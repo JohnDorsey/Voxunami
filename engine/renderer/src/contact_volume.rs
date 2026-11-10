@@ -11,6 +11,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::occupancy_volume::{
     Changes, MAXIMUM_WINDOWS, PARTIAL_SLOT_BYTES, SLOT_BYTES, WINDOW_ENTRIES,
 };
+use crate::sun_boxes::{MAXIMUM_SUN_BOXES, SunBoxUniform};
 use crate::voxel_renderer::{SunWalk, voxel_pipelines, voxel_shader};
 
 /// Where a window is, as the shader has it (`Window` in `contact_on.wgsl`).
@@ -35,6 +36,10 @@ pub(crate) struct WindowsUniform {
     pub windows: [WindowUniform; MAXIMUM_WINDOWS],
     /// x: how many cells to search whatever the rule says (0: by the rule), y: 1 to draw the walk's answer and nothing else.
     pub debug: [u32; 4],
+    /// x: how many of `boxes` are set.
+    pub entities: [u32; 4],
+    /// The boxes of the nearest entities, nearest first (`entities_on.wgsl`).
+    pub boxes: [SunBoxUniform; MAXIMUM_SUN_BOXES],
 }
 
 /// The slots the pool has room for from the start, and the partial slots.
@@ -59,10 +64,11 @@ pub(crate) struct ContactGpu {
     /// The cells of the shapes of the block table that stop the sun in part, 16 words each (`BlockTable::shape_cells`).
     shapes: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// The voxel shader with the walk, with and without the pictures, the walk through shapes and the walk through the windows of other grids, and the pipelines made with each
-    /// (the number of the kind is `usize::from(with_pictures) + 2 * usize::from(with_shapes) + 4 * usize::from(with_other_windows)`): made when they are first wanted.
-    shaders: [Option<wgpu::ShaderModule>; 8],
-    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 8],
+    /// The voxel shader with the walk, with and without the pictures, the walk through shapes, the walk through the windows of other grids and the test against the boxes of
+    /// entities, and the pipelines made with each (the number of the kind is `usize::from(with_pictures) + 2 * usize::from(with_shapes) + 4 * usize::from(with_other_windows) +
+    /// 8 * usize::from(with_entities)`): made when they are first wanted.
+    shaders: [Option<wgpu::ShaderModule>; 16],
+    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 16],
 }
 
 fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -353,11 +359,15 @@ impl ContactGpu {
         let SunWalk::Voxels {
             shapes,
             other_windows,
+            entities,
         } = walk
         else {
             panic!("a variant with the walk has a walk");
         };
-        usize::from(with_pictures) + 2 * usize::from(shapes) + 4 * usize::from(other_windows)
+        usize::from(with_pictures)
+            + 2 * usize::from(shapes)
+            + 4 * usize::from(other_windows)
+            + 8 * usize::from(entities)
     }
 
     /// The pipelines of the variant with the walk; `ensure_pipelines` has made them.

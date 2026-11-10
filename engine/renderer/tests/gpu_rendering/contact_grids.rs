@@ -31,7 +31,7 @@ fn blocks_inside(soup: &Soup, voxel: [i128; 3]) -> Option<SunCell> {
 }
 
 /// The place of the probe in the world, and the way its face looks (a unit vector), given how its soup is mounted.
-fn probe_in_the_world(mount: Mount, probe: &Probe) -> ([f64; 3], [f64; 3]) {
+pub(super) fn probe_in_the_world(mount: Mount, probe: &Probe) -> ([f64; 3], [f64; 3]) {
     let axis = (0..3)
         .find(|axis| !probe.across.contains(axis))
         .expect("a face has an axis");
@@ -47,14 +47,14 @@ fn probe_in_the_world(mount: Mount, probe: &Probe) -> ([f64; 3], [f64; 3]) {
     (mount.to_world(place), mount.to_world(normal))
 }
 
-/// What the other grid says of a voxel in its own axes: `None` where it knows nothing.
-type OtherCells<'a> = &'a dyn Fn([i128; 3]) -> Option<SunCell>;
+/// Whether something that is not the face's own grid blocks the sun's ray from a place on a face, given the place and the way the face looks (a unit vector) in the world, and the
+/// sun in the world.
+pub(super) type OtherBlocks<'a> = &'a dyn Fn([f64; 3], [f64; 3], [f64; 3]) -> bool;
 
-/// Whether the sun is blocked at the probe by the face's own grid (`own`) or by the other (`other_mount`, `other_cells`), for the sun in the world and a place `fraction` in the
-/// front cell.
+/// Whether the sun is blocked at the probe by the face's own grid (`own`) or by something else (`other`), for the sun in the world and a place `fraction` in the front cell.
 fn blocked_at(
     own: (&Soup, Mount),
-    (other_mount, other_cells): (Mount, OtherCells<'_>),
+    other: OtherBlocks<'_>,
     probe: &Probe,
     fraction: [f64; 3],
     sun_world: [f64; 3],
@@ -72,22 +72,14 @@ fn blocked_at(
         target: probe.target,
     };
     let (place, normal) = probe_in_the_world(own.1, &moved);
-    // A sixteenth of a voxel out of the face, in the other grid's axes.
-    let nudged: [f64; 3] = std::array::from_fn(|part| place[part] + normal[part] * 0.0625);
-    let by_other = sun_blocked_from_point(
-        other_mount.to_local(nudged),
-        other_mount.to_local(sun_world),
-        cells,
-        |cell| other_cells([cell.x(), cell.y(), cell.z()]),
-    );
-    (by_own, by_other)
+    (by_own, other(place, normal, sun_world))
 }
 
 /// The reference's answer (blocked by either grid) and whether the other grid decided it, if the answer does not change when the place moves by up to a hundredth of a voxel
 /// across the face or the sun by a tenth of a thousandth.
-fn exact_answer_with_the_other(
+pub(super) fn exact_answer_with_the_other(
     own: (&Soup, Mount),
-    other: (Mount, OtherCells<'_>),
+    other: OtherBlocks<'_>,
     probe: &Probe,
     sun_world: [f64; 3],
     cells: u32,
@@ -214,9 +206,20 @@ fn grids_against_the_reference(
                 attempts += 1;
                 assert!(attempts < probes * 800, "{name}: too few probes are robust");
                 let probe = random_probe(&mut random, &own, toward_sun);
+                let by_the_other = |place: [f64; 3], normal: [f64; 3], sun: [f64; 3]| {
+                    // A sixteenth of a voxel out of the face.
+                    let point: [f64; 3] =
+                        std::array::from_fn(|part| place[part] + normal[part] * 0.0625);
+                    sun_blocked_from_point(
+                        other_mount.to_local(point),
+                        other_mount.to_local(sun),
+                        cell_count,
+                        |cell| other_cells([cell.x(), cell.y(), cell.z()]),
+                    )
+                };
                 let Some((exact, decided_by_the_other)) = exact_answer_with_the_other(
                     (&own, own_mount),
-                    (other_mount, &*other_cells),
+                    &by_the_other,
                     &probe,
                     sun_world,
                     cell_count,

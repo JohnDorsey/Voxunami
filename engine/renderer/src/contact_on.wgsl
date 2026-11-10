@@ -52,10 +52,20 @@ struct Window {
     bounds_high: vec4<f32>,
 }
 
+// The box of an entity, in voxels from the camera, along the axes of the world (`entities_on.wgsl`).
+struct SunBox {
+    low: vec4<f32>,
+    high: vec4<f32>,
+}
+
 struct Windows {
     windows: array<Window, 4>,
     // x: how many cells to search whatever the rule says (0: by the rule), y: 1 to draw the walk's answer and nothing else.
     debug: vec4<u32>,
+    // x: how many of the boxes are set.
+    entities: vec4<u32>,
+    // The boxes of the nearest entities, nearest first.
+    boxes: array<SunBox, 16>,
 }
 
 @group(2) @binding(0) var<uniform> contact_windows: Windows;
@@ -243,7 +253,7 @@ fn walk_window(window: Window, in: VertexOutput, sun: vec3<f32>, cells: u32, own
 }
 
 // 0 if the sun's ray from the place on this face meets a voxel that blocks the sun in the first `forced_cells` cells (or the number the rule gives, if that is 0) of the window of the
-// face's own grid, or of another grid's (`other_windows_block`), 1 if not, which says nothing of what is farther: that is the shadow map's business.
+// face's own grid, or of another grid's (`other_windows_block`), or the box of an entity (`entity_boxes_block`), 1 if not, which says nothing of what is farther: that is the shadow map's business.
 fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     if (in.volume == 0u) {
         return 1.0;
@@ -261,6 +271,9 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
         }
     }
     if (walk_window(contact_windows.windows[in.volume - 1u], in, sun, cells, true)) {
+        return 0.0;
+    }
+    if (entity_boxes_block(in, sun, cells)) {
         return 0.0;
     }
     if (other_windows_block(in, sun, cells)) {

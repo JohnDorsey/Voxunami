@@ -34,6 +34,7 @@ use crate::sun::{
     MAXIMUM_SUN_BALLS, SUN_DISC_SOFTNESS, SunOccluder, TWILIGHT_SOFTNESS, balls_and_ground,
     length_and_direction, zenith,
 };
+use crate::sun_boxes::nearest_sun_boxes;
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
@@ -126,7 +127,7 @@ pub struct EntityBox {
 impl EntityBox {
     /// What the box is made of, as the renderer remembers its mesh: the size made even and put from 2 to 8,
     /// and the material put among the game's.
-    fn key(&self) -> (u32, [u8; 3]) {
+    pub(crate) fn key(&self) -> (u32, [u8; 3]) {
         let material = self.material.clamp(1, MAXIMUM_GAME_MATERIALS as u32 - 1);
         (
             material,
@@ -386,6 +387,9 @@ pub struct RenderStatistics {
     /// Whether the walk was the one that also goes through the windows of the grids other than the face's own (two or more windows are traced), which is a shader of its own and
     /// slower.
     pub walked_other_windows: bool,
+    /// Whether the walk was the one that also tests the sun's ray against the boxes of the nearest entities (an avatar or a box is set, and the walk is asked to know them), which
+    /// is a shader of its own and slower.
+    pub walked_entities: bool,
 }
 
 /// What the shader that walks the sun's ray through the voxels draws instead of the picture, to look at the walk alone (a tool for the tests of the walk, and for whoever
@@ -909,6 +913,8 @@ pub struct VoxelRenderer {
     contact_debug: ContactDebug,
     /// Whether the picture draws only the faces of a brick that can look at the camera (see [`GpuBrick::each_range_facing_camera`]); on unless a test turns it off.
     skip_faces_looking_away: bool,
+    /// Whether the sun's ray is tested against the boxes of the nearest entities (the default).
+    entities_in_the_sun_walk: bool,
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
@@ -1216,6 +1222,7 @@ impl VoxelRenderer {
             contact: None,
             contact_debug: ContactDebug::Off,
             skip_faces_looking_away: true,
+            entities_in_the_sun_walk: true,
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
             bricks: HashMap::new(),
@@ -1767,6 +1774,12 @@ impl VoxelRenderer {
     /// pixel, and the first is faster by a fifth to a third of a frame on an integrated GPU; the switch is for the tests that check that, and for whoever measures it.
     pub fn set_skip_faces_looking_away(&mut self, enabled: bool) {
         self.skip_faces_looking_away = enabled;
+    }
+
+    /// Chooses whether the sun's ray is tested against the boxes of the nearest entities (avatars and boxes), as a face of a grid meets the shade of an entity from the very foot of it
+    /// (the default), or the entities are left to the shadow map alone, which leaves a lit strip a texel or two wide at their feet. The switch is for the tests that check that.
+    pub fn set_entities_in_the_sun_walk(&mut self, enabled: bool) {
+        self.entities_in_the_sun_walk = enabled;
     }
 
     /// Tells the renderer the cells of the shapes of the block table (`BlockTable::shape_cells`), which the voxels that block the sun in part
@@ -2419,9 +2432,17 @@ impl VoxelRenderer {
         let with_shapes = self.volume.has_partials();
         // And through the windows of the other grids only while there are two or more windows to walk: with one, a face has nothing but its own grid's voxels to meet.
         let with_other_windows = traced_windows >= 2;
+        // And against the boxes of entities only while some are set.
+        let sun_boxes = if self.entities_in_the_sun_walk {
+            nearest_sun_boxes(&self.avatars, &self.entity_boxes, camera.position)
+        } else {
+            Vec::new()
+        };
+        let with_entities = !sun_boxes.is_empty();
         let walk = SunWalk::Voxels {
             shapes: with_shapes,
             other_windows: with_other_windows,
+            entities: with_entities,
         };
         if tracing && let Some(contact) = &mut self.contact {
             contact.ensure_pipelines(&self.device, self.color_format, with_pictures, walk);
@@ -2462,6 +2483,7 @@ impl VoxelRenderer {
             traced_windows: if tracing { traced_windows } else { 0 },
             walked_shapes: tracing && with_shapes,
             walked_other_windows: tracing && with_other_windows,
+            walked_entities: tracing && with_entities,
             quads_drawn: visible
                 .iter()
                 .map(|&index| self.mesh(drawables[index].mesh).quad_total())
@@ -2496,6 +2518,8 @@ impl VoxelRenderer {
                 ContactDebug::Off => [0; 4],
                 ContactDebug::Answer { cells } => [cells, 1, 0, 0],
             };
+            windows.entities = [sun_boxes.len() as u32, 0, 0, 0];
+            windows.boxes[..sun_boxes.len()].copy_from_slice(&sun_boxes);
             contact.write_windows(&self.queue, &windows);
         }
         self.crosshair.set_screen_size(&self.queue, size);
@@ -3083,7 +3107,11 @@ impl VoxelRenderer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SunWalk {
     None,
-    Voxels { shapes: bool, other_windows: bool },
+    Voxels {
+        shapes: bool,
+        other_windows: bool,
+        entities: bool,
+    },
 }
 
 pub(crate) fn voxel_shader(
@@ -3096,11 +3124,12 @@ pub(crate) fn voxel_shader(
     } else {
         include_str!("pictures_off.wgsl")
     };
-    let (contact, shapes, windows) = match walk {
-        SunWalk::None => (include_str!("contact_off.wgsl"), "", ""),
+    let (contact, shapes, windows, entities) = match walk {
+        SunWalk::None => (include_str!("contact_off.wgsl"), "", "", ""),
         SunWalk::Voxels {
             shapes,
             other_windows,
+            entities,
         } => (
             include_str!("contact_on.wgsl"),
             if shapes {
@@ -3113,25 +3142,33 @@ pub(crate) fn voxel_shader(
             } else {
                 include_str!("windows_off.wgsl")
             },
+            if entities {
+                include_str!("entities_on.wgsl")
+            } else {
+                include_str!("entities_off.wgsl")
+            },
         ),
     };
     let label = format!(
-        "voxel shader{}{}{}",
+        "voxel shader{}{}{}{}{}",
         if with_pictures { " with pictures" } else { "" },
         match walk {
             SunWalk::None => "",
             SunWalk::Voxels { .. } => " and the sun's ray",
         },
         match walk {
-            SunWalk::Voxels {
-                shapes: true,
-                other_windows: true,
-            } => " through shapes and other grids",
             SunWalk::Voxels { shapes: true, .. } => " through shapes",
+            _ => "",
+        },
+        match walk {
             SunWalk::Voxels {
                 other_windows: true,
                 ..
-            } => " through other grids",
+            } => " and other grids",
+            _ => "",
+        },
+        match walk {
+            SunWalk::Voxels { entities: true, .. } => " and entities",
             _ => "",
         }
     );
@@ -3143,7 +3180,8 @@ pub(crate) fn voxel_shader(
 {pictures}
 {contact}
 {shapes}
-{windows}",
+{windows}
+{entities}",
                 include_str!("voxel.wgsl")
             )
             .into(),

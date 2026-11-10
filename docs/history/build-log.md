@@ -1915,3 +1915,13 @@ The books keep every grid; the windows of the graphics card's go to the nearest 
 - **Mutants:** 11; 3 survived the first run (two gaps in my tests, closed; one a brick of distance, unseen).
 - **A measurement I could not settle:** Cave was 2 ms slower today in every mode, with the rebalance taken out as well, so the machine and not the change; no side-by-side with the old code.
 - **Not done:** Cave with ships in view.
+
+## The sun's exact short ray: the boxes of entities (2026-11-10)
+
+An avatar or an item on the ground now shades the floor from the very foot of it (`contact-trace-spec.md`, section 16 has the design, the tests, the mutation results and the cost).
+
+- **Built:** `world_view::sun_blocked_by_boxes` (the reference); `renderer::sun_boxes` (the nearest 16 boxes, nearest first); `entities_on.wgsl` / `entities_off.wgsl` (a shader variant; 16 kinds of voxel shader); `Windows::boxes` in the uniform; `set_entities_in_the_sun_walk`; `RenderStatistics::walked_entities`.
+- **A mistake of mine, found by the first picture test:** the ray started a sixteenth of a voxel out of the face (as for other grids), which cut the tip of the shadow of a flat item short; it starts on the face now.
+- **Mutants:** 29; 27 killed, 1 a gap in my tests (closed), 1 near-equivalent.
+- **Cost:** +0.64 ms (Vulkan) and +0.85 ms (DX12) on the integrated AMD GPU at worst (16 avatars, every face tests all of them).
+- **Not done:** a turned box for an entity on a ship; Cave with other players in view.

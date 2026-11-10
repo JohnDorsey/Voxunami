@@ -121,10 +121,25 @@ pub(super) fn floor_row(
     from: f64,
     to: f64,
 ) -> (usize, usize) {
+    floor_row_beside(renderer, elevation, height, (14.0, -1.0), z, from, to)
+}
+
+/// As [`floor_row`], for a foot at `foot.0` along x (the wall's is at 14) and the floor on the side of it that `foot.1` says: -1 for the west, where the sun over the +x horizon
+/// casts the shadow, +1 for the east, where the floor faces the sun.
+pub(super) fn floor_row_beside(
+    renderer: &mut VoxelRenderer,
+    elevation: f64,
+    height: i128,
+    foot: (f64, f64),
+    z: f64,
+    from: f64,
+    to: f64,
+) -> (usize, usize) {
+    let (foot, side) = foot;
     let sun = sun_at(elevation);
     // Looking down as far as a camera can (a degree short of straight down): the camera is moved back so that the foot is where it looks, however high it is.
     let behind = height as f64 * elevation_tangent(90.0 - Camera::MAXIMUM_PITCH.to_degrees());
-    let mut camera = Camera::new(place_in_voxels([14.0, (1 + height) as f64, z + behind]));
+    let mut camera = Camera::new(place_in_voxels([foot, (1 + height) as f64, z + behind]));
     camera.yaw = 0.0;
     camera.pitch = -Camera::MAXIMUM_PITCH;
     camera.vertical_field_of_view = (0.17 * 20.0 / height as f64) as f32;
@@ -139,7 +154,7 @@ pub(super) fn floor_row(
         if distance < from {
             continue;
         }
-        let Some((x, y)) = pixel_of_sized(&camera, [-distance, -height as f64, -behind], BIG)
+        let Some((x, y)) = pixel_of_sized(&camera, [side * distance, -height as f64, -behind], BIG)
         else {
             continue;
         };
@@ -548,7 +563,7 @@ impl Mount {
     }
 
     /// A renderer with the soup in it, mounted this way.
-    fn renderer_with(self, context: &GraphicsContext, soup: &Soup) -> VoxelRenderer {
+    pub(super) fn renderer_with(self, context: &GraphicsContext, soup: &Soup) -> VoxelRenderer {
         let mut renderer = new_renderer(context);
         if let Mount::Grid(orientation) = self {
             renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], orientation));
@@ -1127,16 +1142,40 @@ fn cost_of_the_walk_on_a_scene_of_many_contact_edges() {
                 ));
             }
         }
-        // The walk off; on, with one window; on, with a window of another grid far from everything (the shader that walks other windows, its bricks too far to be walked); on,
-        // with a window of another grid whose bricks are the same as the terrain's and stand where the terrain's do (every pixel walks both: the worst case).
-        for mode in 0..4 {
+        // The walk off; on, with one window; on, with sixteen avatars about that the walk leaves out (what drawing them costs) and the same with the walk testing them (every face
+        // tests sixteen boxes: the worst case of the entities); on, with a window of another grid far from everything (the shader that walks other windows, its bricks too far to
+        // be walked); on, with a window of another grid whose bricks are the same as the terrain's and stand where the terrain's do (every pixel walks both: the worst case).
+        for mode in 0..6 {
             if mode == 1 {
                 for (brick, occupancy) in &occupancies {
                     renderer.set_occupancy(*brick, occupancy);
                 }
             }
-            if mode >= 2 {
-                let far = if mode == 2 { 400 } else { 0 };
+            if mode == 2 {
+                let avatars: Vec<Avatar> = (0..16u32)
+                    .map(|index| Avatar {
+                        position: WorldPosition::new(
+                            BrickCoordinate::new(1, 0, 2),
+                            [
+                                10.0 + 4.0 * f64::from(index % 4),
+                                2.5,
+                                12.0 + 4.0 * f64::from(index / 4),
+                            ],
+                        ),
+                        color: index,
+                    })
+                    .collect();
+                renderer.set_avatars(&avatars);
+                renderer.set_entities_in_the_sun_walk(false);
+            }
+            if mode == 3 {
+                renderer.set_entities_in_the_sun_walk(true);
+            }
+            if mode == 4 {
+                renderer.set_avatars(&[]);
+            }
+            if mode >= 4 {
+                let far = if mode == 4 { 400 } else { 0 };
                 renderer.set_grid_pose(
                     a_ship(),
                     pose([far, 0, far], [0.0; 3], Orientation::IDENTITY),
@@ -1170,6 +1209,8 @@ fn cost_of_the_walk_on_a_scene_of_many_contact_edges() {
                 [
                     "off",
                     "on",
+                    "on, 16 avatars left out of the walk",
+                    "on, 16 avatars tested by the walk",
                     "on, a far window of another grid",
                     "on, a window of another grid on the same bricks"
                 ][mode],

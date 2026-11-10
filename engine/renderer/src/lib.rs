@@ -20,6 +20,7 @@ mod shadow;
 mod shadow_maps;
 mod sky;
 mod sun;
+mod sun_boxes;
 mod voxel_renderer;
 
 pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
