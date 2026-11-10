@@ -85,6 +85,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         session.package(),
         session.fog_radius_bricks(),
     );
+    apply_face_switch(&mut renderer);
 
     // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray is told of.)
     let reports_occupancy = std::env::var_os(REPORT_OCCUPANCY).is_some();
@@ -186,6 +187,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
         session.package(),
         session.fog_radius_bricks(),
     );
+    apply_face_switch(&mut renderer);
     session.set_viewport_height(view.height);
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
@@ -199,6 +201,16 @@ const REPORT_OCCUPANCY: &str = "VOX_REPORT_OCCUPANCY";
 /// The environment variable that makes a screenshot or a benchmark run without the walk of the sun's ray through the voxels (`docs/specs/contact-trace-spec.md`): the shadows
 /// are the map's alone, with the lit strip it leaves at the foot of a wall. For comparing pictures and times.
 const WITHOUT_SUN_RAY: &str = "VOX_WITHOUT_SUN_RAY";
+
+/// The environment variable that makes a screenshot or a benchmark run draw all six faces of every brick, as the renderer once did, and not only those that can look at the
+/// camera. The pictures are the same; for comparing times.
+const WITH_EVERY_FACE: &str = "VOX_WITH_EVERY_FACE";
+
+fn apply_face_switch(renderer: &mut VoxelRenderer) {
+    if std::env::var_os(WITH_EVERY_FACE).is_some() {
+        renderer.set_skip_faces_looking_away(false);
+    }
+}
 
 /// Makes the session tell the renderer which voxels block the sun, unless the run is asked to be without the walk.
 fn enable_sun_ray<C: Connection, G: GameDefinition>(session: &mut Session<C, G>) {

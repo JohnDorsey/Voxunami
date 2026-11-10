@@ -39,6 +39,8 @@ pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
 const BRICK_BOUNDING_RADIUS: f32 = 27.72;
 const BRICK_CENTER_OFFSET: f32 = 16.0;
+/// How many cells a brick (or a coarse node) is wide: its quads are on planes from 0 to this along each axis.
+const BRICK_WIDTH_IN_CELLS: f32 = 32.0;
 /// How many quads of shadow maps may be drawn again in a frame to keep them up to date (a map that is wrong is always drawn again, and one map is always allowed): a cascade
 /// keeps its map while the camera stays near the middle of it, and drawing the terrain of a whole picture is most of what shadows cost.
 const REFRESH_BUDGET_QUADS: usize = 1_500_000;
@@ -366,6 +368,8 @@ pub struct RenderStatistics {
     pub quads_drawn: usize,
     /// Of those, the detailed ones.
     pub detailed_quads_drawn: usize,
+    /// Of the quads of the bricks and nodes drawn, how many were not sent to the graphics card because they are on faces that cannot look at the camera.
+    pub quads_looking_away_skipped: usize,
     pub avatars_drawn: usize,
     pub entity_boxes_drawn: usize,
     /// How many cascades of the shadow map were drawn again this frame (0 while there are no shadows, or no sun to cast them, and while the maps are kept), and how many things
@@ -493,6 +497,41 @@ impl GpuBrick {
         ranges
     }
 
+    /// Calls `each` with the ranges of quads on the faces that can look at the camera, which is at `camera` in the cells of the brick (see [`Placement::camera_in_cells`]): the
+    /// brick's quads lie on planes from 0 to 32 along each axis, so a face on the +x side can look at the camera only if it is past x = 0, and a face on the -x side only if it
+    /// is short of x = 32. The others would be thrown away by the rasteriser (the pipelines cull back faces) after their vertices were shaded, which is most of the cost of a
+    /// frame. Neighbouring faces' ranges are joined, so there are at most three.
+    fn each_range_facing_camera(
+        faces: &[u32; 7],
+        camera: Vec3,
+        mut each: impl FnMut(std::ops::Range<u32>),
+    ) {
+        let slack = facing_slack(camera);
+        let mut pending: Option<std::ops::Range<u32>> = None;
+        for face in 0..6 {
+            let looks = if face % 2 == 1 {
+                camera[face / 2] > -slack
+            } else {
+                camera[face / 2] < BRICK_WIDTH_IN_CELLS + slack
+            };
+            let range = faces[face]..faces[face + 1];
+            if !looks || range.is_empty() {
+                continue;
+            }
+            match &mut pending {
+                Some(last) if last.end == range.start => last.end = range.end,
+                _ => {
+                    if let Some(done) = pending.replace(range) {
+                        each(done);
+                    }
+                }
+            }
+        }
+        if let Some(last) = pending {
+            each(last);
+        }
+    }
+
     /// The ranges of quads a map of this kind is drawn from, for the light in this direction.
     fn map_faces(
         kind: MapKind,
@@ -514,6 +553,26 @@ impl GpuBrick {
             .map(|range| range.len())
             .sum()
     }
+}
+
+/// Draws the quads of the buffer that is set, in the order of the faces they are on (`faces`): all of them, or (given where the camera is in the cells of the brick) those on
+/// faces that can look at it. Returns how many quads were left out.
+fn draw_quads_facing(
+    pass: &mut wgpu::RenderPass<'_>,
+    faces: &[u32; 7],
+    camera_in_cells: Option<Vec3>,
+) -> usize {
+    let total = faces[6];
+    let Some(camera) = camera_in_cells else {
+        pass.draw(0..6, 0..total);
+        return 0;
+    };
+    let mut drawn = 0;
+    GpuBrick::each_range_facing_camera(faces, camera, |range| {
+        drawn += range.len() as u32;
+        pass.draw(0..6, range);
+    });
+    (total - drawn) as usize
 }
 
 /// Where the things on each face begin, for things in the order of their faces (0 to 5): the number of things before the first of each face, and the total after the last.
@@ -538,6 +597,27 @@ struct Placement {
     rotation: [[f32; 3]; 3],
     /// The number (1 and up) of the window of voxels that block the sun that the faces are traced in, or 0 for none.
     volume: u32,
+}
+
+impl Placement {
+    /// Where the camera is in the cells of what is placed, in its own (turned) axes: the brick spans 0 to 32 along each. The corner is at `offset` from the camera, so the camera
+    /// is at `-offset` from the corner; the turn is undone by its transpose, and a cell is `scale` voxels.
+    fn camera_in_cells(&self) -> Vec3 {
+        let from_corner = -self.offset;
+        let turn = &self.rotation;
+        Vec3::new(
+            turn[0][0] * from_corner.x + turn[1][0] * from_corner.y + turn[2][0] * from_corner.z,
+            turn[0][1] * from_corner.x + turn[1][1] * from_corner.y + turn[2][1] * from_corner.z,
+            turn[0][2] * from_corner.x + turn[1][2] * from_corner.y + turn[2][2] * from_corner.z,
+        ) / self.scale
+    }
+}
+
+/// How far past the edge of a brick the camera may be, in cells, and still have the faces on that side kept: the rounding of `f32` in the place of the camera in the cells
+/// (a few times `2^-23` of the largest part of it, about `4e-7`) must never be what drops a face that shows. `1e-5` of the width of a brick and of the camera's distance is
+/// more than twenty times that, and for a camera near the brick (the case where the choice matters) it is a few thousandths of a cell.
+fn facing_slack(camera: Vec3) -> f32 {
+    1e-5 * (BRICK_WIDTH_IN_CELLS + camera.abs().max_element())
 }
 
 const NO_TURN: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -822,6 +902,8 @@ pub struct VoxelRenderer {
     volume: Volume,
     contact: Option<ContactGpu>,
     contact_debug: ContactDebug,
+    /// Whether the picture draws only the faces of a brick that can look at the camera (see [`GpuBrick::each_range_facing_camera`]); on unless a test turns it off.
+    skip_faces_looking_away: bool,
     bricks: HashMap<BrickCoordinate, GpuBrick>,
     /// The bricks of ships, in the ships' own coordinates, and where each ship is. A ship without a pose is not drawn.
     ship_bricks: HashMap<(GridId, BrickCoordinate), GpuBrick>,
@@ -1125,6 +1207,7 @@ impl VoxelRenderer {
             volume: Volume::new(maximum_slots),
             contact: None,
             contact_debug: ContactDebug::Off,
+            skip_faces_looking_away: true,
             bricks: HashMap::new(),
             ship_bricks: HashMap::new(),
             coarse_nodes: HashMap::new(),
@@ -1653,6 +1736,12 @@ impl VoxelRenderer {
     /// Chooses what is drawn of the walk of the sun's ray: the picture, or its answer alone (see [`ContactDebug`]).
     pub fn set_contact_debug(&mut self, debug: ContactDebug) {
         self.contact_debug = debug;
+    }
+
+    /// Chooses whether the picture draws only the faces of each brick that can look at the camera (the default) or all six, as it once did. The pictures are the same to the
+    /// pixel, and the first is faster by a fifth to a third of a frame on an integrated GPU; the switch is for the tests that check that, and for whoever measures it.
+    pub fn set_skip_faces_looking_away(&mut self, enabled: bool) {
+        self.skip_faces_looking_away = enabled;
     }
 
     /// Makes the graphics card's side of the volume when the first voxel that blocks the sun is told of, and writes what changed since the last picture into it.
@@ -2411,6 +2500,7 @@ impl VoxelRenderer {
                 }
             }
         }
+        let mut looking_away_skipped = 0usize;
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("voxel pass"),
@@ -2455,6 +2545,8 @@ impl VoxelRenderer {
                     _ => (&self.pipeline, &self.detailed_pipeline),
                 },
             };
+            // (Only the faces of a brick that can look at the camera: the others are quads the rasteriser would throw away, after the vertex shader had run on all four of their
+            // corners. The avatars and boxes are few and are drawn whole.)
             pass.set_pipeline(whole_pipeline);
             for &index in &visible {
                 let brick = self.mesh(drawables[index].mesh);
@@ -2463,7 +2555,12 @@ impl VoxelRenderer {
                 };
                 pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, quads.slice(..));
-                pass.draw(0..6, 0..brick.quad_count);
+                looking_away_skipped += draw_quads_facing(
+                    &mut pass,
+                    &brick.quad_faces,
+                    self.skip_faces_looking_away
+                        .then(|| drawables[index].placement.camera_in_cells()),
+                );
             }
             // The bricks that have blocks that do not fill their cells, with the other pipeline.
             pass.set_pipeline(detailed_pipeline);
@@ -2474,7 +2571,12 @@ impl VoxelRenderer {
                 };
                 pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, detailed.slice(..));
-                pass.draw(0..6, 0..brick.detailed_count);
+                looking_away_skipped += draw_quads_facing(
+                    &mut pass,
+                    &brick.detailed_faces,
+                    self.skip_faces_looking_away
+                        .then(|| drawables[index].placement.camera_in_cells()),
+                );
             }
             pass.set_pipeline(whole_pipeline);
             for &index in &visible_avatars {
@@ -2518,6 +2620,7 @@ impl VoxelRenderer {
             }
             self.overlay.draw(&mut pass);
         }
+        statistics.quads_looking_away_skipped = looking_away_skipped;
         self.queue.submit([encoder.finish()]);
         statistics
     }
@@ -3059,6 +3162,190 @@ mod tests {
         let quads =
             |ranges: &[std::ops::Range<u32>]| ranges.iter().map(|range| range.len()).sum::<usize>();
         assert_eq!(quads(&fronts) + quads(&backs), 21);
+    }
+
+    /// The ranges of quads `each_range_facing_camera` hands out, for a camera at this place in the cells of the brick.
+    fn facing(faces: &[u32; 7], camera: Vec3) -> Vec<std::ops::Range<u32>> {
+        let mut ranges = Vec::new();
+        GpuBrick::each_range_facing_camera(faces, camera, |range| ranges.push(range));
+        ranges
+    }
+
+    #[test]
+    fn only_the_faces_that_can_look_at_the_camera_are_drawn_and_which_depends_on_which_side_of_the_brick_it_is()
+     {
+        // Faces in the order -x, +x, -y, +y, -z, +z, with 1, 2, 3, 4, 5 and 6 quads on them.
+        let starts = [0, 1, 3, 6, 10, 15, 21];
+        // In the middle of the brick every face has a place from which it looks at the camera.
+        assert_eq!(facing(&starts, Vec3::splat(16.0)), vec![0..21]);
+        // Far off along +x: the -x face looks away from every place in the brick; the others (the sides of the brick are seen from there too) can look at it.
+        assert_eq!(facing(&starts, Vec3::new(100.0, 16.0, 16.0)), vec![1..21]);
+        assert_eq!(
+            facing(&starts, Vec3::new(-100.0, 16.0, 16.0)),
+            vec![0..1, 3..21]
+        );
+        // Over a corner, out along +x, +y and +z: the three faces that look that way, and no other.
+        assert_eq!(
+            facing(&starts, Vec3::splat(100.0)),
+            vec![1..3, 6..10, 15..21]
+        );
+        // Under the opposite corner: -x, -y and -z, which are as far apart as faces get (three ranges is the most there can be).
+        assert_eq!(facing(&starts, Vec3::splat(-5.0)), vec![0..1, 3..6, 10..15]);
+        // A face with no quads is no range, and the ranges either side of it are one: here +x, +y and +z have none, and -x, -y and -z touch.
+        assert_eq!(
+            facing(&[0, 1, 1, 3, 3, 5, 5], Vec3::new(-5.0, 16.0, 16.0)),
+            vec![0..5]
+        );
+        // Below the brick the +y face (6..10) is dropped and the faces either side of it stay two ranges.
+        assert_eq!(
+            facing(&starts, Vec3::new(16.0, -5.0, 16.0)),
+            vec![0..6, 10..21]
+        );
+        assert_eq!(facing(&[0; 7], Vec3::splat(16.0)), vec![]);
+    }
+
+    #[test]
+    fn a_face_is_kept_up_to_the_edge_of_the_brick_and_dropped_just_past_it() {
+        let starts = [0, 1, 3, 6, 10, 15, 21];
+        let side = |x: f32| facing(&starts, Vec3::new(x, 16.0, 16.0));
+        // A face on the +x side is seen from places beyond the lowest plane a quad of it can be on (x = 0), and a -x face from places short of x = 32.
+        assert_eq!(side(-0.01), vec![0..1, 3..21]);
+        assert_eq!(side(0.01), vec![0..21]);
+        assert_eq!(side(31.99), vec![0..21]);
+        assert_eq!(side(32.01), vec![1..21]);
+        // On the plane itself the face is edge on, and it is kept: the rounding of a turned brick's place must never be what drops a face that shows.
+        assert_eq!(side(0.0), vec![0..21]);
+        assert_eq!(side(32.0), vec![0..21]);
+    }
+
+    /// A turn by this unit quaternion, as the matrix a placement holds (`rotation[row][column]`).
+    fn turn_of(quaternion: glam::Quat) -> [[f32; 3]; 3] {
+        let columns = glam::Mat3::from_quat(quaternion).to_cols_array_2d();
+        std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]))
+    }
+
+    /// The placement of a brick of cells `scale` voxels wide, turned by `rotation`, for a camera at `camera` in its cells: the corner is where the turn and the camera put it.
+    fn placement_seen_from(camera: Vec3, scale: f32, rotation: [[f32; 3]; 3]) -> Placement {
+        let in_voxels = camera * scale;
+        let offset = -Vec3::new(
+            rotation[0][0] * in_voxels.x
+                + rotation[0][1] * in_voxels.y
+                + rotation[0][2] * in_voxels.z,
+            rotation[1][0] * in_voxels.x
+                + rotation[1][1] * in_voxels.y
+                + rotation[1][2] * in_voxels.z,
+            rotation[2][0] * in_voxels.x
+                + rotation[2][1] * in_voxels.y
+                + rotation[2][2] * in_voxels.z,
+        );
+        Placement {
+            offset,
+            scale,
+            rotation,
+            volume: 0,
+        }
+    }
+
+    #[test]
+    fn the_camera_is_found_in_the_cells_of_a_brick_that_is_turned_and_scaled() {
+        let half_turn = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
+        // A brick at 10, 20, 30 from the camera, not turned: the camera is at -10, -20, -30 from its corner. Four voxels to a cell: a quarter of that in cells.
+        let placement = Placement {
+            offset: Vec3::new(10.0, 20.0, 30.0),
+            scale: 4.0,
+            rotation: NO_TURN,
+            volume: 0,
+        };
+        assert_eq!(placement.camera_in_cells(), Vec3::new(-2.5, -5.0, -7.5));
+        // Turned half way round the y axis, the brick's +x and +z run the other way in the world.
+        let placement = Placement {
+            rotation: half_turn,
+            ..placement
+        };
+        assert_eq!(placement.camera_in_cells(), Vec3::new(2.5, -5.0, 7.5));
+        // A tumble about the diagonal (the ship's x onto the world's y, y onto z, z onto x): found where the placement was made from.
+        let tumble = turn_of(glam::Quat::from_xyzw(0.5, 0.5, 0.5, 0.5));
+        let camera = Vec3::new(3.0, 5.0, 7.0);
+        let found = placement_seen_from(camera, 2.0, tumble).camera_in_cells();
+        assert!((found - camera).abs().max_element() < 1e-5, "{found}");
+    }
+
+    /// How far the camera (at the origin) is in front of the plane a quad of `face` is on at `plane` cells along its axis, in cells: positive where a quad on it looks at the camera.
+    /// Worked out in the world, from the turned and moved corners and normal, and not from the camera's place in the cells.
+    fn in_front_of(placement: &Placement, face: usize, plane: f64) -> f64 {
+        let (axis, sign) = (face / 2, if face % 2 == 1 { 1.0 } else { -1.0 });
+        let mut point = [16.0f64; 3];
+        point[axis] = plane;
+        let mut toward_camera = 0.0;
+        for row in 0..3 {
+            let world: f64 = (0..3)
+                .map(|column| f64::from(placement.rotation[row][column]) * point[column])
+                .sum::<f64>()
+                * f64::from(placement.scale)
+                + f64::from(placement.offset[row]);
+            let normal = f64::from(placement.rotation[row][axis]) * sign;
+            toward_camera -= normal * world;
+        }
+        toward_camera / f64::from(placement.scale)
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Whatever the turn, the width of a cell and the place of the camera (inside the brick, beside it, far off, on a plane of it), a face is drawn exactly when a quad on some
+        /// plane of the brick would look at the camera, worked out in the world; and the ranges are in order, joined and at most three.
+        #[test]
+        fn the_faces_drawn_are_those_a_quad_somewhere_in_the_brick_would_show_to_the_camera(
+            quaternion in (-1.0f32..1.0, -1.0f32..1.0, -1.0f32..1.0, -1.0f32..1.0)
+                .prop_filter("a turn needs a direction", |(x, y, z, w)| x * x + y * y + z * z + w * w > 0.01),
+            level in 0u8..7,
+            places in proptest::array::uniform3(prop_oneof![
+                -60.0f32..100.0,
+                Just(0.0f32),
+                Just(32.0f32),
+                -3000.0f32..3000.0,
+            ]),
+            counts in proptest::array::uniform6(0u32..4),
+        ) {
+            let (x, y, z, w) = quaternion;
+            let rotation = turn_of(glam::Quat::from_xyzw(x, y, z, w).normalize());
+            let camera = Vec3::from(places);
+            let placement = placement_seen_from(camera, cell_scale(level), rotation);
+            let mut starts = [0u32; 7];
+            for face in 0..6 {
+                starts[face + 1] = starts[face] + counts[face];
+            }
+            let found = placement.camera_in_cells();
+            let slack = facing_slack(found);
+            let ranges = facing(&starts, found);
+            let drawn_quads: Vec<u32> = ranges.iter().flat_map(|range| range.clone()).collect();
+            let mut quads_of_faces_drawn = 0;
+            for face in 0..6 {
+                // The most in front of the camera any plane of the brick, at eighths of a cell, puts a quad of this face.
+                let most = (0..=256)
+                    .map(|step| in_front_of(&placement, face, f64::from(step) / 8.0))
+                    .fold(f64::MIN, f64::max);
+                let quads = starts[face]..starts[face + 1];
+                if quads.is_empty() {
+                    continue;
+                }
+                let in_ranges = quads.clone().filter(|quad| drawn_quads.contains(quad)).count();
+                prop_assert!(in_ranges == 0 || in_ranges == quads.len(), "face {face} is drawn in part");
+                quads_of_faces_drawn += in_ranges;
+                // (Between "shows" and "is a rounding error behind" the face may go either way.)
+                if most > 0.0 {
+                    prop_assert!(in_ranges > 0, "face {face} shows ({most} cells in front) and is not drawn");
+                }
+                if most < -2.0 * f64::from(slack) {
+                    prop_assert!(in_ranges == 0, "face {face} cannot show ({most} cells behind) and is drawn");
+                }
+            }
+            prop_assert_eq!(quads_of_faces_drawn, drawn_quads.len(), "quads that are on no face are drawn");
+            prop_assert!(ranges.len() <= 3);
+            for pair in ranges.windows(2) {
+                prop_assert!(pair[0].end < pair[1].start, "{ranges:?} are not in order and joined");
+            }
+        }
     }
 
     fn standing() -> Standing {

@@ -395,7 +395,7 @@ fn the_walk_is_used_only_while_a_volume_holds_something_and_the_shadows_are_on()
 // ---- the walk against the exact answer ----
 
 /// A small deterministic source of random numbers (splitmix64): the tests must give the same probes every time, and on every adapter.
-struct Random(u64);
+pub(super) struct Random(pub(super) u64);
 
 impl Random {
     fn next(&mut self) -> u64 {
@@ -407,11 +407,11 @@ impl Random {
     }
 
     /// A number from 0 up to but not including 1.
-    fn unit(&mut self) -> f64 {
+    pub(super) fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    fn below(&mut self, count: usize) -> usize {
+    pub(super) fn below(&mut self, count: usize) -> usize {
         (self.next() % count as u64) as usize
     }
 }

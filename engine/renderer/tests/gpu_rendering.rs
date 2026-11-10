@@ -26,6 +26,8 @@ use world_view::sun_blocked;
 // (The sun's exact short ray: `docs/specs/contact-trace-spec.md`. A module of its own, which uses what is in this file.)
 #[path = "gpu_rendering/contact_trace.rs"]
 mod contact_trace;
+#[path = "gpu_rendering/facing_cull.rs"]
+mod facing_cull;
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];
