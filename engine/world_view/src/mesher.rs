@@ -160,6 +160,8 @@ pub enum MeshUpdate {
         grid: GridId,
         pose: GridPose,
     },
+    /// Says that a grid is the ground of a planet (a ship with terrain), told once when it is first seen. What the renderer does with it is its own (`set_grid_is_ground`).
+    GridIsGround(GridId),
     /// A ship is gone, with all its bricks.
     RemoveGrid(GridId),
     /// Replaces the picture of a coarse node of the terrain (a cube of bricks of detail level 1 or more, see `coarse_cells`).

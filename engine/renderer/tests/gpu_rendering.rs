@@ -2947,6 +2947,126 @@ fn a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_from_a_brick
     }
 }
 
+/// The scene as the nodes of a grid at the origin, as the ground of a planet is held (a ship with terrain), for a level of 1 or more.
+fn upload_shadow_scene_as_a_grid(
+    renderer: &mut VoxelRenderer,
+    scene: ShadowScene,
+    level: u8,
+    ground: bool,
+) {
+    renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], Orientation::IDENTITY));
+    renderer.set_grid_is_ground(a_ship(), ground);
+    renderer.upload_grid_coarse_node(
+        a_ship(),
+        cube_of_bricks([0, 0, 0], level),
+        &coarse_mesh_lit(|x, y, z| scene.cell(x, y, z), 0),
+    );
+}
+
+/// What is wrong with the shadows of a scene held in a grid, as `shadow_failures` says it (`ground`: whether the grid is told to be ground).
+fn failures_of_a_scene_in_a_grid(
+    context: &GraphicsContext,
+    scene: ShadowScene,
+    level: u8,
+    ground: bool,
+) -> Vec<String> {
+    let mut renderer = new_renderer(context);
+    upload_shadow_scene_as_a_grid(&mut renderer, scene, level, ground);
+    let (camera, cells, probes) = shadow_scene_setup(scene, level);
+    let (failures, seen) = shadow_failures(
+        &mut renderer,
+        level,
+        SUN_OVER_THE_EAST,
+        &camera,
+        cells.map(|cell| cell as f64),
+        &probes,
+    );
+    assert_eq!(
+        seen,
+        probes.len(),
+        "level {level}: a probe is out of the picture"
+    );
+    failures
+}
+
+#[test]
+fn the_ground_of_a_planet_casts_shadows_at_every_distance_as_terrain_does_though_a_planet_is_a_grid()
+ {
+    // The ground of a planet is a grid (a ship with terrain), and a grid is a thing that moves: the maps that keep their picture for a while, those of a texel of more than
+    // a voxel, held only what is not. The planet's terrain cast no shadow farther than a few hundred voxels, and the terrain of a level did. Level 9 (cells of 512, the
+    // camera 10,000 voxels from the floor) and level 15 are looked up in the cascades of a texel of 32 voxels and more.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for scene in [ShadowScene::Block, ShadowScene::Roof] {
+            for level in [1u8, 4, 9, 15] {
+                let failures = failures_of_a_scene_in_a_grid(&context, scene, level, true);
+                assert!(
+                    failures.is_empty(),
+                    "{name} {} level {level}:\n{}",
+                    if matches!(scene, ShadowScene::Block) {
+                        "block"
+                    } else {
+                        "roof"
+                    },
+                    failures.join("\n")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_shadow_of_ground_that_moves_follows_it_in_the_maps_that_are_kept() {
+    // A planet on a rail moves: the map of a texel wider than a voxel is kept while the camera and the sun stay, and the ground it holds moving is what makes it out of
+    // date. Level 9, the block's grid moved 40 bricks along z (2.5 cells): the picture must be the one of a renderer that had the grid there from the start, and not the
+    // one before the move.
+    let moved = pose([0, 0, 40], [0.0; 3], Orientation::IDENTITY);
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let level = 9;
+        let (camera, _, _) = shadow_scene_setup(ShadowScene::Block, level);
+        let picture = |renderer: &mut VoxelRenderer| {
+            renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, true));
+            render(renderer, &camera)
+        };
+        let mut follower = new_renderer(&context);
+        upload_shadow_scene_as_a_grid(&mut follower, ShadowScene::Block, level, true);
+        let before = picture(&mut follower);
+        follower.set_grid_pose(a_ship(), moved);
+        // (A map of terrain that changed waits for its turn: one frame for the finest, and 2^(index - 2) for the others, 16 for the map of the node.)
+        let mut after = picture(&mut follower);
+        for _ in 0..40 {
+            after = picture(&mut follower);
+        }
+        let mut fresh = new_renderer(&context);
+        upload_shadow_scene_as_a_grid(&mut fresh, ShadowScene::Block, level, true);
+        fresh.set_grid_pose(a_ship(), moved);
+        let expected = picture(&mut fresh);
+        assert_ne!(
+            before, expected,
+            "{name}: moving the ground changed nothing the picture shows"
+        );
+        assert!(
+            after == expected,
+            "{name}: the picture after the ground moved is not that of the ground where it is: a kept map was not drawn again"
+        );
+    }
+}
+
+#[test]
+fn a_ship_that_is_not_ground_casts_no_shadow_into_the_maps_that_keep_their_picture() {
+    // What is not ground moves: a ship's node, 10,000 voxels from the camera, is in no shadow map of a texel of more than a voxel (a map that is kept would hold its
+    // shadow where the ship was). This is the rule the ground is the exception to, held so that the exception does not become the rule.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let failures = failures_of_a_scene_in_a_grid(&context, ShadowScene::Block, 9, false);
+        assert!(
+            !failures.is_empty(),
+            "{name}: a ship's node far from the camera cast a shadow into a map that is kept"
+        );
+    }
+}
+
 #[test]
 fn under_a_low_sun_the_shadow_of_a_block_begins_at_its_foot_and_not_a_few_texels_from_it_at_every_scale()
  {

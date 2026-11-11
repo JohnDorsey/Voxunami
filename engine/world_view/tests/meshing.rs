@@ -36,6 +36,7 @@ fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<Mesh
             MeshUpdate::UploadGridBrick { .. }
             | MeshUpdate::RemoveGridBrick { .. }
             | MeshUpdate::GridPose { .. }
+            | MeshUpdate::GridIsGround(_)
             | MeshUpdate::RemoveGrid(_) => panic!("the terrain mesher made an update for a ship"),
             MeshUpdate::UploadCoarse { .. }
             | MeshUpdate::RemoveCoarse(_)

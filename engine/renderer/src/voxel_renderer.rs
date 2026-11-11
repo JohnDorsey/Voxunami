@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroU64;
 
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
@@ -718,7 +718,7 @@ struct Drawable {
     placement: Placement,
     middle: Vec3,
     radius: f32,
-    /// Whether it moves (a ship, an avatar, a box) and not the terrain: the maps that keep their picture for a while hold only the terrain.
+    /// Whether it moves (a ship, an avatar, a box) and not the terrain, or the ground of a planet: the maps that keep their picture for a while hold only the terrain.
     dynamic: bool,
 }
 
@@ -928,6 +928,8 @@ pub struct VoxelRenderer {
     coarse_nodes: HashMap<BrickCube, GpuBrick>,
     ship_coarse_nodes: HashMap<(GridId, BrickCube), GpuBrick>,
     ship_poses: BTreeMap<GridId, GridPose>,
+    /// The grids that are ground (the terrain of a planet), which a shadow map holds like the terrain of a level and not like a ship ([`VoxelRenderer::set_grid_is_ground`]).
+    ground_grids: BTreeSet<GridId>,
     avatar_meshes: Vec<GpuBrick>,
     avatars: Vec<Avatar>,
     entity_boxes: Vec<EntityBox>,
@@ -1234,6 +1236,7 @@ impl VoxelRenderer {
             coarse_nodes: HashMap::new(),
             ship_coarse_nodes: HashMap::new(),
             ship_poses: BTreeMap::new(),
+            ground_grids: BTreeSet::new(),
             avatar_meshes: Vec::new(),
             avatars: Vec::new(),
             entity_boxes: Vec::new(),
@@ -1630,7 +1633,7 @@ impl VoxelRenderer {
         coordinate: BrickCoordinate,
         mesh: &PackedBrickMesh,
     ) {
-        self.dynamic_version += 1;
+        self.grid_changed(grid);
         if mesh.is_empty() {
             self.ship_bricks.remove(&(grid, coordinate));
             return;
@@ -1640,8 +1643,17 @@ impl VoxelRenderer {
     }
 
     pub fn remove_grid_brick(&mut self, grid: GridId, coordinate: BrickCoordinate) {
-        self.dynamic_version += 1;
+        self.grid_changed(grid);
         self.ship_bricks.remove(&(grid, coordinate));
+    }
+
+    /// Notes that something of a grid changed (a brick, a node, its pose, whether it is ground): the maps that hold the things that move are out of date, and those that hold
+    /// the terrain too if the grid is ground.
+    fn grid_changed(&mut self, grid: GridId) {
+        self.dynamic_version += 1;
+        if self.ground_grids.contains(&grid) {
+            self.terrain_version += 1;
+        }
     }
 
     /// Replaces the mesh of a coarse node of the terrain: a cube of bricks of detail level 1 or more (`mesh_coarse_node` makes the mesh, in cells of
@@ -1681,7 +1693,7 @@ impl VoxelRenderer {
         mesh: &PackedBrickMesh,
     ) {
         assert!(cube.level() > 0, "a cube of level 0 is a brick");
-        self.dynamic_version += 1;
+        self.grid_changed(grid);
         if mesh.is_empty() {
             self.ship_coarse_nodes.remove(&(grid, cube));
             return;
@@ -1691,7 +1703,7 @@ impl VoxelRenderer {
     }
 
     pub fn remove_grid_coarse_node(&mut self, grid: GridId, cube: BrickCube) {
-        self.dynamic_version += 1;
+        self.grid_changed(grid);
         self.ship_coarse_nodes.remove(&(grid, cube));
     }
 
@@ -1703,13 +1715,30 @@ impl VoxelRenderer {
     /// Says where a ship is and how it is turned: its bricks are drawn there from the next picture on.
     pub fn set_grid_pose(&mut self, grid: GridId, pose: GridPose) {
         if self.ship_poses.insert(grid, pose) != Some(pose) {
+            self.grid_changed(grid);
+        }
+    }
+
+    /// Says whether a grid is ground: the terrain of a planet, which does not move as a ship does (a planet on a rail moves a little in a tick, and a map that is kept is drawn
+    /// again for it as it is for terrain that changed). The shadow maps of a texel wider than a voxel, which keep their picture for a while, hold the ground and not the ships;
+    /// before this the ground of a planet was in none of them, and cast no shadow farther than a few hundred voxels. The sky's maps hold the ground too, as a roof.
+    pub fn set_grid_is_ground(&mut self, grid: GridId, ground: bool) {
+        if ground != self.ground_grids.contains(&grid) {
+            // (Changed from what it was: counted with the ground's own versions, as it is no longer what it was.)
+            self.terrain_version += 1;
             self.dynamic_version += 1;
+            if ground {
+                self.ground_grids.insert(grid);
+            } else {
+                self.ground_grids.remove(&grid);
+            }
         }
     }
 
     /// Forgets a ship, its pose and all its bricks.
     pub fn remove_grid(&mut self, grid: GridId) {
-        self.dynamic_version += 1;
+        self.grid_changed(grid);
+        self.ground_grids.remove(&grid);
         self.ship_poses.remove(&grid);
         self.ship_bricks.retain(|(held, _), _| *held != grid);
         self.ship_coarse_nodes.retain(|(held, _), _| *held != grid);
@@ -2146,7 +2175,7 @@ impl VoxelRenderer {
                 },
                 middle: place(local.map(|component| component + f64::from(BRICK_CENTER_OFFSET))),
                 radius: BRICK_BOUNDING_RADIUS,
-                dynamic: true,
+                dynamic: !self.ground_grids.contains(&grid),
             });
         }
         for &(grid, cube) in self.ship_coarse_nodes.keys() {
@@ -2179,7 +2208,7 @@ impl VoxelRenderer {
                 },
                 middle: place(local.map(|component| component + half)),
                 radius: BRICK_BOUNDING_RADIUS * scale,
-                dynamic: true,
+                dynamic: !self.ground_grids.contains(&grid),
             });
         }
         let pieces = drawables.len();

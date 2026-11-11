@@ -1,7 +1,7 @@
 //! A player's side of a game, without a window: the client, the meshes of what it sees, the camera,
 //! and the messages the player's actions turn into. Windows and headless runs both drive one.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -159,6 +159,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// Whether the terrain follows what the game says for each level (`GameDefinition::level_detail`): coarse nodes in a level it draws so, bricks only in another.
     follows_level_detail: bool,
     sent_poses: BTreeMap<GridId, GridPose>,
+    /// The grids the renderer was told are the ground of a planet (a ship with terrain).
+    sent_ground: BTreeSet<GridId>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
     client_plugins: Vec<Box<dyn ClientPlugin>>,
@@ -271,6 +273,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             occupancy_wanted: false,
             follows_level_detail: false,
             sent_poses: BTreeMap::new(),
+            sent_ground: BTreeSet::new(),
             camera: start,
             client_plugins,
             client_host,
@@ -868,12 +871,17 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .collect();
         for id in gone {
             self.sent_poses.remove(&id);
+            self.sent_ground.remove(&id);
             self.grid_mesher.forget_grid(id);
             // (Dropping its mesher ends its threads; the renderer drops the ship whole.)
             self.planets.remove(&id);
             updates.push(MeshUpdate::RemoveGrid(id));
         }
         for (id, ship) in ships.iter() {
+            // (Before its pose: the renderer holds a grid that is ground as it holds terrain, whatever else it is told of it.)
+            if ship.terrain.is_some() && self.sent_ground.insert(id) {
+                updates.push(MeshUpdate::GridIsGround(id));
+            }
             if self.sent_poses.get(&id) != Some(&ship.pose) {
                 self.sent_poses.insert(id, ship.pose);
                 updates.push(MeshUpdate::GridPose {
