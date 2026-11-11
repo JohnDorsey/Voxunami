@@ -46,10 +46,6 @@ pub use prediction::{PredictedRail, Prediction, PredictionEnd};
 /// Seconds a ship has to be undisturbed before it goes on a rail.
 pub const QUIET_SECONDS: u64 = 1;
 
-/// Whether a group of ships (ships coupled by their joint ends) is put on a rail. **Not yet:** the world places a group that has a rail, and takes the rail away when anything
-/// happens to the group, but the bodies do not yet hold a group on one (step 4c-3 of `docs/decisions/joints-and-cars.md`).
-const GROUPS_RIDE_RAILS: bool = false;
-
 /// How near, in voxels, something may be, over the way the ship would go in [`NEAR_SECONDS`] at the speed it closes at, before a ship is not on a rail (a ship that is on one
 /// comes off it at half as near, so that it does not go on and off).
 const NEAR_MARGIN: f64 = 64.0;
@@ -127,8 +123,6 @@ pub enum NotCoasting {
     InAGroup(GridId),
     /// A ship of the group is not in memory (it is in a file), so there is no centre of mass of the group to put on a rail.
     GroupNotWhole,
-    /// The ship is the anchor of a group, and a group of ships is not put on a rail yet (`GROUPS_RIDE_RAILS`, in this module).
-    Coupled,
     /// The level the ship is in has a pull of its own (a ground to fall to), which is no pull toward a planet.
     LevelPulls,
     /// No planet that pulls (a planet with a number lower than the ship's, held or on a rail, weighing at least what pulls) is there.
@@ -373,13 +367,8 @@ impl ServerWorld {
         }
         let members = self.data.grids().group_of(grid);
         let grouped = members.len() > 1;
-        if grouped {
-            if members[0] != grid {
-                return Err(NotCoasting::InAGroup(members[0]));
-            }
-            if !GROUPS_RIDE_RAILS {
-                return Err(NotCoasting::Coupled);
-            }
+        if grouped && members[0] != grid {
+            return Err(NotCoasting::InAGroup(members[0]));
         }
         for member in &members {
             let ship = self

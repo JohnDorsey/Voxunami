@@ -8,7 +8,10 @@ use voxel_space::Orientation;
 use world_storage::rail::{Centre, Orbit, Rail, RailTime};
 use world_storage::{ParkedGrid, ShipFileName};
 
-use super::coasting_ships::{PULL, TICKS, ship_at, space};
+use super::coasting_ships::{
+    PULL, TICKS, orbit_of, rail_of, server_tick, ship_at, space, ticks_of_the_end,
+    until_the_rail_changes,
+};
 use super::*;
 
 const DISTANCE: f64 = 10_000.0;
@@ -500,5 +503,355 @@ fn the_ships_of_a_group_on_a_rail_are_not_carried_by_a_planet_whose_sphere_they_
             None,
             "{ship} is in a group on a rail"
         );
+    }
+}
+
+/// Three ships going round the planet at the same speed, 200 voxels farther out and 30 along from one to the next, weighed 1,000, 3,000 and 2,000, coupled one to the next: the
+/// centre of mass of the group is the place of none of them. No rail yet. The planet and the ships.
+fn a_group_in_a_circle() -> (ServerWorld, GridId, [GridId; 3]) {
+    let (mut world, planet) = space();
+    let speed = circular_speed();
+    let ships = [(0.0, 0.0), (200.0, 30.0), (400.0, 60.0)]
+        .map(|(out, along)| ship_at(&mut world, [DISTANCE + out, 0.0, along], [0.0, 0.0, speed]));
+    for (ship, mass) in ships.iter().zip([1000.0, 3000.0, 2000.0]) {
+        world.set_grid_mass(*ship, mass, [0.0; 3]).unwrap();
+    }
+    world.set_ships_coupled(ships[0], ships[1], true);
+    world.set_ships_coupled(ships[1], ships[2], true);
+    (world, planet, ships)
+}
+
+/// Runs `ticks` ticks of the rules of rails (the clock passes one, and ships left alone are put on rails) and says in which of them, counting from 1, the ship was first on one.
+fn first_tick_on_a_rail(world: &mut ServerWorld, ship: GridId, ticks: u64) -> Option<u64> {
+    (1..=ticks).find(|_| {
+        world.data_mut().advance_clock(1);
+        world.update_coasting(TICKS);
+        world.apply_rails(TICKS);
+        world.data().grids().get(ship).unwrap().rail.is_some()
+    })
+}
+
+#[test]
+fn a_group_is_given_the_orbit_of_its_centre_of_mass_and_only_its_anchor_is_asked() {
+    let (mut world, planet, ships) = a_group_in_a_circle();
+    // (The anchor goes slower than the others, so that the speed of the group is not the speed of any one of the ships: a tenth less for the anchor, a tenth more for the last.)
+    world
+        .set_grid_velocity(ships[0], [0.0, 0.0, 0.9 * circular_speed()], [0.0; 3])
+        .unwrap();
+    world
+        .set_grid_velocity(ships[2], [0.0, 0.0, 1.1 * circular_speed()], [0.0; 3])
+        .unwrap();
+    let rail = world.coasting_rail(ships[0], time(0)).unwrap();
+    assert!(rail.is_coasting());
+    // The orbit has the centre of mass of the group where the group is: at the time the rail was made, its place is the centre of mass' and its speed is the group's. (The
+    // centre of mass is 270 voxels farther out than the anchor, and a rail made of the anchor would not be at it.)
+    let centre = world.data().grids().group_centre(&ships).unwrap();
+    let anchor = world
+        .data()
+        .grids()
+        .get(ships[0])
+        .unwrap()
+        .middle()
+        .unwrap();
+    let planet_at = world
+        .data()
+        .grids()
+        .get(planet)
+        .unwrap()
+        .pose
+        .position
+        .in_voxels();
+    let state = rail.state(time(0), planet_at, [0.0; 3]);
+    close(
+        state.position.unwrap(),
+        centre.position.in_voxels(),
+        1e-6,
+        "its place is the centre of mass'",
+    );
+    close(
+        state.velocity,
+        centre.velocity,
+        1e-9,
+        "and its speed the group's",
+    );
+    assert!(centre.position.relative_to(anchor)[0] > 200.0);
+    // The other ships of the group are not asked: their rail is the anchor's.
+    for ship in &ships[1..] {
+        assert_eq!(
+            world.coasting_rail(*ship, time(0)).unwrap_err(),
+            NotCoasting::InAGroup(ships[0])
+        );
+    }
+}
+
+#[test]
+fn a_group_whose_ships_have_not_been_weighed_is_given_the_orbit_of_the_middle_of_their_places() {
+    let (mut world, planet, ships) = a_group_in_a_circle();
+    for ship in ships {
+        world.set_grid_mass(ship, 0.0, [0.0; 3]).unwrap();
+    }
+    let rail = world.coasting_rail(ships[0], time(0)).unwrap();
+    let planet_at = world
+        .data()
+        .grids()
+        .get(planet)
+        .unwrap()
+        .pose
+        .position
+        .in_voxels();
+    let place = rail.state(time(0), planet_at, [0.0; 3]).position.unwrap();
+    // 10,000, 10,200 and 10,400 along x, 0, 30 and 60 along z: the middle of them.
+    close(place, [10_200.0, 0.0, 30.0], 1e-6, "the mean of the places");
+}
+
+#[test]
+fn a_group_is_put_on_a_rail_when_nothing_has_touched_it_for_a_second_and_only_its_anchor_has_one() {
+    let (mut world, planet, ships) = a_group_in_a_circle();
+    // (The ships were made and set going at the clock's 0; a second is 20 ticks.)
+    let first = first_tick_on_a_rail(&mut world, ships[0], 40).expect("it is put on a rail");
+    assert!((20..=22).contains(&first), "after {first} ticks");
+    for ship in &ships[1..] {
+        assert_eq!(
+            world.data().grids().get(*ship).unwrap().rail,
+            None,
+            "{ship}"
+        );
+    }
+    // It is the orbit of the centre of mass: the group stays on it as the world puts it there.
+    let rail = world
+        .data()
+        .grids()
+        .get(ships[0])
+        .unwrap()
+        .rail
+        .clone()
+        .unwrap();
+    let planet_at = world
+        .data()
+        .grids()
+        .get(planet)
+        .unwrap()
+        .pose
+        .position
+        .in_voxels();
+    let state = rail.state(time(world.world_tick()), planet_at, [0.0; 3]);
+    close(
+        centre_of(&world, &ships).0,
+        state.position.unwrap(),
+        1e-6,
+        "the centre of mass is on the rail",
+    );
+}
+
+#[test]
+fn a_touch_on_any_ship_of_a_group_makes_it_wait_a_second_again() {
+    for target in [0, 1, 2] {
+        let (mut world, _planet, ships) = a_group_in_a_circle();
+        // Ten ticks of quiet, and a touch (the speed it has, said again, is a touch).
+        assert_eq!(first_tick_on_a_rail(&mut world, ships[0], 10), None);
+        let speed = world
+            .data()
+            .grids()
+            .get(ships[target])
+            .unwrap()
+            .linear_velocity;
+        world
+            .set_grid_velocity(ships[target], speed, [0.0; 3])
+            .unwrap();
+        let after = first_tick_on_a_rail(&mut world, ships[0], 40).expect("it is put on a rail");
+        assert!(
+            (20..=22).contains(&after),
+            "touched {target}: {after} ticks after the touch"
+        );
+    }
+}
+
+#[test]
+fn a_group_is_not_put_on_a_rail_with_something_near_it_and_keeps_one_it_has_with_less_room() {
+    let (mut world, _planet, ships) = a_group_in_a_circle();
+    // A stranger 100 voxels from the last ship, going as the group does: it is nearer than twice the margin (128) that is needed to go on a rail, and farther than the margin
+    // (64) that is needed to stay on one.
+    let stranger = ship_at(
+        &mut world,
+        [DISTANCE + 400.0, 0.0, 160.0],
+        [0.0, 0.0, circular_speed()],
+    );
+    assert_eq!(first_tick_on_a_rail(&mut world, ships[0], 60), None);
+    assert!(matches!(
+        world.coasting_rail(ships[0], time(0)).unwrap_err(),
+        NotCoasting::SomethingNear(near) if near == stranger
+    ));
+    // The stranger goes away and the group, quiet, is put on a rail (and goes round, which is eight kilometres in a second here); the stranger is brought back to 100 voxels from
+    // the last ship, going as it goes, and the group keeps its rail.
+    world
+        .set_grid_pose(
+            stranger,
+            GridPose::new(
+                WorldPosition::from_voxels([DISTANCE, 5_000.0, 0.0]),
+                Orientation::IDENTITY,
+            ),
+        )
+        .unwrap();
+    assert!(first_tick_on_a_rail(&mut world, ships[0], 40).is_some());
+    let last = world.data().grids().get(ships[2]).unwrap();
+    let (near, going) = (
+        last.pose.position.translated([0.0, 0.0, 100.0]),
+        last.linear_velocity,
+    );
+    world
+        .set_grid_pose(stranger, GridPose::new(near, Orientation::IDENTITY))
+        .unwrap();
+    world.set_grid_velocity(stranger, going, [0.0; 3]).unwrap();
+    world.update_coasting(TICKS);
+    assert!(
+        world.data().grids().get(ships[0]).unwrap().rail.is_some(),
+        "100 voxels from a stranger it has the room to stay"
+    );
+    // And at 50 it has not.
+    let nearer = last_position(&world, ships[2]).translated([0.0, 0.0, 50.0]);
+    world
+        .set_grid_pose(stranger, GridPose::new(nearer, Orientation::IDENTITY))
+        .unwrap();
+    world.update_coasting(TICKS);
+    assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, None);
+}
+
+fn last_position(world: &ServerWorld, ship: GridId) -> WorldPosition {
+    pose_of(world, ship).position
+}
+
+#[test]
+fn a_group_with_a_ship_held_or_in_a_file_is_not_given_a_rail() {
+    let (mut world, _planet, ships) = a_group_in_a_circle();
+    world.set_grid_held(ships[2], true).unwrap();
+    assert_eq!(
+        world.coasting_rail(ships[0], time(0)).unwrap_err(),
+        NotCoasting::Held
+    );
+    // (A ship that is held has no speed, and let go goes at none: it is given the speed of the others, or the group would go too low.)
+    world.set_grid_held(ships[2], false).unwrap();
+    world
+        .set_grid_velocity(ships[2], [0.0, 0.0, circular_speed()], [0.0; 3])
+        .unwrap();
+    assert!(world.coasting_rail(ships[0], time(0)).is_ok());
+    let parked = ParkedGrid {
+        level: LevelIndex::MAIN,
+        pose: pose_of(&world, ships[2]),
+        bounds: None,
+        file: ShipFileName::new(ships[2], 0),
+        checksum: 0,
+        waits_for_those_aboard: false,
+        has_terrain: false,
+        on_a_rail: false,
+    };
+    world.data_mut().grids_mut().park(ships[2], parked).unwrap();
+    assert_eq!(
+        world.coasting_rail(ships[0], time(0)).unwrap_err(),
+        NotCoasting::GroupNotWhole
+    );
+}
+
+#[test]
+fn a_group_that_is_made_waits_a_second_though_the_ships_were_quiet_before() {
+    let (mut world, _planet, ships) = a_group_in_a_circle();
+    // They are alone first, for fifteen ticks (each is quiet, and none has a rail yet), and are coupled in the sixteenth.
+    world.set_ships_coupled(ships[0], ships[1], false);
+    world.set_ships_coupled(ships[1], ships[2], false);
+    assert_eq!(first_tick_on_a_rail(&mut world, ships[0], 15), None);
+    world.set_ships_coupled(ships[0], ships[1], true);
+    world.set_ships_coupled(ships[1], ships[2], true);
+    // The group is not asked to have been quiet for the fifteen: it waits its own second.
+    let after = first_tick_on_a_rail(&mut world, ships[0], 40).expect("it is put on a rail");
+    assert!(
+        (20..=22).contains(&after),
+        "{after} ticks after the pairs were made"
+    );
+    // A pair said again (the bodies say it of every pair, every tick) is not a change, and makes no one wait.
+    world.set_grid_rail(ships[0], None).unwrap();
+    assert_eq!(first_tick_on_a_rail(&mut world, ships[0], 10), None);
+    world.set_ships_coupled(ships[0], ships[1], true);
+    world.set_ships_coupled(ships[1], ships[2], true);
+    assert!(first_tick_on_a_rail(&mut world, ships[0], 40).is_some_and(|tick| tick < 20));
+}
+
+#[test]
+fn a_group_on_a_rail_answers_a_change_of_the_mass_of_its_planet_from_its_centre_of_mass() {
+    // Three ships on an ellipse round the planet, 30 voxels apart along their way, weighed alike: the centre of mass is not the anchor's place. The planet weighs more, and
+    // at the nearest point the rail is made again from the state the group is in, which is its centre of mass' and not the anchor's.
+    let (mut world, planet) = space();
+    let mu = PULL * PLANET_MASS;
+    let speed = libm::sqrt(mu * (2.0 / 10_000.0 - 1.0 / 7_500.0));
+    let ships = [0.0, 30.0, 60.0]
+        .map(|along| ship_at(&mut world, [10_000.0, 0.0, along], [0.0, 0.0, speed]));
+    for ship in ships {
+        world.set_grid_mass(ship, 1000.0, [0.0; 3]).unwrap();
+    }
+    world.set_ships_coupled(ships[0], ships[1], true);
+    world.set_ships_coupled(ships[1], ships[2], true);
+    for tick in 0..=21 {
+        server_tick(&mut world, tick);
+    }
+    let old = rail_of(&world, ships[0]);
+    assert!(old.is_some(), "on a rail at tick 21");
+    let before = orbit_of(&world, ships[0]);
+    world.set_grid_mass(planet, 1.2e22, [0.0; 3]).unwrap();
+    let expected = ticks_of_the_end(before, 21, 400, true)[0];
+    let tick =
+        until_the_rail_changes(&mut world, ships[0], old.clone(), 21, 400).expect("answered");
+    assert_eq!(
+        tick, expected,
+        "answered in the tick that passes the nearest point"
+    );
+    let after = orbit_of(&world, ships[0]);
+    assert!((after.mass_parameter() / (PULL * 1.2e22) - 1.0).abs() < 1e-12);
+    // The group did not jump: it is where the old rail has it at that time, and goes as the old rail has it. (A rail made of the anchor's state would have put it 30 voxels away.)
+    let planet_here = world
+        .data()
+        .grids()
+        .get(planet)
+        .unwrap()
+        .pose
+        .position
+        .in_voxels();
+    let was = old
+        .unwrap()
+        .state(time(world.world_tick()), planet_here, [0.0; 3]);
+    close(
+        centre_of(&world, &ships).0,
+        was.position.unwrap(),
+        1e-6,
+        "the group did not move when its rail was made again",
+    );
+    close(
+        centre_of(&world, &ships).1,
+        was.velocity,
+        1e-6,
+        "or change its speed",
+    );
+    // The new rail has the centre of mass of the group where it is, going as it goes. (The anchor is 30 voxels from it, and a rail made of the anchor's state would not.)
+    let planet_at = world
+        .data()
+        .grids()
+        .get(planet)
+        .unwrap()
+        .pose
+        .position
+        .in_voxels();
+    let rail = rail_of(&world, ships[0]).unwrap();
+    let state = rail.state(time(world.world_tick()), planet_at, [0.0; 3]);
+    close(
+        centre_of(&world, &ships).0,
+        state.position.unwrap(),
+        1e-6,
+        "the centre of mass is on the new rail",
+    );
+    close(
+        centre_of(&world, &ships).1,
+        state.velocity,
+        1e-6,
+        "and goes as it does",
+    );
+    for ship in &ships[1..] {
+        assert_eq!(rail_of(&world, *ship), None);
     }
 }

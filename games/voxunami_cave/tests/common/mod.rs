@@ -2,6 +2,7 @@
 
 //! A server ticked by the test, and players connected to it.
 
+pub mod chains;
 pub mod docking;
 pub mod joints;
 pub mod moving_planet;

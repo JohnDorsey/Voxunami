@@ -341,9 +341,17 @@ impl ServerWorld {
         self.data.grids().coupled()
     }
 
-    /// Records that two ships are coupled, or that they are not (in either order). Nothing is recorded of a ship the world does not know.
+    /// Records that two ships are coupled, or that they are not (in either order). Nothing is recorded of a ship the world does not know. **A group that is made or changed has
+    /// been quiet for none of the time its ships were**: it waits a second before it is put on a rail, as a ship that is made does (a pair that was recorded already changes
+    /// nothing, and the bodies say so of every pair every tick).
     pub fn set_ships_coupled(&mut self, first: GridId, second: GridId, coupled: bool) {
-        self.data.grids_mut().set_coupled(first, second, coupled);
+        if self.data.grids_mut().set_coupled(first, second, coupled) {
+            for ship in [first, second] {
+                for member in self.data.grids().group_of(ship) {
+                    self.quiet_since.remove(&member);
+                }
+            }
+        }
     }
 
     /// How the paths of ships on rails are kept.

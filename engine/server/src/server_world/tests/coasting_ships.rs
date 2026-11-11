@@ -165,11 +165,10 @@ fn what_a_ship_cannot_coast_for_is_said() {
         .set_grid_velocity(ship, speed, [0.0, 0.001, 0.0])
         .unwrap();
     assert!(world.coasting_rail(ship, time(0)).is_ok());
-    // A ship coupled to another by a joint is in a group, whose rail is on its anchor, the ship of it with the lowest number; and a group is not put on a rail yet (step 4c-3).
+    // A ship coupled to another by a joint is in a group, whose rail is on its anchor, the ship of it with the lowest number (the group's rules are in `group_ships.rs`).
     // (A partner that is a ship of the world: the world records no pair for a ship it does not know.)
     let partner = ship_at(&mut world, [0.0, 50_000.0, 0.0], [0.0; 3]);
     world.set_ships_coupled(ship, partner, true);
-    assert_eq!(refused(&world, ship), NotCoasting::Coupled);
     assert_eq!(refused(&world, partner), NotCoasting::InAGroup(ship));
     world.set_ships_coupled(ship, partner, false);
     assert!(world.coasting_rail(ship, time(0)).is_ok(), "alone again");

@@ -268,14 +268,14 @@ impl GridStore {
     ///
     /// **A change in who is in a group takes the coasting rails from the ships of the groups it touches** (see [`GridStore::group_of`], [`Rail::is_coasting`]): the rail of a group
     /// is the orbit of the centre of mass of the ships it had when the rail was made, and with another set of ships it is the orbit of nothing. (A pair that was there, or one
-    /// that joins ships that were one group already, changes no one's group.)
-    pub fn set_coupled(&mut self, first: GridId, second: GridId, coupled: bool) {
+    /// that joins ships that were one group already, changes no one's group.) Whether the pairs changed.
+    pub fn set_coupled(&mut self, first: GridId, second: GridId, coupled: bool) -> bool {
         let pair = (first.min(second), first.max(second));
         if coupled == self.coupled.contains(&pair) {
-            return;
+            return false;
         }
         if coupled && (first == second || !self.knows(first) || !self.knows(second)) {
-            return;
+            return false;
         }
         let before = (self.group_of(first), self.group_of(second));
         if coupled {
@@ -297,6 +297,7 @@ impl GridStore {
                 .collect();
             self.clear_group_rails(touched);
         }
+        true
     }
 
     /// Whether this ship is coupled to another (so a ship that is alone is found so without building its group).
@@ -993,6 +994,18 @@ mod tests {
             store.coupled().iter().copied().collect::<Vec<_>>(),
             [(first, second)]
         );
+    }
+
+    #[test]
+    fn setting_a_pair_says_whether_the_pairs_changed() {
+        let mut store = GridStore::new();
+        let (first, second) = (store.create(grid(1)), store.create(grid(2)));
+        assert!(store.set_coupled(second, first, true), "a pair is made");
+        assert!(!store.set_coupled(first, second, true), "and said again");
+        assert!(!store.set_coupled(first, first, true), "a ship with itself");
+        assert!(!store.set_coupled(first, GridId::new(GridId::FIRST_ALLOCATED + 90), true));
+        assert!(store.set_coupled(first, second, false), "a pair is let go");
+        assert!(!store.set_coupled(first, second, false), "and said again");
     }
 
     #[test]
