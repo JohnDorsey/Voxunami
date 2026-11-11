@@ -51,6 +51,7 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `plugin-architecture-review.md`: the 2026-10-17 reasoning behind the plugin shape.
 - `joint-probe.md` (2026-11-01: do Rapier joints hold when over-constrained, with its program in `spikes/joints/`).
 - `loop-probe.md` (2026-11-06: loops of cars on multibody or impulse joints, phantom momentum and free energy, cost against the number of cars, overlapping colliders, spin, and the accuracy of `BodyWorld` collisions; programs in `spikes/loops/`).
+- `ship-rail-frames-review.md` (2026-11-10: how a ship that turns rides a rail, steps 4c-1 and 4c-2 of the joints plan, read through with snippets, what is tested and what is not).
 - `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 

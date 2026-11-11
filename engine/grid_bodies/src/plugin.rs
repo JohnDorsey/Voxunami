@@ -248,11 +248,13 @@ struct Frame {
     terrain: BTreeSet<BrickCoordinate>,
 }
 
-/// What a frame goes with: the planet on a rail that carries the ships in it (see `ServerWorld::carrier_of`). The places of such a frame are the world's less how far
-/// the planet has gone since the frame was made, and the velocities in it are the world's less the planet's: a ship that rests on the planet rests in the frame
-/// whatever the planet's speed, and a ship in orbit round the planet moves as if the planet stood still and only turned. The frame is in free fall with the
-/// planet, so the gravity in it leaves out the pull of what the planet goes round (`ServerWorld::gravity_in_the_free_fall_of`), and it has no terrain of the
-/// level, which stands still in the world (blocks built in space near a planet on a rail are not solid to what goes with the planet).
+/// What a frame goes with: a point that moves in the world (see [`Followed`]). The places of such a frame are the world's less how far the point has gone since the
+/// frame was made, and the velocities in it are the world's less the point's.
+/// For a planet on a rail that carries the ships in it (see `ServerWorld::carrier_of`): a ship that rests on the planet rests in the frame whatever the planet's speed,
+/// and a ship in orbit round the planet moves as if the planet stood still and only turned. The frame is in free fall with the planet, so the gravity in it leaves out the
+/// pull of what the planet goes round (`ServerWorld::gravity_in_the_free_fall_of`), and it has no terrain of the level, which stands still in the world (blocks built in
+/// space near a planet on a rail are not solid to what goes with the planet).
+/// For the centre of mass of a ship that turns on a rail: the frame has that one ship in it, at rest, with no pull and no planets, and no terrain of the level either.
 #[derive(Clone, Copy, Debug)]
 struct Follow {
     followed: Followed,
@@ -374,10 +376,10 @@ fn velocity_from(follow: Option<Follow>, local: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// Whether two places of a frame are the same (see [`SAME_PLACE_VOXELS`]).
 /// What a ship is to the solver. A ship that is held or frozen does not move; **neither does one that is on a rail**: it is where the clock puts it whatever the solver does, so it
 /// is a fixed body that other ships are stopped by, and it asks for no terrain of a planet (a fixed ship is held against it). The world takes a ship off its rail before anything near
 /// it could meet it or push it (`server::ServerWorld::update_coasting`), and then it is the solver's again.
+/// (The exception is a ship that turns on a rail: the caller does not say it is on one, since it is a free body in a frame of its own, see [`Followed::of`].)
 fn body_kind(held: bool, frozen: bool, on_a_rail: bool) -> BodyKind {
     if held || frozen || on_a_rail {
         BodyKind::Fixed
@@ -386,6 +388,7 @@ fn body_kind(held: bool, frozen: bool, on_a_rail: bool) -> BodyKind {
     }
 }
 
+/// Whether two places of a frame are the same (see [`SAME_PLACE_VOXELS`]).
 fn same_place(first: WorldPosition, second: WorldPosition) -> bool {
     first
         .displacement_to(second)

@@ -155,7 +155,7 @@ The owner's words, condensed:
     its rail. Until step C, a jointed group that is thrusting is an ordinary body of the contact pass, its frame following its own body, with no promise about the precision of its path; only a
     coasting group rides a rail. Its mechanisms behave the same either way (promise (a)): the frame is centred on the group in both. "Engines affect the rail" (promise (b)) waits for step C.
 
-**What the code does today that these would forbid (read in the source, 2026-11-09, not run):**
+**What the code did on 2026-11-09 that these would forbid (read in the source, 2026-11-09, not run). Since 2026-11-10 item 3 no longer holds for a ship alone (4c-2: a turning ship rides a rail) and item 4 no longer holds for a ship on a rail that turns (its body may not sleep); the rest stand until their steps:**
 1. `BodyWorld::steps_for_this_tick` cuts a tick into 3 to 24 steps by the speed of the **fastest dynamic body in the frame**, so a mechanism's solver steps depend on its own speed and on every other ship in its frame.
 2. A frame is one `BodyWorld` for all the ships of a place; its origin is the brick of the first ship that made it, and a ship moves to another frame (its joints would die) at 32 km from the origin.
 3. A rail is per grid, holds a place and not a turn (`coasting_candidate`: a ship that turns is not put on one), and any force or torque takes the ship off it; a joint motor turns cars.
