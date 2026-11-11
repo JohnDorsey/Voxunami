@@ -1934,3 +1934,11 @@ The owner asked for "grass and leaves" (grass is an opaque cube with halves and 
 - **Parked:** the work, on the branch `cutouts-walk-parked` (`95bbc0e`).
 - **A mistake of mine, corrected:** section 5.3 of the spec said that leaves and glass keep the strip; I had not measured it.
 - **A lesson:** write the control (the picture without the walk) before the walk, not after.
+
+## Shader packs, step 1: the interface (2026-11-10)
+
+The lighting equation of `fragment_main` moved out into `pack_shade(s: Surface)`, the engine's answers given to it; a player's pack is a file that defines it instead (`shader-pack-spec.md` has the design, the rules, the numbers and the decisions).
+
+- **Built:** `Surface` and the call in `voxel.wgsl`; `lighting_default.wgsl` (the old equation, moved); `voxel_source`/`voxel_shader` taking the lighting text, last; `shader_pack.rs` (`ShaderPack::new` checks the words (no loop, binding, outside variable, engine name or texture) and that the shader language (naga) accepts the engine's shader of the plainest and the heaviest kind with the pack after it, at the pack's own lines); `VoxelRenderer::set_shader_pack` (the card's refusal comes back as an error, the renderer unchanged); `ContactGpu::set_lighting`.
+- **Verified:** 0 differing pixels of 10 real-Cave views on two adapters before and after; frame time unchanged (18.6 ms); 19 tests (10 unit, 9 GPU on four adapters); 26 mutants, 3 survived and were closed.
+- **Not done:** the player's side (folders, `--shader-pack`, `.shader`), hooks for the sky, the fog, vertices and time.

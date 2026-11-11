@@ -89,6 +89,8 @@ Measured on the spike's flat 36 KB volume, 1280 by 720, about **0.08 to 0.09 ms 
 
 The engine owns the volume and the answer; a pack gets **`sun_visibility(place, normal) -> f32`** (map and trace together, as `light` above) and, later, a bounded **ray query** `trace(origin, direction, longest) -> hit`, and writes only how a surface is lit with them. A pack therefore cannot bring the strip back by choosing its own bias, which is what packs of other games do each for themselves. The volume would also give exact sky cover (replacing the heightfield of `shadow-spec.md` 8, whose approximations the spec lists) and cheap ambient occlusion to a pack, at no new data cost; neither is designed here. A pack's loops can still hang a GPU: the engine's queries are bounded, a pack's own are its author's (to be thought about with the pack format).
 
+**Built 2026-11-10 (step 1; `shader-pack-spec.md`):** the interface is `pack_shade(s: Surface) -> vec3<f32>`, a function of the engine's answers (the visibilities of this section's `sun_visibility`, among them), as proposed here; no ray query yet.
+
 ## 9. Open decisions (my recommendation first)
 
 1. **Composition: `min(map, trace)`**, not the trace alone within range. The map has no false shadows by design (the bias is toward lit), so the minimum is exact where the trace reaches and the map's own where it does not.

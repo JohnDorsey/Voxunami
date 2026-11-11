@@ -24,6 +24,7 @@ use crate::occupancy_volume::{
     MAXIMUM_WINDOWS, SLOT_BYTES, Volume, VolumeKey, VolumeStatistics, WINDOW_BRICKS, WINDOW_ENTRIES,
 };
 use crate::overlay::{Overlay, OverlayRect};
+use crate::shader_pack::{DEFAULT_LIGHTING, ShaderPack, ShaderPackError};
 use crate::shadow::{
     Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
     sky_half_widths,
@@ -915,6 +916,8 @@ pub struct VoxelRenderer {
     skip_faces_looking_away: bool,
     /// Whether the sun's ray is tested against the boxes of the nearest entities (the default).
     entities_in_the_sun_walk: bool,
+    /// The text of the shader pack's `pack_shade` the voxel shaders are made with ([`DEFAULT_LIGHTING`] or a pack's: [`VoxelRenderer::set_shader_pack`]).
+    lighting: String,
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
@@ -1072,7 +1075,7 @@ impl VoxelRenderer {
             immediate_size: 0,
         });
 
-        let shader = voxel_shader(&device, false, SunWalk::None);
+        let shader = voxel_shader(&device, false, SunWalk::None, DEFAULT_LIGHTING);
         let (pipeline, detailed_pipeline) =
             voxel_pipelines(&device, &pipeline_layout, &shader, color_format);
 
@@ -1223,6 +1226,7 @@ impl VoxelRenderer {
             contact_debug: ContactDebug::Off,
             skip_faces_looking_away: true,
             entities_in_the_sun_walk: true,
+            lighting: DEFAULT_LIGHTING.to_owned(),
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
             bricks: HashMap::new(),
@@ -1431,7 +1435,12 @@ impl VoxelRenderer {
         // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
         self.cutouts_in_use = words.iter().any(|&word| word & (1 << 17) != 0);
         if self.pictures_in_use && self.picture_shader.is_none() {
-            self.picture_shader = Some(voxel_shader(&self.device, true, SunWalk::None));
+            self.picture_shader = Some(voxel_shader(
+                &self.device,
+                true,
+                SunWalk::None,
+                &self.lighting,
+            ));
         }
         if let Some(shader) = &self.picture_shader {
             if self.pictures_in_use && self.picture_pipelines.is_none() {
@@ -1765,6 +1774,73 @@ impl VoxelRenderer {
             .collect()
     }
 
+    /// Draws faces with this shader pack's `pack_shade` from now on, or with the default one for `None` (see [`ShaderPack`]). The engine still works out what is lit and what
+    /// is not, and the fog and the sky are still its own. The pack's shaders are made at once, for the kinds the renderer draws with and the heaviest one: if the graphics card
+    /// refuses any of them (the checks of [`ShaderPack::new`] are the shader language's, not the card's) this is an error and the renderer draws as it did.
+    pub fn set_shader_pack(&mut self, pack: Option<&ShaderPack>) -> Result<(), ShaderPackError> {
+        let lighting = pack.map_or(DEFAULT_LIGHTING, ShaderPack::lighting);
+        if lighting == self.lighting {
+            return Ok(());
+        }
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = voxel_shader(&self.device, false, SunWalk::None, lighting);
+        let pipelines = voxel_pipelines(
+            &self.device,
+            &self.pipeline_layout,
+            &shader,
+            self.color_format,
+        );
+        let pictures = self.pictures_in_use.then(|| {
+            let shader = voxel_shader(&self.device, true, SunWalk::None, lighting);
+            let pipelines = voxel_pipelines(
+                &self.device,
+                &self.pipeline_layout,
+                &shader,
+                self.color_format,
+            );
+            (shader, pipelines)
+        });
+        let mut contact = self.contact.take();
+        if let Some(contact) = &mut contact {
+            contact.set_lighting(lighting);
+            // (The heaviest kind: if the card takes this one it takes the others, which have less of the engine's code round the same pack.)
+            contact.ensure_pipelines(
+                &self.device,
+                self.color_format,
+                self.pictures_in_use,
+                SunWalk::Voxels {
+                    shapes: true,
+                    other_windows: true,
+                    entities: true,
+                },
+            );
+        }
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            // (The old pack's shaders are made again lazily, from the old text.)
+            if let Some(contact) = &mut contact {
+                contact.set_lighting(&self.lighting);
+            }
+            self.contact = contact;
+            return Err(ShaderPackError::refused_by_the_graphics_card(
+                &error.to_string(),
+            ));
+        }
+        self.contact = contact;
+        self.lighting = lighting.to_owned();
+        (self.pipeline, self.detailed_pipeline) = pipelines;
+        match pictures {
+            Some((shader, pipelines)) => {
+                self.picture_shader = Some(shader);
+                self.picture_pipelines = Some(pipelines);
+            }
+            None => {
+                self.picture_shader = None;
+                self.picture_pipelines = None;
+            }
+        }
+        Ok(())
+    }
+
     /// Chooses what is drawn of the walk of the sun's ray: the picture, or its answer alone (see [`ContactDebug`]).
     pub fn set_contact_debug(&mut self, debug: ContactDebug) {
         self.contact_debug = debug;
@@ -1835,6 +1911,7 @@ impl VoxelRenderer {
                 return;
             }
             self.contact = Some(ContactGpu::new(
+                &self.lighting,
                 &self.device,
                 &self.frame_layout,
                 &self.placement_layout,
@@ -3114,11 +3191,9 @@ pub(crate) enum SunWalk {
     },
 }
 
-pub(crate) fn voxel_shader(
-    device: &wgpu::Device,
-    with_pictures: bool,
-    walk: SunWalk,
-) -> wgpu::ShaderModule {
+/// The text of the voxel shader of this kind, with `lighting` (the shader pack's `pack_shade`: [`crate::shader_pack::DEFAULT_LIGHTING`] or a pack's) after all the rest, so that
+/// the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (`voxel_source(.., "")`).
+pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, lighting: &str) -> String {
     let pictures = if with_pictures {
         include_str!("pictures_on.wgsl")
     } else {
@@ -3149,6 +3224,24 @@ pub(crate) fn voxel_shader(
             },
         ),
     };
+    format!(
+        "{}
+{pictures}
+{contact}
+{shapes}
+{windows}
+{entities}
+{lighting}",
+        include_str!("voxel.wgsl")
+    )
+}
+
+pub(crate) fn voxel_shader(
+    device: &wgpu::Device,
+    with_pictures: bool,
+    walk: SunWalk,
+    lighting: &str,
+) -> wgpu::ShaderModule {
     let label = format!(
         "voxel shader{}{}{}{}{}",
         if with_pictures { " with pictures" } else { "" },
@@ -3174,18 +3267,7 @@ pub(crate) fn voxel_shader(
     );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&label),
-        source: wgpu::ShaderSource::Wgsl(
-            format!(
-                "{}
-{pictures}
-{contact}
-{shapes}
-{windows}
-{entities}",
-                include_str!("voxel.wgsl")
-            )
-            .into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(voxel_source(with_pictures, walk, lighting).into()),
     })
 }
 

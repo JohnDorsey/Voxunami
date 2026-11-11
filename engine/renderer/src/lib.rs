@@ -16,6 +16,7 @@ mod crosshair;
 mod graphics_context;
 mod occupancy_volume;
 mod overlay;
+mod shader_pack;
 mod shadow;
 mod shadow_maps;
 mod sky;
@@ -30,6 +31,9 @@ pub use graphics_context::{
 };
 pub use occupancy_volume::VolumeStatistics;
 pub use overlay::OverlayRect;
+pub use shader_pack::{
+    SHADER_PACK_INTERFACE, ShaderPack, ShaderPackError, ShaderPackProblem, default_lighting,
+};
 pub use shadow::{
     BLEND_FROM, CASCADE_RESOLUTION, Cascade, DEPTH_BIAS_TEXELS, EDGE_TEXELS, FACING_FULL_FROM,
     FIRST_HALF_WIDTH, HIGHEST_CASTER, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES,

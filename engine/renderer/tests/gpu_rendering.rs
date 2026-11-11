@@ -36,6 +36,8 @@ mod contact_shapes;
 mod contact_trace;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
+#[path = "gpu_rendering/shader_packs.rs"]
+mod shader_packs;
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];

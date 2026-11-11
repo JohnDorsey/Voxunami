@@ -53,6 +53,29 @@ struct Frame {
     pictures: vec4<f32>,
 }
 
+// What a shader pack is told of a face at a pixel (`docs/specs/shader-pack-spec.md`): the engine works out what is lit and what is not, and the pack's `pack_shade` makes a colour
+// of it. The pack has no way to ask the map, the voxels or the pictures anything itself, so it cannot bring back a gap the engine closed.
+struct Surface {
+    // The colour of the face at this pixel, linear: its picture where it has one, else its own.
+    albedo: vec3<f32>,
+    // The face's normal in the world's axes, turned toward the way out of the planet the face is on, as far as the planet turns it (far from the camera): what the sun's light
+    // is the cosine of.
+    normal: vec3<f32>,
+    // Where the point is relative to the camera, in voxels, and how far from it.
+    relative: vec3<f32>,
+    distance: f32,
+    // The light of the lamps and the ambient light (0 to 1), and how bright the side of the face makes it (0.4 to 1).
+    lamp: f32,
+    side: f32,
+    // The share of the sun that is above the horizon of the planet the place is on, not hidden by a planet or a moon (0 to 1; 1 where the level has no balls).
+    above_horizon: f32,
+    // The share of the sun's light that reaches the place: the above, and the terrain's shadow (the map and the exact walk of the ray) on top of it (0 to 1).
+    sun_visible: f32,
+    // The share of the sky's light that reaches the place past the terrain's shadow (0 to 1), and the share of it that reaches the place past what is over it (0 to 1).
+    sky_visible: f32,
+    uncovered: f32,
+}
+
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
 const AVATAR_BASE: u32 = 0xFFFFF0u;
 
@@ -445,11 +468,19 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (debug.a > 0.5) {
         return vec4<f32>(debug.rgb, 1.0);
     }
-    let albedo = picture.rgb;
-    let lamp = in.lamp_and_side.x;
-    let side = in.lamp_and_side.y;
-    var shaded = side * lamp;
-    var sun = 0.0;
+    // What the engine knows of the face, for the shader pack (`pack_shade`, in `lighting_default.wgsl` or the pack the renderer is given): where there is no light of the sun's or
+    // the sky's the visibilities are all 1 and mean nothing.
+    var surface: Surface;
+    surface.albedo = picture.rgb;
+    surface.normal = in.normal;
+    surface.relative = in.relative;
+    surface.distance = in.distance;
+    surface.lamp = in.lamp_and_side.x;
+    surface.side = in.lamp_and_side.y;
+    surface.above_horizon = 1.0;
+    surface.sun_visible = 1.0;
+    surface.sky_visible = 1.0;
+    surface.uncovered = 1.0;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
@@ -482,12 +513,14 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             uncovered = mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
             sky_visible = sky_visible * uncovered;
         }
-        // At night the light of the stars lights what the sun does not reach, where the sky is open, as the sky's light does by day.
-        let sky = frame.sun_light.y * sky_visible + frame.heavens.w * (1.0 - light.visible) * uncovered;
-        shaded = side * (lamp + sky * (1.0 - lamp));
-        sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * sun_visible;
+        surface.normal = light.normal;
+        surface.above_horizon = light.visible;
+        surface.sun_visible = sun_visible;
+        surface.sky_visible = sky_visible;
+        surface.uncovered = uncovered;
     }
-    let color = albedo * (shaded + sun * (1.0 - shaded));
+    // The pack makes the colour of it; the fog is the engine's.
+    let color = pack_shade(surface);
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
     return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
 }
