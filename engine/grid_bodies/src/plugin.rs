@@ -238,7 +238,7 @@ type FrameKey = (LevelIndex, u32);
 /// The bodies of one place in a level, in one frame: the frame's origin is the brick of the first ship that made it.
 struct Frame {
     level: LevelIndex,
-    /// The planet the frame goes with, if it does (see [`Follow`]).
+    /// The point the frame goes with, if it goes with one (see [`Follow`]).
     follow: Option<Follow>,
     bodies: BodyWorld,
     ships: BTreeMap<GridId, Ship>,
@@ -255,8 +255,8 @@ struct Frame {
 /// level, which stands still in the world (blocks built in space near a planet on a rail are not solid to what goes with the planet).
 #[derive(Clone, Copy, Debug)]
 struct Follow {
-    planet: GridId,
-    /// Where the planet was when the frame was made.
+    followed: Followed,
+    /// Where the point was when the frame was made.
     anchor: WorldPosition,
     /// How far it has gone since, as of this tick.
     shift: Displacement,
@@ -264,7 +264,65 @@ struct Follow {
     velocity: [f64; 3],
 }
 
+/// The point a frame goes with, and what the world says of it. Everything that is particular to what is followed is here (who is carried by it, where it is and how fast
+/// it goes, what pulls on a frame that falls with it); [`Follow`] only moves places and velocities by where it has gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Followed {
+    /// A planet on a rail: the point is its place in the world, and the ships in the frame are those it carries.
+    Planet(GridId),
+}
+
+impl Followed {
+    /// Where the point is in the world now, and how fast it goes; `None` if the world has nothing of it.
+    fn state(self, world: &ServerWorld) -> Option<(WorldPosition, [f64; 3])> {
+        match self {
+            Self::Planet(planet) => {
+                let grid = world.data().grids().get(planet)?;
+                Some((grid.pose.position, grid.linear_velocity))
+            }
+        }
+    }
+
+    /// The acceleration of gravity at a place of the world for what falls with the point.
+    fn gravity(self, world: &ServerWorld, there: WorldPosition) -> [f64; 3] {
+        match self {
+            Self::Planet(planet) => world.gravity_in_the_free_fall_of(planet, there),
+        }
+    }
+
+    /// The planet that carries the ships of the frame, as `ServerWorld::carrier_of` names it.
+    fn carrier(self) -> GridId {
+        match self {
+            Self::Planet(planet) => planet,
+        }
+    }
+}
+
 impl Follow {
+    /// A frame made now for the point `followed`; `None` if the world has nothing of it.
+    fn begin(followed: Followed, world: &ServerWorld) -> Option<Follow> {
+        let (anchor, velocity) = followed.state(world)?;
+        Some(Follow {
+            followed,
+            anchor,
+            shift: Displacement::NONE,
+            velocity,
+        })
+    }
+
+    /// Where the point has gone since the frame was made, and how fast it goes, as of this tick (both stay as they were if the world has nothing of it).
+    fn update(&mut self, world: &ServerWorld) {
+        if let Some((position, velocity)) = self.followed.state(world) {
+            self.shift = self.anchor.displacement_to(position);
+            self.velocity = velocity;
+        }
+    }
+
+    /// The planet that carries the ships of the frame (see [`Followed::carrier`]).
+    fn carrier(&self) -> GridId {
+        self.followed.carrier()
+    }
+
     fn local(&self, world: WorldPosition) -> Option<WorldPosition> {
         world.displaced(self.shift.negated())
     }
@@ -736,7 +794,7 @@ impl Bodies {
         let changed_voxels = std::mem::take(&mut self.changed_ship_voxels);
         self.dock(world);
         self.split_ships(world, changed_voxels);
-        self.follow_planets(world);
+        self.follow_points(world);
         // (A ship with terrain, a planet, is no ship here: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.
         // It is a fixed body, which ships collide with, below.)
         let present: Vec<(GridId, LevelIndex)> = world
@@ -756,7 +814,7 @@ impl Bodies {
             let follow = frame.follow;
             leaving.extend(frame.ships.keys().filter(|id| {
                 !present.iter().any(|(held, _)| held == *id)
-                    || world.carrier_of(**id) != follow.map(|follow| follow.planet)
+                    || world.carrier_of(**id) != follow.map(|follow| follow.carrier())
                     || world.data().grids().get(**id).is_none_or(|ship| {
                         local_in(follow, ship.pose.position).is_none_or(|place| {
                             farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
@@ -871,7 +929,7 @@ impl Bodies {
             let brick = ship.pose.position.brick();
             let near = |key: &FrameKey, frame: &Frame| {
                 key.0 == level_index
-                    && frame.follow.map(|follow| follow.planet) == carrier
+                    && frame.follow.map(|follow| follow.carrier()) == carrier
                     && local_in(frame.follow, ship.pose.position).is_some_and(|place| {
                         !farther_than(FRAME_RADIUS_BRICKS, place.brick(), frame.bodies.origin())
                     })
@@ -891,15 +949,13 @@ impl Bodies {
                 None => {
                     let follow = match carrier {
                         None => None,
-                        Some(planet) => match world.data().grids().get(planet) {
-                            Some(grid) => Some(Follow {
-                                planet,
-                                anchor: grid.pose.position,
-                                shift: Displacement::NONE,
-                                velocity: grid.linear_velocity,
-                            }),
-                            None => return,
-                        },
+                        Some(planet) => {
+                            let Some(follow) = Follow::begin(Followed::Planet(planet), world)
+                            else {
+                                return;
+                            };
+                            Some(follow)
+                        }
                     };
                     let key = (level_index, self.next_frame);
                     self.next_frame += 1;
@@ -1050,17 +1106,14 @@ impl Bodies {
             .insert(id, (record.mass, record.centre_of_mass));
     }
 
-    /// Where each frame that goes with a planet is, and how fast it goes: the planet's displacement since the frame was made, and its velocity.
-    fn follow_planets(&mut self, world: &ServerWorld) {
-        for frame in self.frames.values_mut() {
-            let Some(follow) = &mut frame.follow else {
-                continue;
-            };
-            let Some(planet) = world.data().grids().get(follow.planet) else {
-                continue;
-            };
-            follow.shift = follow.anchor.displacement_to(planet.pose.position);
-            follow.velocity = planet.linear_velocity;
+    /// Where each frame that goes with a point is, and how fast it goes: the point's displacement since the frame was made, and its velocity.
+    fn follow_points(&mut self, world: &ServerWorld) {
+        for follow in self
+            .frames
+            .values_mut()
+            .filter_map(|frame| frame.follow.as_mut())
+        {
+            follow.update(world);
         }
     }
 
@@ -1438,7 +1491,7 @@ impl Bodies {
                 };
                 let gravity = match follow {
                     None => world.gravity_at(level_index, there),
-                    Some(follow) => world.gravity_in_the_free_fall_of(follow.planet, there),
+                    Some(follow) => follow.followed.gravity(world, there),
                 };
                 let force = gravity.map(|component| component * record.mass);
                 // A change in gravity wakes a ship that is asleep (a heavy ship came near); the same gravity does not, so a ship at rest sleeps.
@@ -2133,7 +2186,7 @@ mod tests {
 
     fn follows(shift_bricks: [i128; 3], shift_offset: [f64; 3], velocity: [f64; 3]) -> Follow {
         Follow {
-            planet: GridId::new(GridId::FIRST_ALLOCATED + 1),
+            followed: Followed::Planet(GridId::new(GridId::FIRST_ALLOCATED + 1)),
             anchor: WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]),
             shift: Displacement {
                 bricks: shift_bricks,

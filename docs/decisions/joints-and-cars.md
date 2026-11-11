@@ -191,7 +191,7 @@ angular momentum, explicit; `loop-probe.md`, section 8 has its drift: an exact t
 **Phases (each ends with tests, clippy, fmt, doc, and a commit).**
 - **4c-0 Tests first.** Pin today: a turning ship is refused a rail; a rail with no spin gives zero spin and keeps the orientation; a ship carried by a planet is simulated in a frame with the planet's speed taken off
   (the numbers of `Follow` for a planet must not move). Then the new tests below, red first.
-- **4c-1 Generalise `Follow`** from "a planet" to "a rail point" with the planet case unchanged (the pins above are the proof). No behaviour change.
+- **4c-1 Generalise `Follow`** from "a planet" to "a rail point" with the planet case unchanged (the pins above are the proof). No behaviour change. **Built 2026-11-10** (`Follow` holds a `Followed`, today only `Planet`; build log, "Joints, step 4c-1").
 - **4c-2 One turning ship rides a rail**: the world stops overwriting the turn for a rail that has no spin and a ship that a frame carries; the candidate rule lets a turning ship be quiet; the bodies make its rail frame,
   re-centre it, and write the turn back. Tests: the path equals the unspun ship's path to the bit while the ship turns (a rail against a rail); the turn is Rapier's (angular momentum kept to the loop-probe's figure); the
   numbers of the ship in its frame are the same at the origin, 1e9 voxels away, and at 6 km/s; a push takes it off and the turn goes on; save and load on a rail keep the place to the bit.
