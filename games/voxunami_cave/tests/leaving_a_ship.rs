@@ -57,7 +57,8 @@ fn walker_on_a_deck_in_orbit(distance: f64) -> (Scene, common::Player, u64) {
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 80);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(number), "aboard it");
-    scene.run(move |world| {
+    // (Made to go at the speed of the circle by hand: with the walker buckled, because free they would feel it as a blow, and be thrown.)
+    common::carried_through(&mut scene, &mut player, 1, move |world, _| {
         world.set_grid_held(ship_id(number), false).unwrap();
         world
             .set_grid_velocity(ship_id(number), [speed, 0.0, 0.0], [0.0; 3])
@@ -119,8 +120,9 @@ fn a_walker_who_steps_off_a_ship_in_orbit_stays_beside_it_and_is_not_left_behind
 /// walker on the deck.
 fn walker_on_a_deck_that_goes_at_six() -> (Scene, common::Player) {
     let mut scene = scene_with_a_deck();
-    let player = walker_on_the_deck(&mut scene);
-    scene.run(|world| {
+    let mut player = walker_on_the_deck(&mut scene);
+    // (By hand, with the walker buckled: free they would feel the six as a blow.)
+    common::carried_through(&mut scene, &mut player, 1, |world, _| {
         world
             .set_grid_velocity(ship_id(0), [6.0, 0.0, 0.0], [0.0; 3])
             .unwrap();

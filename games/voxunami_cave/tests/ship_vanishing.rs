@@ -257,6 +257,8 @@ fn passengers_who_are_away_do_not_keep_the_ship_and_whoever_of_them_comes_back_h
 fn a_ship_that_was_moving_when_its_pilot_left_is_at_rest_when_they_come_back() {
     let (mut scene, mut pilot) = deck_on_the_floor();
     assert_eq!(say(&mut scene, &mut pilot, "/ship pilot"), PILOT_REPLY);
+    // (Buckled: the push of six is a blow to a pilot who stands free, and throws them off the deck.)
+    assert!(say(&mut scene, &mut pilot, "/ship buckle").starts_with("you are buckled"));
     assert_eq!(say(&mut scene, &mut pilot, "/ship vanish on"), VANISH_ON);
     assert_eq!(
         say(&mut scene, &mut pilot, "/ship push 6 0 0"),

@@ -540,6 +540,66 @@ pub fn say(scene: &mut Scene, player: &mut Player, command: &str) -> String {
     player.take_command_replies().join(" | ")
 }
 
+/// The pose that puts the middle of a ship (its origin plus `half`, in its own coordinates) at `centre` in the world, turned as
+/// `orientation` says: what a ship that turns about its middle is at each moment.
+pub fn about_the_middle(centre: [f64; 3], half: [f64; 3], orientation: Orientation) -> GridPose {
+    let origin = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
+    let turned = GridPose::new(origin, orientation).direction_to_world(half);
+    GridPose::new(
+        WorldPosition::new(
+            BrickCoordinate::ORIGIN,
+            [0, 1, 2].map(|axis| centre[axis] - turned[axis]),
+        ),
+        orientation,
+    )
+}
+
+/// A turn of `angle` radians about the z axis.
+pub fn roll(angle: f64) -> Orientation {
+    Orientation::from_components([0.0, 0.0, libm::sin(angle / 2.0), libm::cos(angle / 2.0)])
+        .unwrap()
+}
+
+/// The middle of the cabin of these tests, in the air high above the floor.
+pub const CABIN_MIDDLE: [f64; 3] = [24.0, FLOOR + 20.0, 24.0];
+
+/// A hollow cabin of stone, 8 along each edge with walls a voxel thick, held, with its middle at `CABIN_MIDDLE`; and a walker who falls
+/// onto its floor from a little way up inside it, and is aboard it standing still.
+pub fn walker_in_a_cabin(scene: &mut Scene) -> Player {
+    flat_floor(scene);
+    make_ship(
+        scene,
+        about_the_middle(CABIN_MIDDLE, [4.0; 3], Orientation::IDENTITY),
+        true,
+        [8, 8, 8],
+        |[x, y, z]| [x, y, z].iter().any(|&edge| edge == 0 || edge == 7),
+    );
+    // The floor inside is at the middle's height less 3; the walker's eyes start half a voxel above where they will be standing.
+    let mut player =
+        scene
+            .rig
+            .join_walking([24.0, CABIN_MIDDLE[1] - 3.0 + 1.62 + 0.5, 24.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(scene, &mut player, 60);
+    player
+}
+
+/// Runs `ticks` ticks in which `act` is run in the server (with the number of the tick from 0), with the player buckled to the ship they are aboard, and lets them go after.
+/// It is for a test that makes a ship go at a speed **by hand**, which a walker who stood free would feel as a blow (a change of the ship's speed in a tick is an acceleration, and
+/// what is aboard is pulled by it): buckled, the ship carries the walker however it goes, and the speed they are let go with is the ship's.
+pub fn carried_through(
+    scene: &mut Scene,
+    player: &mut Player,
+    ticks: usize,
+    act: impl Fn(&mut server::ServerWorld, usize) + Clone + Send + 'static,
+) {
+    let reply = say(scene, player, "/ship buckle");
+    assert!(reply.contains("you are buckled"), "{reply}");
+    each_tick(scene, player, ticks, act);
+    let reply = say(scene, player, "/ship unbuckle");
+    assert!(reply.starts_with("you are let go"), "{reply}");
+}
+
 /// The block in a voxel of the main level, as the server has it (this takes a tick).
 pub fn block_at(scene: &mut Scene, at: [i128; 3]) -> u32 {
     let content = CaveContent::new();

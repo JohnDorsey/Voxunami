@@ -192,7 +192,8 @@ fn a_walker_who_walks_off_a_deck_near_a_planet_that_goes_round_goes_on_beside_it
 fn a_walker_on_a_deck_in_orbit(scene: &mut Scene) -> (Player, u64) {
     let (mut player, deck) = a_walker_on_a_held_deck(scene);
     let speed = circular_speed(scene, WANDERER, DISTANCE);
-    scene.run(move |world| {
+    // (Made to go at the speed of the circle by hand: with the walker buckled, because free they would feel it as a blow, and be thrown.)
+    common::carried_through(scene, &mut player, 1, move |world, _| {
         let planet = world
             .data()
             .grids()
@@ -286,7 +287,8 @@ fn fly_off_a_thrown_raft(
         against,
         [6, 1, 6],
     );
-    put_aboard(scene, raft, [3.0, 3.5, 3.0]);
+    // (Standing on it: the raft is thrown and falls, and a walker in the air above its deck would float, as anything does in a ship in free fall, and not fall onto it.)
+    put_aboard(scene, raft, [3.0, 2.65, 3.0]);
     walk_off(scene, &mut player);
     let (mut path, mut distances) = (Vec::new(), Vec::new());
     for _ in 0..ticks {

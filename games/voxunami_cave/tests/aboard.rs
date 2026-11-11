@@ -5,9 +5,9 @@
 mod common;
 
 use common::{
-    FLOOR, Player, PlayerExt, Scene, each_tick, eyes_in_the_world, eyes_in_their_frame, flat_floor,
-    make_ship, player_pose, pose_at, scene_with_a_deck, ship_id, ship_pose, tick_and_follow,
-    walker_on_the_deck,
+    CABIN_MIDDLE, FLOOR, Player, PlayerExt, Scene, about_the_middle, each_tick, eyes_in_the_world,
+    eyes_in_their_frame, flat_floor, make_ship, player_pose, pose_at, roll, scene_with_a_deck,
+    ship_id, ship_pose, tick_and_follow, walker_in_a_cabin, walker_on_the_deck,
 };
 use game_shell::KeyCode;
 use player_presence::{PlayerClient, player_kind};
@@ -158,9 +158,13 @@ fn walking_off_the_edge_of_a_ship_that_moves_leaves_it_with_the_speed_it_had() {
             .set_grid_velocity(ship_id(0), [6.0, 0.0, 0.0], [0.0; 3])
             .unwrap();
     };
+    // (It is made to go at six by hand, in two ticks with the walker buckled: free, they would feel it as a blow of 120 metres a second a second. The ticks of the script go on from there.)
+    common::carried_through(&mut scene, &mut player, 2, move |world, tick| {
+        moving(world, tick)
+    });
     player.hold(&[KeyCode::KeyW]);
     let mut left_at = None;
-    for tick in 0..60 {
+    for tick in 2..62 {
         each_tick(&mut scene, &mut player, 1, move |world, _| {
             moving(world, tick)
         });
@@ -171,8 +175,8 @@ fn walking_off_the_edge_of_a_ship_that_moves_leaves_it_with_the_speed_it_had() {
         assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
     }
     let left_at = left_at.expect("they walked off the edge and left the ship");
-    // Four voxels at four and a bit a second: a little under a second, less the quarter of a voxel of the edge that carries them.
-    assert!((15..28).contains(&left_at), "left at tick {left_at}");
+    // Four voxels at four and a bit a second: a little under a second, less the quarter of a voxel of the edge that carries them (and the two ticks of the script before they walked).
+    assert!((17..30).contains(&left_at), "left at tick {left_at}");
     // In the world now, with the ship's speed: east, and in the first tick as far as six a second goes.
     let here = eyes_in_the_world(&scene, 1);
     each_tick(&mut scene, &mut player, 1, move |world, _| {
@@ -237,50 +241,6 @@ fn a_ship_that_turns_carries_the_walker_round_without_moving_them_in_it() {
         );
     }
     assert!(looking[0] < -0.9, "(a turn of 1.2 faces mostly -x)");
-}
-
-/// The pose that puts the middle of a ship (its origin plus `half`, in its own coordinates) at `centre` in the world, turned as
-/// `orientation` says: what a ship that turns about its middle is at each moment.
-fn about_the_middle(centre: [f64; 3], half: [f64; 3], orientation: Orientation) -> GridPose {
-    let origin = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
-    let turned = GridPose::new(origin, orientation).direction_to_world(half);
-    GridPose::new(
-        WorldPosition::new(
-            BrickCoordinate::ORIGIN,
-            [0, 1, 2].map(|axis| centre[axis] - turned[axis]),
-        ),
-        orientation,
-    )
-}
-
-/// A turn of `angle` radians about the z axis.
-fn roll(angle: f64) -> Orientation {
-    Orientation::from_components([0.0, 0.0, libm::sin(angle / 2.0), libm::cos(angle / 2.0)])
-        .unwrap()
-}
-
-/// The middle of the cabin of these tests, in the air high above the floor.
-const CABIN_MIDDLE: [f64; 3] = [24.0, FLOOR + 20.0, 24.0];
-
-/// A hollow cabin of stone, 8 along each edge with walls a voxel thick, held, with its middle at `CABIN_MIDDLE`; and a walker who falls
-/// onto its floor from a little way up inside it, and is aboard it standing still.
-fn walker_in_a_cabin(scene: &mut Scene) -> Player {
-    flat_floor(scene);
-    make_ship(
-        scene,
-        about_the_middle(CABIN_MIDDLE, [4.0; 3], Orientation::IDENTITY),
-        true,
-        [8, 8, 8],
-        |[x, y, z]| [x, y, z].iter().any(|&edge| edge == 0 || edge == 7),
-    );
-    // The floor inside is at the middle's height less 3; the walker's eyes start half a voxel above where they will be standing.
-    let mut player =
-        scene
-            .rig
-            .join_walking([24.0, CABIN_MIDDLE[1] - 3.0 + 1.62 + 0.5, 24.0], 0.0, 0.0);
-    scene.rig.settle(&mut [&mut player]);
-    tick_and_follow(scene, &mut player, 60);
-    player
 }
 
 #[test]
@@ -993,9 +953,13 @@ fn leaving_a_ship_that_is_turned_and_moving_gives_the_speed_in_the_worlds_axes()
             .set_grid_velocity(ship_id(0), [0.0, 0.0, -6.0], [0.0; 3])
             .unwrap();
     };
+    // (Made to go at six by hand with the walker buckled, as above.)
+    common::carried_through(&mut scene, &mut player, 2, move |world, tick| {
+        moving(world, tick)
+    });
     player.hold(&[KeyCode::KeyW]);
     let mut left_at = None;
-    for tick in 0..80 {
+    for tick in 2..82 {
         each_tick(&mut scene, &mut player, 1, move |world, _| {
             moving(world, tick)
         });

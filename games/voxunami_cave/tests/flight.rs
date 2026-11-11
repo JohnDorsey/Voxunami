@@ -234,6 +234,8 @@ fn a_pilot_hovers_a_ship_with_no_keys_flies_where_they_look_and_stops_when_they_
     let in_the_ship = eyes_in_their_frame(&scene, 1);
     let reply = say(&mut scene, &mut player, "/ship pilot");
     assert!(reply.starts_with("you pilot ship 0"), "{reply}");
+    // (Buckled: the ship accelerates at 24 metres a second a second, and a pilot who stood free would be left behind it, as anyone standing is.)
+    say(&mut scene, &mut player, "/ship buckle");
     // The ship is let go; the pilot holds it up against gravity.
     say(&mut scene, &mut player, "/ship hold off");
     let hanging = in_voxels(ship_pose(&scene, 0).position);
@@ -381,9 +383,12 @@ fn scripted_flight() -> u64 {
             4 => Some("/ship hold on".to_owned()),
             8 => Some(format!("/tp 24 {} 26", FLOOR as i128 + 12)),
             70 => Some("/ship pilot".to_owned()),
+            // (Buckled while they fly: a pilot who stood free would be left behind by its acceleration.)
+            71 => Some("/ship buckle".to_owned()),
             72 => Some("/ship hold off".to_owned()),
             250 => Some("/ship push 5 0 3".to_owned()),
             330 => Some("/ship pilot".to_owned()),
+            331 => Some("/ship unbuckle".to_owned()),
             332 => Some("/ship hold on".to_owned()),
             _ => None,
         };
@@ -458,7 +463,11 @@ fn a_scripted_flight_ends_in_the_same_bits_every_time_and_on_every_machine() {
     // 2.8e-3 voxel at 361, then by 4.2e-3 more each tick (a vertical speed 0.083 metres a second different after the step off), and 0.24 voxel at tick 419 when they have fallen 90 voxels. **Not explained:**
     // the step off is a contact that ends, which the controller (its skin of 0.01, its nudge of 1e-5) decides from positions that were `f32` and are `f64`; the same kind of difference as the creeping
     // of a standing walker in `docs/history/joint-probe.md`, but not traced. The tests of behaviour in the same file pass as they were.)
-    assert_eq!(first, 17_783_923_537_324_820_895);
+    // (Moved on purpose, 2026-11-11: 17_783_923_537_324_820_895 before. A walker aboard a ship feels the ship's acceleration now (`decisions/joints-and-cars.md`, the suit thrusters, part 2): a pilot who stands free
+    // while the ship accelerates at 24 metres a second a second is left behind it, so the script buckles them (ticks 71 and 331). Control, run with switches that are gone: with the old rule and no buckling the old
+    // value comes back, so the harness is the same; and the hash of the ship alone, left out of the pilot's poses, is 9_287_554_883_686_586_684 with the old rule and no buckling and with the new rule and buckling:
+    // **the ship's flight did not change, to the bit.** Only the pilot's own poses did.)
+    assert_eq!(first, 22_954_920_714_550_126);
 }
 
 #[test]

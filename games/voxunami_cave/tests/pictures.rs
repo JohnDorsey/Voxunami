@@ -435,6 +435,8 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
     assert_eq!(common::player_pose(&scene, 1).grid, common::ship_id(0));
     let piloting = type_command(&mut scene, &mut player, &mut updates, "/ship pilot");
     assert!(piloting.contains("you pilot ship 0"), "{piloting}");
+    // (Buckled while they fly: a pilot who stood free would be left behind by its acceleration.)
+    type_command(&mut scene, &mut player, &mut updates, "/ship buckle");
     type_command(&mut scene, &mut player, &mut updates, "/ship hold off");
 
     // They fly it a little north, level, and let it come to rest.
@@ -469,6 +471,7 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
 
     // They let go, stop the ship where it is (holding it stops its turning), and walk off the edge of it.
     type_command(&mut scene, &mut player, &mut updates, "/ship pilot");
+    type_command(&mut scene, &mut player, &mut updates, "/ship unbuckle");
     type_command(&mut scene, &mut player, &mut updates, "/ship hold on");
     player.hold(&[game_shell::KeyCode::KeyA]);
     step_drawing(&mut scene, &mut player, &mut updates, 100);
