@@ -7,7 +7,7 @@
 //! plugin registers its own commands (see [`crate::client_plugin`]).
 
 /// What the client commands change, and what a command can say about it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientSettings {
     /// How bright, from 0 to 255, a face is drawn that no light reaches (see
     /// `renderer::Atmosphere::ambient_light`).
@@ -22,6 +22,10 @@ pub struct ClientSettings {
     pub shadows: bool,
     /// How far from the camera, in voxels, a block's picture is drawn on it (`.textures`); beyond a quarter more the block is its flat colour. 0 draws no pictures.
     pub texture_distance: u32,
+    /// The shader packs the player has (`.shader`), by id, and the id of the one chosen (`None`: the default). The session is told of the first when it starts; a pack the
+    /// graphics card refuses is taken off the second by the window.
+    pub shader_packs: Vec<ShaderPackName>,
+    pub shader_pack: Option<String>,
 }
 
 impl ClientSettings {
@@ -34,6 +38,8 @@ impl ClientSettings {
             time_of_day: None,
             shadows: true,
             texture_distance: renderer::DEFAULT_PICTURE_DISTANCE as u32,
+            shader_packs: Vec::new(),
+            shader_pack: None,
         }
     }
 }
@@ -46,6 +52,7 @@ pub fn is_client_command(line: &str) -> bool {
 use plugin_host::{Argument, CommandSpec};
 
 use crate::client_plugin::ClientRegistrar;
+use crate::shader_packs::{ShaderPackName, pick};
 
 /// A time of day in minutes from midnight as `07:05`.
 fn clock_text(minutes: u16) -> String {
@@ -222,6 +229,52 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
     );
     registrar.command(
         CommandSpec::new(
+            "shader",
+            "chooses the shader pack that makes the colour of every face (a folder of `shaderpacks` in the game data folder, or of --shader-packs): .shader NAME (its id or name, or the beginning of it), .shader default for the game's own, .shader alone says which is in use and what there is",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("pack").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            let listed = |settings: &ClientSettings| {
+                if settings.shader_packs.is_empty() {
+                    "there are no shader packs".to_owned()
+                } else {
+                    let names: Vec<String> = settings
+                        .shader_packs
+                        .iter()
+                        .map(|pack| format!("{} ({})", pack.name, pack.id))
+                        .collect();
+                    format!("there are {}", names.join(", "))
+                }
+            };
+            if !arguments.present(0) {
+                let in_use = match &settings.shader_pack {
+                    Some(id) => settings
+                        .shader_packs
+                        .iter()
+                        .find(|pack| &pack.id == id)
+                        .map_or_else(|| format!("the pack {id}"), |pack| format!("the pack {} ({})", pack.name, pack.id)),
+                    None => "the game's own".to_owned(),
+                };
+                return format!("the shader is {in_use}; {}", listed(settings));
+            }
+            if arguments.word(0) == "default" {
+                settings.shader_pack = None;
+                return "the shader is the game's own".to_owned();
+            }
+            match pick(&settings.shader_packs, arguments.word(0)) {
+                Ok(index) => {
+                    let pack = settings.shader_packs[index].clone();
+                    settings.shader_pack = Some(pack.id.clone());
+                    format!("the shader is now the pack {} ({}); .shader default goes back", pack.name, pack.id)
+                }
+                Err(error) => error,
+            }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
             "choose",
             "answers the question the game is asking: .choose 1 is the first option",
         )
@@ -304,6 +357,72 @@ mod tests {
                 options: vec!["Yes".to_owned()],
             },
         ]
+    }
+
+    fn settings_with_packs() -> ClientSettings {
+        let mut settings = ClientSettings::new(0);
+        settings.shader_packs = [("tester:cel", "Cel shading"), ("tester:flat", "Flat")]
+            .map(|(id, name)| ShaderPackName {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            })
+            .to_vec();
+        settings
+    }
+
+    #[test]
+    fn shader_says_which_pack_is_in_use_and_what_there_is_chooses_by_name_and_goes_back_to_the_default()
+     {
+        let mut settings = settings_with_packs();
+        assert_eq!(
+            run(".shader", &mut settings),
+            "the shader is the game's own; there are Cel shading (tester:cel), Flat (tester:flat)"
+        );
+        assert_eq!(
+            run(".shader cel", &mut settings),
+            "the shader is now the pack Cel shading (tester:cel); .shader default goes back"
+        );
+        assert_eq!(settings.shader_pack.as_deref(), Some("tester:cel"));
+        assert_eq!(
+            run(".shader", &mut settings),
+            "the shader is the pack Cel shading (tester:cel); there are Cel shading (tester:cel), Flat (tester:flat)"
+        );
+        run(".shader FLAT", &mut settings);
+        assert_eq!(settings.shader_pack.as_deref(), Some("tester:flat"));
+        // What a player types is often the part of the id after the colon.
+        run(".shader cel", &mut settings);
+        assert_eq!(settings.shader_pack.as_deref(), Some("tester:cel"));
+        run(".shader flat", &mut settings);
+        assert_eq!(
+            run(".shader default", &mut settings),
+            "the shader is the game's own"
+        );
+        assert_eq!(settings.shader_pack, None);
+    }
+
+    #[test]
+    fn shader_with_a_name_that_is_no_pack_or_is_two_changes_nothing_and_says_what_there_is() {
+        let mut settings = settings_with_packs();
+        run(".shader flat", &mut settings);
+        let reply = run(".shader nothing", &mut settings);
+        assert!(
+            reply.contains("there is no shader pack called")
+                && reply.contains("Cel shading (tester:cel)"),
+            "{reply}"
+        );
+        let reply = run(".shader t", &mut settings);
+        assert!(reply.contains("could be any of"), "{reply}");
+        assert_eq!(
+            settings.shader_pack.as_deref(),
+            Some("tester:flat"),
+            "nothing changed"
+        );
+        let mut none = ClientSettings::new(0);
+        assert_eq!(
+            run(".shader", &mut none),
+            "the shader is the game's own; there are no shader packs"
+        );
+        assert!(run(".shader any", &mut none).contains("there are none"));
     }
 
     #[test]
@@ -511,18 +630,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

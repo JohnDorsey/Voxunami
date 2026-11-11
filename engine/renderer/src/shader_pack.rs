@@ -1,7 +1,7 @@
 //! Shader packs (`docs/specs/shader-pack-spec.md`): a player's own `pack_shade`, the function that makes the colour of a face of what the engine knows of it.
 //!
 //! The engine works out what is lit (the sun's shadow from the map and the exact walk of the ray, the sky over a place, the horizon of the planet, the lamps) and gives the
-//! pack a [`Surface`](#the-surface) with the answers, and the pack makes a colour of it; the fog and the sky are still the engine's. A pack is one WGSL file of functions
+//! pack a `Surface` with the answers, and the pack makes a colour of it; the fog and the sky are still the engine's. A pack is one WGSL file of functions
 //! and constants whose entry is
 //!
 //! ```wgsl

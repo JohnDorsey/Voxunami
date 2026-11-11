@@ -65,7 +65,7 @@ pub const GAMES: &[Game] = &[
 
 fn usage() -> String {
     let mut text = String::from(
-        "Voxunami launcher\n\nUsage:\n  voxunami GAME [options]         play a game (GAME --help for its options)\n  voxunami GAME --join HOST       play on someone else's server\n  voxunami serve GAME [options]   run a dedicated server for a game\n  voxunami replay FILE [options]  watch a recording, in the game that made it\n  voxunami check-pack GAME DIR    check data packs the way a server loads them\n  voxunami pack-schema GAME DIR   write the JSON Schemas of pack files\n\nGames:\n",
+        "Voxunami launcher\n\nUsage:\n  voxunami GAME [options]         play a game (GAME --help for its options)\n  voxunami GAME --join HOST       play on someone else's server\n  voxunami serve GAME [options]   run a dedicated server for a game\n  voxunami replay FILE [options]  watch a recording, in the game that made it\n  voxunami check-pack GAME DIR    check data packs the way a server loads them\n  voxunami pack-schema GAME DIR   write the JSON Schemas of pack files\n  voxunami check-shader-pack DIR  check a shader pack, or a folder of them\n\nGames:\n",
     );
     for game in GAMES {
         text.push_str(&format!("  {:<8} {}\n", game.command, game.title));
@@ -90,6 +90,7 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
         "serve" => serve(arguments),
         "check-pack" => for_game(arguments, "check-pack", |game| game.check_packs),
         "pack-schema" => for_game(arguments, "pack-schema", |game| game.pack_schemas),
+        "check-shader-pack" => game_shell::run_check_shader_packs(arguments),
         other => match GAMES.iter().find(|game| game.command == other) {
             Some(game) => (game.play)(arguments),
             None => Err(format!("unknown command {other:?}\n\n{}", usage())),

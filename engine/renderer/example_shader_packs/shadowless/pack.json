@@ -1,0 +1,6 @@
+{
+  "id": "voxunami:shadowless",
+  "name": "No shadows",
+  "interface": 1,
+  "description": "A sun that no terrain hides: only the horizon of the planet does. A pack may ignore what the engine works out."
+}

@@ -395,3 +395,59 @@ fn a_pack_is_told_how_much_of_the_sky_is_over_the_place() {
         );
     }
 }
+
+/// The text of the lighting file of an example pack of the renderer's `example_shader_packs` folder.
+fn example(name: &str) -> ShaderPack {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("example_shader_packs")
+        .join(name);
+    let lighting =
+        std::fs::read_to_string(folder.join("lighting.wgsl")).expect("the example's lighting file");
+    ShaderPack::new(&format!("voxunami:{name}"), name, &lighting)
+        .expect("an example is a good pack")
+}
+
+#[test]
+fn the_example_packs_are_taken_by_every_graphics_card_and_do_what_they_say() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let (mut renderer, camera, probes) = block_scene(&context);
+        let default = render(&mut renderer, &camera);
+        let brightness_at = |image: &[u8], probe: &(u32, u32, bool)| {
+            linear_brightness(pixel(image, probe.0, probe.1))
+        };
+        let shadowed = probes.iter().find(|probe| probe.2).unwrap();
+        let lit = probes.iter().find(|probe| !probe.2).unwrap();
+        // The default: the block's shadow is about a ninth as bright as the light.
+        assert!(
+            brightness_at(&default, shadowed) < 0.2 * brightness_at(&default, lit),
+            "{name}: the default's shadow"
+        );
+        // Cel shading: taken, a different picture, the shadow still a shadow.
+        renderer
+            .set_shader_pack(Some(&example("cel")))
+            .expect("the card takes the cel pack");
+        let cel = render(&mut renderer, &camera);
+        assert_ne!(cel, default, "{name}: cel shading changes nothing");
+        assert!(
+            brightness_at(&cel, shadowed) < 0.2 * brightness_at(&cel, lit),
+            "{name}: the cel pack's shadow"
+        );
+        // No shadows: the same brightness in the block's shadow as in the light.
+        renderer
+            .set_shader_pack(Some(&example("shadowless")))
+            .expect("the card takes the shadowless pack");
+        let flat = render(&mut renderer, &camera);
+        let (in_shadow, in_light) = (brightness_at(&flat, shadowed), brightness_at(&flat, lit));
+        assert!(
+            (in_shadow - in_light).abs() < 0.02,
+            "{name}: the shadowless pack: {in_shadow} against {in_light}"
+        );
+        renderer.set_shader_pack(None).unwrap();
+        assert_eq!(
+            render(&mut renderer, &camera),
+            default,
+            "{name}: the default again"
+        );
+    }
+}

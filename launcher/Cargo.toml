@@ -14,6 +14,7 @@ name = "voxunami"
 path = "src/main.rs"
 
 [dependencies]
+game_shell.workspace = true
 namespaced_id.workspace = true
 replay.workspace = true
 voxunami_2048.workspace = true

@@ -1,0 +1,6 @@
+{
+  "id": "voxunami:cel",
+  "name": "Cel shading",
+  "interface": 1,
+  "description": "The sun's light in three steps instead of a smooth fall-off; the sky's and the lamps' as they are."
+}

@@ -1455,6 +1455,7 @@ dependencies = [
 name = "launcher"
 version = "0.0.0"
 dependencies = [
+ "game_shell",
  "namespaced_id",
  "protocol",
  "replay",

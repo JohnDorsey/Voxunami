@@ -1942,3 +1942,12 @@ The lighting equation of `fragment_main` moved out into `pack_shade(s: Surface)`
 - **Built:** `Surface` and the call in `voxel.wgsl`; `lighting_default.wgsl` (the old equation, moved); `voxel_source`/`voxel_shader` taking the lighting text, last; `shader_pack.rs` (`ShaderPack::new` checks the words (no loop, binding, outside variable, engine name or texture) and that the shader language (naga) accepts the engine's shader of the plainest and the heaviest kind with the pack after it, at the pack's own lines); `VoxelRenderer::set_shader_pack` (the card's refusal comes back as an error, the renderer unchanged); `ContactGpu::set_lighting`.
 - **Verified:** 0 differing pixels of 10 real-Cave views on two adapters before and after; frame time unchanged (18.6 ms); 19 tests (10 unit, 9 GPU on four adapters); 26 mutants, 3 survived and were closed.
 - **Not done:** the player's side (folders, `--shader-pack`, `.shader`), hooks for the sky, the fog, vertices and time.
+
+## Shader packs, step 2: the player's side (2026-11-10)
+
+A player can have packs and swap them: `shaderpacks` in the game data folder, `--shader-packs DIRECTORY`, `--shader-pack NAME`, `.shader [NAME|default]`, `voxunami check-shader-pack DIR` (`shader-pack-spec.md` section 4b; the guide is `docs/reference/shader-pack-format.md`).
+
+- **Built:** `game_shell::shader_packs` (the pack folder reader with every problem at once, the folder of packs, the shelf, `pick`, the check command); `ClientSettings` with the names and the choice (no longer `Copy`); `.shader`; `ViewOptions::{shader_packs, shader_pack}`; `Session::offer_shader_packs`/`reject_shader_pack`; `view::{prepare_shader_packs, apply_shader_pack}` used by the window every frame and by the screenshot runs; the launcher's `check-shader-pack`; two example packs in the renderer.
+- **A thing found by running it:** a pack called `voxunami:shadowless` was not found by `shadowless` (the name was matched in full or by its beginning, and the id by its beginning): `pick` now matches the part of the id after the colon too.
+- **Verified:** real Cave pictures on both adapters with each example pack (the cel pack differs in 90 thousand pixels of 230,400, the shadowless in 5,291); the examples drawn by a GPU test on four adapters; the mutants of the shell's side.
+- **Not done:** hooks (sky, fog, vertices, time), pack settings, post-processing; tests of the session's offer and of `apply_shader_pack`.

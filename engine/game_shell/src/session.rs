@@ -1123,6 +1123,21 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.settings
     }
 
+    /// Tells the session which shader packs the player has (`.shader` chooses among them) and which is chosen to start with (`None`: the game's own).
+    pub fn offer_shader_packs(
+        &mut self,
+        packs: Vec<crate::shader_packs::ShaderPackName>,
+        chosen: Option<String>,
+    ) {
+        self.settings.shader_packs = packs;
+        self.settings.shader_pack = chosen;
+    }
+
+    /// Goes back to the game's own shader, for a pack the graphics card did not take.
+    pub fn reject_shader_pack(&mut self) {
+        self.settings.shader_pack = None;
+    }
+
     /// The sun of the level the player is in and the time of day by the world's clock, if the game has a sun there.
     fn sun_by_the_clock(&self) -> Option<(crate::sun::Sun, f64)> {
         let world = self.client.world();
