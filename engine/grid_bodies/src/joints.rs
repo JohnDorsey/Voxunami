@@ -33,8 +33,8 @@ pub struct JointSettings {
     /// radians a second (owner, 2026-11-09: 0.2): a joint made with more begins with a collision, which loses energy and leaves a gap.
     pub max_relative_speed: f64,
     pub max_relative_spin: f64,
-    /// Ends this near, in metres, are coupled whatever the spin of the cars against each other (owner, 2026-11-09: a centimetre). A coupling is derived from the blocks and
-    /// places and never saved, so a swinging group that is loaded has to be coupled again, and a ball turns however it is: only the speed of the pivots matters then.
+    /// Ends this near, in metres, are coupled whatever the spin of the cars against each other (owner, 2026-11-09: a centimetre). A joint is derived from the blocks and
+    /// places (only the pair is saved), so a swinging group that is loaded has to be coupled again, and a ball turns however it is: only the speed of the pivots matters then.
     pub spin_waived_within: f64,
     /// The most torque, in newton metres, that slows the cars' spin against each other as they are pulled (the same as docking's twist torque). The pull is at the ends,
     /// as docking's is (owner, 2026-11-09), which swings cars whose ends are away from their centres; this takes away the spin that leaves, which a coupling would not allow.
@@ -94,6 +94,13 @@ impl JointSettings {
             && length(relative_velocity) <= self.max_relative_speed
             && (length(relative_spin) <= self.max_relative_spin
                 || approach.distance <= self.spin_waived_within)
+    }
+
+    /// Whether two ends are at one place, to a centimetre ([`JointSettings::spin_waived_within`]): the ends of a pair that the world has as coupled (a saved world's, or one
+    /// whose ships were in files) are coupled again if they are, whatever the line-up of their faces and the speed and spin of the cars against each other. A ball joint lets
+    /// the cars fold past the line-up that a new coupling is asked for, and the speed of ends that are together is the speed of the pivot, which the joint keeps.
+    pub fn together_again(&self, approach: &Approach) -> bool {
+        approach.distance <= self.spin_waived_within
     }
 
     /// The force on the second end of a pair that pull on each other (the first has the opposite one): toward the first end, at most `pull_force`, and such that the pair

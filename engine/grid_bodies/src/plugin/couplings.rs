@@ -1,7 +1,8 @@
 //! The couplings of ships that have joint ends: which pairs of ships pull on each other, which are coupled, and the forces and joints the plugin puts on their bodies.
 //! The rules (when ends pull, when they are coupled, how hard they are pulled) are in [`crate::joints`]; this finds the ends, the speeds and the masses they need, and
-//! keeps the couplings true to the blocks. A coupling is derived from the blocks and the places of the ships and is never saved: a world that is loaded with two ships whose
-//! ends are together couples them again in the first tick they are both moving.
+//! keeps the couplings true to the blocks. A coupling is derived from the blocks and the places of the ships: the joint is never saved, only which pairs of ships there were
+//! (the world's, `ServerWorld::coupled_ships`), so that a group is kept together while it is in files, and so that a pair whose ends are together is coupled again whatever
+//! the bend of the joint. A world that is loaded with two ships whose ends are together and in line couples them again in the first tick they are both moving, saved or not.
 //!
 //! What is pulled is a *group*: ships joined by couplings move as one under a pull, so the mass a pull works against is the group's, and a group is pulled by one other group
 //! at a time, the nearest (two pulls at once, or a pull on a ship that is held by its coupling to a third, were found by the tests of a chain to make the ends overshoot each
@@ -61,6 +62,9 @@ struct JointPair {
     first_view: BlockFaceView,
     second_view: BlockFaceView,
     how: Approach,
+    /// The world has these two ships as coupled (saved so, or in files when they were last coupled), though the bodies have no joint for them: it is made again if the ends are
+    /// together, and the ends need not pull or be in line to be a candidate.
+    saved: bool,
     /// Where each end is from the ship's centre of mass, in the world's axes.
     first_arm: [f64; 3],
     second_arm: [f64; 3],
@@ -168,7 +172,7 @@ impl Bodies {
 
     /// Tells the world which ships are coupled, for whoever keeps ships by how near the players are (`ServerWorld::coupled_ships`): every coupling there is. One that is gone
     /// is forgotten too, unless a ship of it is in a file: its joint went with the ship's body, but the pair is the same, and the group is kept together while it waits (the
-    /// joint is made again when both are in memory, the ends being together).
+    /// joint is made again when both are in memory and the ends are together, and the pair is let go if they are not).
     fn record_couplings(&self, world: &mut ServerWorld) {
         let forgotten: Vec<CouplingKey> = world
             .coupled_ships()
@@ -203,13 +207,13 @@ impl Bodies {
         let mut coupled: BTreeSet<(GridId, GridId)> = BTreeSet::new();
         for pair in &candidates {
             let can_couple = !groups.same(pair.first, pair.second)
-                && settings.can_couple(
+                && (settings.can_couple(
                     &pair.first_view,
                     &pair.second_view,
                     &pair.how,
                     pair.relative_velocity,
                     pair.relative_spin,
-                );
+                ) || (pair.saved && settings.together_again(&pair.how)));
             if can_couple && self.make_coupling(settings, frame_key, pair) {
                 groups.join(pair.first, pair.second);
                 coupled.insert((pair.first, pair.second));
@@ -221,6 +225,7 @@ impl Bodies {
             .filter(|pair| {
                 !coupled.contains(&(pair.first, pair.second))
                     && !groups.same(pair.first, pair.second)
+                    && settings.pulls(&pair.first_view, &pair.second_view, &pair.how)
             })
             .collect();
         pulling.sort_by(|a, b| {
@@ -418,6 +423,7 @@ impl Bodies {
                 {
                     continue;
                 }
+                let saved = world.coupled_ships().contains(&(first_id, second_id));
                 let from = first_ship.pose.position;
                 let mut best: Option<(
                     BlockFace,
@@ -431,7 +437,7 @@ impl Bodies {
                     for second_end in second.joint_ends.values().flatten() {
                         let second_view = BlockFaceView::of(*second_end, &second_ship.pose, from);
                         let how = approach(&first_view, &second_view);
-                        if settings.pulls(&first_view, &second_view, &how)
+                        if (saved || settings.pulls(&first_view, &second_view, &how))
                             && best
                                 .as_ref()
                                 .is_none_or(|top| how.distance < top.4.distance)
@@ -474,6 +480,7 @@ impl Bodies {
                     first_view,
                     second_view,
                     how,
+                    saved,
                     first_arm,
                     second_arm,
                     relative_velocity: [0, 1, 2]

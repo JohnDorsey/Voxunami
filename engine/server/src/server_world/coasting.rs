@@ -359,7 +359,7 @@ impl ServerWorld {
         // carries a group: its car would be on a rail of its own, in a frame of its own, and the joint would die with the body that has it.)
         if ship.angular_velocity != [0.0; 3]
             && self
-                .coupled_ships
+                .coupled_ships()
                 .iter()
                 .any(|&(first, second)| first == grid || second == grid)
         {

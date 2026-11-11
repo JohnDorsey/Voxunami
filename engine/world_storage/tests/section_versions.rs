@@ -106,6 +106,7 @@ fn a_turn_that_is_not_a_number_of_f32_is_read_back_bit_for_bit() {
             on_a_rail: false,
         }],
         tombstones: Vec::new(),
+        couplings: Vec::new(),
     };
     assert_eq!(decode_grids(&encode_grids(&record)).unwrap(), record);
 }
@@ -166,6 +167,7 @@ fn a_coordinate_at_the_ends_of_the_range_survives_the_section_of_entities_and_th
                 },
             )],
         )],
+        couplings: Vec::new(),
     };
     assert_eq!(decode_grids(&encode_grids(&record)).unwrap(), record);
 }

@@ -166,7 +166,8 @@ fn what_a_ship_cannot_coast_for_is_said() {
         .set_grid_velocity(ship, speed, [0.0, 0.001, 0.0])
         .unwrap();
     assert!(world.coasting_rail(ship, time(0)).is_ok());
-    let partner = GridId::new(GridId::FIRST_ALLOCATED + 98);
+    // (A partner that is a ship of the world: the world records no pair for a ship it does not know.)
+    let partner = ship_at(&mut world, [0.0, 50_000.0, 0.0], [0.0; 3]);
     world.set_ships_coupled(ship, partner, true);
     assert_eq!(refused(&world, ship), NotCoasting::Turning);
     world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();

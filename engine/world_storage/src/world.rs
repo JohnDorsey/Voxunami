@@ -734,6 +734,7 @@ impl WorldData {
                 .tombstones()
                 .map(|(id, successors)| (id, successors.to_vec()))
                 .collect(),
+            couplings: self.grids.coupled().iter().copied().collect(),
         }
     }
 
@@ -1622,7 +1623,13 @@ impl ParsedWorld {
                         },
                     ));
                 }
-                GridStore::from_saved(record.next, record.next_serial, parked, record.tombstones)
+                GridStore::from_saved(
+                    record.next,
+                    record.next_serial,
+                    parked,
+                    record.tombstones,
+                    record.couplings,
+                )
             }
         };
         // What the file puts in the frame of a ship it does not list is put where it was in the world: not in a frame that is not there.

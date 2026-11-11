@@ -31,7 +31,9 @@
 //! - `engine:grids`: the counter that ship ids come from and the one that the numbers of ship files come from, then each ship in order of
 //!   id (its level, where it was, the bricks it touched, and its file: the number of the write and the checksum of the bytes), then the
 //!   ids that were retired by a split or a merge and
-//!   the ships that took their places. The voxels of the ships are in files of their own. Written only when the world has had ships (so a
+//!   the ships that took their places, then, only if there are any, the pairs of ships that are coupled by their joint ends (a count, and the two ids of each pair, the lower
+//!   first, in order). A coupling is derived from the blocks and places, and only which pairs there were is saved: the joint is made again when both ships are in memory and their ends
+//!   are together. The voxels of the ships are in files of their own. Written only when the world has had ships (so a
 //!   world without them is byte for byte what it was before ships).
 //! - `engine:clock`: the ticks since the world was made (a varint), a twentieth of a second each. Written only when it is not zero (so a world that has not
 //!   ticked is byte for byte what it was before the clock), and not in a world description. Planets on rails are a function of it.
@@ -296,6 +298,8 @@ pub struct GridsRecord {
     pub next_serial: u64,
     pub ships: Vec<GridRecord>,
     pub tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
+    /// The pairs of ships that were coupled by their joint ends, the lower id first, in order, each once: both ships are in `ships`.
+    pub couplings: Vec<(GridId, GridId)>,
 }
 
 /// Whether a ship id is one a world has given out.
@@ -344,6 +348,14 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
             for component in transform.offset {
                 writer.write_wide_signed(component);
             }
+        }
+    }
+    // The coupled pairs are written only when there are any (so a world without any is byte for byte what it was before they were saved): a count, then each pair's two ids.
+    if !record.couplings.is_empty() {
+        writer.write_varint(record.couplings.len() as u64);
+        for (first, second) in &record.couplings {
+            writer.write_varint(first.get());
+            writer.write_varint(second.get());
         }
     }
     writer.into_bytes()
@@ -456,12 +468,48 @@ pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
         }
         tombstones.push((id, successors));
     }
+    let mut couplings: Vec<(GridId, GridId)> = Vec::new();
+    if !reader.remaining().is_empty() {
+        // Two ids.
+        let count = reader.read_count(2)?;
+        if count == 0 {
+            return Err(DecodeError::Invalid(
+                "the coupled pairs are listed, and there are none",
+            ));
+        }
+        couplings.reserve(count);
+        for _ in 0..count {
+            let first = GridId::new(reader.read_varint()?);
+            let second = GridId::new(reader.read_varint()?);
+            if first >= second {
+                return Err(DecodeError::Invalid(
+                    "a coupled pair does not have the lower id first",
+                ));
+            }
+            if couplings
+                .last()
+                .is_some_and(|previous| *previous >= (first, second))
+            {
+                return Err(DecodeError::Invalid(
+                    "the coupled pairs are not in order, each once",
+                ));
+            }
+            let is_a_ship = |id: GridId| ships.binary_search_by_key(&id, |ship| ship.id).is_ok();
+            if !is_a_ship(first) || !is_a_ship(second) {
+                return Err(DecodeError::Invalid(
+                    "a coupled pair names a ship the world does not list",
+                ));
+            }
+            couplings.push((first, second));
+        }
+    }
     reader.finish()?;
     Ok(GridsRecord {
         next,
         next_serial,
         ships,
         tombstones,
+        couplings,
     })
 }
 

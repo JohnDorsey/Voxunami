@@ -840,6 +840,19 @@ impl Scene {
     /// file and a file for each ship that is in memory), and another server is made from what was written, with the same ship files. The
     /// players are not connected to the new one: they join again.
     pub fn restarted(self) -> Self {
+        self.restarted_with(|content| (cave_plugins(content), ())).0
+    }
+
+    /// The same, with a way to ask what the plugin that moves ships has done in the new server.
+    pub fn restarted_reporting(self) -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
+        let (scene, report) = self.restarted_with(voxunami_cave::plugins::cave_plugins_reporting);
+        (scene, report)
+    }
+
+    fn restarted_with<T>(
+        self,
+        plugins_for: impl FnOnce(&CaveContent) -> (Vec<Box<dyn Plugin>>, T),
+    ) -> (Self, T) {
         let Scene { rig, .. } = self;
         let Rig {
             mut content,
@@ -859,14 +872,17 @@ impl Scene {
         let seed = parsed.world_seed();
         let (world, _) = parsed.load(content.load_context(seed)).unwrap();
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
-        let mut plugins = cave_plugins(&content);
+        let (mut plugins, extra) = plugins_for(&content);
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
         }));
-        Self {
-            rig: Rig::with_plugins_and_files(content, world, plugins, files),
-            actions,
-        }
+        (
+            Self {
+                rig: Rig::with_plugins_and_files(content, world, plugins, files),
+                actions,
+            },
+            extra,
+        )
     }
 }
 

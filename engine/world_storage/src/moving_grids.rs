@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use terrain::GeneratorId;
 use voxel_grid::Grid;
@@ -191,6 +191,8 @@ pub struct GridStore {
     /// The ships that are in files and not in memory.
     parked: BTreeMap<GridId, ParkedGrid>,
     tombstones: BTreeMap<GridId, Vec<(GridId, LatticeTransform)>>,
+    /// The pairs of ships that are coupled by their joint ends, the lower identifier first: both of a pair are ships of the store, in memory or in files.
+    coupled: BTreeSet<(GridId, GridId)>,
 }
 
 impl Default for GridStore {
@@ -207,16 +209,18 @@ impl GridStore {
             grids: BTreeMap::new(),
             parked: BTreeMap::new(),
             tombstones: BTreeMap::new(),
+            coupled: BTreeSet::new(),
         }
     }
 
     /// The store a saved world had: no ship in memory, these in files, this counter and these retired ids. The caller has checked that the
-    /// ids are below the counter and that no id is both a ship and retired.
+    /// ids are below the counter, that no id is both a ship and retired, and that the coupled pairs name ships that are in `parked`, the lower id first.
     pub(crate) fn from_saved(
         next: u64,
         next_serial: u64,
         parked: Vec<(GridId, ParkedGrid)>,
         tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
+        coupled: Vec<(GridId, GridId)>,
     ) -> Self {
         Self {
             next: next.max(GridId::FIRST_ALLOCATED),
@@ -224,7 +228,30 @@ impl GridStore {
             grids: BTreeMap::new(),
             parked: parked.into_iter().collect(),
             tombstones: tombstones.into_iter().collect(),
+            coupled: coupled.into_iter().collect(),
         }
+    }
+
+    /// The pairs of ships that are coupled by their joint ends, the lower identifier first, in order. The bodies keep this true to their joints; it is saved with the
+    /// world, so that a group that was coupled is kept together by whoever keeps ships by how near the players are, and its joint is made again, after a restart.
+    pub fn coupled(&self) -> &BTreeSet<(GridId, GridId)> {
+        &self.coupled
+    }
+
+    /// Records that two ships are coupled, or that they are not (in either order). Nothing is recorded of a ship the store does not know, or of a ship with itself.
+    pub fn set_coupled(&mut self, first: GridId, second: GridId, coupled: bool) {
+        let pair = (first.min(second), first.max(second));
+        if !coupled {
+            self.coupled.remove(&pair);
+        } else if first != second && self.knows(first) && self.knows(second) {
+            self.coupled.insert(pair);
+        }
+    }
+
+    /// Forgets every pair that names this ship: it is gone, or something else is in its place and has to be coupled again by its own ends.
+    fn forget_couplings_of(&mut self, id: GridId) {
+        self.coupled
+            .retain(|&(first, second)| first != id && second != id);
     }
 
     /// The id the next ship will get: what a save keeps, so that an id is never given twice.
@@ -310,7 +337,11 @@ impl GridStore {
 
     /// Forgets a ship that is in a file (its file is the caller's to remove), leaving no tombstone.
     pub fn remove_parked(&mut self, id: GridId) -> Option<ParkedGrid> {
-        self.parked.remove(&id)
+        let removed = self.parked.remove(&id);
+        if removed.is_some() {
+            self.forget_couplings_of(id);
+        }
+        removed
     }
 
     fn allocate(&mut self) -> GridId {
@@ -349,7 +380,11 @@ impl GridStore {
 
     /// Removes a grid for good (a ship that was destroyed), leaving no tombstone: nothing took its place.
     pub fn remove(&mut self, id: GridId) -> Option<MovingGrid> {
-        self.grids.remove(&id)
+        let removed = self.grids.remove(&id);
+        if removed.is_some() {
+            self.forget_couplings_of(id);
+        }
+        removed
     }
 
     /// Replaces a grid by others, as a split or a merge does: each of `parts` is added under a new id (so none keeps the id of
@@ -362,6 +397,7 @@ impl GridStore {
         parts: Vec<(MovingGrid, LatticeTransform)>,
     ) -> Option<(MovingGrid, Vec<GridId>)> {
         let old = self.grids.remove(&id)?;
+        self.forget_couplings_of(id);
         let mut successors = Vec::with_capacity(parts.len());
         for (grid, transform) in parts {
             successors.push((self.create(grid), transform));
@@ -391,6 +427,9 @@ impl GridStore {
             .iter()
             .map(|(id, _)| self.grids.remove(id).expect("the grid exists"))
             .collect();
+        for &(id, _) in grids {
+            self.forget_couplings_of(id);
+        }
         let merged_id = self.create(merged);
         for &(id, transform) in grids {
             self.tombstones.insert(id, vec![(merged_id, transform)]);
@@ -410,6 +449,7 @@ impl GridStore {
             return None;
         }
         let old = self.grids.remove(&id)?;
+        self.forget_couplings_of(id);
         self.tombstones.insert(id, vec![(into, transform)]);
         Some(old)
     }
@@ -780,6 +820,128 @@ mod tests {
         );
         assert_eq!(store, before);
         assert!(store.merge(&[(right, shift(0))], grid(3)).is_some());
+    }
+
+    fn parked_like(store: &mut GridStore, id: GridId) {
+        let parked = ParkedGrid {
+            level: LevelIndex::MAIN,
+            pose: GridPose::identity(),
+            bounds: None,
+            file: ShipFileName::new(id, 0),
+            checksum: 0,
+            waits_for_those_aboard: false,
+            has_terrain: false,
+            on_a_rail: false,
+        };
+        store.park(id, parked).unwrap();
+    }
+
+    #[test]
+    fn a_coupled_pair_is_kept_with_the_lower_id_first_in_either_order_and_only_for_ships_the_store_knows()
+     {
+        let mut store = GridStore::new();
+        let (first, second, third) = (
+            store.create(grid(1)),
+            store.create(grid(2)),
+            store.create(grid(3)),
+        );
+        store.set_coupled(second, first, true);
+        store.set_coupled(first, second, true);
+        assert_eq!(
+            store.coupled().iter().copied().collect::<Vec<_>>(),
+            [(first, second)]
+        );
+        // Not with itself, and not with a ship that is not there.
+        store.set_coupled(third, third, true);
+        store.set_coupled(third, GridId::new(GridId::FIRST_ALLOCATED + 50), true);
+        assert_eq!(store.coupled().len(), 1);
+        store.set_coupled(second, third, true);
+        assert_eq!(store.coupled().len(), 2);
+        // Let go in either order; one that was never coupled is not an error.
+        store.set_coupled(third, second, false);
+        store.set_coupled(first, third, false);
+        assert_eq!(
+            store.coupled().iter().copied().collect::<Vec<_>>(),
+            [(first, second)]
+        );
+    }
+
+    #[test]
+    fn a_coupled_pair_stays_while_a_ship_of_it_is_put_in_a_file() {
+        let mut store = GridStore::new();
+        let (first, second) = (store.create(grid(1)), store.create(grid(2)));
+        store.set_coupled(first, second, true);
+        parked_like(&mut store, first);
+        assert_eq!(
+            store.coupled().len(),
+            1,
+            "a ship in a file is a ship of the store"
+        );
+        // The pair can be recorded between a ship in memory and one in a file.
+        let third = store.create(grid(3));
+        store.set_coupled(second, third, true);
+        parked_like(&mut store, second);
+        parked_like(&mut store, third);
+        assert_eq!(store.coupled().len(), 2);
+    }
+
+    #[test]
+    fn a_pair_is_forgotten_when_a_ship_of_it_is_removed_in_memory_or_in_a_file_or_split_merged_or_absorbed()
+     {
+        let pair_of = |store: &GridStore| store.coupled().iter().copied().collect::<Vec<_>>();
+        let make = || {
+            let mut store = GridStore::new();
+            let ids = [
+                store.create(grid(1)),
+                store.create(grid(2)),
+                store.create(grid(3)),
+            ];
+            store.set_coupled(ids[0], ids[1], true);
+            store.set_coupled(ids[1], ids[2], true);
+            (store, ids)
+        };
+        // Removed: its pairs go, the other pair stays.
+        let (mut store, [a, b, c]) = make();
+        store.remove(a);
+        assert_eq!(pair_of(&store), [(b, c)]);
+        // Removed from a file.
+        let (mut store, [a, b, c]) = make();
+        parked_like(&mut store, c);
+        store.remove_parked(c);
+        assert_eq!(pair_of(&store), [(a, b)]);
+        // A ship that is not there takes nothing.
+        let (mut store, _) = make();
+        let before = store.clone();
+        store.remove(GridId::new(GridId::FIRST_ALLOCATED + 50));
+        assert_eq!(store, before);
+        // Split: the pairs of the old id go; the parts are coupled by their own ends when the bodies find them.
+        let (mut store, [a, b, c]) = make();
+        store
+            .retire(b, vec![(grid(4), shift(0)), (grid(5), shift(3))])
+            .unwrap();
+        assert!(
+            pair_of(&store).is_empty(),
+            "{a} and {c} were coupled to {b} only"
+        );
+        // Merged: both ships that were coupled to each other, and the ships they were coupled to, lose the pairs.
+        let (mut store, [a, b, c]) = make();
+        store
+            .merge(&[(a, shift(0)), (b, shift(4))], grid(4))
+            .unwrap();
+        assert!(pair_of(&store).is_empty(), "{c}");
+        // Absorbed into a ship that keeps its id: the absorbed ship's pairs go, the other's stay.
+        let (mut store, [a, b, c]) = make();
+        store.absorb(a, c, shift(1)).unwrap();
+        assert_eq!(pair_of(&store), [(b, c)]);
+        // A merge or a retirement that is refused changes nothing.
+        let (mut store, [a, ..]) = make();
+        let before = store.clone();
+        assert!(
+            store
+                .merge(&[(a, shift(0)), (a, shift(1))], grid(9))
+                .is_none()
+        );
+        assert_eq!(store, before);
     }
 
     #[test]

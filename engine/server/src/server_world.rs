@@ -240,8 +240,6 @@ pub struct ServerWorld {
     exit_searches: u64,
     /// How many hand-overs ships have made.
     hand_overs: u64,
-    /// The pairs of ships that are coupled by their joint ends, the lower identifier first (see [`ServerWorld::coupled_ships`]).
-    coupled_ships: BTreeSet<(GridId, GridId)>,
 }
 
 /// How much work the rails have cost since the world was made, for measuring and for tests of the savings (see [`ServerWorld::rail_work`]).
@@ -301,7 +299,6 @@ impl ServerWorld {
             exits: BTreeMap::new(),
             exit_searches: 0,
             hand_overs: 0,
-            coupled_ships: BTreeSet::new(),
         }
     }
 
@@ -338,19 +335,15 @@ impl ServerWorld {
 
     /// The pairs of ships that are coupled by their joint ends, the lower identifier first. The bodies plugin keeps this true to its joints; whoever keeps ships by
     /// how near the players are reads it, to freeze, put away and bring in the ships of a group together. A pair stays in it while one of the two ships is in a file (its
-    /// joint is made again when both are in memory and their ends are together), and it is never saved.
+    /// joint is made again when both are in memory and their ends are together). It is part of the world's data ([`world_storage::GridStore::coupled`]) and is saved with it, so a
+    /// group that was coupled is kept together, and coupled again, after a restart.
     pub fn coupled_ships(&self) -> &BTreeSet<(GridId, GridId)> {
-        &self.coupled_ships
+        self.data.grids().coupled()
     }
 
-    /// Records that two ships are coupled, or that they are not (in either order).
+    /// Records that two ships are coupled, or that they are not (in either order). Nothing is recorded of a ship the world does not know.
     pub fn set_ships_coupled(&mut self, first: GridId, second: GridId, coupled: bool) {
-        let pair = (first.min(second), first.max(second));
-        if coupled {
-            self.coupled_ships.insert(pair);
-        } else {
-            self.coupled_ships.remove(&pair);
-        }
+        self.data.grids_mut().set_coupled(first, second, coupled);
     }
 
     /// How the paths of ships on rails are kept.
