@@ -509,7 +509,7 @@ Not seen by any output: a rider with gravity or planets in its frame (the speed 
 5. **Linux.** Nothing in this work was run there. The determinism claim (same bits on both) rests on the same arithmetic as the rest of the physics, and is not checked.
 6. **The `moved` flag every tick** (4.5). I derived it; I did not count it.
 
-### 8.4 How this meets the sleep rule (item 7), next
+### 8.4 How this meets the sleep rule (item 7), next (built 2026-11-11: the rule exists and the call was deleted, see section 11)
 
 The accepted rule is: a ship may sleep only while touching another ship or the ground. A rider touches nothing, so under that rule it never sleeps, and the `set_can_sleep(false)` call in `sync_ship` becomes redundant, not wrong. Two ways to take it: leave the call (it states the reason at the place it matters), or let the rule cover it and delete the call, keeping `never_asleep.rs` as the test that proves the rule covers riders. I would keep the test either way. I would also keep the explicit call until the rule exists and is tested for riders, since the test (mutant C) is the only thing that sees the PHY-2 road.
 
@@ -572,3 +572,7 @@ About **38 µs a tick for each rider** in all, linear from 20 to 60, and less th
 The workspace after this follow-up: 3,189 passed, 0 failed, 4 ignored on Windows (3,181 before, and 8 new tests). The whole workspace was run before a clippy fix to the new test file; after the fix the 16 tests of that file, the 33 of `grid_bodies` and the test of the documents were run again, and fmt, clippy on the whole workspace and `cargo doc` with `-D warnings` are clean.
 
 See also: `docs/decisions/joints-and-cars.md` (the design and the owner's answers), `docs/history/build-log.md` ("Joints, step 4c-0", "Joints, step 4c-1", "Joints, step 4c-2", "Joints, tests for what a rider meets"), `docs/history/loop-probe.md` (the drift of the step), `docs/plan.md` (the order of steps).
+
+## 11. The sleep rule, 2026-11-11
+
+Section 8.4 said to keep the explicit `set_can_sleep(false)` of a rider until the rule existed and was tested for riders. It exists (`BodyWorld` lets a dynamic body sleep only while it touches something) and is tested for riders: with the rule switched off, `a_ship_that_turns_slowly_on_a_rail_goes_on_turning` fails (*ran*, a mutant). The call where a rider's body is made (`plugin.rs`, the `if rides` block) was deleted. `never_asleep.rs` has 2 tests now (the third, wake and sleep again in free space, is in `sleep_only_in_contact.rs` on the ground, where a body can sleep). The statements above about Rapier putting a free body to sleep (sections 4.4 and 5) describe the world before the rule.

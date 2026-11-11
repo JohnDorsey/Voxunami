@@ -1,5 +1,6 @@
-//! A body that is told it may not sleep (`BodyWorld::set_can_sleep`, made for the cars of a mechanism) goes on turning however slowly: step 4c-2 uses it for a ship on a rail,
-//! which turns in a frame of its own, and a body that turns at 0.002 radians a second is put to sleep by Rapier within two seconds, which zeroes its turn (the ship audit's PHY-2).
+//! A body that turns very slowly goes on turning: the turn of a ship on a rail is for good (step 4c-2). Rapier's own rule would put a body that turns at 0.002 radians a second to
+//! sleep within two seconds and zero its turn (the ship audit's PHY-2); the rule of this world is that a body sleeps only while it touches something, and a body told with
+//! `BodyWorld::set_can_sleep` that it may not (made for the cars of a mechanism) does not sleep even then. A rider touches nothing, so it is covered twice.
 
 use physics::{BodyId, BodyKind, BodySettings, BodyState, BodyWorld};
 use voxel_space::{BrickCoordinate, Orientation, WorldPosition};
@@ -38,10 +39,18 @@ fn turn_after(world: &mut BodyWorld, steps: usize) -> [f64; 3] {
 }
 
 #[test]
-fn a_body_that_turns_very_slowly_is_put_to_sleep_and_stops_as_the_audit_found() {
+fn a_body_that_turns_very_slowly_and_touches_nothing_goes_on_turning() {
+    // Rapier's own rule put it to sleep and zeroed its turn within 200 steps (the ship audit's PHY-2); a body sleeps only while it touches something
+    // (`sleep_only_in_contact.rs`), which is what keeps a rider's turn.
     let mut world = a_slow_turn_in_free_space();
-    assert_eq!(turn_after(&mut world, 200), [0.0; 3]);
-    assert!(world.is_asleep(SHIP));
+    let turn = turn_after(&mut world, 200);
+    for axis in 0..3 {
+        assert!(
+            (turn[axis] - SPIN[axis]).abs() < 1e-12,
+            "{SPIN:?} became {turn:?}"
+        );
+    }
+    assert!(!world.is_asleep(SHIP));
 }
 
 #[test]
@@ -57,16 +66,4 @@ fn a_body_that_may_not_sleep_goes_on_turning() {
         );
     }
     assert!(!world.is_asleep(SHIP));
-}
-
-#[test]
-fn a_body_that_may_not_sleep_and_is_asleep_wakes_and_one_that_may_again_sleeps() {
-    let mut world = a_slow_turn_in_free_space();
-    turn_after(&mut world, 200);
-    assert!(world.is_asleep(SHIP), "it went to sleep");
-    world.set_can_sleep(SHIP, false).unwrap();
-    assert!(!world.is_asleep(SHIP), "it is awake when it may not sleep");
-    world.set_can_sleep(SHIP, true).unwrap();
-    turn_after(&mut world, 200);
-    assert!(world.is_asleep(SHIP), "and it sleeps again when it may");
 }

@@ -1018,10 +1018,7 @@ impl Bodies {
             {
                 return;
             }
-            if rides {
-                // (Rapier takes the speed from a body it puts to sleep, and a ship that turns slowly would stop: the turn of a ship on a rail is for good.)
-                let _ = frame.bodies.set_can_sleep(BodyId(id.get()), false);
-            }
+            // (A rider touches nothing in its frame, so it never sleeps and its slow turn is for good: a body sleeps only while it touches something.)
             frame.ships.insert(
                 id,
                 Ship {

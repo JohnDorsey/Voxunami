@@ -11,6 +11,7 @@ use crate::sweep::{SweptBricks, swept_bricks};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 mod couplings;
+mod sleeping;
 
 use couplings::Coupling;
 pub use couplings::{CouplingError, CouplingId, CouplingOptions, PivotPair, SolverDials};
@@ -105,6 +106,10 @@ struct Body {
     filled: HashMap<BrickCoordinate, Rows>,
     /// The collider of the blocks that do not fill their cells, one for each brick that has any.
     partial: HashMap<BrickCoordinate, ColliderHandle>,
+    /// Whether the caller asked that it never sleep ([`BodyWorld::set_can_sleep`]).
+    kept_awake: bool,
+    /// Whether Rapier is let put it to sleep now (see `sleeping.rs`): it is while the body touches something and is not kept awake.
+    may_sleep: bool,
 }
 
 /// The colliders of a body, taken out of its world with [`BodyWorld::take_colliders`] to be given to the same body in another with [`BodyWorld::give_colliders`]: what a ship
@@ -267,6 +272,8 @@ impl BodyWorld {
                 voxels: None,
                 filled: HashMap::new(),
                 partial: HashMap::new(),
+                kept_awake: false,
+                may_sleep: true,
             },
         );
         Ok(())
@@ -808,6 +815,7 @@ impl BodyWorld {
     /// [`BodySettings::substeps`] steps. The forces are then forgotten.
     pub fn step(&mut self) {
         let gravity = vector(self.settings.gravity);
+        self.apply_sleep_rule();
         let steps = self.steps_for_this_tick();
         self.parameters.dt = self.settings.time_step / Real::from(steps);
         for _ in 0..steps {

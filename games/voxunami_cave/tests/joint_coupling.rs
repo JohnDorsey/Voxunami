@@ -397,7 +397,8 @@ fn a_coupled_pair_drifting_slowly_does_not_fall_asleep_and_stop() {
         );
         assert!((speed - 0.05).abs() < 1e-3, "{id:?} went on at {speed} m/s");
     }
-    // The same two cars, not coupled (the ends facing away), stop: that is what this rules out.
+    // The same two cars, not coupled (the ends facing away), used to stop (Rapier put a car of stone going slower than 0.1 m/s to sleep, and took its speed); since the rule
+    // that a body sleeps only while it touches something (2026-11-11) they go on too, and the coupling is no longer what keeps them awake in space.
     let (mut loose, _) = Scene::reporting();
     weightless(&mut loose);
     make(&mut loose, pose(20.0, 230.0, 20.0), false, stones(0, 3));
@@ -417,9 +418,9 @@ fn a_coupled_pair_drifting_slowly_does_not_fall_asleep_and_stop() {
             .unwrap()
             .linear_velocity,
     );
-    assert_eq!(
-        speed, 0.0,
-        "a car of stone on its own goes to sleep and stops"
+    assert!(
+        (speed - 0.05).abs() < 1e-3,
+        "a car of stone on its own goes on at {speed} m/s, as it touches nothing"
     );
 }
 
