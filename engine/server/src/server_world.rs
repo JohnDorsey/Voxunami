@@ -1418,7 +1418,7 @@ impl ServerWorld {
         self.carried_by = now_carried;
         let mut carried_ships: Vec<(GridId, GridId)> = Vec::new();
         for (id, ship) in self.data.grids().iter() {
-            if ship.terrain.is_some() || ship.rail.is_some() {
+            if ship.terrain.is_some() || ship.rail.is_some() || self.rail_group_of(id).is_some() {
                 continue;
             }
             if let Some(planet) = pick_carrier(
@@ -1867,7 +1867,7 @@ impl ServerWorld {
 }
 
 mod coasting;
-pub use coasting::{FlightState, NotCoasting, PredictedRail, Prediction, PredictionEnd};
+pub use coasting::{FlightState, NotCoasting, PredictedRail, Prediction, PredictionEnd, RailGroup};
 
 #[cfg(test)]
 pub(crate) mod tests;

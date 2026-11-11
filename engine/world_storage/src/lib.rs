@@ -31,7 +31,7 @@ mod world;
 pub use container::{ContainerError, Section};
 pub use engine_sections::GeneratorRecipe;
 pub use grid_frame::GridFrame;
-pub use moving_grids::{GridStore, GridTerrain, MovingGrid, ParkedGrid, PilotLogout};
+pub use moving_grids::{GridStore, GridTerrain, GroupCentre, MovingGrid, ParkedGrid, PilotLogout};
 pub use ship_file::{
     ParsedShip, ShipContents, ShipFileError, ShipFlight, ShipFormat, flight_id, rail_id, ship_id,
     terrain_id,

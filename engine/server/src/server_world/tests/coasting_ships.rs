@@ -160,22 +160,19 @@ fn what_a_ship_cannot_coast_for_is_said() {
     assert_eq!(refused(&world, ship), NotCoasting::Held);
     world.set_grid_held(ship, false).unwrap();
     world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();
-    // Turning is no reason (step 4c-2: the rail holds the centre of mass and nothing else, the turn is the bodies'), unless the ship is coupled to another by a joint, which
-    // a rail frame holds only from step 4c-3: its car would be on a rail of its own and the joint would die.
+    // Turning is no reason (step 4c-2: the rail holds the centre of mass and nothing else, the turn is the bodies').
     world
         .set_grid_velocity(ship, speed, [0.0, 0.001, 0.0])
         .unwrap();
     assert!(world.coasting_rail(ship, time(0)).is_ok());
+    // A ship coupled to another by a joint is in a group, whose rail is on its anchor, the ship of it with the lowest number; and a group is not put on a rail yet (step 4c-3).
     // (A partner that is a ship of the world: the world records no pair for a ship it does not know.)
     let partner = ship_at(&mut world, [0.0, 50_000.0, 0.0], [0.0; 3]);
     world.set_ships_coupled(ship, partner, true);
-    assert_eq!(refused(&world, ship), NotCoasting::Turning);
-    world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();
-    assert!(
-        world.coasting_rail(ship, time(0)).is_ok(),
-        "a coupled ship that does not turn goes on a rail as it did"
-    );
+    assert_eq!(refused(&world, ship), NotCoasting::Coupled);
+    assert_eq!(refused(&world, partner), NotCoasting::InAGroup(ship));
     world.set_ships_coupled(ship, partner, false);
+    assert!(world.coasting_rail(ship, time(0)).is_ok(), "alone again");
     // At rest: no orbit (it falls straight down). Fast enough to leave: a hyperbola, which is a rail (see `hyperbola_ships`).
     world.set_grid_velocity(ship, [0.0; 3], [0.0; 3]).unwrap();
     assert!(matches!(refused(&world, ship), NotCoasting::NoOrbit(_)));

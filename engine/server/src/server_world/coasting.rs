@@ -6,7 +6,7 @@
 //!
 //! **What is ruled out, and why.** A rail is a conic round one planet (patched conics: the planet's pull and no other, as the owner chose, 2026-11-01), so a ship is put on one only
 //! where that is the motion it would have. It is not put on one, and comes off one it is on, when:
-//! - it is held, or its level has a pull of its own (a level with a ground), or it turns (a rail holds a ship's place and not its turn: a ship that spins is the bodies');
+//! - it is held, or its level has a pull of its own (a level with a ground); (it may turn: a rail holds a ship's place and not its turn, and the turn is the bodies');
 //! - something pushes it: a force or a torque, a docking, a program that puts it somewhere, anything that is not the bodies moving it;
 //! - it is near what it could touch (another ship, or a planet that is not the one it goes round), nearer than a margin and the way it would go in a second at the speed it
 //!   closes at, so that nothing meets it while it is on a rail; or it is in the sphere that a planet on a rail carries what is near it with;
@@ -45,6 +45,10 @@ pub use prediction::{PredictedRail, Prediction, PredictionEnd};
 
 /// Seconds a ship has to be undisturbed before it goes on a rail.
 pub const QUIET_SECONDS: u64 = 1;
+
+/// Whether a group of ships (ships coupled by their joint ends) is put on a rail. **Not yet:** the world places a group that has a rail, and takes the rail away when anything
+/// happens to the group, but the bodies do not yet hold a group on one (step 4c-3 of `docs/decisions/joints-and-cars.md`).
+const GROUPS_RIDE_RAILS: bool = false;
 
 /// How near, in voxels, something may be, over the way the ship would go in [`NEAR_SECONDS`] at the speed it closes at, before a ship is not on a rail (a ship that is on one
 /// comes off it at half as near, so that it does not go on and off).
@@ -119,8 +123,12 @@ pub enum NotCoasting {
     NotAShip,
     /// The ship is held.
     Held,
-    /// The ship turns and is coupled to another by a joint: a rail holds a ship's centre of mass and not its turn (the bodies turn it), but it does not yet hold a group.
-    Turning,
+    /// The ship is coupled to others by joints, and the rail of a group is on its anchor, the ship of the group with the lowest number (the one given).
+    InAGroup(GridId),
+    /// A ship of the group is not in memory (it is in a file), so there is no centre of mass of the group to put on a rail.
+    GroupNotWhole,
+    /// The ship is the anchor of a group, and a group of ships is not put on a rail yet (`GROUPS_RIDE_RAILS`, in this module).
+    Coupled,
     /// The level the ship is in has a pull of its own (a ground to fall to), which is no pull toward a planet.
     LevelPulls,
     /// No planet that pulls (a planet with a number lower than the ship's, held or on a rail, weighing at least what pulls) is there.
@@ -135,12 +143,15 @@ pub enum NotCoasting {
     SomethingNear(GridId),
 }
 
-/// A ship that passes the rules that look at one ship, with the planet that pulls it and where it is from the planet's middle.
+/// A ship, or a group of ships, that passes the rules that look at one ship or group, with the planet that pulls it and where its centre of mass is from the planet's middle.
 struct Candidate<'a> {
-    ship: &'a MovingGrid,
+    /// The ships: just the one, or the group, lowest number first.
+    members: Vec<GridId>,
     parent: GridId,
     planet: &'a MovingGrid,
     place: [f64; 3],
+    /// How fast the centre of mass goes in the world.
+    velocity: [f64; 3],
 }
 
 /// Where the middle of a grid is (the origin of a planet, whose centre of mass is there) and how far from it its bricks reach, in voxels.
@@ -193,11 +204,15 @@ fn size(vector: [f64; 3]) -> f64 {
 
 /// Whether a rail is of the kind this module makes: an orbit round a planet that turns nothing. (Any other rail of a ship is someone else's, and left to them.)
 pub(super) fn is_a_coasting_rail(rail: &Rail) -> bool {
-    rail.spin.is_none()
-        && rail
-            .orbit
-            .as_ref()
-            .is_some_and(|orbit| matches!(orbit.around, Centre::Grid(_)))
+    rail.is_coasting()
+}
+
+/// A group of ships coupled by their joint ends that rides a rail: the ship with the lowest number holds the rail, and the rail is the orbit of the centre of mass of the group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailGroup {
+    pub anchor: GridId,
+    /// The ships, lowest number first (the anchor is the first).
+    pub members: Vec<GridId>,
 }
 
 /// A planet that has a sphere of influence: a ship inside it, that does not go round it, is not put on a rail.
@@ -312,13 +327,14 @@ impl ServerWorld {
         time: RailTime,
     ) -> Result<Rail, NotCoasting> {
         let Candidate {
-            ship,
+            members,
             parent,
             planet,
             place,
+            velocity,
         } = self.coasting_candidate(known, grid)?;
-        let orbit = self.orbit_from_the_state(ship, parent, planet, place, time)?;
-        if let Some(near) = self.near_with(known, grid, ship, Some(parent), 2.0) {
+        let orbit = self.orbit_from_the_state(parent, planet, place, velocity, time)?;
+        if let Some(near) = self.near_group(known, &members, Some(parent), 2.0) {
             return Err(NotCoasting::SomethingNear(near));
         }
         Ok(Rail {
@@ -336,13 +352,16 @@ impl ServerWorld {
         grid: GridId,
     ) -> Result<(), NotCoasting> {
         let candidate = self.coasting_candidate(known, grid)?;
-        match self.near_with(known, grid, candidate.ship, Some(candidate.parent), 2.0) {
+        match self.near_group(known, &candidate.members, Some(candidate.parent), 2.0) {
             Some(near) => Err(NotCoasting::SomethingNear(near)),
             None => Ok(()),
         }
     }
 
-    /// The ship and the planet that pulls it, and where it is from the planet, if the rules of [`ServerWorld::may_be_put_on_a_rail`] that look at one ship are met.
+    /// The ship, or the group of ships, and the planet that pulls it, and where its centre of mass is from the planet, if the rules of [`ServerWorld::may_be_put_on_a_rail`] that look
+    /// at one ship or group are met. **A group of ships** (ships coupled by their joint ends) has one rail, on the ship of it with the lowest number, and the rail is the orbit of its
+    /// centre of mass: the centres of mass of the ships, and their speeds, weighed by their masses (a ship that turns is no reason for anything: a rail holds the centre of mass and
+    /// nothing else, and the turn is the bodies'). A ship of a group that is not its anchor is refused, and so is a group of which a ship is in a file.
     fn coasting_candidate(
         &self,
         known: Option<&Neighbours>,
@@ -352,18 +371,28 @@ impl ServerWorld {
         if ship.terrain.is_some() {
             return Err(NotCoasting::NotAShip);
         }
-        if ship.held {
-            return Err(NotCoasting::Held);
+        let members = self.data.grids().group_of(grid);
+        let grouped = members.len() > 1;
+        if grouped {
+            if members[0] != grid {
+                return Err(NotCoasting::InAGroup(members[0]));
+            }
+            if !GROUPS_RIDE_RAILS {
+                return Err(NotCoasting::Coupled);
+            }
         }
-        // (A ship that turns may ride a rail, which holds its centre of mass and nothing else: the bodies do the turn. Not one that is coupled to another by a joint, until a rail
-        // carries a group: its car would be on a rail of its own, in a frame of its own, and the joint would die with the body that has it.)
-        if ship.angular_velocity != [0.0; 3]
-            && self
-                .coupled_ships()
-                .iter()
-                .any(|&(first, second)| first == grid || second == grid)
-        {
-            return Err(NotCoasting::Turning);
+        for member in &members {
+            let ship = self
+                .data
+                .grids()
+                .get(*member)
+                .ok_or(NotCoasting::GroupNotWhole)?;
+            if ship.terrain.is_some() {
+                return Err(NotCoasting::NotAShip);
+            }
+            if ship.held {
+                return Err(NotCoasting::Held);
+            }
         }
         if self
             .level_gravity
@@ -373,15 +402,28 @@ impl ServerWorld {
         {
             return Err(NotCoasting::LevelPulls);
         }
-        let middle = self.middle_of(ship).ok_or(NotCoasting::NoPlanetPulls)?;
+        let (middle, velocity) = if grouped {
+            let centre = self
+                .data
+                .grids()
+                .group_centre(&members)
+                .ok_or(NotCoasting::GroupNotWhole)?;
+            (centre.position, centre.velocity)
+        } else {
+            (
+                self.middle_of(ship).ok_or(NotCoasting::NoPlanetPulls)?,
+                ship.linear_velocity,
+            )
+        };
         let (parent, planet, place) = self
             .planet_that_pulls_most(known, grid, ship, middle)
             .ok_or(NotCoasting::NoPlanetPulls)?;
         Ok(Candidate {
-            ship,
+            members,
             parent,
             planet,
             place,
+            velocity,
         })
     }
 
@@ -389,14 +431,14 @@ impl ServerWorld {
     /// rail in: it does not come lower than the ground and what the planet carries, and does not go out of the planet's sphere of influence.
     fn orbit_from_the_state(
         &self,
-        ship: &MovingGrid,
         parent: GridId,
         planet: &MovingGrid,
         place: [f64; 3],
+        velocity: [f64; 3],
         time: RailTime,
     ) -> Result<Orbit, NotCoasting> {
         let relative_velocity: [f64; 3] =
-            [0, 1, 2].map(|axis| ship.linear_velocity[axis] - planet.linear_velocity[axis]);
+            [0, 1, 2].map(|axis| velocity[axis] - planet.linear_velocity[axis]);
         self.orbit_fits.set(self.orbit_fits.get() + 1);
         let orbit = Orbit::from_place(
             Centre::Grid(parent),
@@ -541,12 +583,26 @@ impl ServerWorld {
         goes_round: Option<GridId>,
         factor: f64,
     ) -> Option<GridId> {
+        self.near_with_group(known, grid, ship, goes_round, factor, &[])
+    }
+
+    /// As [`ServerWorld::near_with`], not counting the ships of `group` either: the ships coupled to this one are with it, and not in its way.
+    fn near_with_group(
+        &self,
+        known: Option<&Neighbours>,
+        grid: GridId,
+        ship: &MovingGrid,
+        goes_round: Option<GridId>,
+        factor: f64,
+        group: &[GridId],
+    ) -> Option<GridId> {
         let mut chain = goes_round.map_or_else(Vec::new, |parent| {
             let mut chain = self.what_it_goes_round(parent);
             chain.push(parent);
             chain
         });
         chain.push(grid);
+        chain.extend_from_slice(group);
         let mine = match known.and_then(|known| known.bodies.get(&grid)) {
             Some(body) => {
                 debug_assert_eq!(
@@ -598,6 +654,25 @@ impl ServerWorld {
                 size(carrier.position.displacement_to(place).in_voxels()) <= carrier.radius * limit
             })
             .map(|carrier| carrier.id)
+    }
+
+    /// As [`ServerWorld::near_with`] for the ships of a group together: some grid is in the way of the group if it is in the way of a ship of it, and the ships of the group are not
+    /// in each other's way. The first found, a ship of the group at a time.
+    fn near_group(
+        &self,
+        known: Option<&Neighbours>,
+        members: &[GridId],
+        goes_round: Option<GridId>,
+        factor: f64,
+    ) -> Option<GridId> {
+        members.iter().find_map(|member| {
+            let ship = self.data.grids().get(*member)?;
+            // (A ship that is alone is asked as it always was.)
+            match members {
+                [_] => self.near_with(known, *member, ship, goes_round, factor),
+                _ => self.near_with_group(known, *member, ship, goes_round, factor, members),
+            }
+        })
     }
 
     /// The first grid, in the order of their numbers, that is in the way of a ship in the sense of [`is_in_the_way`], not counting `chain`: every grid is looked at.
@@ -773,7 +848,8 @@ impl ServerWorld {
     }
 
     /// Whether a ship that is on a rail of this module has to come off it: it is held, is in a level with a pull of its own, goes round nothing that is there, or
-    /// something is near. (Turning is no reason: the rail holds the centre of mass and the bodies turn the ship.)
+    /// something is near. (Turning is no reason: the rail holds the centre of mass and the bodies turn the ship.) For a group, a ship of it that is held or is in a file, or
+    /// something near any ship of it.
     fn has_to_leave_its_rail(&self, known: Option<&Neighbours>, grid: GridId) -> bool {
         let Some(ship) = self.data.grids().get(grid) else {
             return false;
@@ -786,7 +862,10 @@ impl ServerWorld {
         else {
             return false;
         };
-        ship.held
+        let members = self.data.grids().group_of(grid);
+        members
+            .iter()
+            .any(|member| self.data.grids().get(*member).is_none_or(|ship| ship.held))
             || self
                 .level_gravity
                 .get(&ship.level)
@@ -794,7 +873,7 @@ impl ServerWorld {
                 != &[0.0; 3]
             || self.data.grids().get(parent).is_none()
             || self
-                .near_with(known, grid, ship, Some(parent), 1.0)
+                .near_group(known, &members, Some(parent), 1.0)
                 .is_some()
     }
 
@@ -844,13 +923,23 @@ impl ServerWorld {
         if !answers_now {
             return;
         }
-        let fitted = self.middle_of(ship).and_then(|middle| {
+        let members = self.data.grids().group_of(grid);
+        let state = if members.len() > 1 {
+            self.data
+                .grids()
+                .group_centre(&members)
+                .map(|centre| (centre.position, centre.velocity))
+        } else {
+            self.middle_of(ship)
+                .map(|middle| (middle, ship.linear_velocity))
+        };
+        let fitted = state.and_then(|(middle, velocity)| {
             let place = planet.pose.position.displacement_to(middle).in_voxels();
             self.orbit_from_the_state(
-                ship,
                 parent,
                 planet,
                 place,
+                velocity,
                 RailTime::of_tick(now, ticks_per_second),
             )
             .ok()
@@ -880,6 +969,13 @@ impl ServerWorld {
             .map(|(id, _)| id)
             .collect();
         for id in ships {
+            // A group of ships has one rail, on its anchor: a ship of it that is not the anchor is not asked (the group is, in its name), and a rail it has was made for
+            // something else.
+            if self.data.grids().has_partners(id) && self.data.grids().group_of(id)[0] != id {
+                self.quiet_since.remove(&id);
+                self.take_a_coasting_rail_from(id);
+                continue;
+            }
             let coasting = self
                 .data
                 .grids()
@@ -920,14 +1016,50 @@ impl ServerWorld {
     }
 
     /// Notes that something other than the bodies has done something to a ship: it is not quiet, and if it is on a rail of this module it comes off it, where it is (a rail
-    /// is the place the ship is put at, so whatever is done to the ship is done from there).
+    /// is the place the ship is put at, so whatever is done to the ship is done from there). **A ship of a group is the group's to disturb**: none of the ships coupled to it is
+    /// quiet, and the group's rail, on its anchor, comes off.
     pub(super) fn disturb(&mut self, grid: GridId) {
-        self.quiet_since.remove(&grid);
-        let Some(ship) = self.data.grids_mut().get_mut(grid) else {
-            return;
-        };
-        if ship.terrain.is_none() && ship.rail.as_ref().is_some_and(is_a_coasting_rail) {
+        for member in self.data.grids().group_of(grid) {
+            self.quiet_since.remove(&member);
+            self.take_a_coasting_rail_from(member);
+        }
+    }
+
+    /// Takes the rail of this module from a ship, if it has one.
+    fn take_a_coasting_rail_from(&mut self, grid: GridId) {
+        if let Some(ship) = self.data.grids_mut().get_mut(grid)
+            && ship.terrain.is_none()
+            && ship.rail.as_ref().is_some_and(is_a_coasting_rail)
+        {
             ship.rail = None;
         }
+    }
+
+    /// The group of ships coupled by joints that this ship is in, if the group is on a rail: its rail is on its anchor, and holds the centre of mass of the ships. `None` for a ship
+    /// that is alone, whatever it is doing, and for a group of which a ship is in a file or whose anchor has no rail of this module. The bodies hold such a group in a frame that goes
+    /// with the rail's point.
+    pub fn rail_group_of(&self, ship: GridId) -> Option<RailGroup> {
+        let grids = self.data.grids();
+        if !grids.has_partners(ship) {
+            return None;
+        }
+        let members = grids.group_of(ship);
+        let anchor = *members.first()?;
+        let on_a_rail = grids.get(anchor).is_some_and(|anchor| {
+            anchor.terrain.is_none() && anchor.rail.as_ref().is_some_and(is_a_coasting_rail)
+        });
+        let whole = members.iter().all(|member| grids.get(*member).is_some());
+        (on_a_rail && whole).then_some(RailGroup { anchor, members })
+    }
+
+    /// Where the centre of mass of the group on a rail whose anchor this is, is in the world, and how fast it goes: the rail's point, as the ships are put at it. `None` if the
+    /// ship is not the anchor of a group on a rail.
+    pub fn rail_group_centre(&self, anchor: GridId) -> Option<(WorldPosition, [f64; 3])> {
+        let group = self.rail_group_of(anchor)?;
+        if group.anchor != anchor {
+            return None;
+        }
+        let centre = self.data.grids().group_centre(&group.members)?;
+        Some((centre.position, centre.velocity))
     }
 }

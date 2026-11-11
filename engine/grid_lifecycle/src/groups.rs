@@ -1,6 +1,9 @@
 //! Ships that are coupled by their joint ends are kept as one: a group is as near as its nearest ship, and awake while any ship of it is. A car left frozen while the car it is
 //! coupled to goes on would hold it fixed (a frozen ship is a fixed body), and a car put in a file would lose its joint, so the lifecycle looks at the distance of the group.
 //! Which ships are coupled is what the server world holds (`ServerWorld::coupled_ships`).
+//!
+//! **A group with a ship on a rail is on a rail**: its anchor holds the rail of the centre of mass of the ships (step 4c-3), so none of them is put in a file, as a ship on a rail
+//! is not (its place is a function of the clock, which the world does not know of a ship in a file), and all of them are brought in when the anchor is.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,6 +14,8 @@ pub(crate) struct Member {
     pub id: GridId,
     pub squared_away: f64,
     pub awake: bool,
+    /// It is on a rail (in memory), or was when it was put in its file.
+    pub on_a_rail: bool,
 }
 
 /// The groups that the coupled ships make, each named by its lowest identifier. A ship that is coupled to none is no group: it is asked as it is.
@@ -20,6 +25,8 @@ pub(crate) struct Groups {
     /// By the name of the group: the squared distance of its nearest ship, and whether any is awake.
     nearest: BTreeMap<GridId, f64>,
     awake: BTreeSet<GridId>,
+    /// The groups with a ship on a rail.
+    on_a_rail: BTreeSet<GridId>,
 }
 
 impl Groups {
@@ -61,6 +68,9 @@ impl Groups {
             if member.awake {
                 groups.awake.insert(name);
             }
+            if member.on_a_rail {
+                groups.on_a_rail.insert(name);
+            }
         }
         groups
     }
@@ -72,6 +82,13 @@ impl Groups {
             .and_then(|name| self.nearest.get(name))
             .copied()
             .unwrap_or(own)
+    }
+
+    /// Whether any ship of the group is on a rail, or `own`, whether the ship is, if it is in no group.
+    pub fn on_a_rail(&self, id: GridId, own: bool) -> bool {
+        self.names
+            .get(&id)
+            .map_or(own, |name| self.on_a_rail.contains(name))
     }
 
     /// Whether any ship of the group is awake, or `own`, whether the ship is, if it is in no group.
@@ -97,6 +114,7 @@ mod tests {
             id: grid(number),
             squared_away,
             awake,
+            on_a_rail: false,
         }
     }
 
@@ -132,6 +150,30 @@ mod tests {
             assert_eq!(groups.squared_away(grid(ship), f64::NAN), 25.0);
             assert!(!groups.awake(grid(ship), true));
         }
+    }
+
+    #[test]
+    fn a_group_is_on_a_rail_if_any_ship_of_it_is_and_a_ship_alone_is_as_it_is() {
+        let mut on_a_rail = member(2, 400.0, true);
+        on_a_rail.on_a_rail = true;
+        let groups = Groups::of(
+            &pairs(&[(1, 2), (3, 2), (5, 6)]),
+            [
+                member(1, 900.0, false),
+                on_a_rail,
+                member(3, 1600.0, true),
+                member(5, 25.0, false),
+                member(6, 100.0, false),
+            ]
+            .into_iter(),
+        );
+        for ship in [1, 2, 3] {
+            assert!(groups.on_a_rail(grid(ship), false), "{ship}");
+        }
+        for ship in [5, 6] {
+            assert!(!groups.on_a_rail(grid(ship), false), "{ship}");
+        }
+        assert!(groups.on_a_rail(grid(9), true) && !groups.on_a_rail(grid(9), false));
     }
 
     #[test]

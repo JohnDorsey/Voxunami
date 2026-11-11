@@ -68,6 +68,14 @@ pub struct MovingGrid {
 }
 
 impl MovingGrid {
+    /// Where the centre of mass of the ship is in the world; `None` where the world cannot hold it.
+    pub fn middle(&self) -> Option<WorldPosition> {
+        self.pose.local_to_world(WorldPosition::new(
+            BrickCoordinate::ORIGIN,
+            self.centre_of_mass,
+        ))
+    }
+
     /// The lowest and the highest brick that has anything in it or that its terrain makes, along each axis, in the ship's own coordinates. `None` for a ship with
     /// no bricks.
     pub fn brick_extent(&self) -> Option<(BrickCoordinate, BrickCoordinate)> {
@@ -176,6 +184,15 @@ pub struct ParkedGrid {
     pub on_a_rail: bool,
 }
 
+/// Where the centre of mass of a group of ships is, how fast it goes, and what the group weighs (see [`GridStore::group_centre`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupCentre {
+    pub position: WorldPosition,
+    pub velocity: [f64; 3],
+    /// In kilograms; nothing if no ship of the group has been weighed.
+    pub mass: f64,
+}
+
 /// The grids that are not the root grids of levels, and the ids they had before they were split or merged.
 ///
 /// Ids come from a counter that only goes up, starting at [`GridId::FIRST_ALLOCATED`], so an id is never given twice in a world and a
@@ -193,6 +210,8 @@ pub struct GridStore {
     tombstones: BTreeMap<GridId, Vec<(GridId, LatticeTransform)>>,
     /// The pairs of ships that are coupled by their joint ends, the lower identifier first: both of a pair are ships of the store, in memory or in files.
     coupled: BTreeSet<(GridId, GridId)>,
+    /// The same, by ship: the ships each one is coupled to (so that a group is found by walking it, and a ship that is alone is found to be so at once).
+    partners: BTreeMap<GridId, BTreeSet<GridId>>,
 }
 
 impl Default for GridStore {
@@ -210,6 +229,7 @@ impl GridStore {
             parked: BTreeMap::new(),
             tombstones: BTreeMap::new(),
             coupled: BTreeSet::new(),
+            partners: BTreeMap::new(),
         }
     }
 
@@ -222,6 +242,11 @@ impl GridStore {
         tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
         coupled: Vec<(GridId, GridId)>,
     ) -> Self {
+        let mut partners: BTreeMap<GridId, BTreeSet<GridId>> = BTreeMap::new();
+        for &(first, second) in &coupled {
+            partners.entry(first).or_default().insert(second);
+            partners.entry(second).or_default().insert(first);
+        }
         Self {
             next: next.max(GridId::FIRST_ALLOCATED),
             next_serial,
@@ -229,6 +254,7 @@ impl GridStore {
             parked: parked.into_iter().collect(),
             tombstones: tombstones.into_iter().collect(),
             coupled: coupled.into_iter().collect(),
+            partners,
         }
     }
 
@@ -239,19 +265,122 @@ impl GridStore {
     }
 
     /// Records that two ships are coupled, or that they are not (in either order). Nothing is recorded of a ship the store does not know, or of a ship with itself.
+    ///
+    /// **A change in who is in a group takes the coasting rails from the ships of the groups it touches** (see [`GridStore::group_of`], [`Rail::is_coasting`]): the rail of a group
+    /// is the orbit of the centre of mass of the ships it had when the rail was made, and with another set of ships it is the orbit of nothing. (A pair that was there, or one
+    /// that joins ships that were one group already, changes no one's group.)
     pub fn set_coupled(&mut self, first: GridId, second: GridId, coupled: bool) {
         let pair = (first.min(second), first.max(second));
-        if !coupled {
-            self.coupled.remove(&pair);
-        } else if first != second && self.knows(first) && self.knows(second) {
+        if coupled == self.coupled.contains(&pair) {
+            return;
+        }
+        if coupled && (first == second || !self.knows(first) || !self.knows(second)) {
+            return;
+        }
+        let before = (self.group_of(first), self.group_of(second));
+        if coupled {
             self.coupled.insert(pair);
+            self.partners.entry(first).or_default().insert(second);
+            self.partners.entry(second).or_default().insert(first);
+        } else {
+            self.coupled.remove(&pair);
+            self.unlink(first, second);
+        }
+        let after = (self.group_of(first), self.group_of(second));
+        if before != after {
+            let touched: BTreeSet<GridId> = before
+                .0
+                .into_iter()
+                .chain(before.1)
+                .chain(after.0)
+                .chain(after.1)
+                .collect();
+            self.clear_group_rails(touched);
         }
     }
 
-    /// Forgets every pair that names this ship: it is gone, or something else is in its place and has to be coupled again by its own ends.
+    /// Whether this ship is coupled to another (so a ship that is alone is found so without building its group).
+    pub fn has_partners(&self, id: GridId) -> bool {
+        self.partners.contains_key(&id)
+    }
+
+    /// The ships that are coupled to this one, directly or through others, with the ship itself, the lowest identifier first (which is the *anchor* of the group: the one that
+    /// holds its rail); just the ship if it is coupled to none. Ships in files are in groups as those in memory are.
+    pub fn group_of(&self, id: GridId) -> Vec<GridId> {
+        let mut found: BTreeSet<GridId> = BTreeSet::from([id]);
+        let mut queue = vec![id];
+        while let Some(next) = queue.pop() {
+            for &partner in self.partners.get(&next).into_iter().flatten() {
+                if found.insert(partner) {
+                    queue.push(partner);
+                }
+            }
+        }
+        found.into_iter().collect()
+    }
+
+    /// Where the centre of mass of these ships is and how fast it goes: the centres of mass of the ships and their speeds, weighed by their masses (equally if none has been
+    /// weighed). `None` if one of them is not in memory or its place cannot be held. Nothing but the ships' own data is looked at, so it is the same bits on every machine.
+    pub fn group_centre(&self, members: &[GridId]) -> Option<GroupCentre> {
+        let ships: Vec<&MovingGrid> = members
+            .iter()
+            .map(|id| self.grids.get(id))
+            .collect::<Option<_>>()?;
+        let reference = ships.first()?.middle()?;
+        let mass: f64 = ships.iter().map(|ship| ship.mass).sum();
+        let weighed = mass > 0.0;
+        let total = if weighed { mass } else { ships.len() as f64 };
+        let (mut apart, mut velocity) = ([0.0f64; 3], [0.0f64; 3]);
+        for ship in &ships {
+            let weight = if weighed { ship.mass } else { 1.0 };
+            let from_the_first = ship.middle()?.relative_to(reference);
+            for axis in 0..3 {
+                apart[axis] += weight * from_the_first[axis];
+                velocity[axis] += weight * ship.linear_velocity[axis];
+            }
+        }
+        Some(GroupCentre {
+            position: reference.translated_by_voxels(apart.map(|part| part / total))?,
+            velocity: velocity.map(|part| part / total),
+            mass: if weighed { mass } else { 0.0 },
+        })
+    }
+
+    /// Takes the coasting rail from each of these ships that is in memory and has one.
+    fn clear_group_rails(&mut self, members: impl IntoIterator<Item = GridId>) {
+        for id in members {
+            if let Some(ship) = self.grids.get_mut(&id)
+                && ship.terrain.is_none()
+                && ship.rail.as_ref().is_some_and(Rail::is_coasting)
+            {
+                ship.rail = None;
+            }
+        }
+    }
+
+    fn unlink(&mut self, first: GridId, second: GridId) {
+        for (one, other) in [(first, second), (second, first)] {
+            if let Some(partners) = self.partners.get_mut(&one) {
+                partners.remove(&other);
+                if partners.is_empty() {
+                    self.partners.remove(&one);
+                }
+            }
+        }
+    }
+
+    /// Forgets every pair that names this ship: it is gone, or something else is in its place and has to be coupled again by its own ends. The ships that were in its group lose
+    /// their coasting rails (see [`GridStore::set_coupled`]).
     fn forget_couplings_of(&mut self, id: GridId) {
-        self.coupled
-            .retain(|&(first, second)| first != id && second != id);
+        let group = self.group_of(id);
+        if group.len() < 2 {
+            return;
+        }
+        self.clear_group_rails(group.into_iter().filter(|member| *member != id));
+        for partner in self.partners.remove(&id).unwrap_or_default() {
+            self.coupled.remove(&(id.min(partner), id.max(partner)));
+            self.unlink(partner, id);
+        }
     }
 
     /// The id the next ship will get: what a save keeps, so that an id is never given twice.
@@ -942,6 +1071,237 @@ mod tests {
                 .is_none()
         );
         assert_eq!(store, before);
+    }
+
+    /// A ship of this mass whose centre of mass is `middle` in its own coordinates, with its origin at `place` and going at `velocity`.
+    fn weighed_ship(
+        mass: f64,
+        middle: [f64; 3],
+        place: [f64; 3],
+        velocity: [f64; 3],
+    ) -> MovingGrid {
+        let mut ship = grid(1);
+        ship.mass = mass;
+        ship.centre_of_mass = middle;
+        ship.pose = GridPose::new(
+            WorldPosition::from_voxels(place),
+            voxel_space::Orientation::IDENTITY,
+        );
+        ship.linear_velocity = velocity;
+        ship
+    }
+
+    /// A rail of the kind a ship that coasts has, round the grid `around`.
+    fn coasting_rail(around: GridId) -> Rail {
+        Rail {
+            spin: None,
+            orbit: Some(
+                crate::rail::Orbit::new(
+                    crate::rail::Centre::Grid(around),
+                    [0.0, 1.0, 0.0],
+                    1.0e5,
+                    3600.0,
+                    0.0,
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_group_is_the_ships_coupled_to_a_ship_through_others_lowest_first_and_a_ship_alone_is_its_own()
+     {
+        let mut store = GridStore::new();
+        let ids: Vec<GridId> = (1..=6).map(|marker| store.create(grid(marker))).collect();
+        store.set_coupled(ids[3], ids[1], true);
+        store.set_coupled(ids[1], ids[4], true);
+        store.set_coupled(ids[0], ids[5], true);
+        for ship in [ids[1], ids[3], ids[4]] {
+            assert_eq!(store.group_of(ship), [ids[1], ids[3], ids[4]], "{ship}");
+        }
+        assert_eq!(store.group_of(ids[5]), [ids[0], ids[5]]);
+        assert_eq!(store.group_of(ids[2]), [ids[2]]);
+        // A ship the store does not know is a group of itself.
+        let unknown = GridId::new(GridId::FIRST_ALLOCATED + 90);
+        assert_eq!(store.group_of(unknown), [unknown]);
+        // Let go of the middle, the group is two groups, found as they are by walking the pairs that are left.
+        store.set_coupled(ids[1], ids[4], false);
+        assert_eq!(store.group_of(ids[4]), [ids[4]]);
+        assert_eq!(store.group_of(ids[3]), [ids[1], ids[3]]);
+        // A store made from a saved world finds the same groups.
+        let saved = GridStore::from_saved(
+            store.next_id(),
+            0,
+            Vec::new(),
+            Vec::new(),
+            vec![(ids[0], ids[5])],
+        );
+        assert_eq!(saved.group_of(ids[5]), [ids[0], ids[5]]);
+    }
+
+    #[test]
+    fn the_centre_of_a_group_is_the_centres_of_mass_and_the_speeds_weighed_by_the_masses() {
+        let mut store = GridStore::new();
+        // Three ships: 1,000 kg with its centre of mass 2 along x of its origin, which is at x = 100; 3,000 kg with its centre of mass at its origin, at x = 200, going on
+        // 4 m/s; and 4,000 kg with the centre of mass 1 up, whose origin is at x = 300, y = 10, going on -2.
+        let first = store.create(weighed_ship(
+            1000.0,
+            [2.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [0.0; 3],
+        ));
+        let second = store.create(weighed_ship(
+            3000.0,
+            [0.0; 3],
+            [200.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+        ));
+        let third = store.create(weighed_ship(
+            4000.0,
+            [0.0, 1.0, 0.0],
+            [300.0, 10.0, 0.0],
+            [-2.0, 0.0, 0.0],
+        ));
+        let centre = store.group_centre(&[first, second, third]).unwrap();
+        // Places: 102, 200 and 300 (and 11 up) weighed 1, 3 and 4 of 8: (102 + 600 + 1200) / 8 = 237.75, and 44 / 8 = 5.5 up.
+        let place = centre.position.in_voxels();
+        assert!(
+            (place[0] - 237.75).abs() < 1e-12
+                && (place[1] - 5.5).abs() < 1e-12
+                && place[2].abs() < 1e-12,
+            "{place:?}"
+        );
+        // Speeds: (0 + 12 - 8) / 8.
+        assert!(
+            (centre.velocity[0] - 0.5).abs() < 1e-12 && centre.velocity[1] == 0.0,
+            "{:?}",
+            centre.velocity
+        );
+        assert_eq!(centre.mass, 8000.0);
+        // A group of one is the ship's own centre of mass.
+        let alone = store.group_centre(&[first]).unwrap();
+        assert!((alone.position.in_voxels()[0] - 102.0).abs() < 1e-12);
+        assert_eq!(alone.mass, 1000.0);
+        // Ships that have not been weighed count the same, and the group weighs nothing yet.
+        let a = store.create(weighed_ship(
+            0.0,
+            [0.0; 3],
+            [10.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ));
+        let b = store.create(weighed_ship(
+            0.0,
+            [0.0; 3],
+            [30.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+        ));
+        let unweighed = store.group_centre(&[a, b]).unwrap();
+        assert!((unweighed.position.in_voxels()[0] - 20.0).abs() < 1e-12);
+        assert!((unweighed.velocity[0] - 3.0).abs() < 1e-12);
+        assert_eq!(unweighed.mass, 0.0);
+        // A ship that is not in memory, or that is not there, gives no centre: the group is not whole.
+        parked_like(&mut store, b);
+        assert_eq!(store.group_centre(&[a, b]), None);
+        assert_eq!(
+            store.group_centre(&[a, GridId::new(GridId::FIRST_ALLOCATED + 90)]),
+            None
+        );
+        assert_eq!(store.group_centre(&[]), None);
+    }
+
+    #[test]
+    fn the_centre_of_a_group_is_exact_however_far_from_the_origin_it_is() {
+        // Ships 10^12 voxels out: the arithmetic is on the distances between them, which are exact, and not on places.
+        let mut store = GridStore::new();
+        let far = 1.0e12;
+        let first = store.create(weighed_ship(1.0, [0.0; 3], [far, 0.0, 0.0], [0.0; 3]));
+        let second = store.create(weighed_ship(1.0, [0.0; 3], [far + 8.0, 0.0, 0.0], [0.0; 3]));
+        let centre = store.group_centre(&[first, second]).unwrap();
+        let from_the_first = centre
+            .position
+            .relative_to(store.get(first).unwrap().middle().unwrap());
+        assert_eq!(from_the_first, [4.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_change_in_who_is_in_a_group_takes_the_coasting_rails_of_the_ships_it_touches_and_nothing_else_does()
+     {
+        let planet = GridId::new(5);
+        let make = || {
+            let mut store = GridStore::new();
+            let ids: [GridId; 4] =
+                std::array::from_fn(|index| store.create(grid(index as u32 + 1)));
+            store.set_coupled(ids[0], ids[1], true);
+            store.set_coupled(ids[1], ids[2], true);
+            // The group of the first three has a rail on its anchor; the fourth is alone with one of its own; and the second has a rail that turns, which is not a coasting rail.
+            store.get_mut(ids[0]).unwrap().rail = Some(coasting_rail(planet));
+            store.get_mut(ids[3]).unwrap().rail = Some(coasting_rail(planet));
+            (store, ids)
+        };
+        let has_rail = |store: &GridStore, id: GridId| store.get(id).unwrap().rail.is_some();
+        // A pair that was there already, and one that joins ships of one group, change no one's group.
+        let (mut store, [a, b, c, d]) = make();
+        store.set_coupled(a, b, true);
+        store.set_coupled(c, a, true);
+        assert!(has_rail(&store, a) && has_rail(&store, d), "a loop closed");
+        store.set_coupled(c, a, false);
+        assert!(
+            has_rail(&store, a),
+            "and opened again: the group is the same ships"
+        );
+        // A pair of the group let go: the group is two, and the rail is of neither.
+        store.set_coupled(b, c, false);
+        assert!(!has_rail(&store, a));
+        assert!(
+            has_rail(&store, d),
+            "a ship of another group keeps its rail"
+        );
+        // A ship joined to the group.
+        let (mut store, [a, _, _, d]) = make();
+        store.set_coupled(d, a, true);
+        assert!(
+            !has_rail(&store, a) && !has_rail(&store, d),
+            "the group has another ship"
+        );
+        // A ship taken out of the group in memory, in a file, split or merged: the rest of the group has no rail.
+        let (mut store, [a, _, c, d]) = make();
+        store.remove(c);
+        assert!(!has_rail(&store, a) && has_rail(&store, d));
+        let (mut store, [a, _, c, d]) = make();
+        store.retire(c, vec![(grid(9), shift(0))]).unwrap();
+        assert!(!has_rail(&store, a) && has_rail(&store, d));
+        let (mut store, [a, b, c, d]) = make();
+        store
+            .merge(&[(b, shift(0)), (d, shift(1))], grid(9))
+            .unwrap();
+        assert!(
+            !has_rail(&store, a),
+            "a ship of the group went into a ship that was not"
+        );
+        let _ = c;
+        let (mut store, [a, _, c, d]) = make();
+        store.absorb(c, d, shift(0)).unwrap();
+        assert!(!has_rail(&store, a));
+        let (mut store, [a, _, c, _]) = make();
+        parked_like(&mut store, c);
+        store.remove_parked(c);
+        assert!(!has_rail(&store, a));
+        // A ship put in a file and brought back is in its group still, and its rail with it.
+        let (mut store, [a, b, c, _]) = make();
+        parked_like(&mut store, b);
+        assert!(has_rail(&store, a) && store.group_of(a) == [a, b, c]);
+        // A rail that is not a coasting rail is nobody's to take (a planet's turns).
+        let (mut store, [a, b, ..]) = make();
+        store.get_mut(b).unwrap().rail = Some(Rail {
+            spin: Some(crate::rail::Spin::new([0.0, 1.0, 0.0], 86_400.0, 0.0).unwrap()),
+            orbit: None,
+        });
+        store.set_coupled(a, b, false);
+        assert!(store.get(b).unwrap().rail.is_some() && !has_rail(&store, a));
+        // A pair for a ship the store does not know changes nothing (and so takes no rail).
+        let (mut store, [a, ..]) = make();
+        store.set_coupled(a, GridId::new(GridId::FIRST_ALLOCATED + 90), true);
+        assert!(has_rail(&store, a));
     }
 
     #[test]

@@ -699,6 +699,16 @@ fn answer_precision(elements: &Elements) -> Precision {
 }
 
 impl Rail {
+    /// Whether this is the rail of a ship that coasts: an orbit round a body of the world, with no spin of its own (a ship's turn is the bodies' work, and a planet's rail turns).
+    /// A rail of this kind is made for what the ship, or the group of ships, was when it was made, and is taken away when that changes.
+    pub fn is_coasting(&self) -> bool {
+        self.spin.is_none()
+            && self
+                .orbit
+                .as_ref()
+                .is_some_and(|orbit| matches!(orbit.around, Centre::Grid(_)))
+    }
+
     /// Where the body is, how fast it moves and how it is turned `time` into the life of the world (a [`RailTime`], or seconds as an `f64`). `centre_position` and
     /// `centre_velocity` are those of what the orbit goes round (the point, and still, for a point), which the caller knows; a rail with no orbit does not look at
     /// them. The position is the centre's and the body's offset from it added in `f64`, which is exact only as far as an `f64` is; the `offset` is exact, and is what to

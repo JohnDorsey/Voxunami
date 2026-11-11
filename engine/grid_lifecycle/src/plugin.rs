@@ -601,11 +601,13 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
                 id: *id,
                 squared_away: *away,
                 awake: !ship.frozen,
+                on_a_rail: ship.rail.is_some(),
             })
-            .chain(in_files.iter().map(|(id, away, _)| Member {
+            .chain(in_files.iter().map(|(id, away, parked)| Member {
                 id: *id,
                 squared_away: *away,
                 awake: false,
+                on_a_rail: parked.on_a_rail,
             })),
     );
 
@@ -623,10 +625,14 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
             }
         } else if away <= simulate {
             actions.push((id, Action::Thaw));
-        } else if away > keep && ship.terrain.is_none() && ship.rail.is_none() {
+        } else if away > keep
+            && ship.terrain.is_none()
+            && !groups.on_a_rail(id, ship.rail.is_some())
+        {
             // (A planet is asleep when no one is near, and is never put away: a client draws it from as far as there is anything to see of it. Neither is a ship on a rail: its
             // place is where its rail puts it at the clock, which the world does not know of a ship in a file, so nothing could say how near a player is to it. It is asleep,
-            // and its rail goes on. The ship audit of 2026-11-09, LIFE-1.)
+            // and its rail goes on. The ship audit of 2026-11-09, LIFE-1. Nor is a ship coupled to one: a group on a rail has its place from the rail of its anchor, and a ship
+            // in a file is not part of it.)
             actions.push((id, Action::Park));
         }
     }
@@ -636,8 +642,11 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
             continue;
         }
         // (A planet is brought back whatever the distance: a client draws it from as far as there is anything to see of it. So is a ship that was on a rail, whose place the
-        // file does not say: a world that was saved and loaded has all its ships in files.)
-        if groups.squared_away(id, own_away) <= simulate || parked.has_terrain || parked.on_a_rail {
+        // file does not say: a world that was saved and loaded has all its ships in files. So are the ships coupled to it, with it.)
+        if groups.squared_away(id, own_away) <= simulate
+            || parked.has_terrain
+            || groups.on_a_rail(id, parked.on_a_rail)
+        {
             actions.push((id, Action::BringIn));
         }
     }

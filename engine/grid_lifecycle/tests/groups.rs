@@ -195,3 +195,76 @@ fn a_ship_in_a_file_counts_for_the_distance_of_its_group_and_one_that_waits_for_
     assert!(rig.in_a_file(ships[0]), "it waits for whoever is aboard");
     assert!(rig.in_memory(ships[1]) && !rig.frozen(ships[1]));
 }
+
+/// A rail that only turns: it is a rail, and it places nothing (these ships have no planet to go round).
+fn a_rail() -> world_storage::rail::Rail {
+    world_storage::rail::Rail {
+        spin: Some(world_storage::rail::Spin::new([0.0, 1.0, 0.0], 3600.0, 0.0).unwrap()),
+        orbit: None,
+    }
+}
+
+#[test]
+fn a_group_with_a_ship_on_a_rail_is_not_put_in_a_file_though_the_others_have_none() {
+    // Two ships coupled, the first on a rail (the anchor of a group on a rail holds the rail of its centre of mass). No player is near: a ship on a rail is not put away, and
+    // the ship coupled to it would be a ship in a file whose place the group needs, so it is not put away either.
+    let (mut rig, ships) = rig_of(&[0, 20], true);
+    let first = ships[0];
+    rig.in_a_tick(move |world| world.set_grid_rail(first, Some(a_rail())).unwrap());
+    rig.player_at(-500.0);
+    rig.tick();
+    rig.tick();
+    assert!(rig.in_memory(ships[0]) && rig.frozen(ships[0]));
+    assert!(rig.in_memory(ships[1]) && rig.frozen(ships[1]));
+    assert_eq!(rig.report().parked, 0);
+
+    // The control: with no rail on the first, both are put in files.
+    let (mut control, ships) = rig_of(&[0, 20], true);
+    control.player_at(-500.0);
+    control.tick();
+    control.tick();
+    assert!(control.in_a_file(ships[0]) && control.in_a_file(ships[1]));
+
+    // The other control: the second has the rail, the first none: the same, the group is on one.
+    let (mut other, ships) = rig_of(&[0, 20], true);
+    let second = ships[1];
+    other.in_a_tick(move |world| world.set_grid_rail(second, Some(a_rail())).unwrap());
+    other.player_at(-500.0);
+    other.tick();
+    other.tick();
+    assert!(other.in_memory(ships[0]) && other.in_memory(ships[1]));
+}
+
+#[test]
+fn the_ships_coupled_to_one_that_was_on_a_rail_when_it_was_put_in_a_file_are_brought_in_with_it_whatever_the_distance()
+ {
+    // A world that was saved and loaded has all its ships in files; the ones on rails are brought in at once, and the group they hold with them.
+    let (mut rig, ships) = rig_of(&[0, 20], true);
+    let (first, second) = (ships[0], ships[1]);
+    rig.in_a_tick(move |world| {
+        world.set_grid_rail(first, Some(a_rail())).unwrap();
+        world.park_ship(first, false).unwrap();
+        world.park_ship(second, false).unwrap();
+    });
+    // (The lifecycle looks at the ships in the tick that parks them, and brings them in at once.)
+    assert!(rig.in_memory(ships[0]) && rig.in_memory(ships[1]));
+    assert_eq!(rig.report().brought_in, 2);
+    assert!(rig.report().problems.is_empty());
+    // A player 2,000 voxels away changes nothing: they are in memory, frozen as ships no one is near, and are not put away.
+    rig.player_at(-2000.0);
+    rig.tick();
+    assert!(rig.in_memory(ships[0]) && rig.in_memory(ships[1]));
+    assert_eq!(rig.report().parked, 0);
+
+    // The control: the same ships with no rail are left in their files.
+    let (mut control, ships) = rig_of(&[0, 20], true);
+    let (first, second) = (ships[0], ships[1]);
+    control.in_a_tick(move |world| {
+        world.park_ship(first, false).unwrap();
+        world.park_ship(second, false).unwrap();
+    });
+    control.player_at(-2000.0);
+    control.tick();
+    assert!(control.in_a_file(ships[0]) && control.in_a_file(ships[1]));
+    assert_eq!(control.report().brought_in, 0);
+}

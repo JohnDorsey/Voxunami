@@ -14,6 +14,7 @@ use super::*;
 
 mod coasting_ships;
 mod exit_ships;
+mod group_ships;
 mod hyperbola_ships;
 mod near_ships;
 mod prediction_ships;

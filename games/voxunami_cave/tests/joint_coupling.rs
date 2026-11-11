@@ -4,14 +4,14 @@
 
 mod common;
 
-use common::docking::{PLAIN, Placed, make, stones};
+use common::docking::{PLAIN, Placed, make, make_going, stones};
 use common::joints::{ball_end_toward, joint_block};
 use std::sync::{Arc, Mutex};
 
 use common::{Scene, ship_id, tick_and_follow};
 use server::{GridView, ShipSettings};
 use voxel_space::{
-    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LevelIndex, Orientation,
+    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, Orientation,
     VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::CaveContent;
@@ -116,26 +116,6 @@ fn momentum_of(scene: &Scene, ids: &[GridId]) -> Vec3 {
         }
     }
     total
-}
-
-/// Makes a car that goes at `velocity` from the tick it is made in (it is set going in the same tick that makes it, or the ships it is near would act on it at rest first).
-fn make_going(scene: &mut Scene, at: GridPose, blocks: Vec<Placed>, velocity: Vec3) {
-    let content = CaveContent::new();
-    scene.run(move |world| {
-        let grid = world.create_grid(LevelIndex::MAIN, at).unwrap();
-        {
-            let mut view = world.grid(grid).unwrap();
-            for ([x, y, z], block, look) in blocks {
-                let voxel = VoxelCoordinate::new(x, y, z);
-                view.set(content.state_channel(), voxel, look.state)
-                    .unwrap();
-                view.set(content.orientation_channel(), voxel, look.orientation)
-                    .unwrap();
-                view.set(content.block_channel(), voxel, block).unwrap();
-            }
-        }
-        world.set_grid_velocity(grid, velocity, [0.0; 3]).unwrap();
-    });
 }
 
 /// Two cars on a line (an east car and a west car) with their pivots `distance` metres apart, the first at rest and the second going at `velocity`, in a world without weight.

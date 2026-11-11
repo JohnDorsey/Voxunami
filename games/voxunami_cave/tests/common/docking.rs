@@ -65,6 +65,27 @@ pub fn make(scene: &mut Scene, at: GridPose, held: bool, blocks: Vec<Placed>) {
     });
 }
 
+/// Makes a ship of these blocks that goes at `velocity` from the tick it is made in (it is set going in the same tick that makes it, or the ships it is near would act on it at
+/// rest first).
+pub fn make_going(scene: &mut Scene, at: GridPose, blocks: Vec<Placed>, velocity: [f64; 3]) {
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let grid = world.create_grid(LevelIndex::MAIN, at).unwrap();
+        {
+            let mut view = world.grid(grid).unwrap();
+            for ([x, y, z], block, look) in blocks {
+                let voxel = VoxelCoordinate::new(x, y, z);
+                view.set(content.state_channel(), voxel, look.state)
+                    .unwrap();
+                view.set(content.orientation_channel(), voxel, look.orientation)
+                    .unwrap();
+                view.set(content.block_channel(), voxel, block).unwrap();
+            }
+        }
+        world.set_grid_velocity(grid, velocity, [0.0; 3]).unwrap();
+    });
+}
+
 /// A ship with a port on its east face at the end of a row of stone, and one with a port on its west face at the start: 4 and 3 blocks.
 pub fn a_pair() -> (Vec<Placed>, Vec<Placed>) {
     let mut first = stones(0, 3);

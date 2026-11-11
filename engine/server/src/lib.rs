@@ -34,7 +34,7 @@ pub use rail_settings::{RailSettings, RailSettingsError};
 pub use server::{LeaveReason, Server, ServerError, StepReport};
 pub use server_world::{
     AccessError, Audience, ChannelChange, DetachError, FlightState, GridForce, GridTorque,
-    NotCoasting, PredictedRail, Prediction, PredictionEnd, RailWork, ServerWorld, ShipStorageError,
-    SplitError, SplitPart,
+    NotCoasting, PredictedRail, Prediction, PredictionEnd, RailGroup, RailWork, ServerWorld,
+    ShipStorageError, SplitError, SplitPart,
 };
 pub use ship_settings::{LogoutPolicy, ShipSettings, ShipSettingsError};

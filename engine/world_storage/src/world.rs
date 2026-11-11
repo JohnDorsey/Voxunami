@@ -360,6 +360,12 @@ impl WorldData {
         let mut not_placed = Vec::new();
         let listed: std::collections::BTreeSet<GridId> = on_rails.iter().copied().collect();
         for id in on_rails {
+            // A group of ships (ships coupled by their joint ends) has one rail, on its anchor, its lowest number: the rail of the centre of mass of the group. A rail on another
+            // ship of a group is of no group and is not placed (the server takes it away).
+            let members = self.grids.group_of(id);
+            if members.first().is_some_and(|anchor| *anchor != id) {
+                continue;
+            }
             // (Looked at, not copied: the borrow of the rail ends with this block, before the ship is changed.)
             let (centre, state, rail_spins) = {
                 let ship = self.grids.get(id).expect("the ship was just listed");
@@ -409,6 +415,14 @@ impl WorldData {
                 Some(Some(position)) => Some(position),
                 None => None,
             };
+            if members.len() > 1 {
+                if let Some(middle) = position
+                    && !self.place_group(&members, middle, state.velocity)
+                {
+                    not_placed.push(id);
+                }
+                continue;
+            }
             let ship = self.grids.get_mut(id).expect("the ship was just found");
             let orientation = state.orientation.unwrap_or(ship.pose.orientation);
             // What a rail has is where the centre of mass goes: the origin of the ship's coordinates is that less the centre of mass, turned as the ship is. (A planet's
@@ -440,6 +454,44 @@ impl WorldData {
         }
         memory.keep_only(|ship| listed.contains(&ship));
         not_placed
+    }
+
+    /// Puts a group of ships where its rail says: **the whole group goes by the same, so that its centre of mass is at `middle`, and its speed is changed by the same, so that
+    /// the speed of its centre of mass is `velocity`.** How the ships stand against each other, how they face, how fast they turn and how fast they go against each other are the
+    /// bodies' (a group has joints, which move), and are not touched; a group of which every ship is frozen has no motion of its own, and all its ships go at `velocity`. Whether it
+    /// was put: not if a ship of it is not in memory, or the place cannot be held (nothing changes then).
+    fn place_group(
+        &mut self,
+        members: &[GridId],
+        middle: WorldPosition,
+        velocity: [f64; 3],
+    ) -> bool {
+        let Some(centre) = self.grids.group_centre(members) else {
+            return false;
+        };
+        let apart = centre.position.displacement_to(middle);
+        let boost = [0, 1, 2].map(|axis| velocity[axis] - centre.velocity[axis]);
+        let all_frozen = members
+            .iter()
+            .all(|member| self.grids.get(*member).is_some_and(|ship| ship.frozen));
+        let mut moved = Vec::with_capacity(members.len());
+        for member in members {
+            let ship = self.grids.get(*member).expect("the group centre found it");
+            let Some(position) = ship.pose.position.displaced(apart) else {
+                return false;
+            };
+            moved.push((*member, position));
+        }
+        for (member, position) in moved {
+            let ship = self.grids.get_mut(member).expect("it was just found");
+            ship.pose.position = position;
+            ship.linear_velocity = if all_frozen {
+                velocity
+            } else {
+                [0, 1, 2].map(|axis| ship.linear_velocity[axis] + boost[axis])
+            };
+        }
+        true
     }
 
     /// The recipes of the terrain generators that are data, in the order they were added.
