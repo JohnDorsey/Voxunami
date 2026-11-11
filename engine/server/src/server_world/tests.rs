@@ -12,6 +12,7 @@ use world_storage::{GridTerrain, LevelData};
 
 use super::*;
 
+mod alone_groups;
 mod coasting_ships;
 mod exit_ships;
 mod group_ships;

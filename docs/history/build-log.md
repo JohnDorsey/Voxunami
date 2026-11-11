@@ -2016,3 +2016,41 @@ The second half of item 3: what a walker aboard a ship that spins feels. With 2a
 - **Ran:** the whole workspace, 3295 tests pass on Windows; fmt, clippy, doc clean. Not run on Linux.
 - **What a player gets.** In a ship that spins the floor is held down less the farther it is from the axis (the walker weighs `omega^2 r` less, and nothing at the axis); a spin that grows pushes them against its direction; a jump goes sideways; with no pull the keys do nothing without the thrusters (`R`) and the speed the walker has is kept, turned as the ship turns.
 - **Not done.** The reaction on a ship of a player's thrusters outside (EVA nudging), fuel and a suit battery, time warp of a spinning ship (not built), and the effect of a leaning body in the floor (2 above) is the character's and is not changed.
+
+## Joints, step 4c-4: a frame of its own for a group that is off a rail and alone (2026-11-11, branch `worktree-dev-ball-joint`)
+
+Promise (a) of the joint plan, off a rail: a mechanism does not change because of where its group is, how fast it goes or how far it has gone. A group on a rail had it since 4c-3; a group that
+a thrust or a push keeps off its rail (a rocket with a hinge) was in the frame everything in its place is in, whose origin is a brick of the first ship in it, whose steps of the solver are cut
+by the fastest body in it, and which a ship leaves at 32 km from its origin.
+
+- **Scope, said first.** The plan's one line, "the centred frame for a group that is not on a rail", is more than one step: a frame that follows a point holds the planets as kinematic bodies and
+  nothing of the level's terrain (its colliders are on a fixed lattice of bricks) and no ship that is not of the same follow, and the docs themselves leave the shared contact frame of two ships to
+  later. **So this is the group that is alone** (below), and a group that has something near is in the frame everything is in, as it was; it is the only piece I believe I can make true and test
+  now, it fixes the defect that shows (the 32 km seam, the speed-dependent steps, place-dependent numbers for a rocket in space), and the rest is a design of its own. *Not done:* see the end.
+- **Built.** `ServerWorld::group_is_alone(anchor, factor)` (`coasting.rs`): two ships or more, a level with no pull of its own (`level_pulls`, which the rail rule uses too, one definition),
+  every ship free, weighed and with no rail of its own, no other ship in the way by the rails' room (planets set aside, but a planet on a rail that carries the group still counts: it has the frame of
+  a planet), and **the ground of no planet within the lookahead of the terrain**: `ground_in_the_way`, a margin and a quarter of a second of the speed they close at (the bodies look that far
+  ahead for terrain). The speed rule of the rails counts a second, and would call the planet a ship orbits low "near" for ever. `Followed::Group(anchor)` in `grid_bodies`: the follow moves itself
+  (`Follow::advance`; `moves_itself`), the bodies of the frame feel no pull, and after each step `hold_groups_at_their_points` takes the move of the centre of mass and the speed gained into the
+  follow with the pull of the world at the point and puts the group back at the point. Room 2 to become alone and 1 to stay (`alone_groups`).
+- **Tests first.** Server (`alone_groups.rs`, 8): what alone means, one rule a test each (anchor only, a single ship, the ground in the lookahead and the room to stay half the room to become, a stranger
+  by the room, a stranger closing fast, held and frozen and unweighed and on a rail, a level that pulls, carried by a planet). Bodies (`plugin.rs`, 6 unit tests of the pure arithmetic: a shift kept in
+  bricks and a rest, exact after a million steps; the semi-implicit step; what the bodies did added). Cave (`group_off_a_rail.rs`, 6): the 70 and 140 km invariance and the equality with the rail case,
+  the orbit, a stranger near and gone, a stranger between the two rooms, and a force on a car. Red first: the invariance test gave 4.2e-2 for under 1e-7, the stranger test expected two frames and had one.
+  The control of `group_on_a_rail.rs` (the free chain differs by more than 1e-4) moved to a chain **with a stranger near**, since a free chain alone is centred now: `Setting` in `common/chains.rs`.
+- **Things found.** (1) **The reach of a ship is that of its bricks from its origin**: 55 voxels for a ship of one brick, so "a stranger 100 voxels off" was 50 off and inside even the room to stay.
+  Two of my test geometries were wrong for that (the second also forgot that ships go 761 voxels a second: placed by where the chain was, not where it began). (2) The alone chain is put on a
+  rail by the world after a second (tick 19) and **the hand-over from the frame of its own to the rail's changes the swing by nothing, to eight digits**; the two parted at tick 130 only,
+  where the swing turns back, which makes a rounding difference of the first 16 ticks large: my first cross-model test ran 200 ticks and failed at 0.02, a chaotic moment and not a model
+  difference (the helper takes a tick count now). (3) The explicit "carried by a planet" check I wrote was **redundant**: `near_with_group` counts the planets that carry whatever is set aside, so
+  no test could kill a mutant of it; I removed it and said where the rule is. (4) The full gate failed once at `screen.rs:386` (one pixel, adapter 1, **the same pixel (157, 68)** as four earlier
+  occurrences; 3 reruns clean): added to `docs/test-flakes.md` as occurrence 6.
+- **Mutants** (18, a script that restores byte for byte): 17 caught; the 18th was the redundant check above (removed). The deliberate breakages: held, frozen, level that pulls, the anchor, the planets
+  set aside, the room to stay (strangers, ground), no lookahead of the ground, no kick of the pull, the bodies' move and speed not added, the bodies pulled by the world as well, the frame found from
+  the world each tick, no hysteresis, every group given the frame, the group not put back at the point, the shift not kept in a brick and a rest.
+- **Ran:** the whole workspace, 3315 tests pass on Windows; fmt, clippy, doc clean. Not run on Linux.
+- **Not done, and riskier than the plan's line made it look.** A group with something near it (two ships in contact in a frame centred on one of them: the meeting frame of answer 6), the terrain
+  of the level and other ships in a frame that follows a point (a lattice of bricks that is fixed in the world cannot be put in a frame that is moved by a fraction of a voxel without new
+  machinery), blocks built into the level itself being solid to a group in its own frame, a group wider than a frame, a split of a car giving a pair and a rail to its parts. **The cost of the question
+  "is it alone" is a look at every grid for each ship of each group, each tick** (`near_with_group` with no neighbours tree): fine for the few groups there are, to be given the tree of `update_coasting`
+  before many are.

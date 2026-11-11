@@ -50,9 +50,11 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   The gate stopped at it (no `--no-fail-fast`), so it was run again with that flag for the suites after it.
 - **Occurrence 5: 2026-11-07**, the full gate of block-textures step 1 (changes in `block_models`, `data_packs`, `voxel_meshing`, `base_blocks`; none draws a form), `cargo test --workspace --no-fail-fast` on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]`
   (screen.rs:386). **Reruns: 3 alone and 1 as the whole binary, 0 failures in 4.** Adapter 1 is the second adapter of the run (which one that is on this machine was not printed).
+- **Occurrence 6: 2026-11-11**, the full gate of step 4c-4 (a frame of its own for a group that is alone: `server`, `grid_bodies`, new Cave tests; nothing that draws a form), `cargo test --workspace --no-fail-fast`
+  on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel again**. **Reruns: 3 as the whole binary (5 tests), 0 failures in 3.**
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
-  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4 and 5 are the same pixel, (157, 68), on the same adapter: a first
+  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4, 5 and 6 are the same pixel, (157, 68), on the same adapter: a first
   frame that leaves out whatever it likes would not repeat the place; something at that place (an edge of the dimmed picture or of a button, rounded one way live and the other in the replay) might.
   Not looked into.
 - **What would settle it.** Run it in a loop on each adapter with `VOX_REQUIRE_GPU=1` and log which adapter and which pixel differs; see whether it goes through `settled`, and what is drawn at (157, 68).

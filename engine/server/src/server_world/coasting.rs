@@ -40,7 +40,7 @@ use super::*;
 
 pub(super) mod neighbours;
 mod prediction;
-use neighbours::{Body, ShipsInTheWay, is_in_the_way};
+use neighbours::{Body, ShipsInTheWay, ground_in_the_way, is_in_the_way};
 pub use prediction::{PredictedRail, Prediction, PredictionEnd};
 
 /// Seconds a ship has to be undisturbed before it goes on a rail.
@@ -383,12 +383,7 @@ impl ServerWorld {
                 return Err(NotCoasting::Held);
             }
         }
-        if self
-            .level_gravity
-            .get(&ship.level)
-            .unwrap_or(&self.gravity.base)
-            != &[0.0; 3]
-        {
+        if self.level_pulls(ship.level) {
             return Err(NotCoasting::LevelPulls);
         }
         let (middle, velocity) = if grouped {
@@ -414,6 +409,79 @@ impl ServerWorld {
             place,
             velocity,
         })
+    }
+
+    /// Whether a level has a pull of its own, which a level in space has none of: what is in it falls to what weighs enough, and that is all.
+    fn level_pulls(&self, level: LevelIndex) -> bool {
+        self.level_gravity.get(&level).unwrap_or(&self.gravity.base) != &[0.0; 3]
+    }
+
+    /// Whether the group of ships coupled by their joint ends that `anchor` (the ship of it with the lowest number) speaks for is **alone**, so that the bodies may give it a frame
+    /// of its own, centred on its centre of mass and in free fall, in which nothing but the group is (step 4c-4 of `docs/decisions/joints-and-cars.md`). It is alone if it is
+    /// two ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed, and nothing could touch it: no
+    /// other ship is in the way of it by the room of `near_with`, and the ground of no planet is within the lookahead of the terrain (`ground_in_the_way`: a
+    /// planet is no ship to the speed rule, which counts a second of the speed two things close at, and the group of a ship that orbits low would be near the planet it orbits all the
+    /// time). A planet on a rail that carries the group is in the way of it as it is of any ship (`near_with` counts the planets that carry whatever is set aside), so a group in the sphere of one has the frame of a planet and not one of its own. `factor` is the room, 2 for a group that is not alone to become so and 1 for one that is to stay so, as for a rail. Blocks built into the level itself are not looked at, as
+    /// for a frame that goes with a planet.
+    pub fn group_is_alone(&self, anchor: GridId, factor: f64) -> bool {
+        let members = self.data.grids().group_of(anchor);
+        if members.len() < 2 || members[0] != anchor {
+            return false;
+        }
+        let mut level = None;
+        for member in &members {
+            let Some(ship) = self.data.grids().get(*member) else {
+                return false;
+            };
+            if ship.terrain.is_some()
+                || ship.held
+                || ship.frozen
+                || ship.rail.is_some()
+                || ship.mass.is_nan()
+                || ship.mass <= 0.0
+                || level.is_some_and(|level| level != ship.level)
+            {
+                return false;
+            }
+            level = Some(ship.level);
+        }
+        let Some(level) = level else {
+            return false;
+        };
+        if self.level_pulls(level) {
+            return false;
+        }
+        let planets: Vec<GridId> = self
+            .data
+            .grids()
+            .iter()
+            .filter(|(_, other)| other.terrain.is_some() && other.level == level)
+            .map(|(id, _)| id)
+            .collect();
+        // (The planets are set aside from the speed rule, with the group: their ground has its own.)
+        let mut set_aside = members.clone();
+        set_aside.extend(planets.iter().copied());
+        for member in &members {
+            let Some(ship) = self.data.grids().get(*member) else {
+                return false;
+            };
+            if self
+                .near_with_group(None, *member, ship, None, factor, &set_aside)
+                .is_some()
+            {
+                return false;
+            }
+            let mine = Body::of(ship);
+            if planets.iter().any(|planet| {
+                self.data
+                    .grids()
+                    .get(*planet)
+                    .is_some_and(|planet| ground_in_the_way(&mine, &Body::of(planet), factor))
+            }) {
+                return false;
+            }
+        }
+        true
     }
 
     /// The orbit a ship's speed and `place` (its centre of mass from the middle of the planet) are on round `planet`, with the mass the planet has now, if it is one the ship may go on a

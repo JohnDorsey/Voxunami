@@ -11,14 +11,14 @@
 mod common;
 
 use common::chains::{
-    TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, alike_in_turn, centre_of, close,
-    mass_of, minus, orientation_of, origins_of, pivot_gap, put_on_its_rail, rail_point,
-    rail_point_in, spin_of,
+    Setting, TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, alike_in_turn, centre_of,
+    close, how_the_chain_turns, mass_of, minus, most_apart, orientation_of, origins_of, pivot_gap,
+    put_on_its_rail, rail_point, rail_point_in, spin_of,
 };
 use common::docking::stone;
 use common::{Player, Scene, circular_speed, length, ship_id, tick_and_follow};
 use server::{GridView, ShipSettings};
-use voxel_space::{Orientation, VoxelCoordinate};
+use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use world_storage::rail::RailTime;
 
@@ -68,64 +68,30 @@ fn a_chain_on_a_rail_has_its_centre_of_mass_on_the_rail_while_its_joints_swing()
     );
 }
 
-/// The facing and the turn of each car of the chain, 200 ticks (ten seconds) after it is set swinging at this distance from the planet, on its rail or not.
-fn how_the_chain_turns(distance: f64, on_a_rail: bool) -> Vec<(Orientation, Vec3)> {
-    let mut scene = Scene::in_a_new_world();
-    let speed = circular_speed(&scene, 0, distance);
-    let ships = a_chain_in_orbit(&mut scene, a_chain(), distance, speed);
-    if on_a_rail {
-        put_on_its_rail(&mut scene, &ships, speed, a_swing());
-    } else {
-        let (to_swing, motion) = (ships.clone(), a_swing());
-        scene.run(move |world| {
-            for (ship, (added, spin)) in to_swing.iter().zip(motion) {
-                world
-                    .set_grid_velocity(*ship, [added[0], added[1], speed + added[2]], spin)
-                    .unwrap();
-            }
-        });
-    }
-    scene.ticks(200);
-    ships
-        .iter()
-        .map(|ship| (orientation_of(&scene, *ship), spin_of(&scene, *ship)))
-        .collect()
-}
-
-/// The most the facings and the turns of two chains differ by.
-fn most_apart(first: &[(Orientation, Vec3)], second: &[(Orientation, Vec3)]) -> f64 {
-    let mut worst: f64 = 0.0;
-    for ((facing, spin), (other_facing, other_spin)) in first.iter().zip(second) {
-        for axis in 0..4 {
-            worst = worst.max((facing.components()[axis] - other_facing.components()[axis]).abs());
-        }
-        for axis in 0..3 {
-            worst = worst.max((spin[axis] - other_spin[axis]).abs());
-        }
-    }
-    worst
-}
-
 #[test]
 fn what_a_mechanism_does_does_not_depend_on_where_the_group_is_or_how_fast_it_goes() {
     // The same chain, swung the same, at 70 and at 140 kilometres (distances that are a whole number of bricks, so that nothing differs in the rounding of a place): on a rail
     // the facing and the turn of each car are those of bodies in a frame that has nothing but them in it. The two differ by a few parts in 10^9, which is the ticks before the
     // rail in which the ships were free (the pull of the planet on them differs from one distance to the other: measured, 1.8e-9 after one such tick, 3.7e-9 after two and
-    // 9.8e-9 after four) and not the rail; **not on a rail, they differ by millions of times as much** (the pull, the number of steps a tick is cut into by the speed), and the
-    // control of this test is that they do.
+    // 9.8e-9 after four) and not the rail; **in the frame everything is in, with a stranger near, they differ by millions of times as much** (the pull, the number of steps a
+    // tick is cut into by the speed), and the control of this test is that they do. (Before step 4c-4 the control was the chain free and alone; now that has a frame of its own too:
+    // `group_off_a_rail.rs`.)
     let on_a_rail = most_apart(
-        &how_the_chain_turns(70_016.0, true),
-        &how_the_chain_turns(140_000.0, true),
+        &how_the_chain_turns(70_016.0, Setting::OnARail),
+        &how_the_chain_turns(140_000.0, Setting::OnARail),
     );
-    let free = most_apart(
-        &how_the_chain_turns(70_016.0, false),
-        &how_the_chain_turns(140_000.0, false),
+    let with_a_stranger = most_apart(
+        &how_the_chain_turns(70_016.0, Setting::WithAStranger),
+        &how_the_chain_turns(140_000.0, Setting::WithAStranger),
     );
     assert!(on_a_rail < 1e-7, "on a rail the two differ by {on_a_rail}");
-    assert!(free > 1e-4, "free they differ by {free}");
+    assert!(
+        with_a_stranger > 1e-4,
+        "with a stranger near they differ by {with_a_stranger}"
+    );
     // (They did swing: the chain turns at the end.)
     assert!(
-        how_the_chain_turns(70_016.0, true)
+        how_the_chain_turns(70_016.0, Setting::OnARail)
             .iter()
             .any(|(_, spin)| length(*spin) > 0.05)
     );

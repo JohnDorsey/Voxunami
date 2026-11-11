@@ -84,6 +84,26 @@ pub(in crate::server_world) fn is_in_the_way(ship: &Body, other: &Body, factor: 
     gap < factor * (NEAR_MARGIN + size(velocity) * NEAR_SECONDS)
 }
 
+/// How many seconds of the speed they close at the ground of a planet is in the way of a group that has a frame of its own: the bodies look this far ahead for terrain
+/// (`grid_bodies`, `TERRAIN_LOOKAHEAD_SECONDS`), so that the ground can touch nothing that is farther than this from the ground.
+const GROUND_SECONDS: f64 = 0.25;
+
+/// Whether the ground of `planet` is in the way of `ship` with this much room (`factor` as for [`is_in_the_way`]): the gap between their middles, less the reach of each, is less
+/// than `factor` times the margin and the way they would go in [`GROUND_SECONDS`] at the speed they close at. (The levels are the caller's to compare.) A planet is in the way of a
+/// ship by the room of [`is_in_the_way`] too, which counts a second of the speed: that is the room of a ship that is not to be hit, and this is the room of a ship that is not to
+/// be in the reach of the ground of a planet, which is a quarter of a second of it.
+pub(in crate::server_world) fn ground_in_the_way(ship: &Body, planet: &Body, factor: f64) -> bool {
+    let apart = size(
+        ship.reach
+            .centre
+            .displacement_to(planet.reach.centre)
+            .in_voxels(),
+    );
+    let velocity: [f64; 3] = [0, 1, 2].map(|axis| planet.velocity[axis] - ship.velocity[axis]);
+    let gap = apart - ship.reach.radius - planet.reach.radius;
+    gap < factor * (NEAR_MARGIN + size(velocity) * GROUND_SECONDS)
+}
+
 /// The ships of a world (grids without terrain), ready to be asked which of them are in the way of one.
 pub(in crate::server_world) struct ShipsInTheWay {
     ships: Vec<(GridId, Body)>,

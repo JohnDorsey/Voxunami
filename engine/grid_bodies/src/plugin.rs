@@ -257,6 +257,9 @@ struct Frame {
 /// For the centre of mass of a ship that turns on a rail: the frame has that one ship in it, at rest, with no pull and no planets, and no terrain of the level either.
 /// For the centre of mass of a group of ships coupled by their joint ends that rides a rail: the frame has the ships of the group in it, free bodies with their joints, and
 /// the same: no pull, no planets, no terrain, nothing else. The bodies hold the centre of mass of the group at the frame's point (see `Bodies::hold_groups_at_their_points`).
+/// For the centre of mass of a group that is **off a rail and alone** (`ServerWorld::group_is_alone`): the same frame, but the point is nobody's rail: it is the group's own, and
+/// the frame is in free fall, so the bodies carry it on from tick to tick (the pull of the world at the point and whatever the group does as a whole, a thrust or a push, are
+/// taken from the bodies' step into the follow and the group put back at the point: see [`Follow::advance`]).
 #[derive(Clone, Copy, Debug)]
 struct Follow {
     followed: Followed,
@@ -282,6 +285,11 @@ enum Followed {
     /// joints. Nothing is in it but the group and nothing pulls on it: it falls with the group. The ships in it are put in the world by the frame (their places are the point's
     /// and what the bodies have), and the world does not put them in it.
     RailGroup(GridId),
+    /// The centre of mass of a group of ships coupled by their joint ends that is off a rail and alone, named by its anchor, the ship of it with the lowest number. As a
+    /// [`Followed::RailGroup`] frame it has nothing in it but the group and nothing pulls on the bodies in it; unlike it, no rail holds the point: the follow is moved by the
+    /// bodies each tick from what the world's pull is at the point and from what the group did as a whole (see [`Follow::advance`]), and the world does not move the group but the
+    /// frame does. The frame is made where the group is, so its numbers are the group's own, small and relative, however far it goes and however fast.
+    Group(GridId),
 }
 
 impl Followed {
@@ -301,14 +309,24 @@ impl Followed {
                 Some((middle, grid.linear_velocity))
             }
             Self::RailGroup(anchor) => world.rail_group_centre(anchor),
+            Self::Group(anchor) => {
+                let grids = world.data().grids();
+                let centre = grids.group_centre(&grids.group_of(anchor))?;
+                Some((centre.position, centre.velocity))
+            }
         }
+    }
+
+    /// Whether the follow of such a frame is moved by the bodies (the point is the group's own) and not found from the world at the start of each tick.
+    fn moves_itself(self) -> bool {
+        matches!(self, Self::Group(_))
     }
 
     /// The acceleration of gravity at a place of the world for what falls with the point; `None` where nothing pulls what is in the frame at all.
     fn gravity(self, world: &ServerWorld, there: WorldPosition) -> Option<[f64; 3]> {
         match self {
             Self::Planet(planet) => Some(world.gravity_in_the_free_fall_of(planet, there)),
-            Self::RailPoint(_) | Self::RailGroup(_) => None,
+            Self::RailPoint(_) | Self::RailGroup(_) | Self::Group(_) => None,
         }
     }
 
@@ -319,16 +337,24 @@ impl Followed {
 
     /// What the frame of a ship goes with: the planet that carries it (see `ServerWorld::carrier_of`), or the centre of mass of its group if it is coupled to other ships and the
     /// group rides a rail, or its own centre of mass if it turns on a rail (a rail with no spin of its own: it is the rail that has the place and the bodies that have the turn),
-    /// or nothing. **A group is in its frame whole, frozen or not:** a ship of it that is frozen is a fixed body there, which the others hang from by their joints (a group
+    /// or, if it is off a rail and alone, its own (see [`Followed::Group`]), or nothing. **A group is in its frame whole, frozen or not:** a ship of it that is frozen is a fixed body there, which the others hang from by their joints (a group
     /// that goes in and out of a frame as it is frozen and let go would lose its joints and its bodies' state each time; a ship that is held has taken the rail from its group).
-    fn of(world: &ServerWorld, id: GridId, ship: &MovingGrid) -> Option<Self> {
+    fn of(
+        world: &ServerWorld,
+        id: GridId,
+        ship: &MovingGrid,
+        alone: &BTreeSet<GridId>,
+    ) -> Option<Self> {
         if let Some(planet) = world.carrier_of(id) {
             return Some(Self::Planet(planet));
         }
         if world.data().grids().has_partners(id) {
-            return world
-                .rail_group_of(id)
-                .map(|group| Self::RailGroup(group.anchor));
+            if let Some(group) = world.rail_group_of(id) {
+                return Some(Self::RailGroup(group.anchor));
+            }
+            // (A group off a rail that is alone, `Bodies::alone_groups`: the ship of it with the lowest number speaks for it.)
+            let anchor = *world.data().grids().group_of(id).first()?;
+            return alone.contains(&anchor).then_some(Self::Group(anchor));
         }
         let turns_on_a_rail = !ship.held
             && !ship.frozen
@@ -352,10 +378,25 @@ impl Follow {
 
     /// Where the point has gone since the frame was made, and how fast it goes, as of this tick (both stay as they were if the world has nothing of it).
     fn update(&mut self, world: &ServerWorld) {
+        if self.followed.moves_itself() {
+            return;
+        }
         if let Some((position, velocity)) = self.followed.state(world) {
             self.shift = self.anchor.displacement_to(position);
             self.velocity = velocity;
         }
+    }
+
+    /// Moves the follow of a frame that moves itself by a tick, after the bodies have stepped. The group was at rest at the point, and the frame went at `velocity`; in the step
+    /// the bodies moved its centre of mass `moved` and gave it the speed `sped` against the frame (a thrust or a push, or a blow, as a whole); the pull of the world at the point is
+    /// `gravity`. The group is then where it would be if it had gone at `velocity` for a tick, been pulled by `gravity` and moved as the bodies moved it, and goes at `velocity` and
+    /// what the bodies gave it and the pull over a tick: **a semi-implicit step, as the bodies take their own**. The bodies put the group back at the point and at rest in the frame
+    /// (`BodyWorld::shift_bodies` by `-moved` and `-sped`), which changes nothing of where the ships are in the world: places in the frame are the world's less the shift.
+    fn advance(&mut self, time_step: f64, gravity: [f64; 3], moved: [f64; 3], sped: [f64; 3]) {
+        let (shift, velocity) =
+            advanced(self.shift, self.velocity, time_step, gravity, moved, sped);
+        self.shift = shift;
+        self.velocity = velocity;
     }
 
     fn local(&self, world: WorldPosition) -> Option<WorldPosition> {
@@ -389,6 +430,38 @@ fn velocity_from(follow: Option<Follow>, local: [f64; 3]) -> [f64; 3] {
         None => local,
         Some(follow) => [0, 1, 2].map(|axis| local[axis] + follow.velocity[axis]),
     }
+}
+
+/// A displacement moved by `delta` voxels, kept as whole bricks and a rest in `[0, 32)`, so that it is exact however far a frame has gone (an offset that was added to for hours
+/// would not be).
+fn shifted_by(shift: Displacement, delta: [f64; 3]) -> Displacement {
+    let edge = BRICK_EDGE_LENGTH as f64;
+    let mut bricks = shift.bricks;
+    let mut offset = shift.offset;
+    for axis in 0..3 {
+        offset[axis] += delta[axis];
+        let whole = (offset[axis] / edge).floor();
+        bricks[axis] += whole as i128;
+        offset[axis] -= whole * edge;
+    }
+    Displacement { bricks, offset }
+}
+
+/// The shift and the velocity of a frame that moves itself after a tick (see [`Follow::advance`]): the shift moves by `velocity * time_step`, the pull for a tick on it and the
+/// bodies' own move of the group; the velocity gains what the bodies gave the group and the pull over the tick.
+fn advanced(
+    shift: Displacement,
+    velocity: [f64; 3],
+    time_step: f64,
+    gravity: [f64; 3],
+    moved: [f64; 3],
+    sped: [f64; 3],
+) -> (Displacement, [f64; 3]) {
+    let kick = gravity.map(|part| part * time_step);
+    let delta =
+        [0, 1, 2].map(|axis| velocity[axis] * time_step + kick[axis] * time_step + moved[axis]);
+    let faster = [0, 1, 2].map(|axis| velocity[axis] + sped[axis] + kick[axis]);
+    (shifted_by(shift, delta), faster)
 }
 
 /// What a ship is to the solver. A ship that is held or frozen does not move; **neither does one that is on a rail**: it is where the clock puts it whatever the solver does, so it
@@ -516,6 +589,8 @@ struct Bodies {
     carried: BTreeMap<GridId, Carried>,
     /// Which tick this is, counting the steps of the bodies.
     tick: u64,
+    /// The groups, named by their anchors, that are off a rail and alone this tick (see [`Bodies::alone_groups`]).
+    alone: BTreeSet<GridId>,
     report: Arc<Mutex<BodiesReport>>,
 }
 
@@ -573,6 +648,7 @@ impl Bodies {
             next_coupling: 0,
             carried: BTreeMap::new(),
             tick: 0,
+            alone: BTreeSet::new(),
             report,
         }
     }
@@ -831,6 +907,7 @@ impl Bodies {
         self.dock(world);
         self.split_ships(world, changed_voxels);
         self.follow_points(world);
+        self.alone = self.alone_groups(world);
         // (A ship with terrain, a planet, is no ship here: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.
         // It is a fixed body, which ships collide with, below.)
         let present: Vec<(GridId, LevelIndex)> = world
@@ -851,7 +928,8 @@ impl Bodies {
             leaving.extend(frame.ships.keys().filter(|id| {
                 !present.iter().any(|(held, _)| held == *id)
                     || world.data().grids().get(**id).is_none_or(|ship| {
-                        Followed::of(world, **id, ship) != follow.map(|follow| follow.followed)
+                        Followed::of(world, **id, ship, &self.alone)
+                            != follow.map(|follow| follow.followed)
                             || local_in(follow, ship.pose.position).is_none_or(|place| {
                                 farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
                             })
@@ -941,7 +1019,7 @@ impl Bodies {
         for frame in self.frames.values_mut() {
             frame.bodies.step();
         }
-        self.hold_groups_at_their_points();
+        self.hold_groups_at_their_points(world);
         let frames = self.frames.len() as u64;
         self.count(|report| report.frames = frames);
         self.write_back(world);
@@ -959,7 +1037,7 @@ impl Bodies {
             return;
         };
         // A ship that turns on a rail is a free body in a frame of its own (the rail holds its centre of mass, the bodies turn it); any other ship on a rail is a fixed one.
-        let followed = Followed::of(world, id, ship);
+        let followed = Followed::of(world, id, ship, &self.alone);
         let rides = matches!(
             followed,
             Some(Followed::RailPoint(_) | Followed::RailGroup(_))
@@ -1152,6 +1230,28 @@ impl Bodies {
         }
         self.weighed
             .insert(id, (record.mass, record.centre_of_mass));
+    }
+
+    /// The groups of ships coupled by their joint ends that are off a rail and alone (`ServerWorld::group_is_alone`), by their anchors. A group that has a frame of its own
+    /// keeps it while it has the room of 1 and one that has not needs the room of 2 to get it, as for a rail, so that it does not go in and out of it at the edge.
+    fn alone_groups(&self, world: &ServerWorld) -> BTreeSet<GridId> {
+        let grids = world.data().grids();
+        let mut alone = BTreeSet::new();
+        for (id, _) in grids.iter() {
+            if !grids.has_partners(id) || grids.group_of(id).first() != Some(&id) {
+                continue;
+            }
+            let has_its_frame = self.frames.values().any(|frame| {
+                frame
+                    .follow
+                    .is_some_and(|follow| follow.followed == Followed::Group(id))
+            });
+            let room = if has_its_frame { 1.0 } else { 2.0 };
+            if world.group_is_alone(id, room) {
+                alone.insert(id);
+            }
+        }
+        alone
     }
 
     /// Where each frame that goes with a point is, and how fast it goes: the point's displacement since the frame was made, and its velocity.
@@ -1564,15 +1664,19 @@ impl Bodies {
         }
     }
 
-    /// Holds the centre of mass of each group on a rail at the point of its frame, at rest there: all its bodies are moved by the one vector, and their speeds changed by the one,
-    /// that put it there. What the bodies do against each other is what it was; the joints and the turns are not touched. **The rail is the authority for where the group goes**,
-    /// and the group's own motion adds nothing to it: a body world conserves momentum to the rounding of its steps, and what is left is taken out here each tick (an hour of
-    /// ticks adds up to nothing that shows); an edit that moves the centre of mass of the group (a block placed or broken, which changes what a ship weighs and where its middle
-    /// is) steps the whole group by the shift, as it steps a single ship, which is the owner's decision of 2026-11-10 and what a single ship on a rail does.
-    fn hold_groups_at_their_points(&mut self) {
+    /// Holds the centre of mass of each group that has a frame of its own at the point of the frame, at rest there: all its bodies are moved by the one vector, and their speeds
+    /// changed by the one, that put it there. What the bodies do against each other is what it was; the joints and the turns are not touched. **For a group on a rail the rail is the
+    /// authority for where the group goes**, and the group's own motion adds nothing to it: a body world conserves momentum to the rounding of its steps, and what is left is taken
+    /// out here each tick (an hour of ticks adds up to nothing that shows); an edit that moves the centre of mass of the group (a block placed or broken, which changes what a ship
+    /// weighs and where its middle is) steps the whole group by the shift, as it steps a single ship, which is the owner's decision of 2026-11-10 and what a single ship on a rail
+    /// does. **For a group that is off a rail and alone nothing is the authority but the bodies and the pull of the world**: what the group did as a whole in the step (the move
+    /// of its centre of mass and the speed it gained) goes into the follow of the frame, with the pull at the point (see [`Follow::advance`]), and the group is put back at the
+    /// point and at rest in it, which changes nothing of where its ships are in the world; an edit that moves the centre of mass does not step the group.
+    fn hold_groups_at_their_points(&mut self, world: &ServerWorld) {
+        let time_step = self.config.settings.time_step;
         for frame in self.frames.values_mut() {
             let Some(Follow {
-                followed: Followed::RailGroup(_),
+                followed: Followed::RailGroup(_) | Followed::Group(_),
                 anchor,
                 ..
             }) = frame.follow
@@ -1600,11 +1704,22 @@ impl Bodies {
                 }
                 mass += record.mass;
             }
-            if mass > 0.0 {
-                frame.bodies.shift_bodies(
-                    apart.map(|part| -part / mass),
-                    speed.map(|part| -part / mass),
-                );
+            if mass <= 0.0 {
+                continue;
+            }
+            let moved = apart.map(|part| part / mass);
+            let sped = speed.map(|part| part / mass);
+            frame
+                .bodies
+                .shift_bodies(moved.map(|part| -part), sped.map(|part| -part));
+            // (A group that is alone is carried on by the follow: the pull at the point it was at, and what it did as a whole.)
+            let level = frame.level;
+            if let Some(follow) = frame.follow.as_mut()
+                && follow.followed.moves_itself()
+                && let Some(point) = follow.world(anchor)
+            {
+                let gravity = world.gravity_at(level, point);
+                follow.advance(time_step, gravity, moved, sped);
             }
         }
     }
@@ -2703,5 +2818,120 @@ mod tests {
         assert_eq!(rings[&at(3, 1, 1)], 3);
         assert_eq!(rings.len(), 6 * 3 * 3);
         assert!(wanted_rings(&[]).is_empty());
+    }
+
+    // ---- A frame that moves itself (a group off a rail that is alone) ------------------------------------------------------------------------------------------------------
+
+    fn voxels_of(shift: Displacement) -> [f64; 3] {
+        shift.in_voxels()
+    }
+
+    #[test]
+    fn a_shift_moved_by_a_vector_is_the_shift_and_the_vector_and_keeps_its_rest_inside_a_brick() {
+        let start = Displacement {
+            bricks: [3, -2, 0],
+            offset: [30.0, 1.0, 16.0],
+        };
+        let moved = shifted_by(start, [5.0, -33.0, 100.5]);
+        // The same place: 3 bricks and 30 + 5 = 35 is 4 bricks and 3; -2 bricks and 1 - 33 = -32 is -3 bricks and 0; 16 + 100.5 = 116.5 is 3 bricks and 20.5.
+        assert_eq!(moved.bricks, [4, -3, 3]);
+        assert_eq!(moved.offset, [3.0, 0.0, 20.5]);
+        assert!(moved.offset.iter().all(|part| (0.0..32.0).contains(part)));
+        for axis in 0..3 {
+            let before = voxels_of(start)[axis];
+            let after = voxels_of(moved)[axis];
+            assert!(
+                (after - before - [5.0, -33.0, 100.5][axis]).abs() < 1e-12,
+                "axis {axis}"
+            );
+        }
+        // Nothing to add is the same shift.
+        assert_eq!(shifted_by(start, [0.0; 3]), start);
+    }
+
+    #[test]
+    fn a_shift_that_has_gone_far_is_still_exact_to_the_rounding_of_a_brick() {
+        // A million steps of 1.7 voxels are 1.7 million voxels; added to one number the last of them would have lost digits at each step, and as bricks and a rest they have not.
+        let mut shift = Displacement::NONE;
+        for _ in 0..1_000_000 {
+            shift = shifted_by(shift, [1.7, -0.3, 0.0]);
+        }
+        let expected = [1_700_000.0, -300_000.0, 0.0];
+        for (axis, expected) in expected.iter().enumerate() {
+            let found = shift.bricks[axis] as f64 * 32.0 + shift.offset[axis];
+            assert!(
+                (found - expected).abs() < 1e-4,
+                "axis {axis}: {found} against {expected}"
+            );
+            assert!((0.0..32.0).contains(&shift.offset[axis]));
+        }
+    }
+
+    #[test]
+    fn a_frame_that_moves_itself_goes_at_its_velocity_for_a_tick_and_keeps_it() {
+        let (shift, velocity) = advanced(
+            Displacement::NONE,
+            [100.0, 0.0, -50.0],
+            0.05,
+            [0.0; 3],
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(voxels_of(shift), [5.0, 0.0, -2.5]);
+        assert_eq!(velocity, [100.0, 0.0, -50.0]);
+    }
+
+    #[test]
+    fn the_pull_of_a_tick_speeds_the_frame_and_moves_it_as_a_semi_implicit_step_does() {
+        // A pull of 5 for a tick of 0.05: the speed is 0.25 more, and the frame has gone its speed and the pull's part of a tick: v dt + g dt^2.
+        let (shift, velocity) = advanced(
+            Displacement::NONE,
+            [0.0, 10.0, 0.0],
+            0.05,
+            [0.0, -5.0, 0.0],
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(velocity, [0.0, 9.75, 0.0]);
+        // The same as the world works it out: the speed after the pull, over the tick.
+        assert!((voxels_of(shift)[1] - 9.75 * 0.05).abs() < 1e-12);
+    }
+
+    #[test]
+    fn what_the_bodies_did_to_the_group_as_a_whole_is_added_to_where_it_has_gone_and_to_how_fast() {
+        // The bodies moved the centre of mass 0.01 and gave it 0.2 against the frame; the frame went at 100 and no pull.
+        let (shift, velocity) = advanced(
+            Displacement::NONE,
+            [100.0, 0.0, 0.0],
+            0.05,
+            [0.0; 3],
+            [0.01, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+        );
+        assert!((voxels_of(shift)[0] - (5.0 + 0.01)).abs() < 1e-12);
+        assert!((velocity[0] - 100.2).abs() < 1e-12);
+        // A push that the bodies give as a semi-implicit step gives (the speed it gains over the tick, and that over the tick as the move) takes the group where a body that was
+        // pushed in the world would be: the world's own step is the new speed over the tick, from the old place.
+        let gained = 0.2;
+        let (shift, velocity) = advanced(
+            Displacement::NONE,
+            [100.0, 0.0, 0.0],
+            0.05,
+            [0.0; 3],
+            [gained * 0.05, 0.0, 0.0],
+            [gained, 0.0, 0.0],
+        );
+        assert!((voxels_of(shift)[0] - velocity[0] * 0.05).abs() < 1e-12);
+    }
+
+    #[test]
+    fn only_a_group_that_is_alone_has_a_frame_that_moves_itself() {
+        assert!(Followed::Group(GridId::new(7)).moves_itself());
+        assert!(!Followed::RailGroup(GridId::new(7)).moves_itself());
+        assert!(!Followed::RailPoint(GridId::new(7)).moves_itself());
+        assert!(!Followed::Planet(GridId::new(7)).moves_itself());
+        // Nothing pulls on what is in it: it falls with the group.
+        let world_free = Followed::Group(GridId::new(7));
+        assert!(!world_free.has_planets());
     }
 }

@@ -262,3 +262,76 @@ pub fn origins_of(scene: &Scene, ships: &[GridId]) -> Vec<Vec3> {
 pub fn minus(first: Vec3, second: Vec3) -> Vec3 {
     [0, 1, 2].map(|axis| first[axis] - second[axis])
 }
+
+/// Where a chain is when a test asks what its mechanism does: on the rail of its centre of mass (step 4c-3), free and alone (step 4c-4: a frame of its own, in free fall, centred on
+/// it), or free with a stranger a hundred voxels from it, which is in the way of it by the room that a group needs to be alone, so that it is in the frame everything is in (the control:
+/// there the mechanism depends on where it is and how fast it goes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    OnARail,
+    Alone,
+    WithAStranger,
+}
+
+/// A chain of three cars, set swinging as `a_swing` says at this distance from the planet going round it, and, if asked, with a stranger (a ship of one stone) a hundred voxels
+/// beyond its east end going the same way. The chain's ships (numbers 1 to 3).
+fn a_swinging_chain_at(distance: f64, speed: f64, stranger: bool) -> (Scene, Vec<GridId>) {
+    let mut scene = Scene::in_a_new_world();
+    let cars = a_chain();
+    let mut at = 0.0;
+    let mut made = Vec::new();
+    for (blocks, length) in cars {
+        made.push((pose_at(at, distance, 0.0), blocks));
+        at += length;
+    }
+    if stranger {
+        made.push((pose_at(at + 100.0, distance, 0.0), stones(0, 1)));
+    }
+    super::docking::make_all_going(&mut scene, made, [0.0, 0.0, speed]);
+    scene.ticks(2);
+    (scene, (1..=3).map(ship_id).collect())
+}
+
+/// The facing and the turn of each car of the chain, 200 ticks (ten seconds) after it is set swinging at this distance from the planet, in this setting.
+pub fn how_the_chain_turns(distance: f64, setting: Setting) -> Vec<(Orientation, Vec3)> {
+    how_the_chain_turns_after(distance, setting, 200)
+}
+
+/// The same, `ticks` ticks after it is set swinging. (The swing of this chain turns back at about the 130th tick, a moment at which a difference of the rounding of a few ticks
+/// before is made large, so that two chains that were in different frames for a while agree to eight digits until then and not after.)
+pub fn how_the_chain_turns_after(
+    distance: f64,
+    setting: Setting,
+    ticks: u32,
+) -> Vec<(Orientation, Vec3)> {
+    let planet_speed = {
+        let scene = Scene::in_a_new_world();
+        super::circular_speed(&scene, 0, distance)
+    };
+    let (mut scene, ships) =
+        a_swinging_chain_at(distance, planet_speed, setting == Setting::WithAStranger);
+    if setting == Setting::OnARail {
+        put_on_its_rail(&mut scene, &ships, planet_speed, a_swing());
+    } else {
+        set_going(&mut scene, &ships, planet_speed, a_swing());
+    }
+    scene.ticks(ticks as usize);
+    ships
+        .iter()
+        .map(|ship| (orientation_of(&scene, *ship), spin_of(&scene, *ship)))
+        .collect()
+}
+
+/// The most the facings and the turns of two chains differ by.
+pub fn most_apart(first: &[(Orientation, Vec3)], second: &[(Orientation, Vec3)]) -> f64 {
+    let mut worst: f64 = 0.0;
+    for ((facing, spin), (other_facing, other_spin)) in first.iter().zip(second) {
+        for axis in 0..4 {
+            worst = worst.max((facing.components()[axis] - other_facing.components()[axis]).abs());
+        }
+        for axis in 0..3 {
+            worst = worst.max((spin[axis] - other_spin[axis]).abs());
+        }
+    }
+    worst
+}
