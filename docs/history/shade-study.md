@@ -2,6 +2,8 @@
 
 The owner's aim: *shadows at a distance are useful for judging the shape of terrain, which pilots need.* After the planet's ground was made to cast at a distance (`shader-systems-survey.md`, section 7.1), the question left was whether the shade is **legible** at a distance. This is what I measured and saw. Labels: **[run]** I ran it; **[looked]** I looked at the pictures; **[believed]** reasoned from the code, not tested.
 
+**Applied (2026-11-11, the owner chose 130):** Cave's `sky_light_in_shadow` is now 130 (`games/voxunami_cave/src/game.rs`). Below, "today" and "70" mean the value before this change. The "quarter of the sky" in `shadow-spec.md` and `future-goals.md` is now about a half in Cave.
+
 ## 1. Short version
 
 - **The shade in Cave is crushed.** **[run]** Averaged over ten fixed views, **38% of the terrain pixels in the 60 rows under the horizon, and 37% in the next 100, are nearly black** (brightest channel under 30 of 255). In the views that face away from the sun the figure is **54% to 76%** at every time of day I tried, noon included. Cause **[run, by changing the one number]**: a place the sun does not reach gets `sky_light_in_shadow` 70 of 255 of the sky's light, and the sky's light is 110 of 255, so an upward face in shade is about 12% of full brightness and a wall that faces away from the sun, which `side` darkens further, is a few percent.

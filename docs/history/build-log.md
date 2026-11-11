@@ -1962,3 +1962,7 @@ The owner said he saw no shadows on the coarse terrain. In Cave the planet is a 
 - **A thing found by running it, and a mistake of mine:** my survey's first reading of a distant-shadow measurement (the pixels that change with the shadows off) said the shadows reach the horizon; a face turned from the sun changes too, so it showed nothing about casting. What tells casting apart is to take the cause out of the picture (leave the coarse nodes out of the casters) and count the casters of each cascade.
 - **Side effect, not asked for:** the sky's cover now holds the planet's ground, so overhangs and caves on a planet darken as designed (the mean of one picture falls by 3 of 765).
 - **Not done:** a planet on a rail moving in a window (its pose changes in every frame and each change makes the kept maps out of date: cost not measured); a tolerance (a map is kept while the ground moves under a quarter of a texel) would remove it.
+
+### The shade value (2026-11-11)
+
+The owner chose 130 after the shade study (`shade-study.md`): Cave's `sky_light_in_shadow` went from 70 to 130 (a one-number change in `games/voxunami_cave/src/game.rs`; no test pinned 70). Far crush 38% -> 0.4%, middle 37% -> 3.4% on the ten study views [run in temporary builds, not re-run on this commit].
