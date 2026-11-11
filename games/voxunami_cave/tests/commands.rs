@@ -26,6 +26,23 @@ fn fly_toggles_and_says_which_it_is_now() {
 }
 
 #[test]
+fn thrusters_toggle_and_say_which_they_are_now() {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    // (They start off.)
+    assert_eq!(
+        reply_to(&mut rig, &mut player, "/thrusters"),
+        ["your thrusters are on"]
+    );
+    assert_eq!(
+        reply_to(&mut rig, &mut player, "/thrusters"),
+        ["your thrusters are off"]
+    );
+}
+
+#[test]
 fn tp_moves_the_player_and_explains_what_it_cannot_do() {
     let mut rig = Rig::new();
     let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);

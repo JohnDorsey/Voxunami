@@ -97,6 +97,11 @@ pub struct CharacterSettings {
     /// How fast the horizontal speed follows what the player asks for, on the ground and in the air.
     pub ground_acceleration: Real,
     pub air_acceleration: Real,
+    /// What the character weighs, in kilograms: a sensible adult, to the nearest 5.
+    pub mass: Real,
+    /// The push of the suit thrusters, in newtons: a round number that is about half the weight of the character on a planet whose pull is 9.81, and so is not quite
+    /// enough to hover over one whose pull is 5 (the game's own) but adds a good deal to a jump there. See [`CharacterSettings::thruster_acceleration`].
+    pub thruster_force: Real,
     /// The highest step a walking character climbs without jumping: slabs and the steps of stairs.
     pub step_height: Real,
     /// The time one step of [`CharacterBody::step`] stands for.
@@ -118,9 +123,18 @@ impl Default for CharacterSettings {
             terminal_speed: 78.0,
             ground_acceleration: 80.0,
             air_acceleration: 14.0,
+            mass: 75.0,
+            thruster_force: 350.0,
             step_height: 0.6,
             time_step: 1.0 / 60.0,
         }
+    }
+}
+
+impl CharacterSettings {
+    /// How hard the suit thrusters accelerate the character, in voxels per second per second: the force over the mass.
+    pub fn thruster_acceleration(&self) -> Real {
+        self.thruster_force / self.mass
     }
 }
 
@@ -189,6 +203,8 @@ pub struct CharacterBody {
     velocity: Vector,
     grounded: bool,
     flying: bool,
+    /// The suit thrusters are on: in the air the keys push the character (see [`CharacterBody::set_thrusters`]).
+    thrusters: bool,
     /// Which way is up in the frame, a unit vector. The frame is a level's, or a ship's, and gravity is whatever the world's field is
     /// there, so up is not always `+y`.
     up: Vector,
@@ -249,6 +265,7 @@ impl CharacterBody {
             velocity: Vector::ZERO,
             grounded: false,
             flying: false,
+            thrusters: false,
             up: Vector::Y,
             heading: Vector::NEG_Z,
             shape_turn: None,
@@ -413,6 +430,18 @@ impl CharacterBody {
             self.flying = flying;
             self.velocity = Vector::ZERO;
         }
+    }
+
+    pub fn thrusters_on(&self) -> bool {
+        self.thrusters
+    }
+
+    /// Switches the suit thrusters. With them on, a character that is in the air and not flying is pushed by its keys, forward, to the side and (the vertical keys) along up
+    /// or down, with the [`CharacterSettings::thruster_acceleration`] in the direction of the keys together (never more for two keys than for one), and nothing brakes it: with
+    /// no key held it keeps its velocity. With them off a character in a pull steers in the air as it always did, toward the walking speed, and one that floats (no pull) is not
+    /// steered at all, so it keeps its velocity too. On the ground, and flying, the thrusters change nothing.
+    pub fn set_thrusters(&mut self, thrusters: bool) {
+        self.thrusters = thrusters;
     }
 
     /// Moves the character by `delta` voxels, in the axes of its frame, with no break in its motion: it keeps its velocity (against whatever carried it) and whether it
@@ -959,7 +988,8 @@ impl CharacterBody {
                 across * cos + self.heading * sin,
             )
         };
-        let mut wish = forward * Real::from(input.forward) + right * Real::from(input.strafe);
+        let keys = forward * Real::from(input.forward) + right * Real::from(input.strafe);
+        let mut wish = keys;
         if wish.length_squared() > 1.0 {
             wish = wish.normalize();
         }
@@ -991,14 +1021,29 @@ impl CharacterBody {
             } else {
                 self.velocity - against
             };
-            let (across, mut along) = self.split(relative);
-            let across = approach_vector(across, target, acceleration * dt);
+            let (mut across, mut along) = self.split(relative);
+            if self.thrusters && !self.grounded {
+                // The suit thrusters push along the keys and along up for the vertical keys, with the one force for all of them together, and nothing brakes: the speed
+                // the keys ask for is none, and there is no air to follow.
+                let push = (keys + self.up * Real::from(input.vertical)).clamp_length_max(1.0)
+                    * (settings.thruster_acceleration() * dt);
+                let (push_across, push_along) = self.split(push);
+                across += push_across;
+                along += push_along;
+            } else if self.grounded || pull > 0.0 {
+                // (A character that floats, with no pull and nothing under it, has nothing to steer with and keeps its velocity.)
+                across = approach_vector(across, target, acceleration * dt);
+            }
             // (A character that is going up has jumped: just after take-off the ground is still near enough to count, and a jump again then
             // would be a second jump in the air, a tick later and as high.)
             if self.grounded && input.jump && along <= 0.0 {
                 along = settings.jump_speed;
             }
-            along = (along - pull * dt).max(-settings.terminal_speed);
+            along -= pull * dt;
+            if pull > 0.0 {
+                // (The fastest a falling character goes is a fall in a pull: where there is none, a speed is kept.)
+                along = along.max(-settings.terminal_speed);
+            }
             self.velocity = if against == Vector::ZERO {
                 self.join(across, along)
             } else {

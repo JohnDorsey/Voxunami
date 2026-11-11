@@ -337,8 +337,9 @@ impl ClientPlugin for ClientBlockEditing {
         }
 
         let selection = Arc::clone(&self.selection);
+        // (`C`: `R` is the suit thrusters, as it is the RCS in Kerbal Space Program.)
         registrar.key(
-            KeyCode::KeyR,
+            KeyCode::KeyC,
             ActionSpec::new(
                 "voxunami_cave:cycle_shape",
                 "cycles the states of the selected block: whole block, slabs and stairs, or the face of a docking port that docks",
@@ -537,7 +538,7 @@ impl ClientPlugin for ClientItems {
     }
 }
 
-/// The client half of `voxunami_cave:movement`: the key that flies.
+/// The client half of `voxunami_cave:movement`: the keys that fly and that switch the suit thrusters (`R`, the key that switches RCS in Kerbal Space Program).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClientMovement;
 
@@ -551,6 +552,14 @@ impl ClientPlugin for ClientMovement {
             KeyCode::KeyF,
             ActionSpec::new("voxunami_cave:toggle_flying", "flies or walks"),
             |context| context.send_command("/fly"),
+        );
+        registrar.key(
+            KeyCode::KeyR,
+            ActionSpec::new(
+                "voxunami_cave:toggle_thrusters",
+                "switches the suit thrusters, which push you in the air along the movement keys (space and shift for up and down) with nothing to brake you",
+            ),
+            |context| context.send_command("/thrusters"),
         );
     }
 }

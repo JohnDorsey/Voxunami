@@ -384,6 +384,14 @@ impl Movement {
         Some(flying)
     }
 
+    /// Switches a player's suit thrusters (see [`CharacterBody::set_thrusters`]). Returns whether they are on now, or `None` if the player has no body.
+    pub fn toggle_thrusters(&mut self, client: ClientId) -> Option<bool> {
+        let player = self.bodies.get_mut(&client)?;
+        let thrusters = !player.body.thrusters_on();
+        player.body.set_thrusters(thrusters);
+        Some(thrusters)
+    }
+
     pub fn is_flying(&self, client: ClientId) -> bool {
         self.bodies
             .get(&client)

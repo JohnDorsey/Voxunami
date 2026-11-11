@@ -431,6 +431,24 @@ impl Plugin for MovementPlugin {
                 );
             },
         );
+        let bodies = Arc::clone(&movement);
+        registrar.command(
+            CommandSpec::new(
+                "thrusters",
+                "switches the suit thrusters: in the air the movement keys (and space and shift) push you, and nothing brakes you",
+            ),
+            move |context, client, _| {
+                let thrusters = locked(&bodies).toggle_thrusters(client);
+                context.reply(
+                    client,
+                    match thrusters {
+                        Some(true) => "your thrusters are on",
+                        Some(false) => "your thrusters are off",
+                        None => "you have not joined yet",
+                    },
+                );
+            },
+        );
         let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
         let ground = (self.block_channel, self.air);
         registrar.command(

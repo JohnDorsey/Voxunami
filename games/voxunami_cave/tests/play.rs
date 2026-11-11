@@ -650,7 +650,7 @@ fn commands_the_game_does_not_know_are_answered() {
     assert_eq!(
         player.take_command_replies(),
         [
-            "unknown command; try /fly, /gamemode [MODE...], /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /ship ACTION [DETAILS...], /tp [WHERE] [NUMBERS...]",
+            "unknown command; try /fly, /gamemode [MODE...], /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /ship ACTION [DETAILS...], /thrusters, /tp [WHERE] [NUMBERS...]",
             "you are in voxunami_cave:overworld"
         ]
     );
@@ -752,7 +752,7 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     let hit = player.target().unwrap();
     assert_eq!(player.hud_text(), "placing stone (whole)");
 
-    player.key_pressed(KeyCode::KeyR);
+    player.key_pressed(KeyCode::KeyC);
     assert_eq!(player.hud_text(), "placing stone (bottom slab)");
     player.mouse_pressed(MouseButton::Secondary);
     rig.settle(&mut [&mut player]);
@@ -770,9 +770,26 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     assert_eq!(player.hud_text(), "placing lamp (whole)");
     player.key_pressed(KeyCode::Digit3);
     for _ in 1..7 {
-        player.key_pressed(KeyCode::KeyR);
+        player.key_pressed(KeyCode::KeyC);
     }
     assert_eq!(player.hud_text(), "placing grass (whole)");
+}
+
+#[test]
+fn the_r_key_switches_the_suit_thrusters_and_no_longer_cycles_the_shape() {
+    let mut rig = Rig::new();
+    let mut player = player_above_ground(&mut rig);
+    assert_eq!(player.hud_text(), "placing stone (whole)");
+    player.take_command_replies();
+
+    // (R is the key Kerbal Space Program uses for RCS; the shape moved to C.)
+    player.key_pressed(KeyCode::KeyR);
+    rig.settle(&mut [&mut player]);
+    assert_eq!(player.take_command_replies(), ["your thrusters are on"]);
+    assert_eq!(player.hud_text(), "placing stone (whole)");
+    player.key_pressed(KeyCode::KeyR);
+    rig.settle(&mut [&mut player]);
+    assert_eq!(player.take_command_replies(), ["your thrusters are off"]);
 }
 
 #[test]
@@ -785,7 +802,7 @@ fn the_dev_docking_port_is_chosen_with_its_number_has_one_state_and_is_placed_wi
     player.key_pressed(KeyCode::Digit9);
     assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
     // It has one state: the shape key leaves it as it is (how it is turned is the orientation, which comes from the face the player clicked and where they are).
-    player.key_pressed(KeyCode::KeyR);
+    player.key_pressed(KeyCode::KeyC);
     assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
     player.mouse_pressed(MouseButton::Secondary);
     rig.settle(&mut [&mut player]);

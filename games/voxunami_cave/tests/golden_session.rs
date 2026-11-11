@@ -383,8 +383,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// the declaration 198 and the block with its entry 171, `block_golden.rs`), and the stream is 398 bytes longer, 7,217,598 to 7,217,996: the 29 more are the item (its 28 characters and a length), as with the dev
 /// docking port's. Predicted before the run (369 + 29 = 398) and then seen. **The saved world's hash moved** (14_691_099_892_887_363_969 to 15_594_210_036_057_493_535), as predicted, because the world names the blocks
 /// it knows and the registry has one more; the script does not place the joint. Taken on Windows; Linux (WSL) gives the same stream hash, length and saved world hash, and the same package and block table.
+/// The suit thrusters (2026-11-11): Cave has a command more, `/thrusters`, and the script sends `/nonsense`, whose answer lists every command: the stream is 12 bytes longer, 7,217,996 to 7,218,008 (", /thrusters" is
+/// 12 characters), predicted from the cause before the new number was taken. **The saved world's hash did not move.** Taken on Windows; Linux has not been run for this change.
 const PINNED: (u64, usize, u64) = (
-    11_344_595_572_390_828_556,
-    7_217_996,
+    1_751_756_436_051_868_179,
+    7_218_008,
     15_594_210_036_057_493_535,
 );
