@@ -119,7 +119,7 @@ pub enum NotCoasting {
     NotAShip,
     /// The ship is held.
     Held,
-    /// The ship turns: a rail holds a ship's place and not its turn.
+    /// The ship turns and is coupled to another by a joint: a rail holds a ship's centre of mass and not its turn (the bodies turn it), but it does not yet hold a group.
     Turning,
     /// The level the ship is in has a pull of its own (a ground to fall to), which is no pull toward a planet.
     LevelPulls,
@@ -355,7 +355,14 @@ impl ServerWorld {
         if ship.held {
             return Err(NotCoasting::Held);
         }
-        if ship.angular_velocity != [0.0; 3] {
+        // (A ship that turns may ride a rail, which holds its centre of mass and nothing else: the bodies do the turn. Not one that is coupled to another by a joint, until a rail
+        // carries a group: its car would be on a rail of its own, in a frame of its own, and the joint would die with the body that has it.)
+        if ship.angular_velocity != [0.0; 3]
+            && self
+                .coupled_ships
+                .iter()
+                .any(|&(first, second)| first == grid || second == grid)
+        {
             return Err(NotCoasting::Turning);
         }
         if self
@@ -765,8 +772,8 @@ impl ServerWorld {
         Ok(handed_over)
     }
 
-    /// Whether a ship that is on a rail of this module has to come off it: it is held, turns, is in a level with a pull of its own, goes round nothing that is there, or
-    /// something is near.
+    /// Whether a ship that is on a rail of this module has to come off it: it is held, is in a level with a pull of its own, goes round nothing that is there, or
+    /// something is near. (Turning is no reason: the rail holds the centre of mass and the bodies turn the ship.)
     fn has_to_leave_its_rail(&self, known: Option<&Neighbours>, grid: GridId) -> bool {
         let Some(ship) = self.data.grids().get(grid) else {
             return false;
@@ -780,7 +787,6 @@ impl ServerWorld {
             return false;
         };
         ship.held
-            || ship.angular_velocity != [0.0; 3]
             || self
                 .level_gravity
                 .get(&ship.level)
@@ -857,7 +863,7 @@ impl ServerWorld {
     }
 
     /// Puts quiet ships on rails and takes off those that have to come off, as the last of what is done in a tick before the rails are applied: a ship that has been undisturbed
-    /// for [`QUIET_SECONDS`] and can coast is put on the orbit its place and speed are on, and one on a rail of this module that is held, turns, has something near it, or goes
+    /// for [`QUIET_SECONDS`] and can coast is put on the orbit its place and speed are on, and one on a rail of this module that is held, has something near it, or goes
     /// round nothing is taken off, as it is, at the place and the speed the rail gave it.
     /// The orbit is made from the state of a ship (the costly part) only when its second is up: see the notes at the top of this module.
     pub(crate) fn update_coasting(&mut self, ticks_per_second: u32) {

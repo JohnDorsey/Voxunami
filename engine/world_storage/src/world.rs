@@ -361,7 +361,7 @@ impl WorldData {
         let listed: std::collections::BTreeSet<GridId> = on_rails.iter().copied().collect();
         for id in on_rails {
             // (Looked at, not copied: the borrow of the rail ends with this block, before the ship is changed.)
-            let (centre, state) = {
+            let (centre, state, rail_spins) = {
                 let ship = self.grids.get(id).expect("the ship was just listed");
                 let rail = ship
                     .rail
@@ -381,6 +381,7 @@ impl WorldData {
                 (
                     centre,
                     memory.state(id, rail, time, [0.0; 3], centre_velocity),
+                    rail.spin.is_some(),
                 )
             };
             let position = match (centre, state.offset) {
@@ -432,7 +433,10 @@ impl WorldData {
             }
             ship.pose.orientation = orientation;
             ship.linear_velocity = state.velocity;
-            ship.angular_velocity = state.angular_velocity;
+            // A rail with no spin has no turn to give: a ship's own turn is left to whoever turns it (the bodies, for a ship), and a planet has none.
+            if rail_spins || ship.terrain.is_some() {
+                ship.angular_velocity = state.angular_velocity;
+            }
         }
         memory.keep_only(|ship| listed.contains(&ship));
         not_placed

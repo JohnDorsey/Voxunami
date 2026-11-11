@@ -160,12 +160,21 @@ fn what_a_ship_cannot_coast_for_is_said() {
     assert_eq!(refused(&world, ship), NotCoasting::Held);
     world.set_grid_held(ship, false).unwrap();
     world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();
-    // Turning.
+    // Turning is no reason (step 4c-2: the rail holds the centre of mass and nothing else, the turn is the bodies'), unless the ship is coupled to another by a joint, which
+    // a rail frame holds only from step 4c-3: its car would be on a rail of its own and the joint would die.
     world
         .set_grid_velocity(ship, speed, [0.0, 0.001, 0.0])
         .unwrap();
+    assert!(world.coasting_rail(ship, time(0)).is_ok());
+    let partner = GridId::new(GridId::FIRST_ALLOCATED + 98);
+    world.set_ships_coupled(ship, partner, true);
     assert_eq!(refused(&world, ship), NotCoasting::Turning);
     world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();
+    assert!(
+        world.coasting_rail(ship, time(0)).is_ok(),
+        "a coupled ship that does not turn goes on a rail as it did"
+    );
+    world.set_ships_coupled(ship, partner, false);
     // At rest: no orbit (it falls straight down). Fast enough to leave: a hyperbola, which is a rail (see `hyperbola_ships`).
     world.set_grid_velocity(ship, [0.0; 3], [0.0; 3]).unwrap();
     assert!(matches!(refused(&world, ship), NotCoasting::NoOrbit(_)));
@@ -443,21 +452,13 @@ fn what_the_bodies_write_is_not_a_disturbance() {
 }
 
 #[test]
-fn a_ship_on_a_rail_that_is_held_or_that_turns_or_is_in_a_level_with_a_ground_comes_off() {
-    for reason in 0..3 {
+fn a_ship_on_a_rail_that_is_held_or_is_in_a_level_with_a_ground_comes_off() {
+    for reason in 0..2 {
         let (mut world, ship) = a_circle_at_the_start_of_the_clock();
         run_ticks(&mut world, 1, 25);
         assert!(rail_of(&world, ship).is_some());
         match reason {
             0 => world.set_grid_held(ship, true).unwrap(),
-            1 => {
-                world
-                    .data_mut()
-                    .grids_mut()
-                    .get_mut(ship)
-                    .unwrap()
-                    .angular_velocity = [0.0, 0.5, 0.0]
-            }
             _ => world.set_level_gravity(LevelIndex::MAIN, [0.0, -5.0, 0.0]),
         }
         world.update_coasting(TICKS);
@@ -465,11 +466,72 @@ fn a_ship_on_a_rail_that_is_held_or_that_turns_or_is_in_a_level_with_a_ground_co
     }
 }
 
-/// Pinned in step 4c-0 as it is today, to be replaced on purpose by step 4c-2 (the owner's answer 6 of the ship audit: rotation never keeps a ship off a rail, the rail
-/// holds the centre of mass and the turn is the frame's): a rail with no spin sets the ship's turn to nothing every time it places the ship, and leaves its orientation as it found
-/// it. Until the world stops doing that, no ship that turns can ride a rail, which is why `coasting_candidate` refuses one.
+/// Step 4c-2 (the owner's answer 6 of the ship audit: rotation never keeps a ship off a rail): a ship that turns stays on its rail, with the turn it has.
 #[test]
-fn a_rail_with_no_spin_takes_the_turn_of_a_ship_and_keeps_the_way_it_faces() {
+fn a_ship_on_a_rail_that_turns_stays_on_it() {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    run_ticks(&mut world, 1, 25);
+    assert!(rail_of(&world, ship).is_some());
+    // (What the bodies write: a ship that turns, as they have it, not a push.)
+    world
+        .data_mut()
+        .grids_mut()
+        .get_mut(ship)
+        .unwrap()
+        .angular_velocity = [0.0, 0.5, 0.0];
+    for _ in 0..10 {
+        world.update_coasting(TICKS);
+    }
+    assert!(rail_of(&world, ship).is_some());
+    assert_eq!(
+        world.data().grids().get(ship).unwrap().angular_velocity,
+        [0.0, 0.5, 0.0]
+    );
+}
+
+/// A ship that turns and is left alone is put on a rail like any other, after its second, and the rail is the one a ship that does not turn would have (what the ship turns
+/// about does not enter the orbit).
+#[test]
+fn a_quiet_ship_that_turns_is_put_on_the_rail_a_ship_that_does_not_turn_would_have() {
+    let (mut turning_world, turning) = a_circle_at_the_start_of_the_clock();
+    let (mut still_world, still) = a_circle_at_the_start_of_the_clock();
+    let speed = turning_world
+        .data()
+        .grids()
+        .get(turning)
+        .unwrap()
+        .linear_velocity;
+    turning_world
+        .set_grid_velocity(turning, speed, [0.0, 0.3, 0.1])
+        .unwrap();
+    run_ticks(&mut turning_world, 1, 25);
+    run_ticks(&mut still_world, 1, 25);
+    let (rail_turning, rail_still) = (
+        rail_of(&turning_world, turning).expect("the ship that turns is on a rail"),
+        rail_of(&still_world, still).expect("the ship that does not is on a rail"),
+    );
+    assert_eq!(rail_turning.spin, None);
+    assert_eq!(
+        format!("{:?}", rail_turning.orbit),
+        format!("{:?}", rail_still.orbit),
+        "the orbit is that of the place and the speed alone"
+    );
+    assert_eq!(
+        turning_world
+            .data()
+            .grids()
+            .get(turning)
+            .unwrap()
+            .angular_velocity,
+        [0.0, 0.3, 0.1],
+        "and the ship goes on turning as it did"
+    );
+}
+
+/// Step 4c-2 replaced a pin of step 4c-0 (a rail with no spin set the turn of a ship to nothing every time it placed it): **a rail with no spin leaves the ship's turn as it is and
+/// the way it faces too**, since the rail holds the centre of mass and nothing else, and the turn is the bodies' work (`grid_bodies`, in a frame that goes with the rail's point).
+#[test]
+fn a_rail_with_no_spin_leaves_the_turn_of_a_ship_and_the_way_it_faces_to_the_bodies() {
     let (mut world, _planet) = space();
     let ship = ship_in_a_circle(&mut world, 10_000.0);
     let rail = world.coasting_rail(ship, time(0)).unwrap();
@@ -485,23 +547,60 @@ fn a_rail_with_no_spin_takes_the_turn_of_a_ship_and_keeps_the_way_it_faces() {
         .set_grid_velocity(ship, speed, [0.0, 0.3, 0.1])
         .unwrap();
     world.set_grid_rail(ship, Some(rail)).unwrap();
-    assert_eq!(
-        world.data().grids().get(ship).unwrap().angular_velocity,
-        [0.0, 0.3, 0.1],
-        "the ship turns before the rail places it"
-    );
     for tick in 1..=3 {
         world.apply_rails(TICKS);
         let placed = world.data().grids().get(ship).unwrap();
         assert_eq!(
-            placed.angular_velocity, [0.0; 3],
-            "tick {tick}: the rail has no spin, so the ship's turn is taken"
+            placed.angular_velocity,
+            [0.0, 0.3, 0.1],
+            "tick {tick}: the rail has no spin, so the ship's turn is its own"
         );
         assert_eq!(
             placed.pose.orientation, facing,
-            "tick {tick}: and the way it faces is left as it was"
+            "tick {tick}: and the way it faces is what the bodies last wrote"
         );
         world.data_mut().advance_clock(1);
+    }
+}
+
+/// The centre of mass is what the rail holds, however the ship faces: a ship turned as the bodies turn it is put with its centre of mass on the rail's place each tick.
+#[test]
+fn a_ship_that_turns_on_a_rail_has_its_centre_of_mass_on_the_rail_whichever_way_it_faces() {
+    let (mut world, _planet) = space();
+    let ship = ship_in_a_circle(&mut world, 10_000.0);
+    let middle = [3.0, 1.0, -2.0];
+    world.set_grid_mass(ship, 5.0e3, middle).unwrap();
+    let rail = world.coasting_rail(ship, time(0)).unwrap();
+    world.set_grid_rail(ship, Some(rail)).unwrap();
+    world.apply_rails(TICKS);
+    let centre_of = |world: &ServerWorld| {
+        world
+            .data()
+            .grids()
+            .get(ship)
+            .unwrap()
+            .pose
+            .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, middle))
+            .unwrap()
+    };
+    let on_the_rail = centre_of(&world);
+    // (The bodies turn the ship between the two placings of a tick; the second puts it again.)
+    for (turn, yaw) in [0.4, 1.1, 2.9].into_iter().enumerate() {
+        let pose = world.data().grids().get(ship).unwrap().pose;
+        world
+            .move_grid_by_bodies(
+                ship,
+                GridPose::new(pose.position, Orientation::from_yaw_pitch(yaw, 0.3)),
+                [0.0; 3],
+                [0.0, 0.2, 0.0],
+            )
+            .unwrap();
+        world.apply_rails(TICKS);
+        let now = centre_of(&world);
+        assert!(
+            distance_between(on_the_rail, now) < 1e-6,
+            "turn {turn}: the centre of mass is {on_the_rail:?} and then {now:?}"
+        );
     }
 }
 
@@ -561,6 +660,35 @@ fn a_frozen_ship_on_a_rail_goes_on_round_and_one_that_is_not_loses_its_speed() {
         world.data().grids().get(drifting).unwrap().linear_velocity,
         [0.0; 3]
     );
+}
+
+/// A frozen ship does not turn (the bodies hold it, and the owner's answer 4 of step 4c-2 is that it comes back not turning); the rail has its place and goes on, so it keeps
+/// the speed the rail gives it and loses only the turn. (Time warp that goes on turning ships would change this rule: the turn is the ship's, not the rail's.)
+#[test]
+fn a_frozen_ship_on_a_rail_that_turns_stops_turning_and_keeps_the_speed_of_its_rail() {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    run_ticks(&mut world, 1, 25);
+    assert!(rail_of(&world, ship).is_some());
+    world
+        .data_mut()
+        .grids_mut()
+        .get_mut(ship)
+        .unwrap()
+        .angular_velocity = [0.0, 0.3, 0.1];
+    let speed = world.data().grids().get(ship).unwrap().linear_velocity;
+    world.set_grid_frozen(ship, true).unwrap();
+    let frozen = world.data().grids().get(ship).unwrap();
+    assert_eq!(frozen.angular_velocity, [0.0; 3]);
+    assert_eq!(frozen.linear_velocity, speed);
+    assert!(rail_of(&world, ship).is_some());
+    // Thawed, it is not turning and is still on its rail.
+    world.set_grid_frozen(ship, false).unwrap();
+    world.update_coasting(TICKS);
+    assert_eq!(
+        world.data().grids().get(ship).unwrap().angular_velocity,
+        [0.0; 3]
+    );
+    assert!(rail_of(&world, ship).is_some());
 }
 
 // ---- a change of the mass of the planet (the owner's rule, 2026-11-02) ----
@@ -994,7 +1122,7 @@ fn the_flight_of_a_ship_is_asked_against_the_planet_that_pulls_it_whatever_the_s
  {
     let (mut world, planet) = space();
     let ship = ship_in_a_circle(&mut world, 10_000.0);
-    // A ship that turns, is held or has something near it is on no rail; its flight is asked all the same.
+    // A ship that is held or has something near it is on no rail; its flight is asked all the same (and a ship that turns can be on one, step 4c-2).
     world
         .set_grid_velocity(
             ship,
@@ -1002,7 +1130,13 @@ fn the_flight_of_a_ship_is_asked_against_the_planet_that_pulls_it_whatever_the_s
             [0.0, 0.3, 0.0],
         )
         .unwrap();
-    assert_eq!(refused(&world, ship), NotCoasting::Turning);
+    let moving = world.data().grids().get(ship).unwrap().linear_velocity;
+    world.set_grid_held(ship, true).unwrap();
+    assert_eq!(refused(&world, ship), NotCoasting::Held);
+    world.set_grid_held(ship, false).unwrap();
+    world
+        .set_grid_velocity(ship, moving, [0.0, 0.3, 0.0])
+        .unwrap();
     let flight = world
         .flight_state(ship, time(0))
         .expect("a planet pulls it");

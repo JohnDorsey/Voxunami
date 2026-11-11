@@ -1289,10 +1289,13 @@ impl ServerWorld {
             .grids_mut()
             .get_mut(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
-        // (A ship that is on a rail is where the clock says and goes on round: it has no speed of its own to lose.)
+        // (A ship that is on a rail is where the clock says and goes on round: it has no speed of its own to lose. Its turn is its own, and a frozen ship does not turn: the bodies
+        // hold it, and it comes back as it was left, not turning, the owner's answer 4 of step 4c-2; what the rail does not hold is what freezing takes.)
         let on_a_rail = ship.terrain.is_none() && ship.rail.is_some();
-        if frozen && !ship.frozen && !on_a_rail {
-            ship.linear_velocity = [0.0; 3];
+        if frozen && !ship.frozen {
+            if !on_a_rail {
+                ship.linear_velocity = [0.0; 3];
+            }
             ship.angular_velocity = [0.0; 3];
         }
         ship.frozen = frozen;

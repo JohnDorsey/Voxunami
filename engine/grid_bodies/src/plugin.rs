@@ -264,12 +264,15 @@ struct Follow {
     velocity: [f64; 3],
 }
 
-/// The point a frame goes with, and what the world says of it. Everything that is particular to what is followed is here (who is carried by it, where it is and how fast
-/// it goes, what pulls on a frame that falls with it); [`Follow`] only moves places and velocities by where it has gone.
+/// The point a frame goes with, and what the world says of it. Everything that is particular to what is followed is here (which ships belong in the frame, where the point is
+/// and how fast it goes, what pulls on a frame that falls with it); [`Follow`] only moves places and velocities by where it has gone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Followed {
     /// A planet on a rail: the point is its place in the world, and the ships in the frame are those it carries.
     Planet(GridId),
+    /// The centre of mass of a ship that turns on a rail: the rail holds that point and nothing else, and the ship's turn is the bodies' work, done in a frame of its own with
+    /// the ship at rest at the point. It has nothing else in it (no planet, no terrain, no other ship) and nothing pulls on it: it falls with the ship.
+    RailPoint(GridId),
 }
 
 impl Followed {
@@ -280,21 +283,41 @@ impl Followed {
                 let grid = world.data().grids().get(planet)?;
                 Some((grid.pose.position, grid.linear_velocity))
             }
+            Self::RailPoint(ship) => {
+                let grid = world.data().grids().get(ship)?;
+                let middle = grid.pose.local_to_world(WorldPosition::new(
+                    BrickCoordinate::ORIGIN,
+                    grid.centre_of_mass,
+                ))?;
+                Some((middle, grid.linear_velocity))
+            }
         }
     }
 
-    /// The acceleration of gravity at a place of the world for what falls with the point.
-    fn gravity(self, world: &ServerWorld, there: WorldPosition) -> [f64; 3] {
+    /// The acceleration of gravity at a place of the world for what falls with the point; `None` where nothing pulls what is in the frame at all.
+    fn gravity(self, world: &ServerWorld, there: WorldPosition) -> Option<[f64; 3]> {
         match self {
-            Self::Planet(planet) => world.gravity_in_the_free_fall_of(planet, there),
+            Self::Planet(planet) => Some(world.gravity_in_the_free_fall_of(planet, there)),
+            Self::RailPoint(_) => None,
         }
     }
 
-    /// The planet that carries the ships of the frame, as `ServerWorld::carrier_of` names it.
-    fn carrier(self) -> GridId {
-        match self {
-            Self::Planet(planet) => planet,
+    /// Whether the planets of the level are bodies in a frame that goes with this. (Not in the frame of a ship on a rail: nothing there is to meet one.)
+    fn has_planets(self) -> bool {
+        matches!(self, Self::Planet(_))
+    }
+
+    /// What the frame of a ship goes with: the planet that carries it (see `ServerWorld::carrier_of`), or its own centre of mass if it turns on a rail (a rail with no spin of
+    /// its own: it is the rail that has the place and the bodies that have the turn), or nothing.
+    fn of(world: &ServerWorld, id: GridId, ship: &MovingGrid) -> Option<Self> {
+        if let Some(planet) = world.carrier_of(id) {
+            return Some(Self::Planet(planet));
         }
+        let turns_on_a_rail = !ship.held
+            && !ship.frozen
+            && ship.angular_velocity != [0.0; 3]
+            && ship.rail.as_ref().is_some_and(|rail| rail.spin.is_none());
+        turns_on_a_rail.then_some(Self::RailPoint(id))
     }
 }
 
@@ -316,11 +339,6 @@ impl Follow {
             self.shift = self.anchor.displacement_to(position);
             self.velocity = velocity;
         }
-    }
-
-    /// The planet that carries the ships of the frame (see [`Followed::carrier`]).
-    fn carrier(&self) -> GridId {
-        self.followed.carrier()
     }
 
     fn local(&self, world: WorldPosition) -> Option<WorldPosition> {
@@ -814,11 +832,11 @@ impl Bodies {
             let follow = frame.follow;
             leaving.extend(frame.ships.keys().filter(|id| {
                 !present.iter().any(|(held, _)| held == *id)
-                    || world.carrier_of(**id) != follow.map(|follow| follow.carrier())
                     || world.data().grids().get(**id).is_none_or(|ship| {
-                        local_in(follow, ship.pose.position).is_none_or(|place| {
-                            farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
-                        })
+                        Followed::of(world, **id, ship) != follow.map(|follow| follow.followed)
+                            || local_in(follow, ship.pose.position).is_none_or(|place| {
+                                farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
+                            })
                     })
             }));
         }
@@ -921,15 +939,17 @@ impl Bodies {
         let Some(ship) = world.data().grids().get(id) else {
             return;
         };
-        let kind = body_kind(ship.held, ship.frozen, ship.rail.is_some());
-        let carrier = world.carrier_of(id);
+        // A ship that turns on a rail is a free body in a frame of its own (the rail holds its centre of mass, the bodies turn it); any other ship on a rail is a fixed one.
+        let followed = Followed::of(world, id, ship);
+        let rides = matches!(followed, Some(Followed::RailPoint(_)));
+        let kind = body_kind(ship.held, ship.frozen, ship.rail.is_some() && !rides);
         let Some(key) = self.frame_of(id) else {
             // A ship is put in the first frame of its level that goes with the planet that carries it (or with none, if none does) and that it is near the origin of,
             // and makes a frame of its own where it is if there is none.
             let brick = ship.pose.position.brick();
             let near = |key: &FrameKey, frame: &Frame| {
                 key.0 == level_index
-                    && frame.follow.map(|follow| follow.carrier()) == carrier
+                    && frame.follow.map(|follow| follow.followed) == followed
                     && local_in(frame.follow, ship.pose.position).is_some_and(|place| {
                         !farther_than(FRAME_RADIUS_BRICKS, place.brick(), frame.bodies.origin())
                     })
@@ -947,11 +967,10 @@ impl Bodies {
             let key = match key {
                 Some(key) => key,
                 None => {
-                    let follow = match carrier {
+                    let follow = match followed {
                         None => None,
-                        Some(planet) => {
-                            let Some(follow) = Follow::begin(Followed::Planet(planet), world)
-                            else {
+                        Some(followed) => {
+                            let Some(follow) = Follow::begin(followed, world) else {
                                 return;
                             };
                             Some(follow)
@@ -995,6 +1014,10 @@ impl Bodies {
                 .is_err()
             {
                 return;
+            }
+            if rides {
+                // (Rapier takes the speed from a body it puts to sleep, and a ship that turns slowly would stop: the turn of a ship on a rail is for good.)
+                let _ = frame.bodies.set_can_sleep(BodyId(id.get()), false);
             }
             frame.ships.insert(
                 id,
@@ -1131,6 +1154,9 @@ impl Bodies {
             .collect();
         for frame in self.frames.values_mut() {
             let (level, follow) = (frame.level, frame.follow);
+            if follow.is_some_and(|follow| !follow.followed.has_planets()) {
+                continue;
+            }
             let gone: Vec<GridId> = frame
                 .planets
                 .keys()
@@ -1491,7 +1517,10 @@ impl Bodies {
                 };
                 let gravity = match follow {
                     None => world.gravity_at(level_index, there),
-                    Some(follow) => follow.followed.gravity(world, there),
+                    Some(follow) => match follow.followed.gravity(world, there) {
+                        Some(gravity) => gravity,
+                        None => continue,
+                    },
                 };
                 let force = gravity.map(|component| component * record.mass);
                 // A change in gravity wakes a ship that is asleep (a heavy ship came near); the same gravity does not, so a ship at rest sleeps.
