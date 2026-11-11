@@ -101,3 +101,6 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   reaches the server (2026-10-18 to 2026-10-19). `docs/plan.md`.
 - A fire test that was flaky until it was a test of something, a joining test whose fixed number of idle ticks was not enough on a cold build, and the body put inside terrain (Phase 27f): `docs/history/build-log.md`
   (`grep -n "flaky" docs/history/build-log.md`).
+- `a_jump_on_a_deck_that_spins_steadily_is_pulled_up_by_the_centrifugal_pull` (`games/voxunami_cave/tests/aboard_frame_terms.rs`, 2026-11-11): a walker lands on a floor that goes at two metres a second under them and takes a
+  variable number of ticks to be still on it (the landing tick depends on when the terrain worker has made the ground), so the jump began from a walker not yet at rest, which the replica assumed. Failed 3 of about 10 runs,
+  as the whole binary; fixed by waiting until the walker has not moved for ten ticks (a condition, not a count); 13 whole-file runs clean since. `docs/history/build-log.md`, "Suit thrusters, part 2b".

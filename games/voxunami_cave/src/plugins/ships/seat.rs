@@ -62,7 +62,12 @@ impl Ships {
         let mut seats = self.seats();
         if let Some(seated) = seats.remove(&client) {
             pilots.remove(&client);
-            locked(&self.movement).set_piloting(client, false);
+            {
+                let mut movement = locked(&self.movement);
+                movement.set_piloting(client, false);
+                // (Let go of the seat: they stand in the ship again.)
+                movement.unbuckle(client);
+            }
             Self::send_readout(world, client, Vec::new());
             return format!(
                 "you get up from the command seat of ship {}; the engines stop",
@@ -112,7 +117,13 @@ impl Ships {
                 throttle: 0.0,
             },
         );
-        locked(&self.movement).set_piloting(client, true);
+        {
+            let mut movement = locked(&self.movement);
+            movement.set_piloting(client, true);
+            // Strapped in: the ship carries a seated pilot exactly however its seat turns it and its engines push it (a walker is pulled by the acceleration of the ship, and
+            // would be left behind by it).
+            movement.buckle(client, ship);
+        }
         format!(
             "you sit in the command seat of ship {}: W S pitch, A D yaw, Q E roll, shift raises the throttle and control lowers it; /ship sit gets you up",
             number(ship)
@@ -246,6 +257,7 @@ impl Ships {
             seats.remove(&client);
             pilots.remove(&client);
             movement.set_piloting(client, false);
+            movement.unbuckle(client);
             Self::send_readout(world, client, Vec::new());
         }
     }

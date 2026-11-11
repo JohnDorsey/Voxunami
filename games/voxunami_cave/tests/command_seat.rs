@@ -305,3 +305,36 @@ fn the_u_key_sits_in_the_seat_you_look_at_and_gets_up() {
     tick_and_follow(&mut scene, &mut player, 3);
     assert!(!player.hud_text().contains("throttle"));
 }
+
+#[test]
+fn a_seated_pilot_is_carried_exactly_by_the_ship_however_the_seat_turns_and_pushes_it_and_getting_up_lets_them_go()
+ {
+    let (mut scene, mut player) = a_ship_with_a_seat_and_four_engines();
+    sit(&mut scene, &mut player);
+    let seated = common::eyes_in_their_frame(&scene, 1);
+    // Turns, a push of the engines (throttle up), and a turn the other way: a walker who stood free in a ship with no pull would be left behind by every one of them.
+    player.hold(&[KeyCode::KeyW, KeyCode::ShiftLeft]);
+    tick_and_follow(&mut scene, &mut player, 20);
+    player.hold(&[KeyCode::KeyS, KeyCode::KeyE]);
+    tick_and_follow(&mut scene, &mut player, 40);
+    assert_ne!(ship_state(&scene).2, [0.0; 3], "the ship is turning");
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(0), "still aboard");
+    let riding = common::eyes_in_their_frame(&scene, 1);
+    for axis in 0..3 {
+        assert!(
+            (riding[axis] - seated[axis]).abs() < 1e-9,
+            "{seated:?} {riding:?}"
+        );
+    }
+    // Getting up lets them go: they are not buckled any more.
+    player.hold(&[]);
+    let reply = say(&mut scene, &mut player, "/ship sit");
+    assert!(
+        reply.starts_with("you get up from the command seat"),
+        "{reply}"
+    );
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship unbuckle"),
+        "you are not buckled"
+    );
+}

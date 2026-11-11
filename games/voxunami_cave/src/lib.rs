@@ -16,6 +16,7 @@ pub mod client;
 pub mod content;
 pub mod fire;
 pub mod flight;
+pub mod frame_terms;
 pub mod game;
 pub mod generators;
 pub mod items;

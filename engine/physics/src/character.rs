@@ -444,6 +444,24 @@ impl CharacterBody {
         self.thrusters = thrusters;
     }
 
+    /// Turns what the character goes at, in the axes of its frame, by `turn` (an axis scaled by radians): the exact turn about that axis, which keeps the speed to the last
+    /// bit of rounding. It is for a character in a frame that turns (a ship that spins): the frame turns by an angle about an axis and what goes at a speed in it goes at the
+    /// speed turned by the same angle the other way, which is the Coriolis pull; a push at right angles to the speed (an Euler step) would grow it. Nothing but the velocity
+    /// changes: the character is where it was, and whether it stands.
+    pub fn turn_velocity(&mut self, turn: [f64; 3]) {
+        let turn = vector(turn);
+        let angle = turn.length();
+        if angle == 0.0 {
+            return;
+        }
+        // Not the standard library's sin and cos, which differ between platforms.
+        let (sin, cos) = (libm::sin(angle), libm::cos(angle));
+        let axis = turn / angle;
+        let velocity = self.velocity;
+        self.velocity =
+            velocity * cos + axis.cross(velocity) * sin + axis * (axis.dot(velocity) * (1.0 - cos));
+    }
+
     /// Moves the character by `delta` voxels, in the axes of its frame, with no break in its motion: it keeps its velocity (against whatever carried it) and whether it
     /// stands or flies. It is for a character that the world has carried, as a planet that goes round carries what is in the air near it. The terrain stays where it
     /// is and the character goes through it: the next [`CharacterBody::update_terrain`] makes the terrain where the character is now, and [`CharacterBody::keep_clear`]

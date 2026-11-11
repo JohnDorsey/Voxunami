@@ -651,7 +651,12 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
     // the air at 14 voxels a second a second (`leaving_a_ship.rs`). In this script the deck goes at 1 voxel a second and turns at 0.2 radians a second, and the walker is in the air for
     // about 1.4 seconds after the side: they end 0.95 voxel further along x and 1.68 along z, 1.9 voxels in all. Control: with the speed of the place left made nothing and nothing else
     // changed, the old value came back, so this is the only thing that moved it.)
-    assert_eq!(first, 8_736_183_284_958_261_895);
+    // (Moved on purpose, 2026-11-11: 8_736_183_284_958_261_895 before. A walker aboard a ship that turns is moved by the turn now (`decisions/joints-and-cars.md`, the suit thrusters, part 2b): in this script the
+    // deck is said to turn at 0.2 radians a second about y, so the walker is pulled outward by a few tenths of a metre a second a second at most (0.04 times their distance from the axis) and the
+    // Coriolis turn acts on their speed when they walk and when they fall off the side. Control, run with a switch that is gone: with the spin of the walker's new terms made nothing inside `movement.rs` and the script unchanged, the old value came back
+    // to the bit, so the harness is the same and the spin is the only thing that moved it. (Making the script say no spin does not do: the recorded spin is also the speed the deck gives a walker
+    // who steps off it.))
+    assert_eq!(first, 17_513_030_664_070_286_615);
 }
 
 #[test]

@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::aboard::{Extent, has_left, in_voxels, stands_on};
 use crate::block_properties;
+use crate::frame_terms::{frame_motion, pull_in_a_frame};
 use block_models::BlockTable;
 use game_shell::PlayerPose;
 use grid_bodies::collision::{BlockCollisions, GeneratedHull, ShipHull, ShipSource, WorldTerrain};
@@ -147,12 +148,30 @@ struct PlayerBody {
     motion: Option<Motion>,
 }
 
-/// How a ship went when a body aboard it was last stepped: the speed of its centre of mass, in the world's axes, and the planet on a rail that carried the place, with its speed.
+/// How a ship went when a body aboard it was last stepped: the speed of its centre of mass and how it turned, in the world's axes, and the planet on a rail that carried the place,
+/// with its speed.
 #[derive(Clone, Copy, Debug)]
 struct Motion {
     ship: GridId,
     velocity: [f64; 3],
+    spin: [f64; 3],
     carrier: Option<(GridId, [f64; 3])>,
+}
+
+impl Motion {
+    /// How the ship `id`, which is `ship`, goes now, with the planet that carries the place of a body aboard it, if one does.
+    fn of(
+        id: GridId,
+        ship: &world_storage::MovingGrid,
+        carrier: Option<(GridId, [f64; 3])>,
+    ) -> Self {
+        Self {
+            ship: id,
+            velocity: ship.linear_velocity,
+            spin: ship.angular_velocity,
+            carrier,
+        }
+    }
 }
 
 /// The place in a ship that a body stepped off. Until the body stands on something again, what its keys ask and the air does are measured from the speed of that place of the ship, as a
@@ -457,11 +476,11 @@ impl Movement {
             }
             if player.buckled.is_some() {
                 // (The ship carries them however it goes; its speed is kept up to date, so that the tick they are let go is not taken for a blow.)
-                player.motion = world.data().grids().get(player.frame).map(|ship| Motion {
-                    ship: player.frame,
-                    velocity: ship.linear_velocity,
-                    carrier: None,
-                });
+                player.motion = world
+                    .data()
+                    .grids()
+                    .get(player.frame)
+                    .map(|ship| Motion::of(player.frame, ship, None));
                 player.put = false;
                 moved.push(moved_pose(client, player));
                 continue;
@@ -800,11 +819,7 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
     // (Aboard, nothing carries the body but the ship.)
     player.carrier = None;
     // (What the ship does from here is measured against how it went as the body came aboard.)
-    player.motion = Some(Motion {
-        ship: id,
-        velocity: ship.linear_velocity,
-        carrier: None,
-    });
+    player.motion = Some(Motion::of(id, ship, None));
 }
 
 /// One tick of a body that is aboard a ship: the ship's blocks are its terrain, gravity is the world's in the ship's axes, and then
@@ -871,10 +886,16 @@ fn step_aboard(
         };
         player.body.keep_clear(&mut blocks.source(world, id, ship));
     }
-    let gravity = felt_aboard(player, world, id);
+    let felt = felt_aboard(player, world, id);
     let input = input_for(player);
+    let step = player.body.settings().time_step;
     for _ in 0..PHYSICS_STEPS_PER_TICK {
-        player.body.step_with_gravity(input, gravity);
+        // The Coriolis pull, `-2 spin x velocity`, alone turns what the body goes at in the ship's axes at twice the ship's own spin, the other way: an exact turn each step, and
+        // not a push at right angles to the speed, which would grow it. (Turned by the ship's own spin only, it is half of it: the other half is the place changing under it.)
+        player
+            .body
+            .turn_velocity(felt.spin.map(|spin| -2.0 * spin * step));
+        player.body.step_with_gravity(input, felt.pull);
     }
 
     // Has it left? Nothing of the ship under it, or far from the ship; or nothing of the ship is left.
@@ -921,20 +942,32 @@ fn step_aboard(
 /// A pull aboard a ship weaker than this, in voxels a second a second (a two-hundredth of Cave's), is none: the walker floats.
 const FLOATING_BELOW: f64 = 0.05;
 
-/// What a body aboard the ship `id` is pulled by, in the ship's axes: the pull of the world where its eyes are less the acceleration of the ship, which is the change of the speed
-/// of the ship's centre of mass since the last tick over the length of a tick (a rail gives it exactly, an engine gives its thrust, the ground gives what the ground does). So a
-/// ship in free fall, on a rail or not, is a place to float; a ship that burns weighs more; one that goes at any steady speed weighs what it did; and "up" follows the thrust,
-/// because the character's up is against what it is pulled by.
+/// What a body aboard a ship is moved by in a tick, in the ship's axes.
+struct Felt {
+    /// What it is pulled by: the pull of the world where its eyes are, less the acceleration of the ship, less the centrifugal and the Euler pull of its turn.
+    pull: [f64; 3],
+    /// How the ship turns, an axis scaled by radians a second: what the body goes at turns the other way by as much (the Coriolis pull).
+    spin: [f64; 3],
+}
+
+/// What a body aboard the ship `id` is moved by (see [`Felt`]), from how the ship went since the last tick (see [`crate::frame_terms`]): the acceleration of the ship is the change
+/// of the speed of its centre of mass over the length of a tick (a rail gives it exactly, an engine gives its thrust, the ground gives what the ground does), and the change of its
+/// turn likewise. So a ship in free fall, on a rail or not, is a place to float; a ship that burns weighs more; one that goes at any steady speed weighs what it did; "up" follows the
+/// thrust, because the character's up is against what it is pulled by; and in a ship that spins the floor is held down less the farther it is from the axis.
 ///
 /// **What a planet on a rail carries falls with it** (as `step_in_a_level` has it, and `ServerWorld::gravity_in_the_free_fall_of`): in the sphere of such a planet the pull is
 /// everything's but that of what the planet goes round, and the acceleration that is taken off is the ship's less the planet's own, so the planet's rail, which is not a force,
-/// is nothing to a ship carried with it. The first tick aboard has nothing to measure from and is pulled by the field alone; so is the tick in which the carrier changes.
-fn felt_aboard(player: &mut PlayerBody, world: &ServerWorld, id: GridId) -> [f64; 3] {
-    let fallback = [0.0, -player.body.settings().gravity, 0.0];
+/// is nothing to a ship carried with it. The first tick aboard has nothing to measure from and is moved by the field and the spin alone; so is the tick in which the carrier changes.
+fn felt_aboard(player: &mut PlayerBody, world: &ServerWorld, id: GridId) -> Felt {
+    let fallback = Felt {
+        pull: [0.0, -player.body.settings().gravity, 0.0],
+        spin: [0.0; 3],
+    };
     let Some(ship) = world.data().grids().get(id) else {
         return fallback;
     };
-    let Some(eyes) = ship.pose.local_to_world(player.body.eye_position()) else {
+    let place = player.body.eye_position();
+    let Some(eyes) = ship.pose.local_to_world(place) else {
         return fallback;
     };
     let before = player.motion.filter(|motion| motion.ship == id);
@@ -946,36 +979,52 @@ fn felt_aboard(player: &mut PlayerBody, world: &ServerWorld, id: GridId) -> [f64
     let planet_speed = carrier
         .and_then(|planet| world.data().grids().get(planet))
         .map_or([0.0; 3], |planet| planet.linear_velocity);
-    player.motion = Some(Motion {
-        ship: id,
-        velocity: ship.linear_velocity,
-        carrier: carrier.map(|planet| (planet, planet_speed)),
-    });
+    player.motion = Some(Motion::of(
+        id,
+        ship,
+        carrier.map(|planet| (planet, planet_speed)),
+    ));
     let field = ship.pose.direction_to_local(match carrier {
         Some(planet) => world.gravity_in_the_free_fall_of(planet, eyes),
         None => world.gravity_at(ship.level, eyes),
     });
-    let Some(before) = before else {
-        return field;
+    // Where the body is from the centre of mass, in the ship's axes.
+    let centre = WorldPosition::new(BrickCoordinate::ORIGIN, ship.centre_of_mass);
+    let arm = place.relative_to(centre).map(f64::from);
+    // Without a tick to measure from the ship is taken to neither accelerate nor change its turn; it turns as it does.
+    let measured = before.filter(|before| before.carrier.map(|(planet, _)| planet) == carrier);
+    let (acceleration, spin_before) = match measured {
+        Some(before) => {
+            let before_planet = before.carrier.map_or([0.0; 3], |(_, speed)| speed);
+            (
+                [0, 1, 2].map(|axis| {
+                    ((ship.linear_velocity[axis] - before.velocity[axis])
+                        - (planet_speed[axis] - before_planet[axis]))
+                        / TICK_SECONDS
+                }),
+                before.spin,
+            )
+        }
+        None => ([0.0; 3], ship.angular_velocity),
     };
-    if before.carrier.map(|(planet, _)| planet) != carrier {
-        return field;
-    }
-    let before_planet = before.carrier.map_or([0.0; 3], |(_, speed)| speed);
-    let change = [0, 1, 2].map(|axis| {
-        ((ship.linear_velocity[axis] - before.velocity[axis])
-            - (planet_speed[axis] - before_planet[axis]))
-            / TICK_SECONDS
-    });
-    let acceleration = ship.pose.direction_to_local(change);
-    let felt = [0, 1, 2].map(|axis| field[axis] - acceleration[axis]);
-    // In free fall what is left of the two is the tide and the rounding of the speeds, a ten-thousandth of a metre a second a second pointing anywhere, and a body takes the
-    // direction of any pull for its down: its floor would turn from tick to tick and put it out of the ship. A pull that nobody could feel is none.
+    let motion = frame_motion(
+        &ship.pose,
+        acceleration,
+        ship.angular_velocity,
+        spin_before,
+        TICK_SECONDS,
+    );
+    let felt = pull_in_a_frame(field, &motion, arm);
+    // In free fall what is left is the tide and the rounding of the speeds, a ten-thousandth of a metre a second a second pointing anywhere, and a body takes the direction of any
+    // pull for its down: its floor would turn from tick to tick and put it out of the ship. A pull that nobody could feel is none.
     let strength = (felt[0] * felt[0] + felt[1] * felt[1] + felt[2] * felt[2]).sqrt();
-    if strength < FLOATING_BELOW {
-        [0.0; 3]
-    } else {
-        felt
+    Felt {
+        pull: if strength < FLOATING_BELOW {
+            [0.0; 3]
+        } else {
+            felt
+        },
+        spin: motion.spin,
     }
 }
 
