@@ -18,9 +18,9 @@ Where the risk is, in order (details in section 8):
 
 | | Piece | Why | My confidence it is right |
 |---|---|---|---|
-| 1 | The per-tick re-sync that holds the body at rest at the point (section 4.5) | The whole design depends on it and **it is implicit**: there is no line of code that says "re-centre", it falls out of a check written for something else | Medium-high. Read and worked through on paper; the bit-equality tests would fail if it were wrong, but I did not trace the `moved` flag tick by tick |
+| 1 | The per-tick re-sync that holds the body at rest at the point (section 4.5) | I wrote that the whole design depends on it and **it is implicit**: there is no line of code that says "re-centre", it falls out of a check written for something else | **Corrected on 2026-11-11 (section 10): it does not matter.** A mutant that switches the re-sync off for riders passes all 16 tests, because nothing pushes the body, so it stays at rest at the point without it. What I wrote here, "the bit-equality tests would fail if it were wrong", was wrong. (Whether the re-sync happens every tick I still did not count.) |
 | 2 | `set_can_sleep(false)` on the rider (4.4) | It is a patch for a Rapier behaviour; the sleep rule (item 7) will want to own this | High that it works (ran, mutant caught); open question how it meets item 7 |
-| 3 | What no test covers (section 8.3): a block edit on a railed turning ship, a ship tumbling after a blow, many riders at once, Linux | Plausible edge cases | I have no evidence either way |
+| 3 | What no test covers (section 8.3): a block edit on a railed turning ship, a ship tumbling after a blow, many riders at once, Linux | Plausible edge cases | I had no evidence either way. **Since tested, except Linux: section 10** |
 | 4 | The world-side edits (section 3) | Small; each pinned and each mutant caught | High |
 
 Writing this found five things that are wrong or stale and are not behaviour (section 8.1): two doc comments that now say the opposite of the code, a doc comment glued to the wrong function (older than this work), the decision document's "what the code does today" list, and a count in the build log (`never_asleep.rs` has 3 tests, the log says 2). **They are fixed in the commit that carries this report; the code change is comments only.** A sixth item, some warts in a test file, is listed and not changed.
@@ -285,7 +285,7 @@ let near = |key: &FrameKey, frame: &Frame| {
 
 `RailPoint(id)` equals only itself, so **every rider gets a frame of its own** and no other ship can enter it. A ship that stops riding (its rail is dropped, it stops turning, it is frozen or held) fails the equality, leaves, and enters an ordinary frame in the same step, bringing its colliders and weighing records (`Carried`). The reverse is the same. Frames with no ships are dropped (`self.frames.retain`).
 
-The cost of a frame of its own was measured in the 4c-0 probe (one run, test profile): a `BodyWorld` with one ship of one brick is about 48 KB, and a tick of three steps is 1.3 µs for a still body and 5.0 µs for one that turns, so a thousand riders are 36 to 64 MB (by the size of the ship) and 5 ms a tick. That is a probe on a bare world, not a measurement of the plugin with a thousand riders (8.3).
+The cost of a frame of its own was measured in the 4c-0 probe (one run, test profile): a `BodyWorld` with one ship of one brick is about 48 KB, and a tick of three steps is 1.3 µs for a still body and 5.0 µs for one that turns, so a thousand riders are 36 to 64 MB (by the size of the ship) and 5 ms a tick. That is a probe on a bare world, not a measurement of the plugin with a thousand riders (8.3). **Corrected 2026-11-11 (section 10): the "5 ms a tick" is the physics step alone. Measured in the engine, a rider costs about 38 µs a tick in all (60 riders: 2.3 ms against 0.03 for an empty world), which is 38 ms a tick for a thousand if it stays linear (not measured at that size), most of a 50 ms tick. The memory figure was not measured again.**
 
 ### 4.4 What a rider is to the solver
 
@@ -353,6 +353,8 @@ So every tick the body is put **at rest, with its centre of mass at `A`**, no ma
 - the turn is the same bits at 70 km and 400 km and at a quarter more speed (the test below): nothing the body sees depends on the world place or the speed;
 - `steps_for_this_tick` is constant: it sizes the substeps by the fastest body's speed, `linvel + angvel × reach`, and `linvel` is zero here (a free ship falling at 42 m/s gets a fourth substep and its turn differs in the last digits; the rider does not);
 - the world velocity written back is `v(t) + 0`, so the ship's path in the world is the rail's, bit for bit (test: speed bits equal to an unspun twin).
+
+**Corrected on 2026-11-11 (section 10).** The paragraph above says why the body is at rest at the point *if* the re-sync happens every tick (read, not counted). It does not say that the result *needs* it, and it does not: a mutant that makes `moved` false for riders (so that the body is set once, when the frame is made, and never again) passes all 16 tests of `turning_on_a_rail.rs`. The reason is that nothing acts on a rider (no pull, no planet, no other ship, no force: a force would drop the rail first), so a body that starts at rest at the point stays there, turning about its centre of mass, and the world's place for it is the frame's shift plus that. The re-sync is harmless and it would repair a body that something did move, but I called it "the whole design" and "the piece I'd read hardest", and that was wrong.
 
 One consequence worth knowing: `set_state` each tick means the body's linear velocity is reset *by construction*. Anything that tried to push the rider (a force) would act for one step and be erased. That is fine because forces `disturb` the ship and drop the rail first, in the same tick.
 
@@ -428,7 +430,7 @@ The number of substeps depends on the fastest body in the frame. The rider's fra
 | The spin becomes exactly zero | `Followed::of` says nothing, the ship leaves the rider's frame and is a fixed body on its rail | *Read* |
 | The rail is refitted (a change in the mass of what it goes round) | The frame stays; `Followed::state` reads the ship's world velocity each tick | *Read* |
 | A sphere-of-influence hand-over | The rail's centre changes; the velocity is read from the world; the body is re-centred each tick anyway | *Read* |
-| A block is built on or taken off a railed turning ship | **Not examined** (8.3) | |
+| A block is built on or taken off a railed turning ship | The ship is weighed again, stays on its rail and goes on turning; its centre of mass stays on the rail's path and the whole ship takes a step by the shift of the centre (the owner's choice); a cut in two gives each part the speed of its own centre | *Ran*, section 10 (this was **not examined** when this report was written) |
 | Time warp | Not built; the design leaves it possible (the rail holds only the centre of mass) | |
 
 ## 7. The tests
@@ -480,7 +482,7 @@ Not seen by any output: a rider with gravity or planets in its frame (the speed 
 
 ### 8.1 Things that are wrong or stale, none of them behaviour
 
-(Items 1 to 5 were fixed in the commit that carries this report; the line numbers below are those of `a86d1ea`, before the fix. Item 6 was not changed.)
+(Items 1 to 5 were fixed in the commit that carries this report; the line numbers below are those of `a86d1ea`, before the fix. Item 6 was not changed then; it was fixed with the tests of section 10.)
 
 1. **`Follow`'s doc comment (`plugin.rs`, line 251) is stale.** It says "What a frame goes with: the planet on a rail that carries the ships in it", then describes the free fall and the missing terrain of a planet frame. `Followed` is documented right; `Follow` was not updated by 4c-1 or 4c-2. A rider's frame goes with a ship's centre of mass, has no gravity, and keeps no terrain for the same reason a planet frame does not (`keep_terrain`: `level_ground = follow.is_none()`).
 2. **`body_kind`'s doc comment (line 378) says a ship on a rail is a fixed body, with no exception**, and the caller now passes `on_a_rail && !rides`. The function is right; the comment above it does not say what 4c-2 does.
@@ -492,11 +494,13 @@ Not seen by any output: a rider with gravity or planets in its frame (the speed 
 ### 8.2 Design caveats worth knowing, not defects
 
 - **One `BodyWorld` per rider**, so N turning ships on rails are N worlds. Measured only on a bare world (4.3).
-- **The re-centring is a side effect** of a check written for "someone else moved this ship" (4.5). It works, and a change to that check (for example comparing with a tolerance on velocity to save a `set_state`) would break the rider without any test naming the cause; the bit-equality tests would catch it, but they would not say why.
+- **The re-centring is a side effect** of a check written for "someone else moved this ship" (4.5). ~~A change to that check would break the rider without any test naming the cause.~~ **Corrected (section 10): a change to that check does not break the rider**; the mutant that switched it off passed every test. The side effect is not load-bearing.
 - **`Followed::of` runs twice a tick per ship** (the leaving loop and `sync_ship`; the frame matching reuses the second answer). Each is a map lookup and a few comparisons; I did not measure it.
 - **The drift of the first-order step** is the owner's answer 5 (leave it). The exact torque-free rotor step is the cure and is also what a warp would use.
 
 ### 8.3 What nothing tests (so I have no evidence either way)
+
+(As written on 2026-11-10. Items 1, 2 and 3 are tested since, and item 6 is looked at: section 10. Items 4 and 5 stand.)
 
 1. **A block built on or removed from a railed turning ship.** An edit changes the centre of mass; `Followed::state` reads `grid.centre_of_mass`, which the plugin updates at the end of the step (`weighed`). The rail would then place the new centre of mass at the rail point (the owner's "keep the centre-of-mass step" decision of 2026-11-10), the frame's point jumps, and the body is re-set the next tick. I believe it works, because the re-sync handles any jump; I have not run it.
 2. **A ship tumbling after a blow** now goes on a rail after its quiet second and keeps tumbling. The design wants that. No test flies one, and the first-order drift (section 5) applies to it.
@@ -511,10 +515,60 @@ The accepted rule is: a ship may sleep only while touching another ship or the g
 
 ### 8.5 My opinion
 
-The world-side edits (section 3) are small, each is pinned, and I am confident in them. The bodies side is a small amount of code (`Followed::RailPoint`, `Followed::of`, an `if rides`, two `continue`s) whose correctness depends on one implicit mechanism (4.5) and one patch (4.4). Both are tested through their outputs, not by name. If I were reviewing this without having written it I would ask for exactly two additions before building on it: a test that names the re-centring (a rider's body stays at rest at the anchor over 200 ticks, checked through `BodyWorld::state` if the plugin can expose a view for tests, or through the world's speed bits), and the block-edit case of 8.3.1. Neither is large.
+The world-side edits (section 3) are small, each is pinned, and I am confident in them. The bodies side is a small amount of code (`Followed::RailPoint`, `Followed::of`, an `if rides`, two `continue`s) whose correctness depends on one implicit mechanism (4.5) and one patch (4.4). Both are tested through their outputs, not by name. If I were reviewing this without having written it I would ask for exactly two additions before building on it: a test that names the re-centring (a rider's body stays at rest at the anchor over 200 ticks, checked through `BodyWorld::state` if the plugin can expose a view for tests, or through the world's speed bits), and the block-edit case of 8.3.1. Neither is large. (**Done 2026-11-11, section 10, with a correction:** the block-edit case is tested; for the re-centring there turned out to be nothing to name, since the result does not depend on it. What is tested is the function that sets a rider's state, which a re-sync and the first making of the body both use.)
 
 ## 9. Re-run for this report
 
 *Ran* at the start of this review, on the tree of `a86d1ea`: `turning_on_a_rail` 9 passed, `never_asleep` 3 passed, the 34 tests of `coasting_ships` passed. That is the three files this report is about; the whole workspace was last run before the commit (3,181 passed, 4 ignored), and was run again after the comment edits of this commit (see the commit message for the result).
 
-See also: `docs/decisions/joints-and-cars.md` (the design and the owner's answers), `docs/history/build-log.md` ("Joints, step 4c-0", "Joints, step 4c-1", "Joints, step 4c-2"), `docs/history/loop-probe.md` (the drift of the step), `docs/plan.md` (the order of steps).
+## 10. Follow-up, 2026-11-11: the untested cases, tested
+
+The owner asked for tests for the cases of 8.3 before the sleep rule is built. **Seven tests were added to `games/voxunami_cave/tests/turning_on_a_rail.rs` (now 16) and one unit test to `engine/grid_bodies/src/plugin.rs` (now 33).** Everything here was *ran*, on Windows, unless it says *read*. The numbers are what the tests measured; each test says its own in a comment.
+
+| Test | What it pins | Measured |
+|---|---|---|
+| `the_tensor_that_the_tests_use_is_the_one_of_a_box` | The helper that works out a centre of mass and a tensor from voxels gives the formula of a box (a test of the test's own ruler) | exact to 1e-9 |
+| `blocks_placed_on_or_broken_from_a_ship_that_turns_on_a_rail_change_how_it_is_weighed_and_nothing_else` | Four blocks placed (a bar) and a corner broken, on a box that wobbles on a rail: weight and centre of mass are those of the voxels; it stays on its rail; its turn goes on from where it was (against an untouched twin); its centre of mass stays on the rail's path; and it turns by the **new** tensor | turn 6e-5 rad and 2e-3 rad/s from the twin's after the tick; centres 7e-15 voxels apart; momentum drift 1e-4 to 4e-4, energy 6e-5 at most, in 300 ticks |
+| `an_edit_steps_the_whole_ship_by_the_shift_of_its_centre_of_mass_in_the_tick_of_the_edit` | **Today's decision (owner, 2026-11-10, `ship-centre-of-mass-edit-options.md`):** the centre stays on the rail and the whole ship (its origin) takes a step of minus the shift, turned with the ship. Whoever builds option A changes this test on purpose | right to 1.4e-4 voxel for a shift of 0.35 |
+| `a_ship_that_turns_on_a_rail_and_is_cut_in_two_gives_each_part_the_speed_its_own_centre_had` | Two blocks joined by a bar, cut in the middle, turning on a rail: two new ships, neither with the old number, on no rail, still turning; one moves against the other by omega crossed with the arm between their centres; the rider's frame is gone | 6e-5 m/s of 3.1; the mean of their speeds is 0.83 from the ship's, which is two ticks of 0.41 (the rail's own turn in the tick of the cut, and the pull of the tick the parts have had) |
+| `a_blow_off_the_centre_sets_a_ship_on_a_rail_tumbling_and_it_is_put_on_a_rail_again_still_tumbling` | A force off the centre, once on a ship that was not turning and once on one that was: it takes the rail off, pushes and turns as the weight and the tensor say, the ship is on a rail again 20 ticks later (the second of quiet) and still tumbling, and nothing jumps at the hand-on (path, turn, angular momentum, energy) | push right to 1e-15; spin change right to 4e-4 rad/s from rest and to 1 percent from a turn; greatest kink 0.0207 (that of the circle); a tick's turn within 3e-4 of its spin; momentum 6e-4 and energy 8e-4 at most, over the free flight, the hand-on and 100 ticks on the rail |
+| `a_ship_that_turns_on_a_rail_is_taken_off_it_by_a_ship_that_comes_near_and_the_two_meet_as_bodies` | A cube B put 40 voxels ahead of a turning cube A that is on a rail, closing at 20 m/s: A loses its rail in that tick and keeps its turn; then they touch, and B does not go through A. A rider is alone in its frame, so this is what makes a rider meet anything | spin kept to 1e-9; after the meeting A's spin is (0.9, 1.2, -3.1); the middles came to 4.19 voxels; they closed at 7.5 after, from 20 |
+| `many_ships_that_turn_on_rails_each_turn_as_one_alone_does_each_in_a_frame_of_its_own` | 40 riders of four kinds, 400 voxels apart, put on rails in one tick: 40 frames, and after 60 ticks each one's turn is, bit for bit, that of a ship of its kind alone in its own world | |
+| (`plugin.rs`) `a_ship_that_turns_on_a_rail_is_given_rest_with_its_centre_of_mass_at_the_point_of_its_frame_whatever_the_rail_does` | The function that sets a rider's body from the world: no speed at all, exactly, and its centre of mass is the anchor of the frame, however far the point has gone and however its speed and the ship's facing turn | |
+
+**What they found. No fault in the code.** The four cases of 8.3.1, 8.3.2 and 8.3.3 do what 4c-2 meant. Four of my first versions were wrong, and the code was right each time: (1) the cut test expected a mean speed within 0.6 of the ship's, and it is 0.83 because the rail's own turn is one tick ahead of the pull (found by working out that 0.83 is two times 0.41, then written into the test); (2) the meeting test measured the gap between the cubes' *origins* (their corners), and a turned cube's corner is 2.6 from its middle, so "closest 1.47" was no pass-through at all (it measures the middles now); (3) the many-riders test put the ships on rails one at a time in one tick, and the later ships were still at rest, so the near rule saw 761 m/s of closing and refused the rail (a real property: ships put on rails in one tick must all be set going first, which is now `set_going_in` then `put_on_its_rail_in`); (4) the meeting test first had B 5 m/s slower, and a slower ship falls to a lower orbit, so it passed 6.5 voxels under A without touching and the test would have said nothing (20 m/s touches).
+
+**Mutants** (each broken by hand with a script that makes a byte-for-byte backup and puts it back; `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`):
+
+| Mutant | Caught by |
+|---|---|
+| a rider is not weighed again after an edit (the world keeps the old weight) | the edit test and the step test |
+| the body is weighed once and an edit does not reach it (the world is right) | the edit test, at "the angular momentum changed by 0.50 of itself" |
+| the parts of a cut get the speed of the ship, not of their own centres | the cut test, and only it |
+| a rider ignores a ship that comes near | the meeting test, and only it |
+| every rider follows one point, so one frame | the many-riders test, and only it |
+| a turning ship is refused a rail again | 15 of the 16 |
+| a blow does not take the rail | the blow test and the push test |
+| velocity in a frame ignores the speed of the point | the new unit test and three older ones |
+| **a rider is not set at rest again each tick** (`moved` is false for riders) | **nothing: all 16 pass** |
+
+(A first try at "the body is weighed once" took the body's mass away altogether; every body was weightless, the physics ran away on all cores, it was stopped by hand and it says nothing.)
+
+**A correction to this report.** The last mutant is the re-centring of 4.5, and it matters: I called it the piece the whole design depends on (risk 1 in section 0) and said the bit-equality tests would fail without it. They do not. Nothing acts on a rider, so a body set at rest at the point once stays there; the re-sync is harmless and would repair a body that something moved, but no output depends on it. 0, 4.5, 8.2 and 8.5 are corrected where they stand. That also answers the request I made in 8.5 for "a test that names the re-centring": there is nothing observable to name. (Whether `moved` is true every tick in the unmutated code I still did not count.)
+
+**The cost in the engine, which I had only from a bare world** (a throwaway test, not kept; Windows, the test profile, a loopback server with no clients, two runs that agreed):
+
+| Ships | Turning, on rails (one frame each) | Not turning, on rails (shared frames) |
+|---|---|---|
+| 0 | 0.034 ms a tick | 0.034 |
+| 1 | 0.075 | 0.108 |
+| 20 | 0.76 to 0.83 | 1.15 to 1.21 (1 frame) |
+| 60 | 2.30 to 2.32 (60 frames) | 3.32 (2 frames) |
+
+About **38 µs a tick for each rider** in all, linear from 20 to 60, and less than the 55 µs of a ship that does not turn (I did not look into why that is more). The 5 µs of the 4c-0 probe was the physics step alone, so section 4.3's "a thousand riders are 5 ms a tick" was wrong by a factor of seven or more: 38 ms for a thousand if it stays linear, **extrapolated, not measured**, of a 50 ms tick. The cost is the server's work for each ship (the rails twice a tick, the near rule, the plugin's per-ship look) more than the extra worlds; that would be the place to look if a thousand ships on rails is a case that matters.
+
+**Still not tested:** Linux; a rider's frame having no pull and no planets (no output sees it); a refit of the rail, a sphere-of-influence hand-over, and a spin that becomes exactly zero, with a rider (*read* only); more than 60 riders; what a player sees of a step when an edit is made.
+
+The workspace after this follow-up: 3,189 passed, 0 failed, 4 ignored on Windows (3,181 before, and 8 new tests). The whole workspace was run before a clippy fix to the new test file; after the fix the 16 tests of that file, the 33 of `grid_bodies` and the test of the documents were run again, and fmt, clippy on the whole workspace and `cargo doc` with `-D warnings` are clean.
+
+See also: `docs/decisions/joints-and-cars.md` (the design and the owner's answers), `docs/history/build-log.md` ("Joints, step 4c-0", "Joints, step 4c-1", "Joints, step 4c-2", "Joints, tests for what a rider meets"), `docs/history/loop-probe.md` (the drift of the step), `docs/plan.md` (the order of steps).

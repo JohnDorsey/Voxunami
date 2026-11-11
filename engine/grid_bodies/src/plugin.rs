@@ -2382,6 +2382,51 @@ mod tests {
         assert_eq!(still.linear_velocity, moving);
     }
 
+    /// **The rider is put at rest with its centre of mass at the point of its frame, every tick** (how the plugin does it: no line says "re-centre"; the world has the ship where the rail
+    /// puts it, the frame has gone with the rail's point, and the ship's state in the frame is worked out from the two). The rail moves the point and turns its speed every tick, the
+    /// facing changes with the turn, and still the body is given no speed at all (exactly: the speed of the ship less that of the point, the same numbers) and its centre of mass is the
+    /// anchor, however far the point has gone.
+    #[test]
+    fn a_ship_that_turns_on_a_rail_is_given_rest_with_its_centre_of_mass_at_the_point_of_its_frame_whatever_the_rail_does()
+     {
+        let ship = GridId::new(GridId::FIRST_ALLOCATED + 1);
+        let centre = [1.0, 1.5, 2.5];
+        let spin = [0.2, 0.3, 0.1];
+        let anchor = WorldPosition::new(BrickCoordinate::new(100, 2187, -3), [4.0, 5.0, 6.0]);
+        let mut follow = Follow {
+            followed: Followed::RailPoint(ship),
+            anchor,
+            shift: Displacement::NONE,
+            velocity: [761.0, 0.0, 0.0],
+        };
+        for tick in 1..=5 {
+            let tick = f64::from(tick);
+            // The point went on 38 voxels a tick along x and bends down, and its speed turned.
+            let point = anchor.translated([38.0 * tick, -0.01 * tick * tick, 0.5 * tick]);
+            let velocity = [761.0 - 0.012 * tick, -0.41 * tick, 0.5 * tick];
+            follow.shift = anchor.displacement_to(point);
+            follow.velocity = velocity;
+            let facing = turn_about(spin, 0.3 + 0.016 * tick);
+            // The origin of the ship is the point less the centre of mass turned with the ship.
+            let arm = GridPose::new(point, facing).direction_to_world(centre);
+            let origin = point.translated(arm.map(|part| -part));
+            let pose = GridPose::new(origin, facing);
+            let state =
+                ship_state_in(Some(follow), BodyKind::Dynamic, pose, velocity, spin).unwrap();
+            assert_eq!(state.linear_velocity, [0.0; 3], "tick {tick}: at rest");
+            assert_eq!(state.angular_velocity, spin, "tick {tick}: turning");
+            assert!(same_turn(state.orientation, facing), "tick {tick}: facing");
+            let found = GridPose::new(state.position, state.orientation)
+                .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, centre))
+                .unwrap();
+            let apart = found.displacement_to(anchor).in_voxels();
+            assert!(
+                apart.iter().all(|part| part.abs() < 1e-9),
+                "tick {tick}: the centre of mass is {apart:?} from the anchor of the frame"
+            );
+        }
+    }
+
     #[test]
     fn a_planet_that_stands_still_is_given_its_state_as_it_is_and_one_that_moves_its_state_a_tick_before()
      {
