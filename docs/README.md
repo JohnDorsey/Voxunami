@@ -53,6 +53,7 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `loop-probe.md` (2026-11-06: loops of cars on multibody or impulse joints, phantom momentum and free energy, cost against the number of cars, overlapping colliders, spin, and the accuracy of `BodyWorld` collisions; programs in `spikes/loops/`).
 - `contact-shadow-spike.md` (2026-11-09: the lit strip at the foot of a wall measured at every sun and cascade, its cause in the map's depth bias, and a prototype that walks the sun's ray through a voxel volume to remove it, with its cost on the integrated GPU; the code is in commits `3f6ffb1` and `e166faf` of the branch `worktree-shaders`, and out of the tree: see the document).
 - `shader-systems-survey.md` (2026-11-10: how shader packs work in the block-game genre, OptiFine and Iris above all, and in other games and engines, set against our `shader-pack-spec.md`, with what to keep, what is too narrow, and the owner's open questions; read from primary sources, each claim marked as re-read, inferred, run or not read).
+- `shade-study.md` (2026-11-11: whether the shade is legible at a distance, measured on ten fixed Cave views, with the shade's share of the sky's light at 70, 130 and 190; 38% of the far terrain is nearly black today).
 - `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 
