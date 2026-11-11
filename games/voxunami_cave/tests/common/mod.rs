@@ -274,9 +274,14 @@ impl PlayerExt for Player {
 /// Something to do to the server's world, inside the server.
 pub type Action = Box<dyn FnOnce(&mut ServerWorld) + Send>;
 
-/// A plugin that runs the actions it is given, one in each tick, before the rules.
+/// Something a test has shown the world in each tick, once the bodies have moved and what depends on that has settled, and before the world puts the ships on their rails for the
+/// second time and tells anyone what it is: it can look and not touch.
+pub type Watcher = Box<dyn FnMut(&ServerWorld) + Send>;
+
+/// A plugin that runs the actions it is given, one in each tick, before the rules, and shows the world to the watchers after the bodies.
 struct Script {
     actions: Arc<Mutex<VecDeque<Action>>>,
+    watchers: Arc<Mutex<Vec<Watcher>>>,
 }
 
 impl Plugin for Script {
@@ -292,6 +297,15 @@ impl Plugin for Script {
                 let next = actions.lock().unwrap().pop_front();
                 if let Some(action) = next {
                     action(context.world());
+                }
+            },
+        );
+        let watchers = Arc::clone(&self.watchers);
+        registrar.system(
+            SystemSpec::new("test:watch_the_world", Phase::Settle),
+            move |context| {
+                for watcher in watchers.lock().unwrap().iter_mut() {
+                    watcher(context.world());
                 }
             },
         );
@@ -751,6 +765,7 @@ pub fn heavy_planet(scene: &mut Scene) {
 pub struct Scene {
     pub rig: Rig,
     actions: Arc<Mutex<VecDeque<Action>>>,
+    watchers: Arc<Mutex<Vec<Watcher>>>,
 }
 
 impl Scene {
@@ -777,14 +792,23 @@ impl Scene {
         world: world_storage::WorldData,
     ) -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
+        let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
         let (mut plugins, report) = voxunami_cave::plugins::cave_plugins_reporting(&content);
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
+            watchers: Arc::clone(&watchers),
         }));
         let files = MemoryShipFiles::new();
         let disk = Box::new(files.clone());
         let rig = Rig::with_plugins_on_disk(content, world, plugins, files, disk);
-        (Self { rig, actions }, report)
+        (
+            Self {
+                rig,
+                actions,
+                watchers,
+            },
+            report,
+        )
     }
 
     /// A scene in the world a new game starts in: space with the planet in it, and the overworld second.
@@ -812,16 +836,24 @@ impl Scene {
         disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>,
     ) -> Self {
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
+        let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
         let mut plugins = cave_plugins(&content);
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
+            watchers: Arc::clone(&watchers),
         }));
         let files = MemoryShipFiles::new();
         let disk = disk(files.clone());
         Self {
             rig: Rig::with_plugins_on_disk(content, world, plugins, files, disk),
             actions,
+            watchers,
         }
+    }
+
+    /// Has `watcher` shown the world in each tick from now on, after the bodies have moved (see [`Watcher`]).
+    pub fn watch(&mut self, watcher: impl FnMut(&ServerWorld) + Send + 'static) {
+        self.watchers.lock().unwrap().push(Box::new(watcher));
     }
 
     /// Has the server run this in its next tick, and runs that tick.
@@ -872,14 +904,17 @@ impl Scene {
         let seed = parsed.world_seed();
         let (world, _) = parsed.load(content.load_context(seed)).unwrap();
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
+        let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
         let (mut plugins, extra) = plugins_for(&content);
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
+            watchers: Arc::clone(&watchers),
         }));
         (
             Self {
                 rig: Rig::with_plugins_and_files(content, world, plugins, files),
                 actions,
+                watchers,
             },
             extra,
         )

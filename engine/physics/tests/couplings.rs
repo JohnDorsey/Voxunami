@@ -834,3 +834,108 @@ fn the_tick_is_what_the_pins_assume() {
     // (The scenes above are written for a tick of a twentieth of a second.)
     assert_eq!(BodySettings::default().time_step, TICK);
 }
+
+#[test]
+fn shifting_the_bodies_moves_a_coupled_pair_as_one_and_changes_the_speed_of_both_by_the_same() {
+    let mut world = free_space();
+    two_cars_on_a_ball(&mut world, 4, [0.0; 3], [0.0, 0.0, 0.4], [0.0, 0.0, -0.4]);
+    for _ in 0..5 {
+        world.step();
+    }
+    let before = [FIRST, SECOND].map(|id| world.state(id).unwrap());
+    let gap_before = world.pivot_gap(JOINT).unwrap();
+    let (by, faster) = ([10.0, -20.0, 30.5], [1.0, 2.0, -0.5]);
+    world.shift_bodies(by, faster);
+    for (id, was) in [FIRST, SECOND].into_iter().zip(before) {
+        let now = world.state(id).unwrap();
+        assert!(difference(now.position.relative_to(was.position), by) < 1e-12);
+        assert!(difference(now.linear_velocity, add(was.linear_velocity, faster)) < 1e-12);
+        assert_eq!(
+            now.angular_velocity, was.angular_velocity,
+            "{id:?}: how it turns"
+        );
+        assert_eq!(now.orientation, was.orientation, "{id:?}: how it faces");
+    }
+    assert!((world.pivot_gap(JOINT).unwrap() - gap_before).abs() < 1e-12);
+}
+
+#[test]
+fn a_pair_that_was_shifted_goes_on_as_the_pair_that_was_not_shifted_but_by_the_shift() {
+    // Swinging about the ball, 100 ticks (five seconds), shifted at the start by a place and a speed: the pair is where the other is, less the shift, with the speed it has less
+    // the change; the joint did not notice.
+    let (by, faster) = ([10.0, -20.0, 30.5], [1.0, 2.0, -0.5]);
+    let swing = |shifted: bool| {
+        let mut world = free_space();
+        two_cars_on_a_ball(&mut world, 4, [0.0; 3], [0.0, 0.0, 0.4], [0.0, 0.0, -0.4]);
+        if shifted {
+            world.shift_bodies(by, faster);
+        }
+        for _ in 0..100 {
+            world.step();
+        }
+        let states = [FIRST, SECOND].map(|id| world.state(id).unwrap());
+        (states, world.pivot_gap(JOINT).unwrap())
+    };
+    let (plain, plain_gap) = swing(false);
+    let (moved, moved_gap) = swing(true);
+    let gone = add(by, scale(faster, 100.0 * TICK));
+    for index in 0..2 {
+        let (was, now) = (&plain[index], &moved[index]);
+        assert!(
+            difference(now.position.relative_to(was.position), gone) < 1e-9,
+            "car {index}: {:?} against {gone:?}",
+            now.position.relative_to(was.position)
+        );
+        assert!(difference(now.linear_velocity, add(was.linear_velocity, faster)) < 1e-9);
+        assert!(difference(now.angular_velocity, was.angular_velocity) < 1e-9);
+        let (then, found) = (was.orientation.components(), now.orientation.components());
+        assert!((0..4).all(|axis| (then[axis] - found[axis]).abs() < 1e-9));
+    }
+    assert!((moved_gap - plain_gap).abs() < 1e-9);
+    // (They did swing: the control of this test is that the pair is turning, about the ball, at the end.)
+    assert!(length(plain[0].angular_velocity) > 0.1);
+}
+
+#[test]
+fn shifting_the_bodies_leaves_a_body_that_does_not_move_where_it_is() {
+    let mut world = free_space();
+    add_car(
+        &mut world,
+        FIRST,
+        BodyKind::Fixed,
+        2,
+        [50.0; 3],
+        [0.0; 3],
+        [0.0; 3],
+    );
+    add_car(
+        &mut world,
+        SECOND,
+        BodyKind::Kinematic,
+        2,
+        [60.0; 3],
+        [1.0, 0.0, 0.0],
+        [0.0; 3],
+    );
+    add_car(
+        &mut world,
+        THIRD,
+        BodyKind::Dynamic,
+        2,
+        [70.0; 3],
+        [0.0; 3],
+        [0.0; 3],
+    );
+    let before = [FIRST, SECOND, THIRD].map(|id| world.state(id).unwrap());
+    world.shift_bodies([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]);
+    let after = [FIRST, SECOND, THIRD].map(|id| world.state(id).unwrap());
+    assert_eq!(after[0], before[0], "a fixed body");
+    assert_eq!(after[1], before[1], "a kinematic one");
+    assert!(
+        difference(
+            after[2].position.relative_to(before[2].position),
+            [1.0, 2.0, 3.0]
+        ) < 1e-12
+    );
+    assert_eq!(after[2].linear_velocity, [4.0, 5.0, 6.0]);
+}

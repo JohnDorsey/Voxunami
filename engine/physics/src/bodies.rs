@@ -897,6 +897,26 @@ impl BodyWorld {
         self.origin = origin;
     }
 
+    /// Moves every body that moves (a dynamic one) by `by` voxels and changes its velocity by `faster`, the same for all, and leaves what turns them, what holds them together
+    /// (joints go with the bodies), and everything that does not move, as they are. It is what a frame does that is held with its point on the centre of mass of what is in it:
+    /// the bodies are put back, together, when the sum of their motion has drifted from it by the rounding of the steps, or by an edit that moved the centre of mass (the group of
+    /// ships on a rail in `docs/decisions/joints-and-cars.md`, 4c-3). A sleeping body stays asleep.
+    pub fn shift_bodies(&mut self, by: [f64; 3], faster: [f64; 3]) {
+        let (by, faster) = (vector(by), vector(faster));
+        for (_, body) in self.bodies.iter_mut() {
+            if !body.is_dynamic() {
+                continue;
+            }
+            let pose = *body.position();
+            body.set_position(
+                Pose::from_parts(pose.translation + by, pose.rotation),
+                false,
+            );
+            let velocity = body.linvel();
+            body.set_linvel(velocity + faster, false);
+        }
+    }
+
     /// A hash of every body's place and motion, bit for bit, in order of number: two runs of the same calls on any machines must agree.
     pub fn state_hash(&self) -> u64 {
         let mut state: u64 = 0xcbf2_9ce4_8422_2325;

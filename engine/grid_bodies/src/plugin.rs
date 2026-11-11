@@ -255,6 +255,8 @@ struct Frame {
 /// pull of what the planet goes round (`ServerWorld::gravity_in_the_free_fall_of`), and it has no terrain of the level, which stands still in the world (blocks built in
 /// space near a planet on a rail are not solid to what goes with the planet).
 /// For the centre of mass of a ship that turns on a rail: the frame has that one ship in it, at rest, with no pull and no planets, and no terrain of the level either.
+/// For the centre of mass of a group of ships coupled by their joint ends that rides a rail: the frame has the ships of the group in it, free bodies with their joints, and
+/// the same: no pull, no planets, no terrain, nothing else. The bodies hold the centre of mass of the group at the frame's point (see `Bodies::hold_groups_at_their_points`).
 #[derive(Clone, Copy, Debug)]
 struct Follow {
     followed: Followed,
@@ -275,6 +277,11 @@ enum Followed {
     /// The centre of mass of a ship that turns on a rail: the rail holds that point and nothing else, and the ship's turn is the bodies' work, done in a frame of its own with
     /// the ship at rest at the point. It has nothing else in it (no planet, no terrain, no other ship) and nothing pulls on it: it falls with the ship.
     RailPoint(GridId),
+    /// The centre of mass of a group of ships coupled by their joint ends, whose anchor (the ship of the group with the lowest number, named) holds the rail: the rail holds the
+    /// centre of mass of the ships and nothing else, and what the ships do against each other is the bodies' work, done in a frame of its own, the ships free bodies with their
+    /// joints. Nothing is in it but the group and nothing pulls on it: it falls with the group. The ships in it are put in the world by the frame (their places are the point's
+    /// and what the bodies have), and the world does not put them in it.
+    RailGroup(GridId),
 }
 
 impl Followed {
@@ -293,6 +300,7 @@ impl Followed {
                 ))?;
                 Some((middle, grid.linear_velocity))
             }
+            Self::RailGroup(anchor) => world.rail_group_centre(anchor),
         }
     }
 
@@ -300,7 +308,7 @@ impl Followed {
     fn gravity(self, world: &ServerWorld, there: WorldPosition) -> Option<[f64; 3]> {
         match self {
             Self::Planet(planet) => Some(world.gravity_in_the_free_fall_of(planet, there)),
-            Self::RailPoint(_) => None,
+            Self::RailPoint(_) | Self::RailGroup(_) => None,
         }
     }
 
@@ -309,11 +317,18 @@ impl Followed {
         matches!(self, Self::Planet(_))
     }
 
-    /// What the frame of a ship goes with: the planet that carries it (see `ServerWorld::carrier_of`), or its own centre of mass if it turns on a rail (a rail with no spin of
-    /// its own: it is the rail that has the place and the bodies that have the turn), or nothing.
+    /// What the frame of a ship goes with: the planet that carries it (see `ServerWorld::carrier_of`), or the centre of mass of its group if it is coupled to other ships and the
+    /// group rides a rail, or its own centre of mass if it turns on a rail (a rail with no spin of its own: it is the rail that has the place and the bodies that have the turn),
+    /// or nothing. **A group is in its frame whole, frozen or not:** a ship of it that is frozen is a fixed body there, which the others hang from by their joints (a group
+    /// that goes in and out of a frame as it is frozen and let go would lose its joints and its bodies' state each time; a ship that is held has taken the rail from its group).
     fn of(world: &ServerWorld, id: GridId, ship: &MovingGrid) -> Option<Self> {
         if let Some(planet) = world.carrier_of(id) {
             return Some(Self::Planet(planet));
+        }
+        if world.data().grids().has_partners(id) {
+            return world
+                .rail_group_of(id)
+                .map(|group| Self::RailGroup(group.anchor));
         }
         let turns_on_a_rail = !ship.held
             && !ship.frozen
@@ -926,6 +941,7 @@ impl Bodies {
         for frame in self.frames.values_mut() {
             frame.bodies.step();
         }
+        self.hold_groups_at_their_points();
         let frames = self.frames.len() as u64;
         self.count(|report| report.frames = frames);
         self.write_back(world);
@@ -944,7 +960,10 @@ impl Bodies {
         };
         // A ship that turns on a rail is a free body in a frame of its own (the rail holds its centre of mass, the bodies turn it); any other ship on a rail is a fixed one.
         let followed = Followed::of(world, id, ship);
-        let rides = matches!(followed, Some(Followed::RailPoint(_)));
+        let rides = matches!(
+            followed,
+            Some(Followed::RailPoint(_) | Followed::RailGroup(_))
+        );
         let kind = body_kind(ship.held, ship.frozen, ship.rail.is_some() && !rides);
         let Some(key) = self.frame_of(id) else {
             // A ship is put in the first frame of its level that goes with the planet that carries it (or with none, if none does) and that it is near the origin of,
@@ -1079,6 +1098,12 @@ impl Bodies {
         let moved = kind_changed
             || match follow {
                 None => written != (ship.pose, ship.linear_velocity, ship.angular_velocity),
+                // A ship of a group on a rail is the bodies' (its places against the others, its speeds against them, its turn): the world moves the whole group along the rail
+                // and does not put a ship of it anywhere, and anything else that does takes the group off the rail first, which takes it out of the frame.
+                Some(Follow {
+                    followed: Followed::RailGroup(_),
+                    ..
+                }) => false,
                 Some(_) => {
                     written.0.orientation != ship.pose.orientation
                         || written.1 != ship.linear_velocity
@@ -1535,6 +1560,51 @@ impl Bodies {
                 } else {
                     level.bodies.apply_steady_force(body, force)
                 };
+            }
+        }
+    }
+
+    /// Holds the centre of mass of each group on a rail at the point of its frame, at rest there: all its bodies are moved by the one vector, and their speeds changed by the one,
+    /// that put it there. What the bodies do against each other is what it was; the joints and the turns are not touched. **The rail is the authority for where the group goes**,
+    /// and the group's own motion adds nothing to it: a body world conserves momentum to the rounding of its steps, and what is left is taken out here each tick (an hour of
+    /// ticks adds up to nothing that shows); an edit that moves the centre of mass of the group (a block placed or broken, which changes what a ship weighs and where its middle
+    /// is) steps the whole group by the shift, as it steps a single ship, which is the owner's decision of 2026-11-10 and what a single ship on a rail does.
+    fn hold_groups_at_their_points(&mut self) {
+        for frame in self.frames.values_mut() {
+            let Some(Follow {
+                followed: Followed::RailGroup(_),
+                anchor,
+                ..
+            }) = frame.follow
+            else {
+                continue;
+            };
+            let (mut mass, mut apart, mut speed) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
+            for (id, record) in &frame.ships {
+                if record.mass <= 0.0 || record.kind == BodyKind::Fixed {
+                    continue;
+                }
+                let Some(state) = frame.bodies.state(BodyId(id.get())) else {
+                    continue;
+                };
+                let Some(middle) = pose_of(&state).local_to_world(WorldPosition::new(
+                    BrickCoordinate::ORIGIN,
+                    record.centre_of_mass,
+                )) else {
+                    continue;
+                };
+                let from_the_point = middle.relative_to(anchor);
+                for axis in 0..3 {
+                    apart[axis] += record.mass * from_the_point[axis];
+                    speed[axis] += record.mass * state.linear_velocity[axis];
+                }
+                mass += record.mass;
+            }
+            if mass > 0.0 {
+                frame.bodies.shift_bodies(
+                    apart.map(|part| -part / mass),
+                    speed.map(|part| -part / mass),
+                );
             }
         }
     }
