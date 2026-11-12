@@ -84,6 +84,14 @@ All opinions; none tested except the probe above.
    force on a ship when a player pushes. It is the biggest and riskiest: a dynamic capsule feels worse than the kinematic one on stairs
    and slopes, and Windows/Linux determinism was not checked. Advised against for now; confidence low to medium.
 
+## Option 1 built (2026-11-12): what the tests found
+
+Four tests at the end of `games/voxunami_cave/tests/aboard_frame_terms.rs`, which read only the jump and the walk, so they do not depend on how the motion is stored. The fourteen oracle tests above them are unchanged.
+
+- **Boost invariance (pass; ran, Windows).** A ship brought to a velocity (30 m/s along x, 60 along -z, 60 up, 250 along x, and (40, 25, -30)) with the walker buckled, who is then let go and jumps in a rest, a free fall and a burn: the rise agrees with the same run at no boost to 0.02 m. Walking: the walker's distance in the ship agrees to 0.05 m, and their distance in the world is the ship's plus theirs in it. **They bite:** with `felt_aboard` mutated to take the ship's acceleration from its speed and not from the change of it, both fail (so do eight of the oracle's). So today's stored form is Galilean-invariant for a walker who stays aboard; the bugs are not there.
+- **Id invariance (fail; ran).** A ship given a new id (`renumber_ship`) or cut in two (`split_grid`) between 0 and 5 ticks after the jump key. In free fall the jump is lost: the highest rise is 0.18 to 0.9 m against 2.16 m with no change (the speed is zeroed, so one tick of the jump is all there is). In a burn it is 0.703, 0.665, 0.593, 0.426 and 0.567 m against 0.618 m. A renumbering gives the same numbers as a split to every digit, so it is the change of id and not the cut that does it. These two are `#[ignore]`d with the reason, so that a commit ends green; option 2 turns them on.
+- **Not covered:** a merge or dock (its lattice transform can turn the walker's speed), a walker who is buckled or in the seat when the id changes, a ship on a rail, a walker in a level carried by a planet. All are the next tests.
+
 ## Recommendation
 
 Options 1 and 2 first: they fix the verified bug and put the owner's sentence into a test. Then prototype 3 and 4 against the tests that
