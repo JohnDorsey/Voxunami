@@ -1327,7 +1327,7 @@ fn a_walker_who_left_a_fast_deck_goes_on_at_its_speed_when_the_deck_is_cut_in_tw
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// A deck that really turns, cut in two while it does (a measurement, 2026-11-12: what a walker feels at the cut).
+// A deck that really turns, cut in two or merged with another ship while it does (what a walker feels at the change of id, 2026-11-12).
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /// A turn about the world's y of `angle` radians, as the pose of a ship.
@@ -1360,48 +1360,145 @@ fn turning_at(spin: f64, tick: usize) -> (f64, f64) {
     }
 }
 
-/// Runs `ticks` ticks (of which `done` have been run) in which the ship at the handle turns about the vertical through the place `pivot` in the world, which is the place `centre`
-/// is at in its own coordinates when it does not turn (the centre of mass of the deck as it was whole), as a rigid body: its origin is posed from that, whatever the ship is now,
-/// and its speed is the speed of the ship's centre of mass now (`MovingGrid::centre_of_mass`, which a cut changes) in that turn. `change` is done to it in the tick it names.
+/// What else the assembly does, from a tick on, besides turning at a steady rate.
+#[derive(Clone, Copy, Debug)]
+enum Variation {
+    /// Nothing.
+    Steady,
+    /// A burn straight up at the pull (the pivot accelerates, along the axis of the turn).
+    Burning,
+    /// The turn gets faster by this many radians a second a second (the Euler pull).
+    SpinningUp(f64),
+}
+
+/// What a rigid assembly that turns about a vertical is doing at a tick: how far it has turned and how fast, where the point it turns about is, and how fast that goes.
+#[derive(Clone, Copy)]
+struct Turn {
+    angle: f64,
+    spin: f64,
+    pivot: [f64; 3],
+    pivot_velocity: [f64; 3],
+}
+
+type Timeline = Arc<dyn Fn(usize) -> Turn + Send + Sync>;
+
+/// The assembly turns as `turning_at` says, and from the tick `from` does what `variation` says too; its pivot is at `pivot` when it has not moved.
+fn timeline(spin: f64, variation: Variation, pivot: [f64; 3], from: usize) -> Timeline {
+    Arc::new(move |tick| {
+        let (mut angle, mut turn) = turning_at(spin, tick);
+        let after = tick.saturating_sub(from) as f64 * TICK;
+        let (mut place, mut velocity) = (pivot, [0.0; 3]);
+        match variation {
+            Variation::Steady => {}
+            Variation::Burning => {
+                place[1] += 0.5 * PULL * after * after;
+                velocity[1] = PULL * after;
+            }
+            Variation::SpinningUp(rate) => {
+                angle += 0.5 * rate * after * after;
+                turn += rate * after;
+            }
+        }
+        Turn {
+            angle,
+            spin: turn,
+            pivot: place,
+            pivot_velocity: velocity,
+        }
+    })
+}
+
+/// A ship that is driven as part of the assembly: its handle (what it is called now), and where its origin was and how it was turned when the assembly had not turned.
+#[derive(Clone)]
+struct Part {
+    handle: ShipHandle,
+    origin: [f64; 3],
+    orientation: Orientation,
+}
+
+/// Something done to the ships of the assembly, which are given as their handles, in the order of the parts.
+type Cut = Arc<dyn Fn(&mut ServerWorld, &[ShipHandle]) + Send + Sync>;
+
+/// A change of id of the first ship, as the other tests do it.
+fn cut_of(change: Change) -> Cut {
+    Arc::new(move |world, handles| change(world, &handles[0]))
+}
+
+/// Runs `ticks` ticks (of which `done` have been run) in which the ships of the assembly turn as a rigid body about the vertical through the pivot of `timeline`, which is at
+/// `pivot` when it has not moved: each ship is posed from where its origin was and how it was turned, and goes at the speed of its own centre of mass now
+/// (`MovingGrid::centre_of_mass`, which a cut or a merge changes) in that turn. `cut` is done in the tick it names, last. A ship that two handles name is driven once, by the first.
 #[allow(clippy::too_many_arguments)]
-fn drive_turning(
+fn drive_assembly(
     scene: &mut Scene,
     player: &mut Player,
-    ship: &ShipHandle,
-    spin: f64,
-    (pivot, centre): ([f64; 3], [f64; 3]),
+    parts: &[Part],
+    timeline: &Timeline,
+    pivot: [f64; 3],
     done: usize,
     ticks: usize,
-    change: Option<(usize, Change)>,
+    cut: Option<(usize, Cut)>,
 ) {
-    let ship = Arc::clone(ship);
+    let (parts, timeline) = (parts.to_vec(), Arc::clone(timeline));
     common::each_tick(scene, player, ticks, move |world, tick| {
-        if let Some(change) = change
-            .filter(|(at, _)| *at == tick)
-            .map(|(_, change)| change)
-        {
-            change(world, &ship);
+        let turn = timeline(done + tick + 1);
+        let mut driven = BTreeSet::new();
+        for part in &parts {
+            let id = *part.handle.lock().unwrap();
+            if !driven.insert(id) {
+                continue;
+            }
+            let first = [0, 1, 2].map(|axis| part.origin[axis] - pivot[axis]);
+            let carried = posed(part.origin, part.orientation);
+            let centre = carried.direction_to_world(
+                world
+                    .data()
+                    .grids()
+                    .get(id)
+                    .expect("the ship")
+                    .centre_of_mass,
+            );
+            // Where the ship's centre of mass is from the pivot when the assembly has not turned, turned.
+            let arm = about_y(turn.angle, [0, 1, 2].map(|axis| first[axis] + centre[axis]));
+            // (A ship made by a merge has no mass and its centre of mass at its origin until the bodies weigh it in the tick: the speed its plan gave it is the speed of the centre of
+            // mass they find, and a speed worked out for the origin would be another point's.)
+            let (unweighed, planned) = {
+                let ship = world.data().grids().get(id).expect("the ship");
+                (
+                    ship.mass == 0.0 && ship.centre_of_mass == [0.0; 3],
+                    ship.linear_velocity,
+                )
+            };
+            let velocity = [
+                turn.pivot_velocity[0] + turn.spin * arm[2],
+                turn.pivot_velocity[1],
+                turn.pivot_velocity[2] - turn.spin * arm[0],
+            ];
+            let turned_first = about_y(turn.angle, first);
+            let origin = [0, 1, 2].map(|axis| turn.pivot[axis] + turned_first[axis]);
+            world
+                .set_grid_pose(
+                    id,
+                    posed(origin, turned_about_y(turn.angle).compose(part.orientation)),
+                )
+                .unwrap();
+            if unweighed {
+                world
+                    .set_grid_velocity(id, planned, [0.0, turn.spin, 0.0])
+                    .unwrap();
+            } else {
+                world
+                    .set_grid_velocity(id, velocity, [0.0, turn.spin, 0.0])
+                    .unwrap();
+            }
         }
-        let id = *ship.lock().unwrap();
-        let (angle, omega) = turning_at(spin, done + tick + 1);
-        let origin = {
-            let turned = about_y(angle, centre);
-            [0, 1, 2].map(|axis| pivot[axis] - turned[axis])
-        };
-        let now = world
-            .data()
-            .grids()
-            .get(id)
-            .expect("the ship")
-            .centre_of_mass;
-        let arm = about_y(angle, [0, 1, 2].map(|axis| now[axis] - centre[axis]));
-        let velocity = [omega * arm[2], 0.0, -omega * arm[0]];
-        world
-            .set_grid_pose(id, posed(origin, turned_about_y(angle)))
-            .unwrap();
-        world
-            .set_grid_velocity(id, velocity, [0.0, omega, 0.0])
-            .unwrap();
+        // (Last, so that the plan of a merge hears of the speeds of this tick, as the docking of the game does when it works them out.)
+        if let Some((at, cut)) = &cut
+            && *at == tick
+        {
+            let handles: Vec<ShipHandle> =
+                parts.iter().map(|part| Arc::clone(&part.handle)).collect();
+            cut(world, &handles);
+        }
     });
 }
 
@@ -1429,12 +1526,61 @@ fn split_at<const CUT: i128>(world: &mut ServerWorld, ship: &Mutex<GridId>) {
         .expect("the walker is aboard one of the parts");
 }
 
-/// A walker who stands at `x` along a deck that turns steadily at `spin` about the vertical through its centre of mass, and where their eyes are in the ship, tick by tick, for
-/// `ticks` ticks from the cut (if `change`: two ticks into them).
+/// A deck and a larger ship beside it, turned a quarter about z, that are one ship from now on: the deck is the smaller, so it is carried onto the lattice of the other. The
+/// speeds are the whole's, as the docking of the game works them out (the speed of the centre of mass of both, which turn alike; the mass of each is what the bodies worked out).
+/// The handles of the parts are the base's and then the deck's, and both name the merged ship after.
+fn merge_the_deck_into_the_base(world: &mut ServerWorld, handles: &[ShipHandle]) {
+    let (base, deck) = (*handles[0].lock().unwrap(), *handles[1].lock().unwrap());
+    let (mass, linear) = {
+        let grids = world.data().grids();
+        let one = grids.get(base).expect("the base");
+        let other = grids.get(deck).expect("the deck");
+        let mass = one.mass + other.mass;
+        let linear = [0, 1, 2].map(|axis| {
+            (one.mass * one.linear_velocity[axis] + other.mass * other.linear_velocity[axis]) / mass
+        });
+        (mass, linear)
+    };
+    assert!(mass > 0.0, "the premise: the bodies have weighed both");
+    let angular = world
+        .data()
+        .grids()
+        .get(base)
+        .expect("the base")
+        .angular_velocity;
+    let content = voxunami_cave::content::CaveContent::new();
+    let turn = |_: &mut Vec<(voxel_grid::ChannelIndex, u32)>, _: voxel_space::LatticeRotation| {};
+    let merged = world
+        .merge_grids(
+            deck,
+            base,
+            &server::MergePlan {
+                block_channel: content.block_channel(),
+                orientation_channel: Some(content.orientation_channel()),
+                tolerance: voxel_space::AlignmentTolerance::default(),
+                turn: &turn,
+                linear_velocity: linear,
+                angular_velocity: angular,
+            },
+        )
+        .expect("the deck and the other ship were merged");
+    *handles[0].lock().unwrap() = merged;
+    *handles[1].lock().unwrap() = merged;
+}
+
+/// The ticks of the settling of a walker on an assembly that turns: buckled while it gets up to its spin (two at rest, forty of getting up), let go, and twenty to be still; the
+/// ticks that the window of the measure begins after.
+const SETTLED: usize = AT_REST + RAMP + 2 + 20;
+
+/// A walker who stands at `x` along a deck (and, if `with_a_base`, a larger ship beside it, turned a quarter about z, which turns with it) that turns about the vertical through
+/// its centre of mass at `spin` and does what `variation` says from ten ticks before the window of the measure; and where their eyes are in the world, tick by tick, for `ticks`
+/// ticks from the start of the window, with `cut` done two ticks into it (if there is one). `None` for the tick they are no longer aboard the ship that the first handle names.
 fn track_on_a_turning_deck(
     spin: f64,
+    variation: Variation,
     x: f64,
-    change: Option<Change>,
+    with_a_base: bool,
+    cut: Option<Cut>,
     ticks: usize,
 ) -> (Vec<[f64; 3]>, Option<usize>) {
     let mut scene = scene_with_a_deck();
@@ -1444,6 +1590,18 @@ fn track_on_a_turning_deck(
             ..GravitySettings::default()
         });
     });
+    if with_a_base {
+        common::make_ship(
+            &mut scene,
+            posed(
+                plus(START, BASE_BESIDE_THE_DECK),
+                roll(std::f64::consts::FRAC_PI_2),
+            ),
+            true,
+            [40, 2, 8],
+            |_| true,
+        );
+    }
     // (Falls onto the deck from 8 above it at `x` along it, 4 across it, and is still on it.)
     let mut player = scene
         .rig
@@ -1451,78 +1609,69 @@ fn track_on_a_turning_deck(
     scene.rig.settle(&mut [&mut player]);
     common::tick_and_follow(&mut scene, &mut player, 60);
     assert_eq!(common::player_pose(&scene, 1).grid, ship_id(0), "aboard");
-    let centre = centre_of_the_deck(&scene);
-    let place = (plus(START, centre), centre);
-    let ship = the_deck();
+    let pivot = plus(START, centre_of_the_deck(&scene));
+    let deck = Part {
+        handle: the_deck(),
+        origin: START,
+        orientation: Orientation::IDENTITY,
+    };
+    let mut parts = vec![deck.clone()];
+    if with_a_base {
+        parts.insert(
+            0,
+            Part {
+                handle: Arc::new(Mutex::new(ship_id(1))),
+                origin: plus(START, BASE_BESIDE_THE_DECK),
+                orientation: roll(std::f64::consts::FRAC_PI_2),
+            },
+        );
+    }
+    let timeline = timeline(spin, variation, pivot, SETTLED - 10);
+    let run = |scene: &mut Scene, player: &mut Player, done: usize, ticks: usize, cut| {
+        drive_assembly(scene, player, &parts, &timeline, pivot, done, ticks, cut);
+    };
     player.send_command("/ship buckle");
-    drive_turning(&mut scene, &mut player, &ship, spin, place, 0, 2, None);
+    run(&mut scene, &mut player, 0, 2, None);
     let reply = player.take_command_replies().join(" | ");
     assert!(reply.starts_with("you are buckled"), "{reply}");
-    drive_turning(
-        &mut scene,
-        &mut player,
-        &ship,
-        spin,
-        place,
-        AT_REST,
-        RAMP,
-        None,
-    );
+    run(&mut scene, &mut player, AT_REST, RAMP, None);
     player.send_command("/ship unbuckle");
-    drive_turning(
-        &mut scene,
-        &mut player,
-        &ship,
-        spin,
-        place,
-        AT_REST + RAMP,
-        2,
-        None,
-    );
+    run(&mut scene, &mut player, AT_REST + RAMP, 2, None);
     let reply = player.take_command_replies().join(" | ");
     assert!(reply.starts_with("you are let go"), "{reply}");
-    // Twenty ticks on the turning deck, to be still on it.
-    drive_turning(
-        &mut scene,
-        &mut player,
-        &ship,
-        spin,
-        place,
-        AT_REST + RAMP + 2,
-        20,
-        None,
-    );
-    let done = AT_REST + RAMP + 22;
+    run(&mut scene, &mut player, AT_REST + RAMP + 2, 20, None);
     let mut track = Vec::new();
     for tick in 0..ticks {
-        let change = change.filter(|_| tick == 2).map(|change| (0, change));
-        drive_turning(
-            &mut scene,
-            &mut player,
-            &ship,
-            spin,
-            place,
-            done + tick,
-            1,
-            change,
-        );
-        if common::player_pose(&scene, 1).grid != *ship.lock().unwrap() {
+        let cut = cut.clone().filter(|_| tick == 2).map(|cut| (0, cut));
+        run(&mut scene, &mut player, SETTLED + tick, 1, cut);
+        if common::player_pose(&scene, 1).grid != *deck.handle.lock().unwrap() {
             return (track, Some(tick));
         }
-        track.push(eyes_in_their_frame(&scene, 1));
+        track.push(eyes_in_the_world(&scene, 1));
     }
     (track, None)
 }
 
-/// A walker on a deck that turns steadily is no different for the deck being cut in two: the cut puts the centre of mass of their part elsewhere, so the speed of the centre of
-/// mass is another, which is not an acceleration of the ship (it is the same turn, seen from another point). Measured 2026-11-12, before this was made so: a cut that moved the
-/// centre of mass by 5 voxels of a deck turning at 0.02 radians a second (a turn in five minutes) moved the walker's eyes 0.27 voxels, at 0.1 a second 0.67, and from 0.15 a second
-/// the walker was thrown out of the ship in the tick of the cut. (With no turn the cut changes nothing: 1e-5.) Since the acceleration of the ship that the last step measured is carried over a
-/// change of id, with the acceleration the shift of the centre of mass gives (`follow_renamed_ships`), the eyes are within 0.009 voxels of where they are with no cut, at 0.4 radians a second.
-#[test]
-fn a_walker_on_a_deck_that_turns_steadily_is_not_moved_by_the_deck_being_cut_in_two() {
+/// How far apart two tracks of the eyes are at the most, in any direction; and the tick the walker was thrown out of the ship in one of them, if they were.
+fn how_far_apart(
+    control: &(Vec<[f64; 3]>, Option<usize>),
+    changed: &(Vec<[f64; 3]>, Option<usize>),
+) -> Result<f64, usize> {
+    if let Some(tick) = changed.1 {
+        return Err(tick);
+    }
+    Ok(control
+        .0
+        .iter()
+        .zip(&changed.0)
+        .map(|(a, b)| length_of([0, 1, 2].map(|axis| a[axis] - b[axis])))
+        .fold(0.0, f64::max))
+}
+
+/// Cuts a deck that does as `variation` says at each of these spins and in each of these places, and says which ones were thrown out of the ship or moved by more than `allowed`.
+fn walkers_on_a_deck_that_is_cut(variation: Variation, spins: &[f64], allowed: f64) -> Vec<String> {
     let mut disagreements = Vec::new();
-    for spin in [0.02, 0.1, 0.4] {
+    for &spin in spins {
         for (name, x, change) in [
             (
                 "cut at 10, walker at 20 (their part's centre of mass is 5 voxels on)",
@@ -1540,25 +1689,76 @@ fn a_walker_on_a_deck_that_turns_steadily_is_not_moved_by_the_deck_being_cut_in_
                 split_at::<20> as Change,
             ),
         ] {
-            let (control, _) = track_on_a_turning_deck(spin, x, None, 25);
-            let (cut, left) = track_on_a_turning_deck(spin, x, Some(change), 25);
-            if let Some(tick) = left {
-                disagreements.push(format!(
-                    "spin {spin}, {name}: thrown out of the ship at tick {tick}"
-                ));
-                continue;
-            }
-            let worst = control
-                .iter()
-                .zip(&cut)
-                .flat_map(|(a, b)| (0..3).map(move |axis| (a[axis] - b[axis]).abs()))
-                .fold(0.0, f64::max);
-            if worst > 0.02 {
-                disagreements.push(format!(
-                    "spin {spin}, {name}: the eyes were {worst} voxels from where they are with no cut"
-                ));
+            let control = track_on_a_turning_deck(spin, variation, x, false, None, 25);
+            let cut = track_on_a_turning_deck(spin, variation, x, false, Some(cut_of(change)), 25);
+            match how_far_apart(&control, &cut) {
+                Err(tick) => disagreements.push(format!(
+                    "{variation:?}, spin {spin}, {name}: thrown out of the ship at tick {tick}"
+                )),
+                Ok(worst) if worst > allowed => disagreements.push(format!(
+                    "{variation:?}, spin {spin}, {name}: the eyes were {worst} voxels from where they are with no cut"
+                )),
+                Ok(_) => {}
             }
         }
     }
+    disagreements
+}
+
+/// A walker on a deck that turns steadily is no different for the deck being cut in two: the cut puts the centre of mass of their part elsewhere, so the speed of the centre of
+/// mass is another, which is not an acceleration of the ship (it is the same turn, seen from another point). Measured 2026-11-12, before this was made so: a cut that moved the
+/// centre of mass by 5 voxels of a deck turning at 0.02 radians a second (a turn in five minutes) moved the walker's eyes 0.27 voxels, at 0.1 a second 0.67, and from 0.15 a second
+/// the walker was thrown out of the ship in the tick of the cut. (With no turn the cut changes nothing: 1e-5.) Since the acceleration of the ship that the last step measured is carried
+/// over a change of id, with the acceleration the shift of the centre of mass gives (`follow_renamed_ships`), the eyes are within 0.009 voxels of where they are with no cut, at 0.4
+/// radians a second.
+#[test]
+fn a_walker_on_a_deck_that_turns_steadily_is_not_moved_by_the_deck_being_cut_in_two() {
+    let disagreements = walkers_on_a_deck_that_is_cut(Variation::Steady, &[0.02, 0.1, 0.4], 0.02);
+    assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+#[test]
+fn a_walker_on_a_deck_that_turns_and_burns_is_not_moved_by_the_deck_being_cut_in_two() {
+    let disagreements = walkers_on_a_deck_that_is_cut(Variation::Burning, &[0.1, 0.4], 0.02);
+    assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+#[test]
+fn a_walker_on_a_deck_whose_turn_is_getting_faster_is_not_moved_by_the_deck_being_cut_in_two() {
+    let disagreements =
+        walkers_on_a_deck_that_is_cut(Variation::SpinningUp(0.2), &[0.0, 0.1], 0.02);
+    assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+/// The deck merged with a larger ship beside it, turned a quarter (so the walker's speed and place are carried by a turned lattice, and the centre of mass of the merged ship is
+/// far from the deck's) while the whole turns.
+fn walkers_on_a_deck_that_is_merged(
+    variation: Variation,
+    spins: &[f64],
+    allowed: f64,
+) -> Vec<String> {
+    let merge: Cut = Arc::new(merge_the_deck_into_the_base);
+    let mut disagreements = Vec::new();
+    for &spin in spins {
+        let control = track_on_a_turning_deck(spin, variation, 8.0, true, None, 25);
+        let merged =
+            track_on_a_turning_deck(spin, variation, 8.0, true, Some(Arc::clone(&merge)), 25);
+        match how_far_apart(&control, &merged) {
+            Err(tick) => disagreements.push(format!(
+                "{variation:?}, spin {spin}: thrown out of the ship at tick {tick}"
+            )),
+            Ok(worst) if worst > allowed => disagreements.push(format!(
+                "{variation:?}, spin {spin}: the eyes were {worst} voxels from where they are with no merge"
+            )),
+            Ok(_) => {}
+        }
+    }
+    disagreements
+}
+
+#[test]
+fn a_walker_on_a_deck_that_turns_is_not_moved_by_the_deck_being_merged_with_a_ship_that_turns_its_lattice_a_quarter()
+ {
+    let disagreements = walkers_on_a_deck_that_is_merged(Variation::Steady, &[0.0, 0.1, 0.4], 0.02);
     assert!(disagreements.is_empty(), "{disagreements:#?}");
 }

@@ -7,6 +7,7 @@ pub mod docking;
 pub mod joints;
 pub mod moving_planet;
 pub mod parity;
+pub mod rails;
 pub mod rocket;
 
 use std::collections::VecDeque;
