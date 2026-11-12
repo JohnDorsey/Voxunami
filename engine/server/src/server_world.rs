@@ -8,8 +8,9 @@ use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, T
 use terrain::GenerationOutcome;
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
-    BrickCoordinate, Displacement, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform,
-    LevelIndex, LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
+    BrickCoordinate, Displacement, EntityPose, GravitySettings, GridId, GridPose, LatticeRotation,
+    LatticeTransform, LevelIndex, LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate,
+    WorldPosition, gravity_at,
 };
 use world_storage::rail::{Centre, Rail, RailMemo, RailTime};
 use world_storage::{
@@ -22,6 +23,7 @@ use crate::generated_cache::GeneratedBrickCache;
 use crate::prefetch::Prefetcher;
 use crate::rail_settings::RailSettings;
 use crate::ship_settings::ShipSettings;
+use crate::structure_change::{StructureChange, VoxelsCarried};
 
 /// Who receives a game message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +218,8 @@ pub struct ServerWorld {
     ships: Option<ShipStorage>,
     /// The ships that were brought into memory since the rules were told of their voxels (see [`ServerWorld::take_changes`]).
     pub(crate) woken: Vec<GridId>,
+    /// What the splits, merges, docks and detaches of the tick did, in order, until they are taken (see [`ServerWorld::take_structure_changes`]).
+    pub(crate) structure_changes: Vec<StructureChange>,
     ship_settings: ShipSettings,
     /// The clients the game has sent away this tick, with what they are told.
     disconnects: Vec<(ClientId, String)>,
@@ -286,6 +290,7 @@ impl ServerWorld {
             level_gravity: BTreeMap::new(),
             ships: None,
             woken: Vec::new(),
+            structure_changes: Vec::new(),
             ship_settings: ShipSettings::default(),
             disconnects: Vec::new(),
             carried_by: BTreeMap::new(),
@@ -460,6 +465,43 @@ impl ServerWorld {
             }
         }
         changes
+    }
+
+    /// What the splits, merges, docks and detaches did since the last call, in the order they ran (see [`StructureChange`]). An operation that was refused is not in it.
+    pub fn take_structure_changes(&mut self) -> Vec<StructureChange> {
+        std::mem::take(&mut self.structure_changes)
+    }
+
+    /// Gives a ship a new id and changes nothing else about the world: what is aboard it is aboard the new id, it is carried by the planet that carried it, and the quiet of a
+    /// free ship (see the coasting rules) is counted from when it began. What the world only remembers to save work (the answers of the rails, the exits from spheres) is forgotten
+    /// and worked out again. Nothing is told to clients but what they are told of any ship that goes and a ship that comes. Only for tests that look for what keeps the old id of
+    /// a ship (`GridStore::renumber` says what is refused).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn renumber_ship(&mut self, ship: GridId) -> Result<GridId, world_storage::RenumberError> {
+        let renumbered = self.data.grids_mut().renumber(ship)?;
+        for id in self.data.entities().in_grid(ship) {
+            if let Some(entity) = self.data.entities().get(id) {
+                let pose = entity.pose;
+                let _ = self.data.entities_mut().set_pose(
+                    id,
+                    EntityPose::new(renumbered, pose.position, pose.orientation),
+                );
+            }
+        }
+        if let Some(since) = self.quiet_since.remove(&ship) {
+            self.quiet_since.insert(renumbered, since);
+        }
+        if let Some(carrier) = self.carried_ships.remove(&ship) {
+            self.carried_ships.insert(renumbered, carrier);
+        }
+        self.exits.remove(&ship);
+        self.rail_memo.keep_only(|grid| grid != ship);
+        for woken in &mut self.woken {
+            if *woken == ship {
+                *woken = renumbered;
+            }
+        }
+        Ok(renumbered)
     }
 
     /// The kinds of entity and the items the game has.
@@ -1043,6 +1085,17 @@ impl ServerWorld {
                     .set(channel, voxel, layout.default_value(channel))?;
             }
         }
+        self.structure_changes.push(StructureChange::Detach {
+            carried: VoxelsCarried {
+                from,
+                to: grid,
+                transform: LatticeTransform {
+                    rotation: LatticeRotation::IDENTITY,
+                    offset: low.map(|part| -part),
+                },
+                voxels,
+            },
+        });
         Ok(grid)
     }
 
@@ -1667,6 +1720,19 @@ impl ServerWorld {
             );
         }
         self.woken.extend(ids.iter().copied());
+        self.structure_changes.push(StructureChange::Split {
+            from: grid,
+            parts: parts
+                .into_iter()
+                .zip(&ids)
+                .map(|(part, &to)| VoxelsCarried {
+                    from: grid,
+                    to,
+                    transform: LatticeTransform::IDENTITY,
+                    voxels: part.voxels,
+                })
+                .collect(),
+        });
         Ok(ids)
     }
 

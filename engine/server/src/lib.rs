@@ -22,6 +22,7 @@ mod replication;
 mod server;
 mod server_world;
 mod ship_settings;
+mod structure_change;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
@@ -38,3 +39,4 @@ pub use server_world::{
     ShipStorageError, SplitError, SplitPart,
 };
 pub use ship_settings::{LogoutPolicy, ShipSettings, ShipSettingsError};
+pub use structure_change::{StructureChange, VoxelsCarried};

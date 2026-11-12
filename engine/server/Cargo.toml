@@ -7,8 +7,8 @@ publish.workspace = true
 description = "The authoritative game server: owns the world, runs ticks, and streams what each client watches."
 
 [features]
-# Scripted game logic for tests of servers and of code that talks to them.
-test-support = []
+# Scripted game logic for tests of servers and of code that talks to them, and the test-only renumbering of a ship.
+test-support = ["world_storage/test-support"]
 
 [dependencies]
 binary_codec.workspace = true

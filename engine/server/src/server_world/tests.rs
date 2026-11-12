@@ -19,6 +19,8 @@ mod group_ships;
 mod hyperbola_ships;
 mod near_ships;
 mod prediction_ships;
+mod renumbering;
+mod structure_changes;
 
 /// A generator that counts how many bricks it is asked for.
 #[derive(Debug)]

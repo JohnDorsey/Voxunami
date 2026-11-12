@@ -1,5 +1,7 @@
 //! Making one ship of two: [`ServerWorld::merge_grids`].
 
+use std::collections::BTreeSet;
+
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     AlignmentTolerance, BrickCoordinate, EntityPose, GridId, GridPose, LatticeRotation,
@@ -9,6 +11,7 @@ use voxel_space::{
 use world_storage::MovingGrid;
 
 use crate::server_world::{AccessError, ServerWorld};
+use crate::structure_change::{StructureChange, VoxelsCarried};
 
 /// What the values of a voxel become when the ship they are in is turned: see [`MergePlan::turn`].
 pub trait TurnValues: Fn(&mut Vec<(ChannelIndex, u32)>, LatticeRotation) {}
@@ -133,6 +136,7 @@ impl ServerWorld {
         let channels: Vec<ChannelIndex> = layout.channel_indices().collect();
         let default_block = layout.default_value(plan.block_channel);
         let mut voxels = base.voxels.clone();
+        let mut carried = BTreeSet::new();
         for (brick, contents) in other.voxels.bricks() {
             for local in LocalVoxelIndex::all() {
                 if contents.get(plan.block_channel, local) == default_block {
@@ -144,6 +148,7 @@ impl ServerWorld {
                 if base.voxels.get(plan.block_channel, target) != default_block {
                     return Err(MergeError::Overlap(target));
                 }
+                carried.insert(brick.voxel_at(local));
                 let values = carried_values(contents, local, &channels, &layout, plan, transform);
                 for (channel, value) in values {
                     voxels.set(channel, target, value);
@@ -206,6 +211,16 @@ impl ServerWorld {
                 .set_pose(id, EntityPose::new(merged_id, position, orientation));
         }
         self.woken.push(merged_id);
+        self.structure_changes.push(StructureChange::Merge {
+            into: merged_id,
+            base: base_id,
+            carried: VoxelsCarried {
+                from: other_id,
+                to: merged_id,
+                transform,
+                voxels: carried,
+            },
+        });
         Ok(merged_id)
     }
 
@@ -249,6 +264,7 @@ impl ServerWorld {
         let default_block = layout.default_value(plan.block_channel);
         // Everything is worked out before anything is changed.
         let mut writes: Vec<(VoxelCoordinate, Vec<(ChannelIndex, u32)>)> = Vec::new();
+        let mut carried = BTreeSet::new();
         for (brick, contents) in other.voxels.bricks() {
             for local in LocalVoxelIndex::all() {
                 if contents.get(plan.block_channel, local) == default_block {
@@ -260,6 +276,7 @@ impl ServerWorld {
                 if self.moving_voxel(planet, plan.block_channel, target)? != default_block {
                     return Err(MergeError::Overlap(target));
                 }
+                carried.insert(brick.voxel_at(local));
                 writes.push((
                     target,
                     carried_values(contents, local, &channels, &layout, plan, transform),
@@ -292,6 +309,14 @@ impl ServerWorld {
             .grids_mut()
             .absorb(ship, planet, transform)
             .expect("both are there and are two");
+        self.structure_changes.push(StructureChange::Dock {
+            carried: VoxelsCarried {
+                from: ship,
+                to: planet,
+                transform,
+                voxels: carried,
+            },
+        });
         Ok(())
     }
 }
@@ -1031,5 +1056,123 @@ mod tests {
         assert_eq!(world.data().grids().len(), 4);
         assert_eq!(world.data().grids().tombstones().count(), 0);
         assert_eq!(world.entities().get(on_it).unwrap().pose.grid, large);
+    }
+
+    fn voxels_of(blocks: &[[i128; 3]]) -> std::collections::BTreeSet<VoxelCoordinate> {
+        blocks
+            .iter()
+            .map(|&[x, y, z]| VoxelCoordinate::new(x, y, z))
+            .collect()
+    }
+
+    #[test]
+    fn a_merge_leaves_a_record_with_the_larger_as_the_base_whatever_the_order_asked_and_the_smallers_voxels_with_the_transform_of_its_tombstone()
+     {
+        let (mut world, _) = world_with_a_walker();
+        let large = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &FIVE, None);
+        let small = ship(&mut world, pose(9.0, 40.0, 3.0, 1.0), &THREE, None);
+        // (The smaller is named first.)
+        let merged = world
+            .merge_grids(small, large, &plan(&world, &nothing_turns))
+            .unwrap();
+        let (_, transform) = world.data().grids().resolve(small)[0];
+        assert_eq!(
+            world.take_structure_changes(),
+            vec![StructureChange::Merge {
+                into: merged,
+                base: large,
+                carried: VoxelsCarried {
+                    from: small,
+                    to: merged,
+                    transform,
+                    voxels: voxels_of(&THREE),
+                },
+            }]
+        );
+        // The record and the world agree: every voxel of the record landed on a block of the merged ship.
+        let block = block_channel(world.data().main());
+        for voxel in voxels_of(&THREE) {
+            let there = transform.apply(voxel).unwrap();
+            assert_eq!(
+                world.grid(merged).unwrap().get(block, there).unwrap(),
+                BLOCK
+            );
+        }
+    }
+
+    #[test]
+    fn of_two_ships_as_large_the_one_with_the_lower_id_is_the_base_of_the_record() {
+        let (mut world, _) = world_with_a_walker();
+        let first = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &THREE, None);
+        let second = ship(&mut world, pose(10.0, 40.0, 3.0, 0.0), &THREE, None);
+        let merged = world
+            .merge_grids(second, first, &plan(&world, &nothing_turns))
+            .unwrap();
+        let changes = world.take_structure_changes();
+        let [
+            StructureChange::Merge {
+                into,
+                base,
+                carried,
+            },
+        ] = changes.as_slice()
+        else {
+            panic!("one merge: {changes:?}");
+        };
+        assert_eq!((*into, *base, carried.from), (merged, first, second));
+    }
+
+    #[test]
+    fn a_dock_leaves_a_record_with_the_ships_voxels_and_the_transform_of_its_tombstone() {
+        let (mut world, _) = world_with_a_walker();
+        let planet = a_planet(&mut world);
+        let docked = ship(
+            &mut world,
+            pose(4.0, 40.0, 3.0, 0.0),
+            &[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            None,
+        );
+        world
+            .dock_into(planet, docked, &plan(&world, &nothing_turns))
+            .unwrap();
+        let (_, transform) = world.data().grids().resolve(docked)[0];
+        assert_eq!(
+            world.take_structure_changes(),
+            vec![StructureChange::Dock {
+                carried: VoxelsCarried {
+                    from: docked,
+                    to: planet,
+                    transform,
+                    voxels: voxels_of(&[[0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn a_merge_and_a_dock_that_are_refused_leave_no_record() {
+        let (mut world, _) = world_with_a_walker();
+        let planet = a_planet(&mut world);
+        // A dock into the generated ground (an overlap), a merge of ships that share a place (an overlap), and a merge off the lattice.
+        let low = ship(&mut world, pose(4.0, 5.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        assert!(
+            world
+                .dock_into(planet, low, &plan(&world, &nothing_turns))
+                .is_err()
+        );
+        let first = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &THREE, None);
+        let same_place = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &THREE, None);
+        assert!(
+            world
+                .merge_grids(first, same_place, &plan(&world, &nothing_turns))
+                .is_err()
+        );
+        let off = ship(&mut world, pose(20.5, 40.0, 3.0, 0.0), &THREE, None);
+        assert!(
+            world
+                .merge_grids(first, off, &plan(&world, &nothing_turns))
+                .is_err()
+        );
+        assert!(world.take_structure_changes().is_empty());
     }
 }

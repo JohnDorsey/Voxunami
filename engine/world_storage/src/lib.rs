@@ -31,6 +31,8 @@ mod world;
 pub use container::{ContainerError, Section};
 pub use engine_sections::GeneratorRecipe;
 pub use grid_frame::GridFrame;
+#[cfg(any(test, feature = "test-support"))]
+pub use moving_grids::RenumberError;
 pub use moving_grids::{GridStore, GridTerrain, GroupCentre, MovingGrid, ParkedGrid, PilotLogout};
 pub use ship_file::{
     ParsedShip, ShipContents, ShipFileError, ShipFlight, ShipFormat, flight_id, rail_id, ship_id,

@@ -12,7 +12,7 @@ use protocol::{
 };
 use server::GridView;
 use server::test_support::{LogicEvent, ScriptedLogic};
-use server::{Audience, LeaveReason, Server, ServerConfig, StepReport};
+use server::{Audience, LeaveReason, Server, ServerConfig, SplitPart, StepReport, StructureChange};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::{Connection, ConnectionClosed};
 use voxel_space::{
@@ -2621,6 +2621,40 @@ fn ships_come_after_the_change_of_region_and_before_the_messages_of_the_game() {
     assert_eq!(
         kinds,
         ["interest", "ships", "ship brick", "game", "tick", "tick"]
+    );
+}
+
+#[test]
+fn a_split_is_in_the_report_of_the_tick_it_was_done_in_and_in_no_other() {
+    let (mut harness, _client) = ship_harness(ServerConfig::new(game_id()), |tick, world| {
+        let ship = a_ship_id(0);
+        match tick.get() {
+            3 => {
+                let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+                build(world, ship, &[([1, 1, 1], 4), ([2, 1, 1], 4)]);
+            }
+            5 => {
+                let part = |x: i128| SplitPart {
+                    voxels: [VoxelCoordinate::new(x, 1, 1)].into_iter().collect(),
+                    centre_of_mass: [x as f64 + 0.5, 1.5, 1.5],
+                };
+                world.split_grid(ship, vec![part(1), part(2)]).unwrap();
+            }
+            _ => {}
+        }
+    });
+    let reports: Vec<StepReport> = (0..8).map(|_| harness.server.step()).collect();
+    let with_records: Vec<(u64, &Vec<StructureChange>)> = reports
+        .iter()
+        .filter(|report| !report.structure_changes.is_empty())
+        .map(|report| (report.tick.get(), &report.structure_changes))
+        .collect();
+    assert_eq!(with_records.len(), 1, "{with_records:?}");
+    let (tick, changes) = with_records[0];
+    assert_eq!(tick, 5);
+    assert!(
+        matches!(changes.as_slice(), [StructureChange::Split { from, parts }] if *from == a_ship_id(0) && parts.len() == 2),
+        "{changes:?}"
     );
 }
 

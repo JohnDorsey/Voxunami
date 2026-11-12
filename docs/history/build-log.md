@@ -2054,3 +2054,22 @@ by the fastest body in it, and which a ship leaves at 32 km from its origin.
   machinery), blocks built into the level itself being solid to a group in its own frame, a group wider than a frame, a split of a car giving a pair and a rail to its parts. **The cost of the question
   "is it alone" is a look at every grid for each ship of each group, each tick** (`near_with_group` with no neighbours tree): fine for the few groups there are, to be given the tree of `update_coasting`
   before many are.
+
+## Joints, the change record and the test-only renumber (2026-11-11, branch `worktree-dev-ball-joint`)
+
+The last two items of the dev ball joint plan. They are not for speed: the record keeps the options for a cheaper undocking open (a rename message, a re-key of the part that goes on, a client-side split), and the
+renumber is a way to find what keeps the old id of a ship. Planet ids stay as they are (owner, 2026-11-10); the renumber refuses a planet.
+
+- **The record.** `StructureChange` / `VoxelsCarried` (`structure_change.rs`); `split_grid`, `merge_grids`, `dock_into` and `detach_blocks` push one when they succeed (none when refused);
+  `ServerWorld::take_structure_changes`; `Server::step` hands them on in `StepReport::structure_changes`. Tests first: 7 on split and detach (`server_world/tests/structure_changes.rs`: the record equals the
+  world, once and in order, refused leaves none), 4 on merge and dock (`merge.rs`), 1 through the server (`behaviour.rs`: in the report of the tick it was done in and no other). Red first: the 5 that look at a record
+  failed on an empty one. **Mutants** (8, a script that restores byte for byte): 8 caught (no record for each operation, the sign of the detach shift, a part given the first part's voxels, the other ship as the
+  base, the wrong ship carried, the server not handing them on). *Not done, said plainly:* replication reads nothing from it (it cannot replace the comparison: see `decisions/joints-and-cars.md`). *Cost, read from
+  the types and not measured:* a voxel coordinate is three `i128`, 48 bytes, so a record of a split holds 48 bytes per voxel of the ship, moved and not copied; a merge or a dock builds one set of the smaller ship's
+  voxels. It lasts a tick. If that matters for a very large ship, the voxels can be given as runs.
+- **The renumber.** `GridStore::renumber` and `ServerWorld::renumber_ship` (feature `test-support`, which now turns on `world_storage/test-support`; the Cave's tests have it). Tests: 4 on the store, 5 on the world,
+  4 scenarios in the Cave. The store and the world tests were written with the code and not before (they passed the first time), so they were checked by mutants instead: 10 mutants of the renumber, all caught by the store and world tests (the harness stops at the first failing target, so the Cave scenarios never ran in a mutant: they assert that nothing breaks, and bite only if the engine regresses).
+- **What running it found.** A chain, a rail and a held cabin are unaffected (numbers in `decisions/joints-and-cars.md`). A walker in the air in a burning ship loses their speed in the ship (`agree_with` sets it to
+  zero when the record's grid is not the body's), the seat is dropped, and a ship that others go round cannot be renumbered because of the rule that a rail names a lower number. None of the three is pinned by a test.
+  *Measured with a wrong instrument first:* my first jump measurement took the peak before the height of standing was known and printed 3.63 m; the numbers in the docs are from the second.
+- **Ran:** the whole workspace, 3340 tests pass on Windows; fmt, clippy, doc clean. Not run on Linux.

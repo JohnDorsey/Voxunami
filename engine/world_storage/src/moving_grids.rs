@@ -7,6 +7,8 @@ use voxel_space::{
 };
 
 use crate::container::Section;
+#[cfg(any(test, feature = "test-support"))]
+use crate::rail::Centre;
 use crate::rail::Rail;
 use crate::ship_files::ShipFileName;
 
@@ -584,6 +586,45 @@ impl GridStore {
         Some(old)
     }
 
+    /// Gives a ship in memory a new id and changes nothing else about it: the ship moves to the next id, the old id leaves a tombstone naming it with no transform, and the
+    /// pairs it was in are the new id's. A planet is not renumbered (its identifier is kept), nor a ship that is in a file, nor one that another ship goes round (a rail names a ship
+    /// with a lower number than the body that goes round it, and this ship now has the highest). The coasting rails of its group are taken if the ship was the anchor of the group
+    /// (the lowest id, which holds the rail), since another ship is the anchor now. Only for tests that look for what keeps a ship's old id after a restructuring.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn renumber(&mut self, id: GridId) -> Result<GridId, RenumberError> {
+        let ship = self.grids.get(&id).ok_or(RenumberError::NotInMemory)?;
+        if ship.terrain.is_some() {
+            return Err(RenumberError::HasTerrain);
+        }
+        let orbiter = self.grids.iter().find_map(|(other, ship)| {
+            let around = ship.rail.as_ref()?.orbit.as_ref()?.around;
+            (around == Centre::Grid(id)).then_some(*other)
+        });
+        if let Some(orbiter) = orbiter {
+            return Err(RenumberError::GoneRound(orbiter));
+        }
+        let group = self.group_of(id);
+        let ship = self.grids.remove(&id).expect("the ship is in memory");
+        let new = self.allocate();
+        self.grids.insert(new, ship);
+        self.tombstones
+            .insert(id, vec![(new, LatticeTransform::IDENTITY)]);
+        for partner in self.partners.remove(&id).unwrap_or_default() {
+            self.coupled.remove(&(id.min(partner), id.max(partner)));
+            self.coupled.insert((new.min(partner), new.max(partner)));
+            if let Some(partners) = self.partners.get_mut(&partner) {
+                partners.remove(&id);
+                partners.insert(new);
+            }
+            self.partners.entry(new).or_default().insert(partner);
+        }
+        if group.len() > 1 && group[0] == id {
+            let regrouped = self.group_of(new);
+            self.clear_group_rails(regrouped);
+        }
+        Ok(new)
+    }
+
     /// The grids that now hold what the grid with this id held, each with the transform from the old id's voxels to its own: the
     /// grid itself (with no transform) if it still exists, the parts it was split into or the grid it was merged into (following
     /// further splits and merges), or nothing if the grid is gone.
@@ -603,6 +644,20 @@ impl GridStore {
             })
             .collect()
     }
+}
+
+/// Why a ship was not renumbered (see [`GridStore::renumber`]).
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RenumberError {
+    #[error("the ship is not in memory")]
+    NotInMemory,
+    #[error("a planet keeps its identifier")]
+    HasTerrain,
+    #[error(
+        "{0:?} goes round the ship, and a rail names a ship with a lower number than the body that goes round it"
+    )]
+    GoneRound(GridId),
 }
 
 #[cfg(test)]
@@ -964,6 +1019,96 @@ mod tests {
             on_a_rail: false,
         };
         store.park(id, parked).unwrap();
+    }
+
+    #[test]
+    fn a_renumbered_ship_is_the_same_ship_under_the_next_id_and_the_old_id_names_it() {
+        let mut store = GridStore::new();
+        let first = store.create(grid(1));
+        let second = store.create(grid(2));
+        let before = store.get(first).unwrap().clone();
+        let renumbered = store.renumber(first).unwrap();
+        assert_eq!(
+            renumbered.get(),
+            second.get() + 1,
+            "the next id the store gives"
+        );
+        assert!(store.get(first).is_none() && !store.knows(first));
+        assert_eq!(store.get(renumbered), Some(&before));
+        assert_eq!(
+            store.resolve(first),
+            [(renumbered, LatticeTransform::IDENTITY)]
+        );
+        // The other ship is untouched, and the next ship made has the id after.
+        assert_eq!(store.get(second), Some(&grid(2)));
+        assert_eq!(store.create(grid(3)).get(), renumbered.get() + 1);
+    }
+
+    #[test]
+    fn a_renumbered_ship_is_coupled_to_the_same_ships_and_a_group_loses_its_rail_only_if_its_anchor_changed()
+     {
+        let planet = GridId::new(5);
+        let make = || {
+            let mut store = GridStore::new();
+            let ids: [GridId; 3] =
+                std::array::from_fn(|index| store.create(grid(index as u32 + 1)));
+            store.set_coupled(ids[0], ids[1], true);
+            store.set_coupled(ids[1], ids[2], true);
+            store.get_mut(ids[0]).unwrap().rail = Some(coasting_rail(planet));
+            (store, ids)
+        };
+        // The middle ship: the pairs it was in are the pairs its new id is in, the group is the same ships, and the anchor (the lowest id) is still the first, which keeps its rail.
+        let (mut store, [a, b, c]) = make();
+        let renumbered = store.renumber(b).unwrap();
+        assert_eq!(
+            store.coupled().iter().copied().collect::<Vec<_>>(),
+            [(a, renumbered), (c, renumbered)]
+        );
+        assert_eq!(store.group_of(c), [a, c, renumbered]);
+        assert_eq!(store.group_of(renumbered), [a, c, renumbered]);
+        assert!(!store.has_partners(b));
+        assert!(store.get(a).unwrap().rail.is_some());
+        // The anchor: its group is the same ships, but the lowest id is another, which holds no rail: the rail is taken, as a change of who is in a group takes it.
+        let (mut store, [a, b, c]) = make();
+        let renumbered = store.renumber(a).unwrap();
+        assert_eq!(store.group_of(b), [b, c, renumbered]);
+        assert!(store.get(renumbered).unwrap().rail.is_none());
+    }
+
+    #[test]
+    fn a_ship_that_is_not_in_memory_a_planet_or_a_ship_that_others_go_round_is_not_renumbered() {
+        let mut store = GridStore::new();
+        let [lone, centre, moon, planet, parked, gone] =
+            [1, 2, 3, 4, 5, 6].map(|marker| store.create(grid(marker)));
+        store.get_mut(moon).unwrap().rail = Some(coasting_rail(centre));
+        store.get_mut(planet).unwrap().terrain = Some(GridTerrain {
+            generator: terrain::GeneratorId::from_raw(3),
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+            mass: 1.0e20,
+        });
+        parked_like(&mut store, parked);
+        store.remove(gone);
+        // (A rail names a ship with a lower number than the body that goes round it; a renumbered ship has the highest number.)
+        assert_eq!(store.renumber(centre), Err(RenumberError::GoneRound(moon)));
+        assert_eq!(store.renumber(planet), Err(RenumberError::HasTerrain));
+        assert_eq!(store.renumber(parked), Err(RenumberError::NotInMemory));
+        assert_eq!(store.renumber(gone), Err(RenumberError::NotInMemory));
+        // Nothing changed (no tombstone was left), and a ship that nothing goes round is renumbered.
+        assert!(store.knows(centre) && store.knows(planet) && store.knows(parked));
+        assert_eq!(store.tombstones().count(), 0);
+        assert!(store.renumber(lone).is_ok());
+        assert_eq!(store.tombstones().count(), 1);
+    }
+
+    #[test]
+    fn a_coupled_ship_whose_partner_is_in_a_file_is_coupled_to_it_after_the_renumbering() {
+        let mut store = GridStore::new();
+        let first = store.create(grid(1));
+        let second = store.create(grid(2));
+        store.set_coupled(first, second, true);
+        parked_like(&mut store, second);
+        let renumbered = store.renumber(first).unwrap();
+        assert_eq!(store.group_of(second), [second, renumbered]);
     }
 
     #[test]

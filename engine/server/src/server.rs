@@ -20,6 +20,7 @@ use crate::grid_replication::{self, EditedBrick, KnownGrids};
 use crate::replication::{KnownEntities, ViewCache, entity_messages};
 use crate::server_world::{Audience, OutgoingGameMessage, ServerWorld};
 use crate::ship_settings::ShipSettings;
+use crate::structure_change::StructureChange;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
@@ -47,6 +48,8 @@ pub struct StepReport {
     pub joined: Vec<ClientId>,
     /// Every connection that ended, including ones that never finished saying hello.
     pub left: Vec<(ClientId, LeaveReason)>,
+    /// The splits, merges, docks and detaches that were done since the end of the tick before, in order (see [`StructureChange`]).
+    pub structure_changes: Vec<StructureChange>,
 }
 
 #[derive(Debug)]
@@ -257,6 +260,7 @@ impl Server {
             tick,
             joined: Vec::new(),
             left: Vec::new(),
+            structure_changes: Vec::new(),
         };
         self.accept_new_connections();
         self.receive_messages(&mut report);
@@ -267,6 +271,8 @@ impl Server {
         self.world.apply_rails(self.config.ticks_per_second);
         self.send_away(&mut report);
         self.send_updates(tick, &mut report);
+        // (Nothing in the server reads the records of what was restructured; they are handed on so that they never pile up, and so that a caller can.)
+        report.structure_changes = self.world.take_structure_changes();
         self.world.edits.clear();
         self.world.outgoing.clear();
         self.world.replies.clear();
