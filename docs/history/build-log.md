@@ -1966,3 +1966,19 @@ The owner said he saw no shadows on the coarse terrain. In Cave the planet is a 
 ### The shade value (2026-11-11)
 
 The owner chose 130 after the shade study (`shade-study.md`): Cave's `sky_light_in_shadow` went from 70 to 130 (a one-number change in `games/voxunami_cave/src/game.rs`; no test pinned 70). Far crush 38% -> 0.4%, middle 37% -> 3.4% on the ten study views [run in temporary builds, not re-run on this commit].
+
+### What a planet that moves costs the picture (2026-11-11, measured)
+
+Cave's planet is held today (`planet-spec.md`: it does not move or spin), so nothing below happens in the game yet; it is what the ground change of `27bb30a` will cost when planets are on rails. **Why:** a pose that changes bumps `terrain_version` for a grid that is ground (`VoxelRenderer::grid_changed`), and every kept shadow map that holds the ground then counts as out of date and is drawn again once it has waited `terrain_refresh_age` frames (1 to 32 by cascade), within the 1.5 million quad budget. The windowed shell hands the renderer a carried-on pose every frame (`carry_ships_on`), so a planet that moves at all moves the version every frame, and the coarse maps (which before this change did not hold it) are drawn again, planet and all. The cost does not depend on how fast it moves, only on whether the pose differs from the last frame's.
+
+**Measured [run]** (`cave --benchmark --size 1280x720`, pole, noon, dev profile; a temporary patch of the benchmark loop moved every grid's pose by 0.001 voxel a frame, and was restored; one run each, a repeat of the 'now' case agreed to 1 percent):
+
+| | RTX | integrated (AMD) |
+|---|---|---|
+| planet still | 3.2 ms | 11.0 ms |
+| moving, counted as moving (before `27bb30a`) | 4.9 | 13.4 |
+| moving, counted as ground (now) | 7.4 | 16.7 |
+
+So moving the planet already cost 1.7 / 2.4 ms before (the near maps hold it), and the ground change adds 2.5 / 3.3 ms more: on the integrated GPU a moving planet is at the edge of 60 fps (16.7 ms) at the pole. Changing the pose only every n frames: RTX 7.4 (n=1), 7.4 (4), 5.3 (16), 3.8 (64); integrated 16.6 (1), 20.0 (4), 14.4 (16), 11.9 (64). The 20.0 at n=4 is worse than n=1 and **unexplained** (one run; not repeated).
+
+**Not measured:** a real rail in a window, the camera and sun moving at the same time, a planet that is seen from space (few bricks), more than one moving planet. **Options, none built:** (a) redraw a kept map for the ground only when the ground has moved a fraction of a texel of that map (*believed* to cut most of it for a slow planet, none for a fast one); (b) draw a moving planet into the coarse maps in its own frame; (c) accept it. The owner's.
