@@ -11,10 +11,10 @@ use common::chains::{
     Vec3, a_chain, a_chain_in_orbit, a_swing, centre_of, orientation_of, origins_of, pivot_gap,
     set_going,
 };
-use common::docking::{make_all_going, stones};
+use common::docking::{PLAIN, Placed, make_all_going, stone, stones};
 use common::{
     PlayerExt, Scene, circular_speed, eyes_in_the_world, eyes_in_their_frame, length, minus,
-    player_pose, pose_at, ship_id, tick_and_follow, walker_in_a_cabin,
+    player_pose, pose_at, put_aboard, ship_id, tick_and_follow, walker_in_a_cabin,
 };
 use game_shell::KeyCode;
 use voxel_space::GridId;
@@ -244,4 +244,75 @@ fn a_walker_aboard_a_ship_that_is_given_a_new_id_is_aboard_the_new_id_where_they
         assert_eq!(control.1, changed.1, "the same place in the ship");
         assert_eq!(control.2, changed.2, "and in the world");
     }
+}
+
+/// A floor of stone, 8 by 8 voxels and one thick.
+fn a_floor() -> Vec<Placed> {
+    (0..8)
+        .flat_map(|x| (0..8).map(move |z| ([x, 0, z], stone(), PLAIN)))
+        .collect()
+}
+
+/// How far a walker aboard a floor that coasts on a rail round the home planet gets in the ship in the eight ticks after the tick in which the ship is given a new id, if
+/// `renaming` (the walker jumped two ticks before; a ship in orbit is in free fall, so they go on up at the speed of the jump). The distance, and whether the ship was on its rail.
+fn drift_of_a_walker_on_a_rail(renaming: bool) -> (f64, bool) {
+    let mut scene = Scene::in_a_new_world();
+    let distance = 70_016.0;
+    let speed = circular_speed(&scene, 0, distance);
+    make_all_going(
+        &mut scene,
+        vec![(pose_at(0.0, distance, 0.0), a_floor())],
+        [0.0, 0.0, speed],
+    );
+    // A walker who is put aboard it, at rest in it, above its middle.
+    let mut player = scene
+        .rig
+        .join_walking([4.0, distance + 3.0, 4.0 + speed * 0.05], 0.0, 0.0);
+    scene.ticks(3);
+    put_aboard(&mut scene, 1, [4.0, 2.5, 4.0]);
+    tick_and_follow(&mut scene, &mut player, 30);
+    let mut ship = ship_id(1);
+    assert_eq!(player_pose(&scene, 1).grid, ship, "aboard");
+    let on_a_rail = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship)
+        .unwrap()
+        .rail
+        .is_some();
+    player.hold(&[KeyCode::Space]);
+    tick_and_follow(&mut scene, &mut player, 2);
+    player.hold(&[]);
+    let started = eyes_in_their_frame(&scene, 1);
+    if renaming {
+        ship = renumber(&mut scene, ship);
+    } else {
+        scene.run(|_| {});
+    }
+    tick_and_follow(&mut scene, &mut player, 8);
+    assert_eq!(
+        player_pose(&scene, 1).grid,
+        ship,
+        "aboard the ship, whatever it is called"
+    );
+    let later = eyes_in_their_frame(&scene, 1);
+    (length(minus(later, started)), on_a_rail)
+}
+
+#[test]
+fn a_walker_aboard_a_ship_on_a_rail_that_is_given_a_new_id_goes_on_in_it_as_they_were_going() {
+    let (control, on_a_rail) = drift_of_a_walker_on_a_rail(false);
+    assert!(on_a_rail, "the premise: the ship is on a rail");
+    assert!(
+        control > 1.2,
+        "the premise: they were going up at the speed of the jump, {control}"
+    );
+    let (changed, on_a_rail) = drift_of_a_walker_on_a_rail(true);
+    assert!(on_a_rail, "and it is on a rail still");
+    assert!(
+        (changed - control).abs() < 0.05,
+        "they went {changed} in the renamed ship and {control} in the other"
+    );
 }

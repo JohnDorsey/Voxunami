@@ -600,6 +600,28 @@ pub fn carried_through(
     assert!(reply.starts_with("you are let go"), "{reply}");
 }
 
+/// Puts the walker aboard a ship, at rest in it, with their eyes at this place in its coordinates.
+pub fn put_aboard(scene: &mut Scene, ship: u64, eyes_in_the_ship: [f64; 3]) {
+    scene.run(move |world| {
+        let entity = world
+            .entities()
+            .iter()
+            .find(|entity| entity.kind == player_kind())
+            .expect("the player has an entity")
+            .id;
+        world
+            .set_entity_pose(
+                entity,
+                EntityPose::new(
+                    ship_id(ship),
+                    WorldPosition::from_voxels(eyes_in_the_ship),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+    });
+}
+
 /// The block in a voxel of the main level, as the server has it (this takes a tick).
 pub fn block_at(scene: &mut Scene, at: [i128; 3]) -> u32 {
     let content = CaveContent::new();

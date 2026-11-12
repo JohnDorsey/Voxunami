@@ -1264,3 +1264,64 @@ fn a_walker_buckled_in_a_ship_that_is_given_a_new_id_is_buckled_in_it_still() {
 fn a_walker_buckled_in_a_ship_that_is_cut_in_two_is_buckled_in_their_part_still() {
     a_buckled_walker_stays_buckled_when_the_ship_changes_id(split_in_two);
 }
+
+/// How far the eyes of a walker go through the world in the twelve ticks after they have walked off the side of a deck that cruises at 50 metres a second, the deck being given a
+/// change (if there is one) two ticks into them. They are in the level then, and go on at the speed the deck gave them: what the air does to them is measured from the speed of
+/// the place of the deck they left (`Departure`), and that is the deck's, whatever it is called.
+fn how_far_a_walker_who_left_a_cruising_deck_goes(change: Option<Change>) -> f64 {
+    let boost = [50.0, 0.0, 0.0];
+    let (mut scene, mut player, ship, mut done) = let_go_in_a_ship_that_moves_at(at_rest, boost);
+    let whole = at_a_boost(at_rest, boost);
+    // Walks off the side (toward -z, from the middle of the deck, which is 4 voxels from the edge).
+    player.hold(&[KeyCode::KeyW]);
+    let mut left = false;
+    for _ in 0..100 {
+        drive(&mut scene, &mut player, &ship, whole.clone(), done, 1, None);
+        done += 1;
+        if common::player_pose(&scene, 1).grid.root_level().is_some() {
+            left = true;
+            break;
+        }
+    }
+    assert!(left, "the premise: they walked off");
+    player.hold(&[]);
+    let started = eyes_in_the_world(&scene, 1);
+    drive(
+        &mut scene,
+        &mut player,
+        &ship,
+        whole,
+        done,
+        12,
+        change.map(|change| (2, change)),
+    );
+    assert!(
+        common::player_pose(&scene, 1).grid.root_level().is_some(),
+        "and they are in the level still"
+    );
+    eyes_in_the_world(&scene, 1)[0] - started[0]
+}
+
+fn a_walker_who_left_a_deck_is_not_braked_by_a_new_id_of_the_deck(change: Change) {
+    let control = how_far_a_walker_who_left_a_cruising_deck_goes(None);
+    // (Twelve ticks at 50 metres a second is 30 voxels; the air takes 2 or 3 of them if it is measured from the level.)
+    assert!(
+        (control - 30.0).abs() < 1.0,
+        "the premise: they go on at the speed of the deck, {control}"
+    );
+    let changed = how_far_a_walker_who_left_a_cruising_deck_goes(Some(change));
+    assert!(
+        (changed - control).abs() < 0.3,
+        "they went {changed} when the deck was changed and {control} when it was not"
+    );
+}
+
+#[test]
+fn a_walker_who_left_a_fast_deck_goes_on_at_its_speed_when_the_deck_is_given_a_new_id() {
+    a_walker_who_left_a_deck_is_not_braked_by_a_new_id_of_the_deck(renumbered);
+}
+
+#[test]
+fn a_walker_who_left_a_fast_deck_goes_on_at_its_speed_when_the_deck_is_cut_in_two() {
+    a_walker_who_left_a_deck_is_not_braked_by_a_new_id_of_the_deck(split_in_two);
+}
