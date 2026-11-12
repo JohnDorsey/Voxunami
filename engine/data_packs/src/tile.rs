@@ -14,11 +14,15 @@ pub const GREATEST_TILE: u32 = 256;
 /// The most bytes of a PNG file that is read: a 256 by 256 picture is a few hundred kilobytes at the worst, so a file over this is not a tile.
 pub const GREATEST_FILE_BYTES: usize = 1 << 20;
 
-/// A tile: `size` pixels on a side, 8-bit RGBA, row after row, from the top left.
+/// A tile: `size` pixels on a side, 8-bit RGBA, row after row, from the top left. It may carry the two companions of a LabPBR picture (`docs/specs/block-textures-spec.md`,
+/// section 4.4), of its own size: the specular picture (`_s`: smoothness, reflectance, porosity and, in the alpha, emission) and the normal picture (`_n`: the normal's
+/// x and y, the occlusion and, in the alpha, the height). They are data and not colours: no part of them is a colour or a share of covering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tile {
     size: u32,
     rgba: Vec<u8>,
+    specular: Option<Vec<u8>>,
+    normal: Option<Vec<u8>>,
 }
 
 fn problem(file: &str, message: impl Into<String>) -> PackError {
@@ -41,7 +45,51 @@ impl Tile {
             size as usize * size as usize * 4,
             "a tile has four bytes for each pixel"
         );
-        Self { size, rgba }
+        Self {
+            size,
+            rgba,
+            specular: None,
+            normal: None,
+        }
+    }
+
+    /// The tile with a specular companion: `size * size` pixels of 4 bytes, as the tile's own. Panics if they are not.
+    pub fn with_specular(mut self, rgba: Vec<u8>) -> Self {
+        self.check_companion(&rgba);
+        self.specular = Some(rgba);
+        self
+    }
+
+    /// The tile with a normal companion: `size * size` pixels of 4 bytes, as the tile's own. Panics if they are not.
+    pub fn with_normal(mut self, rgba: Vec<u8>) -> Self {
+        self.check_companion(&rgba);
+        self.normal = Some(rgba);
+        self
+    }
+
+    fn check_companion(&self, rgba: &[u8]) {
+        assert_eq!(
+            rgba.len(),
+            self.rgba.len(),
+            "a companion picture is of the tile's size, with four bytes for each pixel"
+        );
+    }
+
+    /// The specular companion's pixels (RGBA, the tile's size), if the tile has one.
+    pub fn specular(&self) -> Option<&[u8]> {
+        self.specular.as_deref()
+    }
+
+    /// The normal companion's pixels (RGBA, the tile's size), if the tile has one.
+    pub fn normal(&self) -> Option<&[u8]> {
+        self.normal.as_deref()
+    }
+
+    /// The bytes a tile takes as pixels, companions included.
+    pub fn bytes(&self) -> usize {
+        self.rgba.len()
+            + self.specular.as_ref().map_or(0, Vec::len)
+            + self.normal.as_ref().map_or(0, Vec::len)
     }
 
     /// The side of the tile, in pixels.
@@ -225,6 +273,28 @@ mod tests {
     }
 
     const FILE: &str = "my_pack/textures/oak.png";
+
+    #[test]
+    fn a_tile_may_carry_a_specular_and_a_normal_companion_of_its_own_size_and_counts_their_bytes() {
+        let tile = plain_tile(8, [1, 2, 3, 4]);
+        assert_eq!((tile.specular(), tile.normal()), (None, None));
+        assert_eq!(tile.bytes(), 8 * 8 * 4);
+        let with = tile
+            .clone()
+            .with_specular(plain_tile(8, [5, 6, 7, 8]).rgba().to_vec())
+            .with_normal(plain_tile(8, [9, 10, 11, 12]).rgba().to_vec());
+        assert_eq!(&with.specular().unwrap()[0..4], [5, 6, 7, 8]);
+        assert_eq!(&with.normal().unwrap()[0..4], [9, 10, 11, 12]);
+        assert_eq!(with.rgba(), tile.rgba(), "the picture itself is the same");
+        assert_eq!(with.bytes(), 3 * 8 * 8 * 4);
+        assert_ne!(with, tile, "a companion is part of what a tile is");
+    }
+
+    #[test]
+    #[should_panic(expected = "a companion picture is of the tile's size")]
+    fn a_companion_of_another_size_is_refused() {
+        let _ = plain_tile(8, [0; 4]).with_specular(plain_tile(16, [0; 4]).rgba().to_vec());
+    }
 
     fn refusal(bytes: &[u8]) -> String {
         match Tile::from_png(FILE, bytes) {

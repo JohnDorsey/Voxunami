@@ -5,6 +5,11 @@
 @group(0) @binding(6) var pictures_2: texture_2d_array<f32>;
 @group(0) @binding(7) var pictures_3: texture_2d_array<f32>;
 @group(0) @binding(8) var picture_sampler: sampler;
+// The specular pictures that go with them (LabPBR `_s`), an array for each size with the same layers; data, not colours. Only the alpha is read so far: the emission.
+@group(0) @binding(9) var specular_0: texture_2d_array<f32>;
+@group(0) @binding(10) var specular_1: texture_2d_array<f32>;
+@group(0) @binding(11) var specular_2: texture_2d_array<f32>;
+@group(0) @binding(12) var specular_3: texture_2d_array<f32>;
 
 // The colour of a picture at a place on a face: `coordinates` are in voxels (the picture repeats in each), `ddx` and `ddy` how much they change across a pixel, which
 // say which smaller picture to read. The size of the picture is its number among the sizes in use (bits 1 and 2) and its place among the pictures of that size is
@@ -25,6 +30,29 @@ fn sample_picture(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec
         }
         default: {
             texel = textureSampleGrad(pictures_3, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+    }
+    return texel;
+}
+
+// The specular picture of a picture at a place on a face, read as `sample_picture` reads the picture (the picture's word names the size and the layer). A picture with no specular
+// companion has the pixel of nothing (all zero).
+fn sample_specular(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let layer = i32((picture >> 3u) & 255u);
+    let wrapped = fract(coordinates);
+    var texel = vec4<f32>(0.0);
+    switch ((picture >> 1u) & 3u) {
+        case 0u: {
+            texel = textureSampleGrad(specular_0, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 1u: {
+            texel = textureSampleGrad(specular_1, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 2u: {
+            texel = textureSampleGrad(specular_2, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        default: {
+            texel = textureSampleGrad(specular_3, picture_sampler, wrapped, layer, ddx, ddy);
         }
     }
     return texel;
@@ -109,6 +137,23 @@ fn picture_albedo(in: VertexOutput) -> vec4<f32> {
         }
     }
     return vec4<f32>(albedo, coverage);
+}
+
+// How much of the pixel shines by itself, 0 to 1: the alpha of the picture's specular companion (LabPBR: 0 to 254 is none to all, and the loader has made 255, none, a 0), faded
+// out with the picture over the same band, so that beyond the picture distance a face is as flat as it is in the colour and the shadow.
+fn picture_emission(in: VertexOutput) -> f32 {
+    // (How the coordinates of the picture change across a pixel is taken here, before anything branches, as in `picture_albedo`.)
+    let picture_dx = dpdx(in.uv);
+    let picture_dy = dpdy(in.uv);
+    if (in.picture == 0u || frame.pictures.y <= 0.0) {
+        return 0.0;
+    }
+    let share = picture_share(in.relative);
+    if (share <= 0.0) {
+        return 0.0;
+    }
+    let texel = sample_specular(in.picture, in.uv, picture_dx, picture_dy);
+    return min(texel.a * (255.0 / 254.0), 1.0) * share;
 }
 
 // ---- The shadow maps of blocks that cut holes: what leaves and glass hide of the sun is what their pictures are not clear of. ----

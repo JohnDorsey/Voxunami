@@ -49,6 +49,7 @@ and may define constants and functions of its own. It returns the **linear** col
 | `sun_visible: f32` | the share of the sun's light that reaches the place: the above, and the terrain's shadow on top of it, 0 to 1 |
 | `sky_visible: f32` | the share of the sky's light that reaches the place past the terrain's shadow, 0 to 1 |
 | `uncovered: f32` | the share of the sky's light that reaches the place past what is over it (a roof, a hill over a cave), 0 to 1 |
+| `emission: f32` | how much of the pixel shines by itself, 0 to 1: the alpha of the picture's specular companion (`_s`, LabPBR), 0 where it has none. The default pack shows the colour by this share whatever the light: `mix(lit, albedo, emission)`. Added without a new interface number: a pack only reads `Surface`, so an added field breaks none |
 
 The strengths the atmosphere sets are in the frame's uniform, which the pack may read: `frame.sun_direction.xyz` and `frame.side_direction.xyz` (unit vectors), `frame.sun_light` (`x` how bright the sun lights a face that looks at it, `y` the sky's light, 0 to 1), `frame.heavens.w` (the light of the night sky, 0 to 1), `frame.fog_color`, `frame.fog_range`. Other members of `Frame` are the engine's and may change without a new interface number.
 

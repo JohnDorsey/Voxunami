@@ -12,16 +12,21 @@ pub const MOST_PICTURE_SIZES: usize = 4;
 pub const MOST_PICTURES_OF_A_SIZE: usize = 256;
 
 /// The pictures of one size: their side in pixels, and the pixels of each, 8-bit sRGB RGBA row after row from the top left (`size * size * 4` bytes).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PictureSize<'a> {
     pub size: u32,
     pub tiles: Vec<&'a [u8]>,
+    /// The specular companion (LabPBR `_s`) of each picture, in the same order and of the same size, if it has one; or empty when none has. Its pixels are data (8-bit,
+    /// not sRGB): the alpha is the emission, where 255 means none and 0 to 254 is the amount of the pixel's own light.
+    pub specular: Vec<Option<&'a [u8]>>,
 }
 
 /// The texture arrays of the pictures and their sampler, for the voxel shader.
 pub(crate) struct BlockTextures {
     /// A view of the array of each size, smallest first; a size that is not in use is an array of one magenta pixel that nothing reads.
     pub views: [wgpu::TextureView; MOST_PICTURE_SIZES],
+    /// A view of the array of the specular pictures of each size, with the layers of the pictures; a size not in use is one pixel of nothing.
+    pub specular_views: [wgpu::TextureView; MOST_PICTURE_SIZES],
     pub sampler: wgpu::Sampler,
 }
 
@@ -40,6 +45,14 @@ impl BlockTextures {
                 .get_or_insert_with(|| stand_in_array(device, queue))
                 .clone(),
         });
+        // (The same stand-in serves the specular arrays of the sizes not in use: nothing reads it there either, and a renderer with no pictures makes no texture more than it did
+        // before there were specular pictures, which the integrated AMD GPU's first frames are sensitive to: `docs/test-flakes.md`.)
+        let specular_views = std::array::from_fn(|class| match sizes.get(class) {
+            Some(size) => specular_array_of(device, queue, size),
+            None => stand_in
+                .get_or_insert_with(|| stand_in_array(device, queue))
+                .clone(),
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("block pictures"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -50,7 +63,11 @@ impl BlockTextures {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        Self { views, sampler }
+        Self {
+            views,
+            specular_views,
+            sampler,
+        }
     }
 }
 
@@ -62,6 +79,7 @@ fn stand_in_array(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureVi
         &PictureSize {
             size: 1,
             tiles: vec![&[255, 0, 255, 255]],
+            specular: Vec::new(),
         },
     )
 }
@@ -90,30 +108,132 @@ fn array_of(
             data.extend_from_slice(&level);
         }
     }
+    layered(
+        device,
+        queue,
+        "block pictures",
+        (size.size, size.tiles.len()),
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        &data,
+    )
+}
+
+/// The specular companions of the pictures of one size as an array with the layers of the pictures (a picture with none has the pixel of no emission and nothing else), in
+/// the form the shader reads: see [`engine_specular`]. Linear data, not colours.
+fn specular_array_of(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: &PictureSize<'_>,
+) -> wgpu::TextureView {
+    assert!(
+        size.specular.is_empty() || size.specular.len() == size.tiles.len(),
+        "the specular pictures are one for each picture, or none"
+    );
+    let bytes = size.size as usize * size.size as usize * 4;
+    let mut data = Vec::new();
+    for layer in 0..size.tiles.len() {
+        let companion = size.specular.get(layer).copied().flatten();
+        let pixels = match companion {
+            Some(pixels) => {
+                assert_eq!(
+                    pixels.len(),
+                    bytes,
+                    "a picture has four bytes for each pixel"
+                );
+                engine_specular(pixels)
+            }
+            None => NO_SPECULAR.repeat(bytes / 4),
+        };
+        for level in data_mip_chain(size.size, &pixels) {
+            data.extend_from_slice(&level);
+        }
+    }
+    layered(
+        device,
+        queue,
+        "block specular pictures",
+        (size.size, size.tiles.len()),
+        wgpu::TextureFormat::Rgba8Unorm,
+        &data,
+    )
+}
+
+/// What a pixel with no specular picture is: smoothness, reflectance and porosity nothing, and no emission (see [`engine_specular`]).
+const NO_SPECULAR: [u8; 4] = [0, 0, 0, 0];
+
+/// A texture array of `(side, layers)`, with the chain of smaller levels under each layer already in `data` (layer after layer).
+fn layered(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &'static str,
+    (side, layers): (u32, usize),
+    format: wgpu::TextureFormat,
+    data: &[u8],
+) -> wgpu::TextureView {
     let texture = device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
-            label: Some("block pictures"),
+            label: Some(label),
             size: wgpu::Extent3d {
-                width: size.size,
-                height: size.size,
-                depth_or_array_layers: size.tiles.len() as u32,
+                width: side,
+                height: side,
+                depth_or_array_layers: layers as u32,
             },
-            mip_level_count: size.size.ilog2() + 1,
+            mip_level_count: side.ilog2() + 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
-        &data,
+        data,
     );
     texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("block pictures"),
+        label: Some(label),
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     })
+}
+
+/// A LabPBR specular picture as the shader reads it: the same pixels, except that the alpha, where 255 means "no emission" and 0 to 254 is the amount, becomes the amount
+/// alone (255 becomes 0), so that the average of four pixels is the average of their emission, as a smaller level of the picture needs.
+pub(crate) fn engine_specular(rgba: &[u8]) -> Vec<u8> {
+    let mut pixels = rgba.to_vec();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        if pixel[3] == 255 {
+            pixel[3] = 0;
+        }
+    }
+    pixels
+}
+
+/// The levels under a picture of data, down to one pixel: each pixel of a smaller one is the plain average of the four it stands for in each channel, rounded (no channel is a
+/// colour, and none is how much of the pixel is there).
+pub(crate) fn data_mip_chain(size: u32, rgba: &[u8]) -> Vec<Vec<u8>> {
+    let mut levels = vec![rgba.to_vec()];
+    let mut side = size as usize;
+    while side > 1 {
+        let previous = levels.last().expect("there is a level");
+        let next_side = side / 2;
+        let mut next = Vec::with_capacity(next_side * next_side * 4);
+        for y in 0..next_side {
+            for x in 0..next_side {
+                for channel in 0..4 {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|(dx, dy)| {
+                            u32::from(previous[((2 * y + dy) * side + 2 * x + dx) * 4 + channel])
+                        })
+                        .sum();
+                    next.push(((sum + 2) / 4) as u8);
+                }
+            }
+        }
+        levels.push(next);
+        side = next_side;
+    }
+    levels
 }
 
 /// The picture and the smaller ones under it, down to one pixel: each pixel of a smaller one is the average of the four it stands for, worked out in linear light (the
@@ -294,5 +414,47 @@ mod tests {
         // There is nothing to weigh by, so the colours count alike (and the result is clear whatever it is).
         let picture = [10, 20, 30, 0, 10, 20, 30, 0, 10, 20, 30, 0, 10, 20, 30, 0];
         assert_eq!(mip_chain(2, &picture)[1], [10, 20, 30, 0]);
+    }
+
+    // ---- the specular companions: data, not colours ----
+
+    #[test]
+    fn a_specular_pictures_alpha_of_255_means_no_emission_and_becomes_0_and_nothing_else_changes() {
+        let picture = [1, 2, 3, 255, 4, 5, 6, 254, 7, 8, 9, 0, 255, 255, 255, 255];
+        assert_eq!(
+            engine_specular(&picture),
+            [1, 2, 3, 0, 4, 5, 6, 254, 7, 8, 9, 0, 255, 255, 255, 0]
+        );
+    }
+
+    #[test]
+    fn the_levels_of_data_are_the_plain_average_of_four_in_every_channel_with_no_weighing_by_the_alpha()
+     {
+        // Alpha 0 on three of the pixels must not take the fourth's colour out of the average, nor the alpha count as a share of covering.
+        let picture = [
+            100, 0, 255, 200, //
+            0, 40, 255, 0, //
+            0, 0, 255, 0, //
+            0, 0, 255, 0,
+        ];
+        let chain = data_mip_chain(2, &picture);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0], picture);
+        assert_eq!(chain[1], [25, 10, 255, 50]);
+        // Rounded to the nearest (half up), and the levels go down to one pixel.
+        let odd = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0];
+        assert_eq!(data_mip_chain(2, &odd)[1], [1, 1, 1, 1]);
+        let eight: Vec<u8> = (0..8 * 8).flat_map(|_| [9, 9, 9, 9]).collect();
+        let sizes: Vec<usize> = data_mip_chain(8, &eight).iter().map(Vec::len).collect();
+        assert_eq!(sizes, [256, 64, 16, 4]);
+    }
+
+    #[test]
+    fn the_emission_of_a_smaller_level_is_the_average_of_the_emission_it_stands_for_with_none_counting_as_zero()
+     {
+        // A pixel of full emission (254) among three with none (255) is a quarter of the emission, not three quarters of 255 and a quarter of 254.
+        let picture = engine_specular(&[0, 0, 0, 254, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        let level = &data_mip_chain(2, &picture)[1];
+        assert_eq!(level[3], 64, "(254 + 0 + 0 + 0 + 2) / 4");
     }
 }

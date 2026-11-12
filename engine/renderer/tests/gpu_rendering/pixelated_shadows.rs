@@ -84,6 +84,7 @@ fn roof_scene(context: &GraphicsContext, pixelated: bool, placement: Placement) 
         &[PictureSize {
             size: PICTURE_PIXELS as u32,
             tiles: vec![&picture],
+            specular: Vec::new(),
         }],
     );
     renderer.set_picture_distance(100.0);

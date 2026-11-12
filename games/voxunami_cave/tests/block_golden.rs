@@ -68,7 +68,9 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// (the length, the hash) of `PackageData::encode` for Cave as it was on 2026-11-09, with the dev ball joint. It moved from (14669, 15_918_905_900_417_198_379) of 2026-11-08, by 369 bytes
 /// that are the declaration of `engine:joint_face` (198: the 17 characters of its name and 176 of its doc line, with their lengths, its kind and its default; worked out before the run and then
 /// seen) and the new block with its entry (171, measured by encoding the package without the block).
-const PINNED_PACKAGE: (usize, u64) = (15038, 3_083_419_622_670_385_581);
+/// Companion pictures (2026-11-12): each picture in the package has a byte of flags before its pixels, so the package is 11 bytes longer, 15,038 to 15,049 (11 is the number of pictures Cave's blocks use, which I
+/// believe and did not count separately; the stream below grew by the same 11, and the saved world's hash did not move).
+const PINNED_PACKAGE: (usize, u64) = (15049, 6_786_877_437_540_921_677);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block

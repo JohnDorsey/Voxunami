@@ -902,6 +902,31 @@ mod tests {
     }
 
     #[test]
+    fn a_pictures_specular_and_normal_files_are_its_companions_in_the_package_and_not_pictures_and_cross_the_wire_with_it()
+     {
+        let lamp = BlockDefinition::cube([0.0; 3])
+            .with_texture(id("test_game:lamp"))
+            .with_color_from_pictures();
+        let content = package_with(
+            Some(("test_game:lamp", lamp)),
+            vec![
+                game_picture("test_game:lamp", 8, [250, 240, 200, 255]),
+                game_picture("test_game:lamp_s", 8, [10, 20, 30, 77]),
+                game_picture("test_game:lamp_n", 8, [128, 128, 255, 200]),
+            ],
+        );
+        let package = content.package_data();
+        assert_eq!(package.tile_classes.len(), 1);
+        assert_eq!(package.tile_classes[0].len(), 1, "one picture, not three");
+        let lamp = &package.tile_classes[0][0];
+        assert_eq!(&lamp.rgba()[0..4], [250, 240, 200, 255]);
+        assert_eq!(&lamp.specular().unwrap()[0..4], [10, 20, 30, 77]);
+        assert_eq!(&lamp.normal().unwrap()[0..4], [128, 128, 255, 200]);
+        let decoded = PackageData::decode(&package.encode()).unwrap();
+        assert_eq!(decoded.tile_classes[0][0], *lamp);
+    }
+
+    #[test]
     fn packs_that_bring_pictures_change_the_tiles_and_the_places_the_blocks_are_told() {
         let mut content = package_with(
             None,

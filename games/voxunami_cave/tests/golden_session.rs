@@ -385,8 +385,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// it knows and the registry has one more; the script does not place the joint. Taken on Windows; Linux (WSL) gives the same stream hash, length and saved world hash, and the same package and block table.
 /// The suit thrusters (2026-11-11): Cave has a command more, `/thrusters`, and the script sends `/nonsense`, whose answer lists every command: the stream is 12 bytes longer, 7,217,996 to 7,218,008 (", /thrusters" is
 /// 12 characters), predicted from the cause before the new number was taken. **The saved world's hash did not move.** Taken on Windows; Linux has not been run for this change.
+/// Companion pictures (2026-11-12): the package the stream carries has a byte of flags before each picture, 11 bytes more, 7,218,008 to 7,218,019 (the same 11 as the package pin in `block_golden.rs`, seen and not
+/// predicted); the saved world's hash did not move. Windows only.
 const PINNED: (u64, usize, u64) = (
-    1_751_756_436_051_868_179,
-    7_218_008,
+    9_489_212_427_895_524_050,
+    7_218_019,
     15_594_210_036_057_493_535,
 );

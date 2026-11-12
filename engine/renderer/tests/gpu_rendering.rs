@@ -34,6 +34,8 @@ mod contact_grids;
 mod contact_shapes;
 #[path = "gpu_rendering/contact_trace.rs"]
 mod contact_trace;
+#[path = "gpu_rendering/emission.rs"]
+mod emission;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
@@ -5093,10 +5095,12 @@ fn renderer_with_pictures(context: &GraphicsContext, table: &BlockTable) -> Voxe
             PictureSize {
                 size: 8,
                 tiles: vec![&quartered, &green],
+                specular: Vec::new(),
             },
             PictureSize {
                 size: 16,
                 tiles: vec![&blue],
+                specular: Vec::new(),
             },
         ],
     );
@@ -5424,6 +5428,7 @@ fn renderer_with_half_clear(context: &GraphicsContext, table: &BlockTable) -> Vo
         &[PictureSize {
             size: 8,
             tiles: vec![&picture],
+            specular: Vec::new(),
         }],
     );
     renderer.set_picture_distance(100.0);
@@ -5588,6 +5593,7 @@ fn roof_failures(
         &[PictureSize {
             size: 8,
             tiles: vec![&clear, &opaque],
+            specular: Vec::new(),
         }],
     );
     renderer.set_picture_distance(distance);

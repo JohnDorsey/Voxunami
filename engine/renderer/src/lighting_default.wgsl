@@ -8,5 +8,7 @@ fn pack_shade(s: Surface) -> vec3<f32> {
     let sky = frame.sun_light.y * s.sky_visible + frame.heavens.w * (1.0 - s.above_horizon) * s.uncovered;
     let shaded = s.side * (s.lamp + sky * (1.0 - s.lamp));
     let sun = frame.sun_light.x * max(dot(s.normal, frame.sun_direction.xyz), 0.0) * s.sun_visible;
-    return s.albedo * (shaded + sun * (1.0 - shaded));
+    let lit = s.albedo * (shaded + sun * (1.0 - shaded));
+    // What shines by itself shows its colour whatever the light: the pixel is its colour by the share it shines, and lit as it was by the rest.
+    return mix(lit, s.albedo, s.emission);
 }

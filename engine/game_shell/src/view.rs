@@ -84,7 +84,13 @@ pub fn picture_sizes(tile_classes: &[Vec<Tile>]) -> Vec<PictureSize<'_>> {
                 .first()
                 .expect("a size of picture has pictures (a package is read with at least one)")
                 .size(),
-            tiles: tiles.iter().map(Tile::rgba).collect(),
+            tiles: tiles.iter().map(|tile| tile.rgba()).collect(),
+            // (The normal pictures are not drawn yet; they are in the package for when they are.)
+            specular: if tiles.iter().any(|tile| tile.specular().is_some()) {
+                tiles.iter().map(|tile| tile.specular()).collect()
+            } else {
+                Vec::new()
+            },
         })
         .collect()
 }
@@ -304,6 +310,32 @@ mod tests {
         assert_eq!(sizes[0].tiles[1], classes[0][1].rgba());
         assert_eq!(sizes[2].tiles[0], classes[2][0].rgba());
         assert!(picture_sizes(&[]).is_empty());
+        assert!(
+            sizes.iter().all(|size| size.specular.is_empty()),
+            "no companions, none handed on"
+        );
+    }
+
+    #[test]
+    fn the_specular_pictures_of_a_package_go_with_their_pictures_and_a_picture_without_one_has_none()
+     {
+        let plain = |size: u32, byte: u8| {
+            Tile::from_rgba(size, vec![byte; size as usize * size as usize * 4])
+        };
+        let shining = plain(8, 2).with_specular(vec![7; 8 * 8 * 4]);
+        let classes = vec![vec![plain(8, 1), shining], vec![plain(16, 3)]];
+        let sizes = picture_sizes(&classes);
+        assert_eq!(
+            sizes[0].specular.len(),
+            2,
+            "one for each picture of the size"
+        );
+        assert_eq!(sizes[0].specular[0], None);
+        assert_eq!(sizes[0].specular[1], Some(&[7u8; 8 * 8 * 4][..]));
+        assert!(
+            sizes[1].specular.is_empty(),
+            "a size none of whose pictures has one hands on none"
+        );
     }
 
     #[test]

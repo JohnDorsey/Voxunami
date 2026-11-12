@@ -116,6 +116,38 @@ translucency and cut-outs are a later step. The flag `sight_through` is unchange
 2. **By patch.** `{ "op": "set", "path": "texture", "value": "my_pack:oak" }` points the block at a different base name, with the same `test`/`optional`
    rules as every other patch.
 
+### 4.4 Companion pictures: the specular (`_s`) and normal (`_n`) pictures (LabPBR)
+
+*Decided with the owner, 2026-11-12: the formats are LabPBR 1.3's, for the channels read, so that a pack written for it works; the owner supplies the art.*
+
+A picture may have two **companions**, files of the same folder with the picture's name and an ending: `dirt_s.png` is the specular picture of `dirt`, and `dirt_n.png` its normal picture;
+`log_side_s.png` goes with `log_side`. The endings `_s` and `_n` are **reserved**: a file that ends with one is never a picture of its own (a block cannot be named `something_s`). A companion is a
+PNG of the same rules as a picture (4.2) and **of the picture's own size** (another size is an error naming both files). A companion whose picture is not there is a warning for a pack and an error
+for the game's own files, and is not used. Companions are found where pictures are: a pack may put `base_blocks/dirt_n.png` in its folder of that namespace to give the game's `dirt` a normal
+picture, and a pack that replaces a picture with a file of its own takes the replaced picture's companions with it (they fit the old picture, not the new; `check-pack` says so) and brings its own.
+
+The pixels are **data, not colours**: they are read as the file has them (an alpha of 0 is not "clear"), kept linear on the GPU, and shrunk for the smaller levels by the plain average of four in each channel.
+
+| File | Channel | Meaning (LabPBR 1.3) | Read by the renderer |
+|---|---|---|---|
+| `_s` | red | perceptual smoothness | not yet |
+| `_s` | green | reflectance at 0 degrees (or a metal) | not yet |
+| `_s` | blue | porosity or subsurface scattering | not yet |
+| `_s` | alpha | **emission**: 0 to 254 is none to all, **255 is none** | **yes** |
+| `_n` | red, green | the normal's x and y (z is worked out) | not yet |
+| `_n` | blue | ambient occlusion | not yet |
+| `_n` | alpha | height | not yet |
+
+The loader turns an emission of 255 into 0 before the GPU is given the picture, so that the average of four pixels is the average of their emission.
+
+**Emission.** A pixel with emission *e* (0 to 1) is its colour by the share *e* whatever light reaches it, and lit as it was by the rest: the default pack makes `mix(lit, albedo, e)`. The share fades out with the picture
+(over the same band, so beyond the picture distance a face is flat colour and lit as it was). **It is not a light**: it does not light its neighbours; what a lamp lights is still the block's
+`base_blocks:emission`. The engine's `Surface` has the field `emission` (`shader-pack-spec.md`).
+
+**On the wire** each picture is a byte of flags (bit 0: a specular picture follows the pixels, bit 1: a normal picture follows that) and then the pixels, the specular and then the normal; the 8 MiB limit counts the
+companions. **On the GPU** the specular pictures are one more array for each size (bindings 9 to 12 of the frame's group), with the layers of the pictures; a picture with no specular picture has the pixel
+of nothing in its layer. The normal pictures are carried to the client and **not yet drawn** (step 3: bumps).
+
 ## 5. Colours
 
 ### 5.1 Each face has a flat colour
@@ -389,3 +421,17 @@ the "plain shadows" column is the new code with the new pipelines switched off b
 - **Pins moved, once:** every game's package changes (the definitions carry two more bytes each, and `sight_through` is named in the table lines); Cave's gains the two blocks (numbers 8 and 9; the dev blocks are 10 to 12), and its saved world's hash moved because the registry has two more blocks.
   **The pins of `block_golden.rs` and the golden stream of Cave were already stale** (the grass, the log and others had been redrawn since 2026-11-07; checked at the commit before this one), so their colours
   and digests moved for that reason too and were pinned again here.
+
+**Companion pictures, step 1: the specular picture and emission (2026-11-12; section 4.4).** Asked for by the owner: the lamp's picture should shine in the dark, and dirt should be bumpy. They are built one at a time, and this is the first
+step, which carries the companions and reads one channel of one of them.
+- `data_packs::Tile` may hold a `specular` and a `normal` picture of its own size (`with_specular`, `with_normal`, `bytes()`); `Available` (pictures.rs) takes a file ending `_s` or `_n` as a companion of the picture with the rest of the
+  name, after all the pictures are in (a pack that replaces a picture drops the old one's companions and says so; a companion with no picture is a warning for a pack and an error for the game; another size is an error).
+- The package: a byte of flags before each picture's pixels, then the specular and normal pixels if the flags say (`PackageData`); the 8 MiB limit counts them. **The bytes of every package with pictures moved** (one byte a picture).
+- The renderer: `PictureSize::specular` (one `Option` a picture, or empty), a second array for each size in `Rgba8Unorm` with the layers of the pictures, bindings 9 to 12 of the frame group; `engine_specular` makes the alpha 255 a 0, and
+  `data_mip_chain` averages four pixels plainly in every channel (the colour mips weigh by the alpha and work in sRGB, which would spoil data). The shader: `picture_emission` (pictures_on.wgsl; the stub in pictures_off.wgsl is 0),
+  `Surface::emission`, and the default pack's `mix(lit, albedo, emission)`.
+- Tests: the loader (9, pictures.rs and tile.rs), the wire (package_data.rs and package.rs), the mips (block_textures.rs), `picture_sizes` (view.rs), and on the GPU (`emission.rs`): in the dark, a white picture whose specular alpha is 255, 127, 254 and 0 in
+  columns is seen as 0, half, all and 0 of its brightness, and a picture with no companion is black, on every adapter.
+- **Not done:** reading the normal picture (step 2: bumps, with a tangent frame from the screen-space derivatives of the picture's coordinates and a shading normal beside the real one; they will show only in direct sun, as lamp and sky light have no direction), the other channels of the specular
+  picture, the lamp's own picture (the owner supplies the art; `lamp.json` has no `texture` yet), `check-pack` lines for companions, and a measurement of the cost on the integrated GPU (four more bindings; the trap of the
+  integrated AMD GPU in `test-flakes.md` is the reason it is measured).

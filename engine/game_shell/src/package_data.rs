@@ -195,7 +195,14 @@ impl PackageData {
             writer.write_varint(u64::from(first.size()));
             writer.write_varint(class.len() as u64);
             for tile in class {
+                // A byte says which companions follow the picture's pixels (bit 0: the specular picture's, bit 1: the normal picture's).
+                writer.write_u8(
+                    u8::from(tile.specular().is_some()) | (u8::from(tile.normal().is_some()) << 1),
+                );
                 writer.write_raw(tile.rgba());
+                for companion in [tile.specular(), tile.normal()].into_iter().flatten() {
+                    writer.write_raw(companion);
+                }
             }
         }
         writer.into_bytes()
@@ -256,21 +263,35 @@ impl PackageData {
                 ));
             }
             let tile_bytes = size as usize * size as usize * 4;
-            let count = reader.read_count(tile_bytes)?;
+            let count = reader.read_count(tile_bytes + 1)?;
             if count == 0 || count > MOST_TILES_OF_A_SIZE {
                 return Err(DecodeError::Invalid(
                     "a size of picture has no pictures or more than a world has",
                 ));
             }
-            bytes_in_all += count * tile_bytes;
-            if bytes_in_all > MOST_TILE_BYTES {
-                return Err(DecodeError::Invalid(
-                    "the pictures take more bytes than a client is sent",
-                ));
-            }
             let mut tiles = Vec::with_capacity(count);
             for _ in 0..count {
-                tiles.push(Tile::from_rgba(size, reader.read_raw(tile_bytes)?.to_vec()));
+                let flags = reader.read_u8()?;
+                if flags > 0b11 {
+                    return Err(DecodeError::Invalid(
+                        "a picture names companions that there are not",
+                    ));
+                }
+                // (Counted before the pixels are asked for, so that a server cannot make a client read what it will refuse.)
+                bytes_in_all += (1 + flags.count_ones() as usize) * tile_bytes;
+                if bytes_in_all > MOST_TILE_BYTES {
+                    return Err(DecodeError::Invalid(
+                        "the pictures take more bytes than a client is sent",
+                    ));
+                }
+                let mut tile = Tile::from_rgba(size, reader.read_raw(tile_bytes)?.to_vec());
+                if flags & 0b01 != 0 {
+                    tile = tile.with_specular(reader.read_raw(tile_bytes)?.to_vec());
+                }
+                if flags & 0b10 != 0 {
+                    tile = tile.with_normal(reader.read_raw(tile_bytes)?.to_vec());
+                }
+                tiles.push(tile);
             }
             tile_classes.push(tiles);
         }
@@ -384,14 +405,105 @@ mod tests {
         let package = pictured();
         let bytes = package.encode();
         assert_eq!(PackageData::decode(&bytes), Ok(package.clone()));
-        // The section is the count of sizes, then for each the size, the count and the pixels, after the ambient light.
-        let tail = bytes.len() - (1 + (1 + 1 + 2 * 8 * 8 * 4) + (1 + 1 + 16 * 16 * 4));
+        // The section is the count of sizes, then for each the size, the count and the pictures (a byte of flags for the companions, and the pixels), after the ambient light.
+        let tail = bytes.len() - (1 + (1 + 1 + 2 * (1 + 8 * 8 * 4)) + (1 + 1 + (1 + 16 * 16 * 4)));
         assert_eq!(bytes[tail], 2);
         assert_eq!(&bytes[tail + 1..tail + 3], [8, 2]);
+        assert_eq!(bytes[tail + 3], 0, "no companions");
         assert_eq!(
-            bytes[tail + 3],
+            bytes[tail + 4],
             1,
             "the first pixel of the first picture of 8"
+        );
+    }
+
+    /// `pictured()` with companions on some of its pictures: a specular one on the first of 8, both on the second, a normal one on the one of 16.
+    fn with_companions() -> PackageData {
+        let mut package = pictured();
+        let companion = |size: u32, first: u8| {
+            let mut rgba = vec![first.wrapping_add(100); (size * size * 4) as usize];
+            rgba[0] = first;
+            rgba
+        };
+        let classes = &mut package.tile_classes;
+        classes[0][0] = classes[0][0].clone().with_specular(companion(8, 11));
+        classes[0][1] = classes[0][1]
+            .clone()
+            .with_specular(companion(8, 12))
+            .with_normal(companion(8, 13));
+        classes[1][0] = classes[1][0].clone().with_normal(companion(16, 14));
+        package
+    }
+
+    #[test]
+    fn companions_survive_the_trip_exactly_each_on_its_own_picture_and_follow_the_pixels_of_the_picture_in_the_order_specular_then_normal()
+     {
+        let package = with_companions();
+        let bytes = package.encode();
+        let decoded = PackageData::decode(&bytes).unwrap();
+        assert_eq!(decoded, package);
+        let [first, second] = &decoded.tile_classes[0][..] else {
+            panic!("two pictures of 8");
+        };
+        assert_eq!(
+            (first.specular().map(|s| s[0]), first.normal()),
+            (Some(11), None)
+        );
+        assert_eq!(
+            (
+                second.specular().map(|s| s[0]),
+                second.normal().map(|n| n[0])
+            ),
+            (Some(12), Some(13))
+        );
+        assert_eq!(decoded.tile_classes[1][0].normal().map(|n| n[0]), Some(14));
+        // The bytes: after the section's start, the first picture of 8 has flags 1, its pixels, its specular picture.
+        let start =
+            bytes.len() - (1 + (1 + 1 + (1 + 2 * 256) + (1 + 3 * 256)) + (1 + 1 + (1 + 2 * 1024)));
+        assert_eq!(&bytes[start + 1..start + 3], [8, 2]);
+        assert_eq!(bytes[start + 3], 0b01);
+        assert_eq!(bytes[start + 4], 1, "the picture's own first pixel");
+        assert_eq!(bytes[start + 4 + 256], 11, "then the specular picture");
+        assert_eq!(
+            bytes[start + 4 + 512],
+            0b11,
+            "the second picture's flags: both"
+        );
+    }
+
+    #[test]
+    fn flags_that_name_companions_there_are_not_are_refused_and_companions_count_against_the_8_mib()
+    {
+        let mut writer = ByteWriter::new();
+        writer.write_varint(1);
+        writer.write_varint(8);
+        writer.write_varint(1);
+        writer.write_u8(4);
+        writer.write_raw(&[0; 256]);
+        assert_eq!(
+            PackageData::decode(&with_picture_section(&writer.into_bytes())),
+            Err(DecodeError::Invalid(
+                "a picture names companions that there are not"
+            ))
+        );
+        // 11 pictures of 256 with both companions are 33 of them, over the limit as 33 plain ones are; 10 are 30, under it.
+        let section = |count: u64| {
+            let mut writer = ByteWriter::new();
+            writer.write_varint(1);
+            writer.write_varint(256);
+            writer.write_varint(count);
+            for _ in 0..count {
+                writer.write_u8(0b11);
+                writer.write_raw(&vec![0; 3 * 256 * 256 * 4]);
+            }
+            writer.into_bytes()
+        };
+        assert!(PackageData::decode(&with_picture_section(&section(10))).is_ok());
+        assert_eq!(
+            PackageData::decode(&with_picture_section(&section(11))),
+            Err(DecodeError::Invalid(
+                "the pictures take more bytes than a client is sent"
+            ))
         );
     }
 
@@ -413,7 +525,10 @@ mod tests {
             for (size, count) in classes {
                 writer.write_varint(*size);
                 writer.write_varint(*count);
-                writer.write_raw(&vec![0; (*size * *size * 4 * *count) as usize]);
+                for _ in 0..*count {
+                    writer.write_u8(0);
+                    writer.write_raw(&vec![0; (*size * *size * 4) as usize]);
+                }
             }
             writer.into_bytes()
         };
@@ -463,7 +578,10 @@ mod tests {
             writer.write_varint(1);
             writer.write_varint(256);
             writer.write_varint(count);
-            writer.write_raw(&vec![0; (256 * 256 * 4 * count) as usize]);
+            for _ in 0..count {
+                writer.write_u8(0);
+                writer.write_raw(&vec![0; 256 * 256 * 4]);
+            }
             writer.into_bytes()
         };
         assert!(PackageData::decode(&with_picture_section(&section(32))).is_ok());

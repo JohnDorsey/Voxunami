@@ -74,6 +74,8 @@ struct Surface {
     // The share of the sky's light that reaches the place past the terrain's shadow (0 to 1), and the share of it that reaches the place past what is over it (0 to 1).
     sky_visible: f32,
     uncovered: f32,
+    // How much of the pixel shines by itself, whatever light reaches it (0 to 1; from the alpha of the picture's specular companion, 0 where it has none).
+    emission: f32,
 }
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
@@ -462,6 +464,8 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // `pictures_off.wgsl` or `pictures_on.wgsl`; it takes derivatives, so it is here before anything branches).
     var shadow_face = in;
     shadow_face.relative = pixelated_place(in);
+    // How much of the pixel shines by itself (`picture_emission` is in the same two files; it takes derivatives too).
+    let emission = picture_emission(in);
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
@@ -485,6 +489,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.sun_visible = 1.0;
     surface.sky_visible = 1.0;
     surface.uncovered = 1.0;
+    surface.emission = emission;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.

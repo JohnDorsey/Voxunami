@@ -21,6 +21,7 @@ struct Surface {
     sun_visible: f32,       // the share of the sun's light that reaches the place: the above, and the terrain's shadow (the map and the exact walk) on top, 0 to 1
     sky_visible: f32,       // the share of the sky's light that reaches the place past the terrain's shadow, 0 to 1
     uncovered: f32,         // the share of the sky's light that reaches the place past what is over it, 0 to 1
+    emission: f32,          // how much of the pixel shines by itself, 0 to 1 (the alpha of the picture's specular companion; 0 where it has none)
 }
 fn pack_shade(s: Surface) -> vec3<f32>
 ```
@@ -71,7 +72,7 @@ What the checks cannot know is what the graphics card says: `VoxelRenderer::set_
 2. **One function, the colour of a face**, to start. Smaller than Iris's, which is passes; the sky, the fog and a pass are hooks to add by need.
 3. **No loops, no resources.** Safe by construction; limits what a pack can look like (no blur, no sampling). The way out for a pack that needs them is a bounded query the engine offers, not a binding.
 4. **The engine owns the fog** so that a pack cannot forget it; a hook for it is easy to add.
-5. **The interface is numbered** (`SHADER_PACK_INTERFACE`), a pack names it, and a change of the fields of `Surface` is a new number, not a quiet break.
+5. **The interface is numbered** (`SHADER_PACK_INTERFACE`), a pack names it, and a change of the fields of `Surface` is a new number, not a quiet break. (*Read so, 2026-11-12, to be confirmed by the owner:* the number is for a change that can break a pack, a field taken away or its meaning changed; `emission` was **added** without one, since a pack only reads `Surface`.)
 6. **Words, not the language, are checked for the engine's names** (a local variable called `pool` is refused): simple and safe; the author renames.
 
 ## 6. Not built
