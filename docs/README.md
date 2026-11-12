@@ -28,7 +28,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 - `terrain-collider-options.md`: the bigger options for what a fast ship costs the server (2026-11-07), ranked, with the measurement that shows where a tick goes. Item 1 is done; the rest is not scheduled.
 - `leaf-cost-options.md`: what leaves and glass cost on the GPU (measured 2026-11-08) and the options to cut it, with a correction of an overstated claim. **A proposal**; nothing is built.
 - `ship-centre-of-mass-edit-options.md`: what a placed or broken block does to the place of a ship on a rail (the whole ship steps by the shift of its centre of mass, today and kept for now, owner 2026-11-10) and three options to smooth it (fit the rail at the edit, a saved offset, ramped mass for new blocks). **Options**; nothing is built.
-- `motion-in-frames-options.md`: why walker and ship motion bugs keep appearing (speed stored against a frame whose id can change, ship acceleration differenced from history, a private physics world per walker), a measured case (a real split mid-jump changes the jump) and six options. **Options**; nothing is built.
+- `motion-in-frames-options.md`: why walker and ship motion bugs keep appearing (speed stored against a frame whose id can change, ship acceleration differenced from history, a private physics world per walker), a measured case (a real split mid-jump changes the jump) and six options. **Options**; 1 (tests) and 2 (one resolver for stale ids) are built, the rest is not.
 - `architecture-review.md`: the direction review of 2026-10-29: findings and proposals (milestones M0 to M4, eleven decisions).
   **Proposals, not decisions**, apart from what `design-decisions.md` records as taken.
 

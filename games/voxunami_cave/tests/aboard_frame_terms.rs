@@ -1048,13 +1048,219 @@ fn a_jump_whose_ship_changes_id_is_the_jump_it_would_have_been(change: Change) {
 }
 
 #[test]
-#[ignore = "known bug, option 2 of docs/motion-in-frames-options.md: agree_with zeroes the walker's speed in the ship when the ship's id changes"]
 fn a_jump_whose_ship_is_given_a_new_id_in_the_air_is_the_jump_it_would_have_been() {
     a_jump_whose_ship_changes_id_is_the_jump_it_would_have_been(renumbered);
 }
 
 #[test]
-#[ignore = "known bug, option 2 of docs/motion-in-frames-options.md: agree_with zeroes the walker's speed in the ship when the ship's id changes"]
 fn a_jump_whose_ship_is_cut_in_two_in_the_air_is_the_jump_it_would_have_been() {
     a_jump_whose_ship_changes_id_is_the_jump_it_would_have_been(split_in_two);
+}
+
+/// A pose with the origin of the ship at `origin` and turned as `orientation` says.
+fn posed(origin: [f64; 3], orientation: Orientation) -> GridPose {
+    GridPose::new(
+        WorldPosition::new(voxel_space::BrickCoordinate::ORIGIN, origin),
+        orientation,
+    )
+}
+
+/// Where the base of the merge is from the deck (whole voxels, in the world's axes): beside the deck, with its first block out of the deck's way.
+const BASE_BESIDE_THE_DECK: [f64; 3] = [-2.0, 0.0, 0.0];
+
+/// A free fall in which the deck and a larger ship beside it, turned a quarter about z, go as one, `ticks` ticks of it, of which `done` have been run (time from the first tick of the
+/// whole run). If `merge_at` is a tick, the deck is made one ship with the other then (`ServerWorld::merge_grids`: the deck is the smaller, so it is carried onto the lattice of the
+/// other, turned a quarter), and the handles name the merged ship.
+fn drive_a_deck_and_a_turned_base(
+    scene: &mut Scene,
+    player: &mut Player,
+    (deck, base): (&ShipHandle, &ShipHandle),
+    done: usize,
+    ticks: usize,
+    merge_at: Option<usize>,
+) {
+    let (deck, base) = (Arc::clone(deck), Arc::clone(base));
+    common::each_tick(scene, player, ticks, move |world, tick| {
+        let (origin, velocity) = falling_freely((done + tick + 1) as f64 * TICK);
+        if merge_at == Some(tick) {
+            let content = voxunami_cave::content::CaveContent::new();
+            let turn =
+                |_: &mut Vec<(voxel_grid::ChannelIndex, u32)>, _: voxel_space::LatticeRotation| {};
+            let merged = world
+                .merge_grids(
+                    *deck.lock().unwrap(),
+                    *base.lock().unwrap(),
+                    &server::MergePlan {
+                        block_channel: content.block_channel(),
+                        orientation_channel: Some(content.orientation_channel()),
+                        tolerance: voxel_space::AlignmentTolerance::default(),
+                        turn: &turn,
+                        linear_velocity: velocity,
+                        angular_velocity: [0.0; 3],
+                    },
+                )
+                .expect("the deck and the other ship were merged");
+            *deck.lock().unwrap() = merged;
+            *base.lock().unwrap() = merged;
+        }
+        let (deck_id, base_id) = (*deck.lock().unwrap(), *base.lock().unwrap());
+        if deck_id != base_id {
+            world
+                .set_grid_pose(
+                    deck_id,
+                    GridPose::new(
+                        WorldPosition::new(voxel_space::BrickCoordinate::ORIGIN, origin),
+                        Orientation::IDENTITY,
+                    ),
+                )
+                .unwrap();
+            world
+                .set_grid_velocity(deck_id, velocity, [0.0; 3])
+                .unwrap();
+        }
+        // (The merged ship is in the place and the turn of the larger.)
+        world
+            .set_grid_pose(
+                base_id,
+                posed(
+                    plus(origin, BASE_BESIDE_THE_DECK),
+                    roll(std::f64::consts::FRAC_PI_2),
+                ),
+            )
+            .unwrap();
+        world
+            .set_grid_velocity(base_id, velocity, [0.0; 3])
+            .unwrap();
+    });
+}
+
+/// How far the eyes go through the world, from the ship's fall, in the `ticks` ticks after the jump key goes down in a ship in free fall, with the deck merged with the base
+/// `merge_at` ticks after (if it is).
+fn flight_through_the_world_from_the_fall(merge_at: Option<usize>, ticks: usize) -> [f64; 3] {
+    let (mut scene, mut player) = standing_on_the_deck();
+    common::make_ship(
+        &mut scene,
+        posed(
+            plus(START, BASE_BESIDE_THE_DECK),
+            roll(std::f64::consts::FRAC_PI_2),
+        ),
+        true,
+        [40, 2, 8],
+        |_| true,
+    );
+    let (deck, base) = (the_deck(), Arc::new(Mutex::new(ship_id(1))));
+    let lead_in = 3;
+    drive_a_deck_and_a_turned_base(&mut scene, &mut player, (&deck, &base), 0, lead_in, None);
+    let before = eyes_in_the_world(&scene, 1);
+    player.hold(&[KeyCode::Space]);
+    drive_a_deck_and_a_turned_base(
+        &mut scene,
+        &mut player,
+        (&deck, &base),
+        lead_in,
+        ticks,
+        merge_at,
+    );
+    let after = eyes_in_the_world(&scene, 1);
+    assert_eq!(
+        common::player_pose(&scene, 1).grid,
+        *deck.lock().unwrap(),
+        "aboard the deck, or the ship it was merged into"
+    );
+    let fell = falling_freely((lead_in + ticks) as f64 * TICK).0;
+    let fell_before = falling_freely(lead_in as f64 * TICK).0;
+    [0, 1, 2].map(|axis| after[axis] - before[axis] - (fell[axis] - fell_before[axis]))
+}
+
+#[test]
+fn a_jump_in_a_ship_in_free_fall_goes_on_as_it_was_when_the_ship_is_merged_with_one_that_turns_its_lattice_a_quarter()
+ {
+    // In free fall the walker goes on through the ship at the speed of the jump, straight up in the world. The merged ship's axes are turned a quarter from the deck's, so the walker's
+    // speed in the ship is turned a quarter, or it would go off sideways.
+    let control = flight_through_the_world_from_the_fall(None, 12);
+    assert!(
+        (control[1] - JUMP * 12.0 * TICK).abs() < 0.2
+            && control[0].abs() < 0.05
+            && control[2].abs() < 0.05,
+        "the premise: a jump in free fall goes straight up at the speed of the jump, {control:?}"
+    );
+    for merge_at in [0, 3, 6] {
+        let merged = flight_through_the_world_from_the_fall(Some(merge_at), 12);
+        for axis in 0..3 {
+            assert!(
+                (merged[axis] - control[axis]).abs() < 0.05,
+                "merged {merge_at} ticks after the key: went {merged:?} and {control:?} with no merge"
+            );
+        }
+    }
+}
+
+fn a_buckled_walker_stays_buckled_when_the_ship_changes_id(change: Change) {
+    let (mut scene, mut player) = standing_on_the_deck();
+    let ship = the_deck();
+    let standing = eyes_in_their_frame(&scene, 1);
+    let reply = say_while(
+        &mut scene,
+        &mut player,
+        &ship,
+        burning_up,
+        0,
+        "/ship buckle",
+    );
+    assert!(reply.starts_with("you are buckled"), "{reply}");
+    drive(
+        &mut scene,
+        &mut player,
+        &ship,
+        burning_up,
+        2,
+        10,
+        Some((3, change)),
+    );
+    assert_ne!(
+        *ship.lock().unwrap(),
+        ship_id(0),
+        "the premise: it has a new id"
+    );
+    assert_eq!(
+        common::player_pose(&scene, 1).grid,
+        *ship.lock().unwrap(),
+        "aboard the new id"
+    );
+    // Still buckled: this is what they are let go of, not nothing.
+    let reply = say_while(
+        &mut scene,
+        &mut player,
+        &ship,
+        burning_up,
+        12,
+        "/ship unbuckle",
+    );
+    assert!(reply.starts_with("you are let go"), "{reply}");
+    drive(
+        &mut scene,
+        &mut player,
+        &ship,
+        burning_up,
+        14,
+        HALF_A_SECOND,
+        None,
+    );
+    let later = eyes_in_their_frame(&scene, 1);
+    for axis in 0..3 {
+        assert!(
+            (later[axis] - standing[axis]).abs() < 0.03,
+            "{standing:?} {later:?}"
+        );
+    }
+}
+
+#[test]
+fn a_walker_buckled_in_a_ship_that_is_given_a_new_id_is_buckled_in_it_still() {
+    a_buckled_walker_stays_buckled_when_the_ship_changes_id(renumbered);
+}
+
+#[test]
+fn a_walker_buckled_in_a_ship_that_is_cut_in_two_is_buckled_in_their_part_still() {
+    a_buckled_walker_stays_buckled_when_the_ship_changes_id(split_in_two);
 }

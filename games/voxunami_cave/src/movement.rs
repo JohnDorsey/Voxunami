@@ -33,6 +33,7 @@ use voxel_space::{
 };
 
 use crate::messages::MoveRequest;
+use crate::renaming::successor;
 use crate::ships::TICK_SECONDS;
 
 /// Physics steps to a tick: the tick is 50 ms and a step a sixtieth of a second.
@@ -462,6 +463,7 @@ impl Movement {
                 continue;
             };
             let carried = carried_by_rails(client);
+            follow_renamed_ships(player, world, &placement);
             agree_with(
                 player,
                 &placement,
@@ -515,6 +517,40 @@ fn ship_bounds(world: &ServerWorld) -> BTreeMap<GridId, ShipBounds> {
             ))
         })
         .collect()
+}
+
+/// A ship that was split, merged, docked with a planet or given a new id is not the ship the body knows by its old id: the body goes on in the ship that took its place, as it was.
+/// The record of the player has been moved to that ship by the world (with the transform, if the ship's coordinates were turned), so the body is put where the record says, and its
+/// speed in the ship is turned by the rotation of the transform, not lost: nothing was done to the player. Every id the body holds is made the new one here (see [`crate::renaming`]).
+/// A ship that is merely gone is left to [`agree_with`], which puts the body where the record says in the world, at rest.
+fn follow_renamed_ships(player: &mut PlayerBody, world: &ServerWorld, placement: &Placement) {
+    let grids = world.data().grids();
+    let frame = successor(grids, player.frame, Some(placement.frame))
+        .filter(|(new, _)| *new == placement.frame && placement.level == player.level);
+    if let Some((new, transform)) = frame {
+        let old = player.frame;
+        let velocity = transform.apply_direction(player.body.velocity());
+        player.body.reframe(
+            placement.position,
+            velocity,
+            placement.frame_rotation().components(),
+        );
+        player.frame = new;
+        if player.buckled == Some(old) {
+            player.buckled = Some(new);
+        }
+        if let Some(motion) = player.motion.as_mut().filter(|motion| motion.ship == old) {
+            motion.ship = new;
+        }
+    }
+    // The place a body left a ship is in the coordinates of that ship, and is the same place in what took its place.
+    if let Some(departure) = player.departure
+        && let Some((new, transform)) = successor(grids, departure.ship, None)
+    {
+        player.departure = transform
+            .apply_position(departure.place)
+            .map(|place| Departure { ship: new, place });
+    }
 }
 
 /// Makes the body agree with what the record of the player says, when it does not: the player was put in another level (the same place,

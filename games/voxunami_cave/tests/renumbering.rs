@@ -1,7 +1,7 @@
 //! A ship given a new id in the middle of a scenario (`ServerWorld::renumber_ship`, a test-only change of id that changes nothing else): what keeps the old id of a ship after a restructuring
 //! shows as a difference from the same scenario without it. A merge or a split does give ships new ids; a rename, which `docs/decisions/joints-and-cars.md` keeps open ("The planet's unchanged
 //! identifier"), would give a ship a new id and nothing else, and these are the scenarios of the plan: a chain of coupled cars, a ship on a rail, a walker aboard. (The seat and the walker's
-//! speed in the ship are not here: they do not survive it, and `docs/history/build-log.md`, "Joints, the change record and the test-only renumber", says how; the jump that a renumbering or a split spoils is in the ignored tests of `aboard_frame_terms.rs`.)
+//! speed in the ship are in `command_seat.rs` and `aboard_frame_terms.rs`: they survive it since `crate::renaming`.)
 
 mod common;
 

@@ -5,7 +5,7 @@ un-realness bugs that we're having with ships sometimes"; is there a root cause,
 player motion so such problems "kinda solve themselves"? The owner's reasoning: a walker's velocity aboard a ship is their velocity
 through the universe minus the ship's, so move in the direction of relying on that, without getting rid of physics frames entirely.
 
-**A proposal; nothing is built.** Numbers marked *ran* were measured with a throwaway probe (Windows only; Linux not run). Statements
+**Options 1 and 2 are built (below); the rest is a proposal.** Numbers marked *ran* were measured with a throwaway probe (Windows only; Linux not run). Statements
 marked *read* come from reading the code and the older notes, not from running or tracing anything.
 
 ## A correction of an earlier claim
@@ -89,8 +89,19 @@ All opinions; none tested except the probe above.
 Four tests at the end of `games/voxunami_cave/tests/aboard_frame_terms.rs`, which read only the jump and the walk, so they do not depend on how the motion is stored. The fourteen oracle tests above them are unchanged.
 
 - **Boost invariance (pass; ran, Windows).** A ship brought to a velocity (30 m/s along x, 60 along -z, 60 up, 250 along x, and (40, 25, -30)) with the walker buckled, who is then let go and jumps in a rest, a free fall and a burn: the rise agrees with the same run at no boost to 0.02 m. Walking: the walker's distance in the ship agrees to 0.05 m, and their distance in the world is the ship's plus theirs in it. **They bite:** with `felt_aboard` mutated to take the ship's acceleration from its speed and not from the change of it, both fail (so do eight of the oracle's). So today's stored form is Galilean-invariant for a walker who stays aboard; the bugs are not there.
-- **Id invariance (fail; ran).** A ship given a new id (`renumber_ship`) or cut in two (`split_grid`) between 0 and 5 ticks after the jump key. In free fall the jump is lost: the highest rise is 0.18 to 0.9 m against 2.16 m with no change (the speed is zeroed, so one tick of the jump is all there is). In a burn it is 0.703, 0.665, 0.593, 0.426 and 0.567 m against 0.618 m. A renumbering gives the same numbers as a split to every digit, so it is the change of id and not the cut that does it. These two are `#[ignore]`d with the reason, so that a commit ends green; option 2 turns them on.
+- **Id invariance (failed before option 2; ran).** A ship given a new id (`renumber_ship`) or cut in two (`split_grid`) between 0 and 5 ticks after the jump key. In free fall the jump is lost: the highest rise is 0.18 to 0.9 m against 2.16 m with no change (the speed is zeroed, so one tick of the jump is all there is). In a burn it is 0.703, 0.665, 0.593, 0.426 and 0.567 m against 0.618 m. A renumbering gives the same numbers as a split to every digit, so it is the change of id and not the cut that does it. These two were `#[ignore]`d with the reason until option 2, below.
 - **Not covered:** a merge or dock (its lattice transform can turn the walker's speed), a walker who is buckled or in the seat when the id changes, a ship on a rail, a walker in a level carried by a planet. All are the next tests.
+
+## Option 2 built (2026-11-12): the resolver
+
+`games/voxunami_cave/src/renaming.rs`: `successor(grids, old, prefer)` says what a retired id became (from `GridStore::resolve`, the tombstones) and the transform from the old ship's coordinates to the new. Every holder of a ship id asks it:
+
+- **The walker's body** (`follow_renamed_ships`, `movement.rs`, called before `agree_with`): the frame, `buckled`, `Motion.ship` and `Departure` (ship and place). The body is put where the record says (the world moved the record with the transform) and its speed in the ship is **turned by the transform's rotation, not zeroed** (`LatticeTransform::apply_direction` and `apply_position`, new in `voxel_space` with property tests). A ship that is merely gone still goes to `agree_with`, as before.
+- **The pilot and the seat** (`follow_ships_that_were_replaced`, which had its own copy of the `resolve` logic, now uses `successor`; `Seated::follow` carries the seat voxel). The seat was dropped on any change of id, by design of the doc comment; nothing tested that, and now a pilot keeps the seat and the throttle.
+
+Results (ran, Windows): the two id tests pass (within 0.02 m of the control) and are no longer ignored; a merge that turns the lattice a quarter, mid-jump in free fall, gives the same flight through the world as no merge (the walker goes up, not sideways); a buckled walker is still buckled after a renumbering or a split; a seated pilot keeps the seat and the throttle through a renumbering. **They bite:** with the speed not turned the merge test fails (the walker went (-1.62, 0.54, 0) and not (0, 2.16, 0)); with the `buckled` id not followed both buckle tests fail; before the fix both id tests and the seat test failed.
+
+Not covered or not done: a ship on a rail; a walker in a level carried by a planet; a `Departure` through a rename (the code is there; no test builds the scene); the chosen rule for a merge or dock that changes the ship's speed (the walker keeps their speed in the ship); a split of a spinning ship (an error of spin times the shift of the centre of mass in the one tick's measure of acceleration, not measured). Planet ids are not followed (kept, owner 2026-11-10).
 
 ## Recommendation
 

@@ -338,3 +338,46 @@ fn a_seated_pilot_is_carried_exactly_by_the_ship_however_the_seat_turns_and_push
         "you are not buckled"
     );
 }
+
+#[test]
+fn a_pilot_who_sits_in_a_ship_that_is_given_a_new_id_sits_in_it_still_with_the_throttle_they_had() {
+    let (mut scene, mut player) = a_ship_with_a_seat_and_four_engines();
+    sit(&mut scene, &mut player);
+    player.hold(&[KeyCode::ShiftLeft]);
+    tick_and_follow(&mut scene, &mut player, 20);
+    let before = player.hud_text();
+    assert!(
+        before.contains("throttle") && !before.contains("throttle 0 %"),
+        "the premise: the throttle is up, {before}"
+    );
+    let renamed = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = std::sync::Arc::clone(&renamed);
+    scene.run(move |world| {
+        *slot.lock().unwrap() = Some(world.renumber_ship(ship_id(0)).expect("renumbered"));
+    });
+    let renamed = renamed.lock().unwrap().take().expect("the tick ran");
+    assert_ne!(renamed, ship_id(0));
+    let speed = |scene: &Scene| {
+        let ship = scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(renamed)
+            .expect("the ship is there");
+        let [x, y, z] = ship.linear_velocity;
+        (x * x + y * y + z * z).sqrt()
+    };
+    let at_the_change = speed(&scene);
+    tick_and_follow(&mut scene, &mut player, 20);
+    let after = player.hud_text();
+    assert!(
+        after.contains("throttle") && !after.contains("throttle 0 %"),
+        "still seated, with the throttle: {after}"
+    );
+    assert!(
+        speed(&scene) > at_the_change + 0.1,
+        "and the engines still push the ship: {at_the_change} then {}",
+        speed(&scene)
+    );
+}

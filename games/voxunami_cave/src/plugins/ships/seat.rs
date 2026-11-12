@@ -11,7 +11,7 @@ use crate::flight::{
 };
 use crate::messages::FlightReadoutIs;
 use protocol::Message;
-use voxel_space::LocalVoxelIndex;
+use voxel_space::{LatticeTransform, LocalVoxelIndex};
 use world_storage::MovingGrid;
 use world_storage::rail::RailTime;
 
@@ -24,12 +24,28 @@ const TICKS_PER_SECOND: u32 = 20;
 /// One pilot sitting in a seat.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Seated {
-    /// The ship, as it was when they sat: a ship that was cut apart or made one with another is not the one they sat in.
+    /// The ship the seat is in: a ship that was cut apart, made one with another or given a new id is followed (`Ships::follow_ships_that_were_replaced`).
     ship: GridId,
     /// The voxel of the seat, in the ship's own coordinates.
     seat: VoxelCoordinate,
     /// The throttle, 0 to 1.
     throttle: f64,
+}
+
+impl Seated {
+    /// The ship the seat is in.
+    pub(super) fn ship(&self) -> GridId {
+        self.ship
+    }
+
+    /// The seat after the ship it was in became `new` (see [`crate::renaming`]): in that ship, at the voxel the transform carries the seat's to. If the seat is not there (a ship cut
+    /// apart put it in another part), `fly_seated` finds no seat at the voxel and stands the pilot up.
+    pub(super) fn follow(&mut self, new: GridId, transform: LatticeTransform) {
+        self.ship = new;
+        if let Some(seat) = transform.apply(self.seat) {
+            self.seat = seat;
+        }
+    }
 }
 
 /// What a ship is made of, as far as flying it goes.
@@ -186,7 +202,7 @@ impl Ships {
         if seats.is_empty() {
             return;
         }
-        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
+        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots, &mut seats);
         let mut movement = locked(&self.movement);
         let mut up = Vec::new();
         for (&client, seated) in seats.iter_mut() {
