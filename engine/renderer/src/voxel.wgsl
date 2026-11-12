@@ -458,6 +458,10 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
     // renderer's pipeline is made with).
     let picture = picture_albedo(in);
+    // Where the terrain's shadow is looked up for this pixel: where it is, or with pixelated shadows the middle of its picture's pixel (`pixelated_place` is in
+    // `pictures_off.wgsl` or `pictures_on.wgsl`; it takes derivatives, so it is here before anything branches).
+    var shadow_face = in;
+    shadow_face.relative = pixelated_place(in);
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
@@ -500,9 +504,9 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if (cosine > 0.0) {
                 // The map's answer, and the walk of the sun's ray through the voxels for the first few cells, where the map is not exact (`contact_light` is 1 unless the
                 // renderer holds the voxels that block the sun: it is in `contact_off.wgsl` or `contact_on.wgsl`).
-                terrain = terrain_light(in.relative, distance);
+                terrain = terrain_light(shadow_face.relative, distance);
                 if (terrain > 0.0) {
-                    terrain = terrain * contact_light(in, distance);
+                    terrain = terrain * contact_light(shadow_face, distance);
                 }
             }
             sun_visible = sun_visible * terrain;

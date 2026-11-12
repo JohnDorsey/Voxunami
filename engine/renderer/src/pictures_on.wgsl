@@ -38,6 +38,55 @@ fn picture_share(relative: vec3<f32>) -> f32 {
     return 1.0 - smoothstep(frame.pictures.x, frame.pictures.y, picture_distance);
 }
 
+// How many pixels a picture has along a voxel's side: the side of the pictures of the size this word names.
+fn picture_pixels_per_voxel(picture: u32) -> f32 {
+    var side = 1u;
+    switch ((picture >> 1u) & 3u) {
+        case 0u: {
+            side = textureDimensions(pictures_0).x;
+        }
+        case 1u: {
+            side = textureDimensions(pictures_1).x;
+        }
+        case 2u: {
+            side = textureDimensions(pictures_2).x;
+        }
+        default: {
+            side = textureDimensions(pictures_3).x;
+        }
+    }
+    return f32(side);
+}
+
+// Where the shadow of the face is looked up. With pixelated shadows off, where the pixel is. With them on, the middle of the picture's pixel the pixel of the screen is in, so
+// that every screen pixel of a picture pixel is lit alike and the edge of a shadow steps along the picture's pixels (the share of the picture there is at the pixel scales the
+// move, so that it fades out with the picture). The move is along the face: how the picture's coordinates and the place change across the screen say how far on the screen the
+// middle is, and where that is. Where the face is nearly edge on (the coordinates hardly change in one direction) the place is left as it is.
+fn pixelated_place(in: VertexOutput) -> vec3<f32> {
+    // (These are taken before anything branches, as in `picture_albedo`.)
+    let uv_across = dpdx(in.uv);
+    let uv_down = dpdy(in.uv);
+    let place_across = dpdx(in.relative);
+    let place_down = dpdy(in.relative);
+    if (in.picture == 0u || frame.pictures.z < 0.5 || frame.pictures.y <= 0.0) {
+        return in.relative;
+    }
+    let share = picture_share(in.relative);
+    if (share <= 0.0) {
+        return in.relative;
+    }
+    let pixels = picture_pixels_per_voxel(in.picture);
+    let middle = (floor(in.uv * pixels) + vec2<f32>(0.5)) / pixels;
+    let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
+    if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
+        return in.relative;
+    }
+    let to_middle = middle - in.uv;
+    let across = (to_middle.x * uv_down.y - to_middle.y * uv_down.x) / determinant;
+    let down = (uv_across.x * to_middle.y - uv_across.y * to_middle.x) / determinant;
+    return in.relative + (place_across * across + place_down * down) * share;
+}
+
 // The colour of the face at this pixel: a picture, fading into the face's own colour with the distance; and how much of the face is there, which is 1 unless the
 // block cuts holes (bit 17 of the picture's word: the block's transparency is not the opaque one) and the picture is clear at this pixel (the fragment is then not
 // drawn: a hole, in leaves and in the panes of glass). An opaque block draws its picture whole, whatever its alpha. Beyond the distance the face is a whole face of

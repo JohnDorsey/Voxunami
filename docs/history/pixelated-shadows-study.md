@@ -50,7 +50,11 @@ The prototype (temporary, in `voxel.wgsl`): `snapped_place` solves for the scree
 
 One scene in the real game (the pole), one test scene, a dev-profile build, one run per cell except the snap cost. Not measured: the cost of widening only the first cascades; the cost of ships and moving planets with wider maps; 1080p or 4K frames; a sun at 7 degrees (Cave's start) with the snap; how often the grazing fallback leaves a face unsnapped; shadows through leaves and glass (their maps read pictures at the map's pixel, which I did not change). The snap should be an engine option (the player's or the pack's choice), not a pack's own, because it is done where the map is looked up, which a pack cannot do; that is a decision for the owner.
 
-## 6. If the owner says go (my plan, with the tests first)
+## 6. Built (2026-11-11), at the owner's yes and with the map size kept at 1024
+
+Steps 1 and 2 below are done: `set_pixelated_shadows` (off by default), `.pixelshadows`, `--pixel-shadows`, and the GPU test `pixelated_shadows.rs` (written first, it failed with the snap off in the shader). The test measures that all screen pixels well inside one picture pixel of the floor have one brightness, which is the claim the snap makes; it does **not** test that edge pixels are binary (they are not exactly, where a map texel straddles a picture pixel). Step 3 is only partly done (one Cave view looked at, 167 pixels changed; the low sun and grazing faces were not examined); step 4 is not built.
+
+## 7. If the owner says go (my plan, with the tests first)
 
 1. A GPU test on four adapters that a picture texel is wholly lit or shaded (the probe scene of this study, with the within-texel spread counted), for terrain and a turned ship, written to fail first.
 2. The snap behind a setting, with the picture size from the texture; the pack interface unchanged.

@@ -30,6 +30,8 @@ Usage: voxunami {command} [options]
   --time TIME                     pin the sun at a time of day for you (noon, midnight, 18:30);
                                   by default it follows the world's clock
   --shadows on|off                shadows of the terrain (default on); .shadows changes it while playing
+  --pixel-shadows on|off          every pixel of a block's picture wholly lit or wholly shaded (default off);
+                                  .pixelshadows changes it while playing
   --shader-pack NAME              start with this shader pack (its id or name, or the beginning of one);
                                   .shader changes it while playing
   --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
@@ -123,6 +125,8 @@ pub struct ViewOptions {
     pub time: Option<u16>,
     /// Whether the terrain casts shadows (`--shadows`); on by default.
     pub shadows: bool,
+    /// Whether each pixel of a block's picture is wholly in the light or wholly in a shadow (`--pixel-shadows`); off by default.
+    pub pixelated_shadows: bool,
     /// A folder of shader packs besides the one in the game data folder (`--shader-packs`).
     pub shader_packs: Option<PathBuf>,
     /// The shader pack to start with (`--shader-pack`): an id or a name, or the beginning of one.
@@ -141,6 +145,7 @@ impl Default for ViewOptions {
             screenshot: None,
             time: None,
             shadows: true,
+            pixelated_shadows: false,
             shader_packs: None,
             shader_pack: None,
         }
@@ -263,6 +268,13 @@ fn parse_view_flag(
                 "on" => true,
                 "off" => false,
                 other => return Err(format!("--shadows: {other:?} should be on or off")),
+            };
+        }
+        "--pixel-shadows" => {
+            view.pixelated_shadows = match value(flag)?.as_str() {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("--pixel-shadows: {other:?} should be on or off")),
             };
         }
         _ => return Ok(false),
@@ -516,6 +528,7 @@ mod tests {
                     screenshot: Some(PathBuf::from("out.png")),
                     time: Some(18 * 60 + 30),
                     shadows: false,
+                    pixelated_shadows: false,
                     shader_packs: Some(PathBuf::from("my_shaders")),
                     shader_pack: Some("cel".to_owned()),
                 },
@@ -533,6 +546,18 @@ mod tests {
                 benchmark: true,
             }
         );
+    }
+
+    #[test]
+    fn pixelated_shadows_are_off_unless_the_player_says_on_and_nothing_else_is_a_state() {
+        assert!(!play("").view.pixelated_shadows);
+        assert!(play("--pixel-shadows on").view.pixelated_shadows);
+        assert!(!play("--pixel-shadows off").view.pixelated_shadows);
+        for bad in ["maybe", "1", "ON", ""] {
+            let error = parse_play::<ExampleGame>(arguments(&format!("--pixel-shadows {bad}")))
+                .unwrap_err();
+            assert!(error.contains("--pixel-shadows"), "{bad:?}: {error}");
+        }
     }
 
     #[test]

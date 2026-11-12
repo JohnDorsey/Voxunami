@@ -20,6 +20,8 @@ pub struct ClientSettings {
     pub time_of_day: Option<u16>,
     /// Whether the terrain casts shadows in the pictures (`.shadows`). On by default; it costs a second drawing of what is near the sun's way, so a slow GPU may want it off.
     pub shadows: bool,
+    /// Whether each pixel of a block's picture is wholly in the light or wholly in a shadow (`.pixelshadows`, `renderer::VoxelRenderer::set_pixelated_shadows`). Off by default.
+    pub pixelated_shadows: bool,
     /// How far from the camera, in voxels, a block's picture is drawn on it (`.textures`); beyond a quarter more the block is its flat colour. 0 draws no pictures.
     pub texture_distance: u32,
     /// The shader packs the player has (`.shader`), by id, and the id of the one chosen (`None`: the default). The session is told of the first when it starts; a pack the
@@ -37,6 +39,7 @@ impl ClientSettings {
             pinned_time: None,
             time_of_day: None,
             shadows: true,
+            pixelated_shadows: false,
             texture_distance: renderer::DEFAULT_PICTURE_DISTANCE as u32,
             shader_packs: Vec::new(),
             shader_pack: None,
@@ -191,6 +194,34 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                     "shadows are now off".to_owned()
                 }
                 _ => "usage: .shadows [on|off]".to_owned(),
+            }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "pixelshadows",
+            "makes every pixel of a block's picture wholly in the light or wholly in a shadow, so that the edge of a shadow steps along the picture's pixels (it is off); exact up to about 28 voxels from you, and in the maps' own steps beyond; .pixelshadows alone says which",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("on|off").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return format!(
+                    "pixelated shadows are {}",
+                    if settings.pixelated_shadows { "on" } else { "off" }
+                );
+            }
+            match arguments.word(0) {
+                "on" => {
+                    settings.pixelated_shadows = true;
+                    "pixelated shadows are now on".to_owned()
+                }
+                "off" => {
+                    settings.pixelated_shadows = false;
+                    "pixelated shadows are now off".to_owned()
+                }
+                _ => "usage: .pixelshadows [on|off]".to_owned(),
             }
         },
     );
@@ -504,6 +535,40 @@ mod tests {
     }
 
     #[test]
+    fn pixel_shadows_are_off_to_begin_with_and_can_be_turned_on_and_off_and_nothing_else() {
+        let mut settings = ClientSettings::new(0);
+        assert!(!settings.pixelated_shadows);
+        assert_eq!(
+            run(".pixelshadows", &mut settings),
+            "pixelated shadows are off"
+        );
+        assert_eq!(
+            run(".pixelshadows on", &mut settings),
+            "pixelated shadows are now on"
+        );
+        assert!(settings.pixelated_shadows);
+        assert_eq!(
+            run(".pixelshadows", &mut settings),
+            "pixelated shadows are on"
+        );
+        assert_eq!(
+            run(".pixelshadows off", &mut settings),
+            "pixelated shadows are now off"
+        );
+        assert!(!settings.pixelated_shadows);
+        // What is neither changes nothing.
+        for bad in [".pixelshadows maybe", ".pixelshadows 1", ".pixelshadows ON"] {
+            settings.pixelated_shadows = true;
+            assert_eq!(
+                run(bad, &mut settings),
+                "usage: .pixelshadows [on|off]",
+                "{bad}"
+            );
+            assert!(settings.pixelated_shadows, "{bad}");
+        }
+    }
+
+    #[test]
     fn textures_say_set_turn_off_and_reset_how_far_the_pictures_on_blocks_are_drawn() {
         let mut settings = ClientSettings::new(0);
         assert_eq!(settings.texture_distance, 64);
@@ -630,18 +695,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

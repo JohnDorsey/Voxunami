@@ -436,6 +436,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.settings.pinned_time = minutes;
     }
 
+    /// Makes every pixel of a block's picture wholly lit or wholly shaded, or not, for this player (what `.pixelshadows` does).
+    pub fn set_pixelated_shadows(&mut self, on: bool) {
+        self.settings.pixelated_shadows = on;
+    }
+
     /// Turns the shadows of the terrain on or off for this player (what `.shadows` does).
     pub fn set_shadows(&mut self, on: bool) {
         self.settings.shadows = on;

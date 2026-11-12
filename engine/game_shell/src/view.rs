@@ -110,6 +110,7 @@ pub fn light_the_scene<C: Connection, G: GameDefinition>(
     renderer.set_sun_occluders(&occluders);
     renderer.set_atmosphere(lit);
     renderer.set_picture_distance(session.settings().texture_distance as f32);
+    renderer.set_pixelated_shadows(session.settings().pixelated_shadows);
 }
 
 /// What [`light_the_scene`] gives the renderer: the atmosphere, and what can be in the sun's way.

@@ -434,7 +434,8 @@ struct FrameUniform {
     heavens: [f32; 4],
     /// Linear RGB of each avatar colour.
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
-    /// x: how far from the camera a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
+    /// x: how far from the camera a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn), z: 1 if each pixel of
+    /// a picture is wholly in the light or wholly in the shade (`pixelated_place` in `pictures_on.wgsl`), 0 if not.
     pictures: [f32; 4],
 }
 
@@ -890,6 +891,8 @@ pub struct VoxelRenderer {
     /// The pictures of blocks on the GPU, and how far from the camera they are drawn.
     block_textures: BlockTextures,
     picture_distance: f32,
+    /// Whether the shadow of a face is looked up at the middle of the picture's pixel each pixel of the screen is in ([`VoxelRenderer::set_pixelated_shadows`]).
+    pixelated_shadows: bool,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -1209,6 +1212,7 @@ impl VoxelRenderer {
             palette_buffer,
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
+            pixelated_shadows: false,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1487,6 +1491,14 @@ impl VoxelRenderer {
             self.terrain_version += 1;
         }
         self.picture_distance = distance;
+    }
+
+    /// Chooses whether each pixel of a block's picture is wholly in the light of the sun or wholly in a shadow (`true`), so that the edge of a shadow steps along the picture's
+    /// pixels, or the shadow is looked up where each pixel of the screen is (`false`, the default). It changes only where the shadow is looked up, never the maps, and costs a
+    /// few instructions a pixel. The edge is exact where a texel of the shadow map is no wider than a picture's (the finest cascade, up to about 28 voxels from the camera at the
+    /// default size of the maps) and steps in the map's texels beyond; faces with no picture (beyond the picture distance, coarse nodes, avatars, boxes) are as they were.
+    pub fn set_pixelated_shadows(&mut self, on: bool) {
+        self.pixelated_shadows = on;
     }
 
     fn remake_frame_bind_group(&mut self) {
@@ -3166,7 +3178,7 @@ impl VoxelRenderer {
                 [
                     self.picture_distance,
                     self.picture_distance * (1.0 + PICTURE_FADE_SHARE),
-                    0.0,
+                    f32::from(self.pixelated_shadows),
                     0.0,
                 ]
             } else {

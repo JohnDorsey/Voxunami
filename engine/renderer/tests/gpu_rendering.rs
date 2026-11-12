@@ -36,6 +36,8 @@ mod contact_shapes;
 mod contact_trace;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
+#[path = "gpu_rendering/pixelated_shadows.rs"]
+mod pixelated_shadows;
 #[path = "gpu_rendering/shader_packs.rs"]
 mod shader_packs;
 
