@@ -53,6 +53,29 @@ struct Frame {
     pictures: vec4<f32>,
 }
 
+// What a shader pack is told of a face at a pixel (`docs/specs/shader-pack-spec.md`): the engine works out what is lit and what is not, and the pack's `pack_shade` makes a colour
+// of it. The pack has no way to ask the map, the voxels or the pictures anything itself, so it cannot bring back a gap the engine closed.
+struct Surface {
+    // The colour of the face at this pixel, linear: its picture where it has one, else its own.
+    albedo: vec3<f32>,
+    // The face's normal in the world's axes, turned toward the way out of the planet the face is on, as far as the planet turns it (far from the camera): what the sun's light
+    // is the cosine of.
+    normal: vec3<f32>,
+    // Where the point is relative to the camera, in voxels, and how far from it.
+    relative: vec3<f32>,
+    distance: f32,
+    // The light of the lamps and the ambient light (0 to 1), and how bright the side of the face makes it (0.4 to 1).
+    lamp: f32,
+    side: f32,
+    // The share of the sun that is above the horizon of the planet the place is on, not hidden by a planet or a moon (0 to 1; 1 where the level has no balls).
+    above_horizon: f32,
+    // The share of the sun's light that reaches the place: the above, and the terrain's shadow (the map and the exact walk of the ray) on top of it (0 to 1).
+    sun_visible: f32,
+    // The share of the sky's light that reaches the place past the terrain's shadow (0 to 1), and the share of it that reaches the place past what is over it (0 to 1).
+    sky_visible: f32,
+    uncovered: f32,
+}
+
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
 const AVATAR_BASE: u32 = 0xFFFFF0u;
 
@@ -63,6 +86,8 @@ struct Placement {
     // How the grid the brick is in is turned (the identity for terrain): a position in the brick, turned, plus the offset, is where
     // it is relative to the camera.
     rotation: mat3x3<f32>,
+    // x: the number of the window of voxels that block the sun that the brick's faces are traced in (see `contact_on.wgsl`): 1 and up, 0 for none. The rest is not used.
+    volume: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -104,6 +129,8 @@ struct VertexOutput {
     @location(5) uv: vec2<f32>,
     // The picture on the face (bits of `FacePicture::word`), 0 for none.
     @location(6) @interpolate(flat) picture: u32,
+    // The window of voxels that block the sun that the face is traced in (`Placement::volume`).
+    @location(7) @interpolate(flat) volume: u32,
 }
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
@@ -116,6 +143,10 @@ const MOST_OF_A_BALL: f32 = 0.999999;
 // `sun.rs`).
 const TURNED_UP_TO: f32 = 0.01;
 const TURNED_NO_MORE_FROM: f32 = 0.03;
+// How far from the camera, in voxels, a face is still lit by its own normal whatever a planet under it does, and how far it is turned as far as the planet turns it (see
+// `Sunlight` in `sun.rs`): a block near the camera is lit as a block is.
+const NEAR_UNTURNED_TO: f32 = 256.0;
+const FAR_TURNED_FROM: f32 = 1024.0;
 
 // How the shadow of the terrain is looked up. The same numbers as `shadow.rs`.
 const BLEND_FROM: f32 = 0.85;
@@ -136,8 +167,8 @@ struct Sunlight {
     normal: vec3<f32>,
 }
 
-// What the sun does at a place (relative to the camera) for a face that looks along `normal`. The same arithmetic as `sunlight` in `sun.rs`.
-fn sunlight(position: vec3<f32>, normal: vec3<f32>) -> Sunlight {
+// What the sun does at a place (relative to the camera, `distance` from it) for a face that looks along `normal`. The same arithmetic as `sunlight` in `sun.rs`.
+fn sunlight(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> Sunlight {
     let sun = frame.sun_direction.xyz;
     var visible = 1.0;
     var nearest_over = 1.0e30;
@@ -177,7 +208,8 @@ fn sunlight(position: vec3<f32>, normal: vec3<f32>) -> Sunlight {
     }
     var lit_normal = normal;
     if (nearest_over < 1.0e29) {
-        let turn = 1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, nearest_over);
+        // (Only what is far from the camera is turned: the patches the turn mends are a sight of the planet from far.)
+        let turn = (1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, nearest_over)) * smoothstep(NEAR_UNTURNED_TO, FAR_TURNED_FROM, distance);
         let turned = normal + way_out * turn;
         let turned_length = length(turned);
         if (turned_length > 1.0e-3) {
@@ -247,6 +279,7 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
 
     var out: VertexOutput;
     out.picture = picture;
+    out.volume = placement.volume.x;
     out.uv = vec2<f32>(0.0);
     if (picture != 0u) {
         // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
@@ -425,34 +458,56 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
     // renderer's pipeline is made with).
     let picture = picture_albedo(in);
+    // Where the terrain's shadow is looked up for this pixel: where it is, or with pixelated shadows the middle of its picture's pixel (`pixelated_place` is in
+    // `pictures_off.wgsl` or `pictures_on.wgsl`; it takes derivatives, so it is here before anything branches).
+    var shadow_face = in;
+    shadow_face.relative = pixelated_place(in);
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
         discard;
     }
-    let albedo = picture.rgb;
-    let lamp = in.lamp_and_side.x;
-    let side = in.lamp_and_side.y;
-    var shaded = side * lamp;
-    var sun = 0.0;
+    // What the walk of the sun's ray finds, alone, when it is asked to be shown (`contact_debug` is in `contact_off.wgsl` or `contact_on.wgsl`, whichever the pipeline is made with).
+    let debug = contact_debug(in);
+    if (debug.a > 0.5) {
+        return vec4<f32>(debug.rgb, 1.0);
+    }
+    // What the engine knows of the face, for the shader pack (`pack_shade`, in `lighting_default.wgsl` or the pack the renderer is given): where there is no light of the sun's or
+    // the sky's the visibilities are all 1 and mean nothing.
+    var surface: Surface;
+    surface.albedo = picture.rgb;
+    surface.normal = in.normal;
+    surface.relative = in.relative;
+    surface.distance = in.distance;
+    surface.lamp = in.lamp_and_side.x;
+    surface.side = in.lamp_and_side.y;
+    surface.above_horizon = 1.0;
+    surface.sun_visible = 1.0;
+    surface.sky_visible = 1.0;
+    surface.uncovered = 1.0;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
-        let light = sunlight(in.relative, in.normal);
+        // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
+        let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
+        let distance = largest * length(in.relative / max(largest, 1.0e-30));
+        let light = sunlight(in.relative, in.normal, distance);
         var sun_visible = light.visible;
         var sky_visible = light.visible;
         // The share of the sky's light that reaches the place past what is over it (all of it where that is not counted).
         var uncovered = 1.0;
-        // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
-        let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
-        let distance = largest * length(in.relative / max(largest, 1.0e-30));
         if (frame.shadow.x > 0.5) {
             // The terrain's shadow: on the sun's light as it is; on the sky's light only in part (a place in a shadow has the sky's light still, and the more the less of the sky
             // is hidden, which this does not know), and a face turned from the sun is in the shade of its own body, which fades in as the sun crosses its plane.
             let cosine = dot(light.normal, frame.sun_direction.xyz);
             var terrain = 0.0;
             if (cosine > 0.0) {
-                terrain = terrain_light(in.relative, distance);
+                // The map's answer, and the walk of the sun's ray through the voxels for the first few cells, where the map is not exact (`contact_light` is 1 unless the
+                // renderer holds the voxels that block the sun: it is in `contact_off.wgsl` or `contact_on.wgsl`).
+                terrain = terrain_light(shadow_face.relative, distance);
+                if (terrain > 0.0) {
+                    terrain = terrain * contact_light(shadow_face, distance);
+                }
             }
             sun_visible = sun_visible * terrain;
             sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));
@@ -462,12 +517,14 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             uncovered = mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
             sky_visible = sky_visible * uncovered;
         }
-        // At night the light of the stars lights what the sun does not reach, where the sky is open, as the sky's light does by day.
-        let sky = frame.sun_light.y * sky_visible + frame.heavens.w * (1.0 - light.visible) * uncovered;
-        shaded = side * (lamp + sky * (1.0 - lamp));
-        sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * sun_visible;
+        surface.normal = light.normal;
+        surface.above_horizon = light.visible;
+        surface.sun_visible = sun_visible;
+        surface.sky_visible = sky_visible;
+        surface.uncovered = uncovered;
     }
-    let color = albedo * (shaded + sun * (1.0 - shaded));
+    // The pack makes the colour of it; the fog is the engine's.
+    let color = pack_shade(surface);
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
     return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
 }

@@ -27,6 +27,7 @@ mod player_identity;
 pub mod screen;
 pub mod serve;
 pub mod session;
+pub mod shader_packs;
 pub mod sun;
 #[cfg(test)]
 mod sun_view_tests;
@@ -47,6 +48,7 @@ pub use sun::{Sky, Sun, SunView};
 pub use winit::keyboard::KeyCode;
 
 pub use packs::{content_with_packs, run_check_packs, run_pack_schemas};
+pub use shader_packs::run_check_shader_packs;
 
 use options::{Parsed, play_usage, replay_usage, serve_usage};
 

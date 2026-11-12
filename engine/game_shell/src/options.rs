@@ -30,6 +30,12 @@ Usage: voxunami {command} [options]
   --time TIME                     pin the sun at a time of day for you (noon, midnight, 18:30);
                                   by default it follows the world's clock
   --shadows on|off                shadows of the terrain (default on); .shadows changes it while playing
+  --pixel-shadows on|off          every pixel of a block's picture wholly lit or wholly shaded (default off);
+                                  .pixelshadows changes it while playing
+  --shader-pack NAME              start with this shader pack (its id or name, or the beginning of one);
+                                  .shader changes it while playing
+  --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
+                                  game data folder
   --screenshot FILE.png           render one image without a window and exit
   --benchmark                     time frames without a window and exit
   --no-vsync                      do not wait for the display refresh
@@ -94,6 +100,9 @@ Usage: voxunami replay FILE [options]
   --tick NUMBER                   the tick to render with --screenshot
   --time TIME                     pin the sun at a time of day (noon, midnight, 18:30), not the recorded clock
   --shadows on|off                shadows of the terrain (default on)
+  --shader-pack NAME              draw with this shader pack (its id or name, or the beginning of one)
+  --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
+                                  game data folder
   --no-vsync                      do not wait for the display refresh
   --exit-after SECONDS            close the window after this long
   --help                          show this text
@@ -116,6 +125,12 @@ pub struct ViewOptions {
     pub time: Option<u16>,
     /// Whether the terrain casts shadows (`--shadows`); on by default.
     pub shadows: bool,
+    /// Whether each pixel of a block's picture is wholly in the light or wholly in a shadow (`--pixel-shadows`); off by default.
+    pub pixelated_shadows: bool,
+    /// A folder of shader packs besides the one in the game data folder (`--shader-packs`).
+    pub shader_packs: Option<PathBuf>,
+    /// The shader pack to start with (`--shader-pack`): an id or a name, or the beginning of one.
+    pub shader_pack: Option<String>,
 }
 
 impl Default for ViewOptions {
@@ -130,6 +145,9 @@ impl Default for ViewOptions {
             screenshot: None,
             time: None,
             shadows: true,
+            pixelated_shadows: false,
+            shader_packs: None,
+            shader_pack: None,
         }
     }
 }
@@ -232,6 +250,8 @@ fn parse_view_flag(
                 return Err("--size must be positive".to_owned());
             }
         }
+        "--shader-packs" => view.shader_packs = Some(PathBuf::from(value(flag)?)),
+        "--shader-pack" => view.shader_pack = Some(value(flag)?),
         "--screenshot" => view.screenshot = Some(PathBuf::from(value(flag)?)),
         "--no-vsync" => view.vsync = false,
         "--exit-after" => view.exit_after_seconds = Some(parse_number(flag, &value(flag)?)?),
@@ -248,6 +268,13 @@ fn parse_view_flag(
                 "on" => true,
                 "off" => false,
                 other => return Err(format!("--shadows: {other:?} should be on or off")),
+            };
+        }
+        "--pixel-shadows" => {
+            view.pixelated_shadows = match value(flag)?.as_str() {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("--pixel-shadows: {other:?} should be on or off")),
             };
         }
         _ => return Ok(false),
@@ -485,7 +512,8 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off",
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off \
+             --shader-pack cel --shader-packs my_shaders",
         );
         assert_eq!(
             parsed,
@@ -500,6 +528,9 @@ mod tests {
                     screenshot: Some(PathBuf::from("out.png")),
                     time: Some(18 * 60 + 30),
                     shadows: false,
+                    pixelated_shadows: false,
+                    shader_packs: Some(PathBuf::from("my_shaders")),
+                    shader_pack: Some("cel".to_owned()),
                 },
                 seed: 7,
                 world_file: Some(PathBuf::from("w.voxunami")),
@@ -515,6 +546,18 @@ mod tests {
                 benchmark: true,
             }
         );
+    }
+
+    #[test]
+    fn pixelated_shadows_are_off_unless_the_player_says_on_and_nothing_else_is_a_state() {
+        assert!(!play("").view.pixelated_shadows);
+        assert!(play("--pixel-shadows on").view.pixelated_shadows);
+        assert!(!play("--pixel-shadows off").view.pixelated_shadows);
+        for bad in ["maybe", "1", "ON", ""] {
+            let error = parse_play::<ExampleGame>(arguments(&format!("--pixel-shadows {bad}")))
+                .unwrap_err();
+            assert!(error.contains("--pixel-shadows"), "{bad:?}: {error}");
+        }
     }
 
     #[test]

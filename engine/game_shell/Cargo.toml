@@ -19,6 +19,7 @@ player_presence.workspace = true
 protocol.workspace = true
 renderer.workspace = true
 replay.workspace = true
+serde_json.workspace = true
 plugin_host.workspace = true
 server.workspace = true
 terrain.workspace = true
@@ -39,7 +40,6 @@ winit = "0.30.13"
 [dev-dependencies]
 entities.workspace = true
 region_octree.workspace = true
-serde_json.workspace = true
 voxel_meshing.workspace = true
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }

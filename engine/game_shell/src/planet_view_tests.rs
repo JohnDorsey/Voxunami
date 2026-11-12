@@ -42,6 +42,8 @@ struct Screen {
     history: Vec<(BrickCoordinate, PackedBrickMesh)>,
     /// Anything else the updates said about the planet's grid or other grids.
     other_grids: usize,
+    /// The grids the renderer was told are ground, in the order it was told (a planet is: its terrain casts shadows into the maps that are kept, as a ship does not).
+    grounds: Vec<GridId>,
 }
 
 impl Screen {
@@ -84,6 +86,7 @@ impl Screen {
                     self.other_grids += 1;
                 }
                 MeshUpdate::GridPose { .. } => self.other_grids += 1,
+                MeshUpdate::GridIsGround(grid) => self.grounds.push(grid),
                 _ => {}
             }
         }
@@ -290,6 +293,8 @@ fn a_player_over_a_planet_sees_the_bricks_its_generator_makes_around_the_camera(
     assert_eq!(shown, expected);
     // The renderer was told where the planet is.
     assert!(screen.other_grids >= 1);
+    // And that it is ground, once (not in every tick), so that its terrain casts shadows at a distance as the terrain of a level does.
+    assert_eq!(screen.grounds, [rig.planet]);
     // And nothing was stored for it: it was drawn from the generator.
     let held = player.client().world().grids().get(rig.planet).unwrap();
     assert_eq!(

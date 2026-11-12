@@ -5,3 +5,8 @@
 fn picture_albedo(in: VertexOutput) -> vec4<f32> {
     return vec4<f32>(in.albedo, 1.0);
 }
+
+// Where the shadow of the face is looked up: where the pixel is (there are no pictures to be wholly in the light or in the shade).
+fn pixelated_place(in: VertexOutput) -> vec3<f32> {
+    return in.relative;
+}

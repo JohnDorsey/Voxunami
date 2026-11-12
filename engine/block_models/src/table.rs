@@ -600,6 +600,25 @@ impl BlockTable {
         !self.shape(model).is_empty()
     }
 
+    /// The cells of every distinct shape of the table, in the order of its pool (the numbers [`BlockTable::partial_sun_shape`] gives): for each, one word for each layer of
+    /// z, and bit `y * 8 + x` of it is whether the sub-cell `(x, y, z)` of the voxel is filled (see [`Shape::cell_key`]).
+    pub fn shape_cells(&self) -> Vec<[u64; 8]> {
+        self.shapes.iter().map(Shape::cell_key).collect()
+    }
+
+    /// The number, in the pool of [`BlockTable::shape_cells`], of the shape of a model that stops the sun in part: one of a block that hides what is behind it (not
+    /// sight-through: glass and leaves are cut-outs, a matter of their pictures) whose shape is neither empty nor whole (a whole cube is [`BlockTable::is_opaque_cube`]).
+    /// `None` for any other model, and for one whose shape is beyond the 65,535th of the pool.
+    pub fn partial_sun_shape(&self, model: ModelId) -> Option<u32> {
+        let details = &self.models[model.0 as usize];
+        let shape = &self.shapes[details.shape as usize];
+        (!details.sight_through
+            && !shape.is_empty()
+            && !shape.is_full()
+            && details.shape < u32::from(u16::MAX))
+        .then_some(details.shape)
+    }
+
     /// Whether the model is a whole cube that hides what is behind it.
     pub fn is_opaque_cube(&self, model: ModelId) -> bool {
         self.models[model.0 as usize].opaque_cube
@@ -778,6 +797,44 @@ mod tests {
         assert!(table.is_solid(bottom_slab) && !table.is_opaque_cube(bottom_slab));
         assert_eq!(table.shape(bottom_slab), &Shape::half(DOWN));
         assert_ne!(table.model_of(1, 1, 0), table.model_of(1, 2, 0));
+    }
+
+    #[test]
+    fn a_shape_that_stops_the_sun_in_part_is_one_of_a_block_that_hides_what_is_behind_it_and_is_neither_empty_nor_whole()
+     {
+        // A block with no shape that is not sight-through (a barrier that can be walked through, say) has none either: there is nothing of it to stop the sun.
+        let ghost = BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::empty()]);
+        let with_ghost = BlockTable::from_definitions(&[Some(&ghost)]);
+        assert_eq!(
+            with_ghost.partial_sun_shape(with_ghost.model_of(0, 0, 0)),
+            None
+        );
+        let table = table();
+        // Air, a whole cube and glass (sight-through: a cut-out, not a partial blocker) have none.
+        for model in [
+            table.model_of(0, 0, 0),
+            table.model_of(1, 0, 0),
+            table.model_of(2, 0, 0),
+            table.model_of(3, 0, 0),
+        ] {
+            assert_eq!(table.partial_sun_shape(model), None, "{model:?}");
+        }
+        // The two slabs have shapes of their own, and each is the cells of its shape in the table's list.
+        let (bottom, top) = (table.model_of(1, 1, 0), table.model_of(1, 2, 0));
+        let (bottom_shape, top_shape) = (
+            table.partial_sun_shape(bottom).expect("a slab"),
+            table.partial_sun_shape(top).expect("a slab"),
+        );
+        assert_ne!(bottom_shape, top_shape);
+        let cells = table.shape_cells();
+        assert_eq!(cells[bottom_shape as usize], Shape::half(DOWN).cell_key());
+        assert_eq!(cells[top_shape as usize], Shape::half(UP).cell_key());
+        // A slab turned upside down (the orientation that is a half turn about x) is the other slab's shape, and the same number.
+        let turned: Vec<u32> = (0..ORIENTATION_COUNT as u32)
+            .filter_map(|orientation| table.partial_sun_shape(table.model_of(1, 1, orientation)))
+            .collect();
+        assert!(turned.contains(&top_shape), "{turned:?}");
+        assert!(turned.iter().all(|&shape| (shape as usize) < cells.len()));
     }
 
     #[test]

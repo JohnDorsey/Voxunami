@@ -19,9 +19,13 @@ use coarse_cells::FineRegion;
 use region_octree::BrickCube;
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, ChannelIndex, ChannelStorage, GridLayout};
-use voxel_meshing::{BrickChannels, BrickNeighbourhood, PackedBrickMesh, mesh_brick};
+use voxel_meshing::{
+    BrickChannels, BrickNeighbourhood, BrickOccupancy, PackedBrickMesh, mesh_brick,
+};
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, VoxelCoordinate};
 use world_storage::LevelData;
+
+use crate::occupancy::{OccupancyChange, OccupancyLog, OccupancyStatistics};
 
 /// Where the bricks around a viewer come from: the terrain of a level, or the terrain of a ship (a planet). A brick is either known as it is (an edited one) or
 /// made by a generator, which the mesher has done on its worker threads.
@@ -156,6 +160,8 @@ pub enum MeshUpdate {
         grid: GridId,
         pose: GridPose,
     },
+    /// Says that a grid is the ground of a planet (a ship with terrain), told once when it is first seen. What the renderer does with it is its own (`set_grid_is_ground`).
+    GridIsGround(GridId),
     /// A ship is gone, with all its bricks.
     RemoveGrid(GridId),
     /// Replaces the picture of a coarse node of the terrain (a cube of bricks of detail level 1 or more, see `coarse_cells`).
@@ -197,6 +203,8 @@ enum Job {
         /// What to draw from, as it is when the job is made: a game can change it (see
         /// [`WorldMesher::set_channels`]).
         channels: ViewChannels,
+        /// Whether to say which voxels of the brick block the sun as well (see [`WorldMesher::enable_occupancy`]).
+        want_occupancy: bool,
     },
 }
 
@@ -211,6 +219,7 @@ enum JobResult {
         coordinate: BrickCoordinate,
         version: u64,
         mesh: PackedBrickMesh,
+        occupancy: Option<BrickOccupancy>,
     },
 }
 
@@ -295,6 +304,8 @@ pub struct WorldMesher {
     scheduled_last_update: usize,
     /// Counts the times the mesher was reset; work and results from an earlier count are ignored.
     epoch: u64,
+    /// Which voxels of the bricks block the sun, as far as the renderer has been told (off until asked for).
+    occupancy: OccupancyLog<BrickCoordinate>,
 }
 
 impl std::fmt::Debug for WorldMesher {
@@ -342,6 +353,7 @@ impl WorldMesher {
                                 version,
                                 snapshot,
                                 channels,
+                                want_occupancy,
                             } => {
                                 // A game with a bulk light hook says how bright each voxel is.
                                 let center_light =
@@ -376,6 +388,8 @@ impl WorldMesher {
                                     coordinate,
                                     version,
                                     mesh: mesh_brick(&neighbourhood, &table).pack(),
+                                    occupancy: want_occupancy
+                                        .then(|| BrickOccupancy::of(&neighbourhood.center, &table)),
                                 }
                             }
                         };
@@ -406,7 +420,26 @@ impl WorldMesher {
             workers,
             scheduled_last_update: 0,
             epoch: 0,
+            occupancy: OccupancyLog::new(),
         }
+    }
+
+    /// Makes the mesher say which voxels of each brick it meshes block the sun, for every brick (the buried ones and the ones of sky, which have no mesh, too): see
+    /// [`WorldMesher::take_occupancy_updates`]. Call it before the first update; bricks meshed before are not said again.
+    pub fn enable_occupancy(&mut self) {
+        self.occupancy.enable();
+    }
+
+    /// What has changed in the occupancy of the bricks since the last call, in order (nothing unless [`WorldMesher::enable_occupancy`] was called). A brick is told of
+    /// when its mesh is made, whether or not it has anything to draw, and again only when its occupancy changes; it is cleared when it goes out of range or the mesher is
+    /// reset.
+    pub fn take_occupancy_updates(&mut self) -> Vec<(BrickCoordinate, OccupancyChange)> {
+        self.occupancy.take()
+    }
+
+    /// How many of the bricks that were told of are empty, full and mixed.
+    pub fn occupancy_statistics(&self) -> OccupancyStatistics {
+        self.occupancy.statistics()
     }
 
     /// Makes the mesher keep the pictures it makes instead of reporting them, for a view that swaps bricks and coarse nodes for each other
@@ -566,6 +599,7 @@ impl WorldMesher {
         self.shown.clear();
         self.versions.clear();
         self.scheduled_last_update = 0;
+        self.occupancy.clear_all();
         let mut displayed: Vec<BrickCoordinate> = self.displayed.drain().collect();
         displayed.sort();
         displayed.into_iter().map(MeshUpdate::Remove).collect()
@@ -603,6 +637,7 @@ impl WorldMesher {
                     coordinate,
                     version,
                     mesh,
+                    occupancy,
                 } => {
                     if epoch != self.epoch
                         || self.meshing.remove(&coordinate).is_none()
@@ -611,6 +646,9 @@ impl WorldMesher {
                         continue; // unloaded, or changed since: the brick will be meshed again
                     }
                     self.meshed.insert(coordinate);
+                    if let Some(occupancy) = occupancy {
+                        self.occupancy.set(coordinate, occupancy);
+                    }
                     if self.held_back && !self.shown.contains(&coordinate) {
                         self.finished.insert(coordinate, mesh);
                         self.ready_serial += 1;
@@ -641,6 +679,7 @@ impl WorldMesher {
             self.meshed.remove(&coordinate);
             self.meshing.remove(&coordinate);
             self.finished.remove(&coordinate);
+            self.occupancy.clear(coordinate);
             if !self.held_back && self.displayed.remove(&coordinate) {
                 updates.push(MeshUpdate::Remove(coordinate));
             }
@@ -699,6 +738,7 @@ impl WorldMesher {
                         version,
                         snapshot: Box::new(snapshot),
                         channels: self.channels.clone(),
+                        want_occupancy: self.occupancy.is_enabled(),
                     })
                     .expect("workers are running");
                 scheduled += 1;

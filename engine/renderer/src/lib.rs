@@ -11,13 +11,17 @@
 
 mod block_textures;
 mod camera;
+mod contact_volume;
 mod crosshair;
 mod graphics_context;
+mod occupancy_volume;
 mod overlay;
+mod shader_pack;
 mod shadow;
 mod shadow_maps;
 mod sky;
 mod sun;
+mod sun_boxes;
 mod voxel_renderer;
 
 pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
@@ -25,7 +29,11 @@ pub use camera::{Camera, Frustum};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };
+pub use occupancy_volume::VolumeStatistics;
 pub use overlay::OverlayRect;
+pub use shader_pack::{
+    SHADER_PACK_INTERFACE, ShaderPack, ShaderPackError, ShaderPackProblem, default_lighting,
+};
 pub use shadow::{
     BLEND_FROM, CASCADE_RESOLUTION, Cascade, DEPTH_BIAS_TEXELS, EDGE_TEXELS, FACING_FULL_FROM,
     FIRST_HALF_WIDTH, HIGHEST_CASTER, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES,
@@ -37,11 +45,11 @@ pub use sky::{
     star_cell_of, star_hash, star_in_cell,
 };
 pub use sun::{
-    MAXIMUM_SUN_BALLS, MOST_OF_A_BALL, SUN_DISC_SOFTNESS, SunBall, SunOccluder, Sunlight,
-    TURNED_NO_MORE_FROM, TURNED_UP_TO, TWILIGHT_SOFTNESS, balls_and_ground, daylight_at,
-    sun_visibility, sunlight, zenith,
+    FAR_TURNED_FROM, MAXIMUM_SUN_BALLS, MOST_OF_A_BALL, NEAR_UNTURNED_TO, SUN_DISC_SOFTNESS,
+    SunBall, SunOccluder, Sunlight, TURNED_NO_MORE_FROM, TURNED_UP_TO, TWILIGHT_SOFTNESS,
+    balls_and_ground, daylight_at, sun_visibility, sunlight, zenith,
 };
 pub use voxel_renderer::{
-    AVATAR_COLOR_COUNT, Atmosphere, Avatar, DEFAULT_PICTURE_DISTANCE, EntityBox,
+    AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_PICTURE_DISTANCE, EntityBox,
     MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
 };

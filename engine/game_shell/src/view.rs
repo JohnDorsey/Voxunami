@@ -2,12 +2,13 @@
 
 use block_models::BlockTable;
 use data_packs::Tile;
-use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, VoxelRenderer};
+use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, ShaderPack, VoxelRenderer};
 use transport::Connection;
 use voxel_space::WorldPosition;
-use world_view::MeshUpdate;
+use world_view::{MeshUpdate, OccupancyChange};
 
 use crate::definition::GameDefinition;
+use crate::options::ViewOptions;
 use crate::package_data::PackageData;
 use crate::session::Session;
 
@@ -24,6 +25,54 @@ pub fn configure_renderer(
         &picture_sizes(&package.tile_classes),
     );
     renderer.set_atmosphere(atmosphere(view_radius_bricks, package.ambient_light));
+    // (The shapes the voxels that block the sun in part refer to: `docs/specs/contact-trace-spec.md`, section 13.)
+    renderer.set_sun_shapes(&block_table.shape_cells());
+}
+
+/// Reads the shader packs the player has (the game data folder's, and the folder `--shader-packs` names), tells the session of them and of the one `--shader-pack` chose, and
+/// returns them for [`apply_shader_pack`]. A pack that is no good is a warning on the error stream and the others are kept; a folder asked for that cannot be read, and a pack
+/// asked for that is not there, are errors.
+pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
+    view: &ViewOptions,
+    session: &mut Session<C, G>,
+) -> Result<Vec<ShaderPack>, String> {
+    let shelf = crate::shader_packs::shelf_of(
+        crate::shader_packs::default_directory().as_deref(),
+        view.shader_packs.as_deref(),
+    )?;
+    for problem in &shelf.problems {
+        eprintln!("warning: shader pack: {problem}");
+    }
+    let names = shelf.names();
+    let chosen = match &view.shader_pack {
+        Some(text) => Some(
+            crate::shader_packs::pick(&names, text)
+                .map(|index| names[index].id.clone())
+                .map_err(|error| format!("--shader-pack: {error}"))?,
+        ),
+        None => None,
+    };
+    session.offer_shader_packs(names, chosen);
+    Ok(shelf.packs)
+}
+
+/// Gives the renderer the shader pack the player's settings choose (or the game's own): at once if it is the one the renderer has. An error says the graphics card refused it,
+/// and the renderer draws as it did; the caller takes the pack off the settings (`Session::reject_shader_pack`).
+pub fn apply_shader_pack(
+    renderer: &mut VoxelRenderer,
+    packs: &[ShaderPack],
+    settings: &crate::client_commands::ClientSettings,
+) -> Result<(), String> {
+    let wanted = settings
+        .shader_pack
+        .as_ref()
+        .and_then(|id| packs.iter().find(|pack| pack.id() == id));
+    renderer.set_shader_pack(wanted).map_err(|error| {
+        format!(
+            "the shader pack {} is refused:\n{error}",
+            wanted.map_or("", ShaderPack::name)
+        )
+    })
 }
 
 /// The pictures of a game's blocks as the renderer takes them: a size at a time, smallest first, which is the order the table's picture words count the sizes in.
@@ -61,6 +110,7 @@ pub fn light_the_scene<C: Connection, G: GameDefinition>(
     renderer.set_sun_occluders(&occluders);
     renderer.set_atmosphere(lit);
     renderer.set_picture_distance(session.settings().texture_distance as f32);
+    renderer.set_pixelated_shadows(session.settings().pixelated_shadows);
 }
 
 /// What [`light_the_scene`] gives the renderer: the atmosphere, and what can be in the sun's way.
@@ -132,6 +182,7 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
                 renderer.remove_grid_brick(grid, coordinate);
             }
             MeshUpdate::GridPose { grid, pose } => renderer.set_grid_pose(grid, pose),
+            MeshUpdate::GridIsGround(grid) => renderer.set_grid_is_ground(grid, true),
             MeshUpdate::RemoveGrid(grid) => renderer.remove_grid(grid),
             MeshUpdate::UploadCoarse { cube, mesh } => renderer.upload_coarse_node(cube, &mesh),
             MeshUpdate::RemoveCoarse(cube) => renderer.remove_coarse_node(cube),
@@ -140,6 +191,32 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             }
             MeshUpdate::RemoveGridCoarse { grid, cube } => {
                 renderer.remove_grid_coarse_node(grid, cube);
+            }
+        }
+    }
+}
+
+/// Tells the renderer which voxels block the sun, for the walk of the sun's ray through them (`docs/specs/contact-trace-spec.md`): what the session's meshers have said of
+/// their bricks since the last call, for the terrain of the level, for the planets and for the ships. Done after [`apply_updates`], so that a brick's occupancy arrives with its mesh
+/// or later, and before a picture is drawn.
+pub fn apply_occupancy<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &mut Session<C, G>,
+) {
+    let terrain = session.terrain_grid();
+    for (grid, coordinate, change) in session.take_occupancy_updates() {
+        if grid == terrain {
+            match change {
+                OccupancyChange::Set(occupancy) => renderer.set_occupancy(coordinate, &occupancy),
+                OccupancyChange::Clear => renderer.clear_occupancy(coordinate),
+            }
+        } else {
+            // A planet or a ship: each grid has a window of its own, and a face is walked in the windows of the others too (`docs/specs/contact-trace-spec.md`, section 14).
+            match change {
+                OccupancyChange::Set(occupancy) => {
+                    renderer.set_grid_occupancy(grid, coordinate, &occupancy);
+                }
+                OccupancyChange::Clear => renderer.clear_grid_occupancy(grid, coordinate),
             }
         }
     }

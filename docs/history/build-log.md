@@ -2073,3 +2073,145 @@ renumber is a way to find what keeps the old id of a ship. Planet ids stay as th
   zero when the record's grid is not the body's), the seat is dropped, and a ship that others go round cannot be renumbered because of the rule that a rail names a lower number. None of the three is pinned by a test.
   *Measured with a wrong instrument first:* my first jump measurement took the peak before the height of standing was known and printed 3.63 m; the numbers in the docs are from the second.
 - **Ran:** the whole workspace, 3340 tests pass on Windows; fmt, clippy, doc clean. Not run on Linux.
+## The sun's exact short ray: the spike and phases 0 and 1 (2026-11-09)
+
+Owner's wish: a default shader with no gap at the base of a shadow, 60 fps on integrated graphics, shaders that can be swapped (`future-goals.md`, "Shaders"). Documents: `contact-shadow-spike.md` (the measurements and the prototype), `contact-trace-spec.md` (the design; section 10 is what phases 0 and 1 built).
+
+- **The strip, measured** on all four adapters (the same numbers on each): 0.07 to 0.12 voxel in the finest shadow cascade, 0.28 to 0.57 in a coarser one, at any sun height; it is the bias of the map (`CASTER_SLOPE_BIAS`, `DEPTH_BIAS_TEXELS`), about `T * (cos(el) + 1.5 * sin(el))` for a texel `T`, and the same mechanism leaks sun into a closed room of rock (6 to 9 of 85 floor pixels at the wall's foot).
+- **The prototype** walks the sun's ray through a one-bit-per-voxel volume from the cell in front of the face: no strip at a wall's foot at suns from 5 to 88 degrees, 6 cells enough for every case, 0.08 to 0.09 ms a cell at 1280 by 720 on the integrated GPU. **It is not in the tree:** the binding it gave the default fragment shader made two shadow tests fail on the integrated AMD GPU (2 of 12 runs against 0 of 12 before it and 0 of 12 with its call taken out; the known family of `test-flakes.md`), so it was taken out (it is in `3f6ffb1` and `e166faf`), and phase 2 gives the walk a shader variant of its own.
+- **A bug in the prototype's shader, found by writing the reference** (a sun direction component of exactly zero stepped sideways first; the spike's scenes were all extruded along z, so it was masked until the edge rows of the block were probed): fixed, every table measured again, `contact-shadow-spike.md` corrected. The spike's first numbers had said that 2 cells settle every sun to 60 degrees; fixed, it is 1.
+- **Phase 0:** a headless Cave with `VOX_REPORT_OCCUPANCY=1` counts the bricks the meshers tell of by kind. The ground is a planet grid (confirmed), the root grid empty; below the surface the bricks are nearly all mixed, not full (one in thousands), so the volume grows with the cube of the radius: 4,289 mixed bricks (17.6 MB) at the default radius 12 at the pole, 4,764 (19.5 MB) in a cave, 10,186 (41.7 MB) at radius 16.
+- **Phase 1:** `voxel_meshing::BrickOccupancy` (`Empty`, `Full`, `Mixed` of 1024 words); `world_view` meshers (`WorldMesher`, `ShipTerrainMesher`, `GridMesher`) and `Session` say it as a stream of their own, for every meshed brick including the buried and the sky ones (which have no mesh), off until asked for; `world_view::sun_blocked`, the reference walk. 7 + 7 + 3 + 4 + 9 tests; **27 of 27 mutants killed** (one only after a test of the log's switch was added). No picture changes; nothing on the GPU.
+- **Not done:** phase 2 (windows and a pool on the GPU, the shader walk with the empty-brick jump, `K` by cascade, the tests of the shader against `sun_blocked` on every adapter, removing the spike's hand-filled volume), partial blocks, leaves and glass, ships and boxes, the far levels, the pack interface.
+
+## The sun's exact short ray: phase 2, the renderer (2026-11-09)
+
+The walk is on the GPU. The design is `contact-trace-spec.md`; what was built, the deviations, the tests, the mutation experiments and the cost are in its section 11; this is the short of it.
+
+- **Built:** `occupancy_volume.rs` (windows of 64 by 64 by 64 bricks, a pool of 4 KB slots, a log of changes), `contact_volume.rs` (the buffers, the pool growing by doubling, the pipelines of the variant), `contact_on.wgsl` / `contact_off.wgsl`, `Placement::volume` (80 bytes), the renderer API, `apply_occupancy` in the shell. **Tests:** 15 on the CPU, 12 on every adapter, and a measurement; **34 of 36 mutants killed** (the two that are not: the order of an exact tie, which no pixel can show).
+- **The gap is gone in the real game:** Cave at the pole, 09:00: the shadows of blocks and trees begin at their feet (before: a lit strip between each block and its shadow); 2.4 percent of the pixels differ, none brighter, none on open ground.
+- **The flake of the spike did not come back:** 0 of 27 runs of the two shadow tests, because the walk is a variant that a renderer never told of a voxel does not use.
+- **The cost is over the budget:** +0.9 / +1.2 ms (Vulkan / DX12) in a synthetic scene and **+3.8 ms (19.1 to 22.9, 52 to 44 fps) in real Cave on the integrated GPU**, +20 percent: the arithmetic of each fragment's setup is half of it, the cells the other half, and half of it is the far terrain. Five ways to make it cheaper were tried (two kept, small gains in the synthetic scene; a four-cell chunked walk was worse in Cave; the rest changed nothing). The owner decides: accept, a setting, a distance limit, a depth pre-pass, or painting the contact into the map.
+- **Not done:** partial blocks, leaves and glass, ships and boxes, the far levels, the pack interface; an empty-brick jump (not needed by anything measured).
+
+## Back sides of blocks in full shadow on a planet (2026-11-09)
+
+The owner: the sides of blocks that look away from the sun are rarely in full shadow. **Measured, not guessed** (a block on a floor, the sun at 10 to 75 degrees, four adapters, the same everywhere): on a flat level the wall that looks away from the sun and a wall edge on to it are at the shade (0.036) at every height; on a planet the edge-on wall was 0.21 to 0.59 and the wall that looks away from the sun went from 0.036 (under 45 degrees) to 0.31 at 60 and 0.47 at 75. Cause: the planet's turn of normals (`sun-spec.md`, sections 2 and 9), which lit every face at the ground as if it looked half way to up, the sides of the blocks beside the player among them; the turn is the cause and not the map (on a flat level the same walls are in full shade): the turned normal lets the face through to the map, which holds the face itself as one of its casters and is biased toward lit. **Fix:** the turn is scaled by the distance from the camera (none to 256 voxels, whole from 1,024), so the near world is lit by its own normals and the planet seen from far is as it was. Tests first (CPU rule, a GPU test that a planet changes nothing near the camera, the older tests of the turn moved far away), then the shader; Cave noon and 09:00 pictures: 28 and 20 percent of the pixels change, none brighter. The walk's own test of faces that look away from the sun was rewritten to ask the walk directly (it had relied on the turn lighting a face near the camera).
+
+## Painting the contact into the map, overdraw, and the faces that cannot look at the camera (2026-11-09)
+
+The owner, on the walk's +3.8 ms: hold off on the command; look into painting the contact into the shadow map, and whether that is faster. Everything below is on the integrated AMD GPU (Vulkan) at 1280 by 720, Cave at the pole, 09:00, pitch -35, view radius 12, the dev profile, the average of 30 batches of 10 frames (two runs of one build: 23.04 and 23.05 ms); each by a temporary edit, undone, so none of it is in the tree. The place to read is section 11 of `contact-trace-spec.md`.
+
+- **Painting is free and partial.** The bottom edge of each back face pushed toward the sun by a few texels of its cascade, in the map's vertex shader (a wedge up the quad, no new draw): 19.11 ms (a 2-texel push and the place's bias at none) against 19.18 without: nothing. It closes the strip only where it is narrow and the sun is not high. The gap from a wall's foot to where the floor goes dark, in voxels, with a push of 2 texels against none, at suns of 5, 15, 30, 53, 75 and 85 degrees (RTX 3090, Vulkan): camera 20 up (the finest cascade) 0.004, 0.004, 0.028, 0.028, 0.096, 0.120 against 0.068, 0.096, 0.108, 0.108, 0.096, 0.120; camera 100 up 0.176, 0.004, 0.004, 0.148, 0.372, none against 0.280, 0.360, 0.428, 0.520, 0.612, none. At a high sun it changes nothing; in coarser cascades it is uneven (where the map's texels fall against the wall's foot decides); it stops at the map's own filter, a texel across. Past 2 texels it shadows what it should not: with 4 texels the floor on the sun's side of a one-voxel wall, seen from 400 voxels, is lit 0.45 (sun at 15 degrees) and 0.86 (53) of what it should be; with 2 it is 1.00 everywhere tried.
+- **Two numbers of the map's bias were measured again, and a note of `shadow-spec.md` was wrong.** The renderer's 120 tests pass with the place's bias (`DEPTH_BIAS_TEXELS`) at a half, a quarter and none of a texel (the note said they fail at a quarter), so the suite does not hold the unit; the caster's slope bias (`CASTER_SLOPE_BIAS`) is held (the guard that a floor under a grazing sun is not shaded by itself fails at 1.0 and under). One Cave picture with the place's bias at none showed nothing wrong; one view is not enough to change it, and it is not changed.
+- **Overdraw is 1.61, not "several times".** An occlusion query round the picture's draws counts 1,486,525 fragments that pass the depth test for 921,600 pixels (the bricks are drawn nearest first; no sky in this view). What `contact-trace-spec.md` said (I believed, not measured, that Cave shades several times more fragments than it has pixels) was wrong, and is corrected there.
+- **A depth pre-pass is a loss.** A pass of its own with no colour (the picture's vertex shaders, no fragment stage), then the picture compared with `GreaterEqual` and writing no depth: the picture then shades 921,604 fragments, one a pixel, and the frame is **30.08 ms without the walk (19.22 before) and 32.19 with it (23.04): +10.9 and +9.2 ms.** The walk's own cost falls from 3.8 to 2.1 ms: the pre-pass buys back 1.7 ms and costs five times that. **The frame is bound by the vertices and the set-up of 2.8 million quads, not by shading.**
+- **The faces that cannot look at the camera.** The quads of a brick are in the order of their faces (the shadow maps already draw ranges of them), but the picture draws all six faces of every brick, and the rasteriser throws the ones that look away after shading their vertices. A face can look at the camera from somewhere in a brick only if the camera is on its side of the brick's far end (the brick's turn and scale taken into account). Drawing only those ranges: **23.05 to 17.19 ms with the walk** (43 to 58 fps) and 19.22 to 13.40 without it at pitch -35; 17.21 to 13.64 at pitch 0; 16.91 to 11.20 at pitch -80; **the pictures are the same pixel for pixel** (0 of 921,600 differ, at pitch -35 and at 0). That is more than the walk costs. Not built (an experiment): `plan.md`, Proposed.
+- **Not done:** the faces that cannot look at the camera (the owner to say yes), the place's bias, and painting, which I do not recommend instead of the walk (a texel is the unit it works in, so it cannot be exact).
+
+## Only the faces that can look at the camera (2026-11-09)
+
+Built the proposal of the previous section (`contact-trace-spec.md`, section 12, has the design, the slack, the tests and the mutation results). `Placement::camera_in_cells`, `GpuBrick::each_range_facing_camera`, `draw_quads_facing`, a statistic `quads_looking_away_skipped`, the switch `VoxelRenderer::set_skip_faces_looking_away` (on by default) and `VOX_WITH_EVERY_FACE=1` for screenshots and benchmarks.
+
+- **Real Cave, integrated AMD GPU, 1280 by 720, 09:00** (medians): pitch -35 with the walk 23.24 to 17.04 ms (44 to 59 fps), without it 19.32 to 13.53; pitch 0 17.19 to 13.53; pitch -80 16.79 to 11.10. The pictures: 0 of 921,600 pixels differ, at pitch -35 and 0. The numbers are those of the throwaway edit (23.05 to 17.19; 17.21 to 13.64; 16.91 to 11.20), within 0.3 ms.
+- **Tests:** 4 unit tests (one a property test against a brute force in the world) and 4 GPU tests on every adapter (terrain with slabs; ships under five turns; coarse nodes of three levels; exact counts); 11 of 11 mutants killed. The gate: clippy, rustfmt, `cargo doc`, and 3,158 tests of the workspace with `VOX_REQUIRE_GPU=1`, none failed. No shader changed, so the flake check of the binding rule was not needed.
+- **Tool trap:** a test wanted a one-voxel cube 170 voxels away to be red in the middle of a 64-pixel picture; it is a third of a pixel. The test was wrong, not the code (a box of 20 voxels, and the counts as ratios of the quads per face).
+- **Not verified:** a discrete GPU's time, a ship in view in real Cave, the CPU cost of the extra draws.
+
+## The sun's exact short ray: phase 3a, voxels that block the sun in part (2026-11-09)
+
+Slabs, stairs and posts are walked through their eighths (`contact-trace-spec.md`, section 13 has the design, the tests and the mutation results).
+
+- **Built:** `BlockTable::partial_sun_shape` / `shape_cells`; `BrickOccupancy::Shaped`; the reference `sun_blocked_by_shapes`; a partial pool (64 KB slots) and the upper half of a table entry; `set_sun_shapes`; the shader in two parts, `shapes_on.wgsl` and `shapes_off.wgsl`; `RenderStatistics::walked_shapes`.
+- **Measured, real Cave, integrated GPU, 1280 by 720, pitch -35, walk on:** 17.04 ms before; **19.77 with the shape code in the walk's shader and no slab anywhere**; 17.26 with the code compiled out; **17.16 with the code in a variant of its own that is used only while a brick has partial voxels.** The cost of the code, not of the data: a per-brick branch did not help. A world with slabs pays about 2.5 ms (by that proxy).
+- **A bug found by the first run of a property test:** the distance to the lower boundary of an eighth had the wrong sign for a ray that goes down an axis. **Two mistakes of mine in tests:** a face probed at a plane that is not a multiple of an eighth (not a face that can exist); and a scene meshed with light `None` (full light), in which nothing was in shadow, even the control of cubes.
+- **Mutants:** 29; 6 survived the first run (3 gaps in my tests, now closed; 1 dead code, removed; 2 equivalent); the rest killed.
+- **Not done:** leaves and glass (cut-outs), a test of shapes in a turned grid, the meshers on a world with slabs, the cost on a scene of many slabs, a list of partial voxels in place of the 64 KB slot.
+
+## The sun's exact short ray: phase 4, ships and the windows of other grids (2026-11-09)
+
+Ships have windows, and a face walks the windows of the other grids too (`contact-trace-spec.md`, section 14 has the design, the tests and the mutation results). Boxes are not done.
+
+- **Built:** `sun_blocked_from_point`; `Volume::solid_bounds`; the walk in one function for a window (`walk_window`, `own` or not) and `windows_on.wgsl` / `windows_off.wgsl`; the box of each window in the uniform; eight kinds of pipelines; `RenderStatistics::walked_other_windows`; the shell passes ships' occupancy.
+- **A design mistake, caught by a surviving mutant:** an unknown brick ended every walk, so a ship's window, which holds only the bricks the ship has, was never reached from the bricks beside it. The first tests overlapped the two grids and could not see it. Another grid's unknown bricks are vacuum.
+- **Measured:** real Cave 17.14 ms (one window; unchanged). The scene of many contact edges on the integrated GPU, Vulkan / DX12: the walk 1.63 / 2.07 ms; with the shader that walks other windows and none to walk +0.2; with every pixel walking both grids +0.9 / +1.2.
+- **Mutants:** 21; 18 killed; 3 survive, near-equivalent (the culling box, which is an optimisation; two starts that move a ray by at most a sixteenth of a voxel).
+- **Mistakes of mine in tests:** a soup count taken twice through an `Rc` that could not be unwrapped; thresholds for "decided by the other grid" set before measuring (9 to 17 per orientation at three probes, so eight probes and twelve).
+- **Not done:** entity boxes, a priority among the four windows, a real ship in a real Cave view.
+
+## The sun's exact short ray: which grids have the four windows (2026-11-10)
+
+The books keep every grid; the windows of the graphics card's go to the nearest (`contact-trace-spec.md`, section 15 has the design, the tests and the mutation results).
+
+- **Built:** `Volume::grids` / `holders` / `rebalance`; `VoxelRenderer::windowed_grids`; the renderer's distance of each grid from the camera, every frame; the bounds of a grid's solid bricks kept as bricks come and go.
+- **Why:** the first four grids told of had the four windows, however far.
+- **Mutants:** 11; 3 survived the first run (two gaps in my tests, closed; one a brick of distance, unseen).
+- **A measurement I could not settle:** Cave was 2 ms slower today in every mode, with the rebalance taken out as well, so the machine and not the change; no side-by-side with the old code.
+- **Not done:** Cave with ships in view.
+
+## The sun's exact short ray: the boxes of entities (2026-11-10)
+
+An avatar or an item on the ground now shades the floor from the very foot of it (`contact-trace-spec.md`, section 16 has the design, the tests, the mutation results and the cost).
+
+- **Built:** `world_view::sun_blocked_by_boxes` (the reference); `renderer::sun_boxes` (the nearest 16 boxes, nearest first); `entities_on.wgsl` / `entities_off.wgsl` (a shader variant; 16 kinds of voxel shader); `Windows::boxes` in the uniform; `set_entities_in_the_sun_walk`; `RenderStatistics::walked_entities`.
+- **A mistake of mine, found by the first picture test:** the ray started a sixteenth of a voxel out of the face (as for other grids), which cut the tip of the shadow of a flat item short; it starts on the face now.
+- **Mutants:** 29; 27 killed, 1 a gap in my tests (closed), 1 near-equivalent.
+- **Cost:** +0.64 ms (Vulkan) and +0.85 ms (DX12) on the integrated AMD GPU at worst (16 avatars, every face tests all of them).
+- **Not done:** a turned box for an entity on a ship; Cave with other players in view.
+
+## The sun's exact short ray: leaves and glass (2026-11-10): built, measured to fix nothing, set aside
+
+The owner asked for "grass and leaves" (grass is an opaque cube with halves and stairs, already walked). The walk through the sheets of leaves and glass was built and agrees with its reference on all four adapters, and then the control of the first picture test found nothing to fix: with the map alone the floor at the foot of a wall of cubes has 189 lit pixels of 1,058 and a wall of leaves or glass has 1; a closed room of cubes leaks 30 and one of leaves or glass 0. The cut-out casters have no bias pushed on them. `contact-trace-spec.md`, section 17 has the numbers, the reason and what was built.
+
+- **Kept in this branch:** the guard tests (`contact_cutouts.rs`) and the section; nothing of the walk.
+- **Parked:** the work, on the branch `cutouts-walk-parked` (`95bbc0e`).
+- **A mistake of mine, corrected:** section 5.3 of the spec said that leaves and glass keep the strip; I had not measured it.
+- **A lesson:** write the control (the picture without the walk) before the walk, not after.
+
+## Shader packs, step 1: the interface (2026-11-10)
+
+The lighting equation of `fragment_main` moved out into `pack_shade(s: Surface)`, the engine's answers given to it; a player's pack is a file that defines it instead (`shader-pack-spec.md` has the design, the rules, the numbers and the decisions).
+
+- **Built:** `Surface` and the call in `voxel.wgsl`; `lighting_default.wgsl` (the old equation, moved); `voxel_source`/`voxel_shader` taking the lighting text, last; `shader_pack.rs` (`ShaderPack::new` checks the words (no loop, binding, outside variable, engine name or texture) and that the shader language (naga) accepts the engine's shader of the plainest and the heaviest kind with the pack after it, at the pack's own lines); `VoxelRenderer::set_shader_pack` (the card's refusal comes back as an error, the renderer unchanged); `ContactGpu::set_lighting`.
+- **Verified:** 0 differing pixels of 10 real-Cave views on two adapters before and after; frame time unchanged (18.6 ms); 19 tests (10 unit, 9 GPU on four adapters); 26 mutants, 3 survived and were closed.
+- **Not done:** the player's side (folders, `--shader-pack`, `.shader`), hooks for the sky, the fog, vertices and time.
+
+## Shader packs, step 2: the player's side (2026-11-10)
+
+A player can have packs and swap them: `shaderpacks` in the game data folder, `--shader-packs DIRECTORY`, `--shader-pack NAME`, `.shader [NAME|default]`, `voxunami check-shader-pack DIR` (`shader-pack-spec.md` section 4b; the guide is `docs/reference/shader-pack-format.md`).
+
+- **Built:** `game_shell::shader_packs` (the pack folder reader with every problem at once, the folder of packs, the shelf, `pick`, the check command); `ClientSettings` with the names and the choice (no longer `Copy`); `.shader`; `ViewOptions::{shader_packs, shader_pack}`; `Session::offer_shader_packs`/`reject_shader_pack`; `view::{prepare_shader_packs, apply_shader_pack}` used by the window every frame and by the screenshot runs; the launcher's `check-shader-pack`; two example packs in the renderer.
+- **A thing found by running it:** a pack called `voxunami:shadowless` was not found by `shadowless` (the name was matched in full or by its beginning, and the id by its beginning): `pick` now matches the part of the id after the colon too.
+- **Verified:** real Cave pictures on both adapters with each example pack (the cel pack differs in 90 thousand pixels of 230,400, the shadowless in 5,291); the examples drawn by a GPU test on four adapters; the mutants of the shell's side.
+- **Not done:** hooks (sky, fog, vertices, time), pack settings, post-processing; tests of the session's offer and of `apply_shader_pack`.
+
+## The planet's ground casts shadows at a distance (2026-11-11): a bug found by the owner's eye
+
+The owner said he saw no shadows on the coarse terrain. In Cave the planet is a grid (a ship with terrain), the renderer counted every grid as a thing that moves, and the shadow maps that are kept for a while (every cascade past 512 voxels of half width) hold only terrain: the planet's ground was in no sun map past 445 voxels and, read from the code, in no sky map. `shadow-spec.md` section 7 and `shader-systems-survey.md` section 7.1 have the numbers.
+
+- **Built:** `VoxelRenderer::set_grid_is_ground` (a ground grid is held like terrain: not "dynamic", and its changes count with the terrain's version); `MeshUpdate::GridIsGround`, said once by the session for a grid with terrain; applied in `view::apply_updates`.
+- **Tests, first:** the shadow spec's block and roof scene held as a planet's grid at four scales on four adapters (red at level 9: the floor in the block's shadow "1.000 of the light"; green after); a ship's node far from the camera is still in no kept map; ground that moves is followed by the kept maps (a mutant that leaves the version alone is killed); the session says it once. Workspace: 3,239 passed, 5 ignored.
+- **Verified by looking and measuring:** seven real Cave views, before and after (far hills shaded where the near ones shade them); the benchmark within the spread on both GPUs (3.31 to 3.38 ms RTX, 13.87 to 14.01 ms integrated).
+- **A thing found by running it, and a mistake of mine:** my survey's first reading of a distant-shadow measurement (the pixels that change with the shadows off) said the shadows reach the horizon; a face turned from the sun changes too, so it showed nothing about casting. What tells casting apart is to take the cause out of the picture (leave the coarse nodes out of the casters) and count the casters of each cascade.
+- **Side effect, not asked for:** the sky's cover now holds the planet's ground, so overhangs and caves on a planet darken as designed (the mean of one picture falls by 3 of 765).
+- **Not done:** a planet on a rail moving in a window (its pose changes in every frame and each change makes the kept maps out of date: cost not measured); a tolerance (a map is kept while the ground moves under a quarter of a texel) would remove it.
+
+### The shade value (2026-11-11)
+
+The owner chose 130 after the shade study (`shade-study.md`): Cave's `sky_light_in_shadow` went from 70 to 130 (a one-number change in `games/voxunami_cave/src/game.rs`; no test pinned 70). Far crush 38% -> 0.4%, middle 37% -> 3.4% on the ten study views [run in temporary builds, not re-run on this commit].
+
+### What a planet that moves costs the picture (2026-11-11, measured)
+
+Cave's planet is held today (`planet-spec.md`: it does not move or spin), so nothing below happens in the game yet; it is what the ground change of `27bb30a` will cost when planets are on rails. **Why:** a pose that changes bumps `terrain_version` for a grid that is ground (`VoxelRenderer::grid_changed`), and every kept shadow map that holds the ground then counts as out of date and is drawn again once it has waited `terrain_refresh_age` frames (1 to 32 by cascade), within the 1.5 million quad budget. The windowed shell hands the renderer a carried-on pose every frame (`carry_ships_on`), so a planet that moves at all moves the version every frame, and the coarse maps (which before this change did not hold it) are drawn again, planet and all. The cost does not depend on how fast it moves, only on whether the pose differs from the last frame's.
+
+**Measured [run]** (`cave --benchmark --size 1280x720`, pole, noon, dev profile; a temporary patch of the benchmark loop moved every grid's pose by 0.001 voxel a frame, and was restored; one run each, a repeat of the 'now' case agreed to 1 percent):
+
+| | RTX | integrated (AMD) |
+|---|---|---|
+| planet still | 3.2 ms | 11.0 ms |
+| moving, counted as moving (before `27bb30a`) | 4.9 | 13.4 |
+| moving, counted as ground (now) | 7.4 | 16.7 |
+
+So moving the planet already cost 1.7 / 2.4 ms before (the near maps hold it), and the ground change adds 2.5 / 3.3 ms more: on the integrated GPU a moving planet is at the edge of 60 fps (16.7 ms) at the pole. Changing the pose only every n frames: RTX 7.4 (n=1), 7.4 (4), 5.3 (16), 3.8 (64); integrated 16.6 (1), 20.0 (4), 14.4 (16), 11.9 (64). The 20.0 at n=4 is worse than n=1 and **unexplained** (one run; not repeated).
+
+**Not measured:** a real rail in a window, the camera and sun moving at the same time, a planet that is seen from space (few bricks), more than one moving planet. **Options, none built:** (a) redraw a kept map for the ground only when the ground has moved a fraction of a texel of that map (*believed* to cut most of it for a slow planet, none for a fast one); (b) draw a moving planet into the coarse maps in its own frame; (c) accept it. The owner's.

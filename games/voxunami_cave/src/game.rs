@@ -155,8 +155,8 @@ impl GameDefinition for Cave {
             axis: [0.0, -0.342, 0.94],
             light: 255,
             sky_light: 110,
-            // A place the sun does not reach has about a quarter of the sky's light: shade is dim, not black.
-            sky_light_in_shadow: 70,
+            // A place the sun does not reach has about half of the sky's light: shade is dim, not black (at 70 a third of the far terrain was nearly black: shade-study.md).
+            sky_light_in_shadow: 130,
             // A place with a hill or a roof over it has none of the sky's light: a cave is dark by day.
             sky_light_under_cover: 0,
             // Starlight: a night is dim where the sky is open, and still black in a cave.

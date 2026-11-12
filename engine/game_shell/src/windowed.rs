@@ -30,8 +30,9 @@ use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
-    apply_updates, camera_at, configure_renderer, hexadecimal_voxel_coordinates, light_the_scene,
-    show_entity_boxes, show_screen,
+    apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
+    hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
+    show_screen,
 };
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
@@ -90,8 +91,10 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.enable_occupancy();
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
+    session.set_pixelated_shadows(view.pixelated_shadows);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -134,8 +137,10 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.enable_occupancy();
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
+    session.set_pixelated_shadows(view.pixelated_shadows);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -182,6 +187,8 @@ struct Viewer<G: GameDefinition> {
     surface_configuration: wgpu::SurfaceConfiguration,
     context: GraphicsContext,
     renderer: VoxelRenderer,
+    /// The shader packs the player has, which `.shader` chooses among (see `crate::shader_packs`).
+    shader_packs: Vec<renderer::ShaderPack>,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
@@ -278,6 +285,7 @@ impl<G: GameDefinition> Viewer<G> {
             session.package(),
             session.fog_radius_bricks(),
         );
+        let shader_packs = prepare_shader_packs(view, &mut session)?;
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
         let ticks_per_second = session.client().world().server_info().ticks_per_second;
@@ -287,6 +295,7 @@ impl<G: GameDefinition> Viewer<G> {
             surface_configuration,
             context,
             renderer,
+            shader_packs,
             session,
             keys: HashSet::new(),
             mouse_captured: false,
@@ -592,10 +601,21 @@ impl<G: GameDefinition> Viewer<G> {
         }
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
+        apply_occupancy(&mut self.renderer, &mut self.session);
         self.carry_ships_on(now);
         // The light of the picture: the terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe), so
         // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.
         light_the_scene(&mut self.renderer, &self.session);
+        // The shader the player chose (`.shader`): at once if it is the one drawn with. A pack the graphics card refuses is taken off, and the player is told.
+        if let Err(error) = apply_shader_pack(
+            &mut self.renderer,
+            &self.shader_packs,
+            self.session.settings(),
+        ) {
+            self.session.reject_shader_pack();
+            eprintln!("{error}");
+            self.reply = Some((error, now));
+        }
         self.show_other_players_carried_on(now);
         show_entity_boxes(&mut self.renderer, &self.session);
 

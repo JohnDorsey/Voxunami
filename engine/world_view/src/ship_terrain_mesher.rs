@@ -15,6 +15,7 @@ use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosit
 
 use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
 use crate::mesher::{MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher};
+use crate::occupancy::{OccupancyChange, OccupancyStatistics};
 
 /// The bricks of one ship, as the client has them: the stored ones, and the generator for the rest within the extent.
 #[derive(Clone)]
@@ -167,6 +168,29 @@ impl ShipTerrainMesher {
                 settings: detail,
             },
         }
+    }
+
+    /// Makes the mesher say which voxels of each brick of the planet block the sun (see [`WorldMesher::enable_occupancy`]); call it before the first update.
+    #[must_use]
+    pub fn with_occupancy(mut self) -> Self {
+        self.bricks_mut().enable_occupancy();
+        self
+    }
+
+    /// What has changed in the occupancy of the planet's bricks since the last call (see [`WorldMesher::take_occupancy_updates`]); the bricks are in the ship's own
+    /// coordinates, and the ship is [`ShipTerrainMesher::grid`].
+    pub fn take_occupancy_updates(&mut self) -> Vec<(BrickCoordinate, OccupancyChange)> {
+        self.bricks_mut().take_occupancy_updates()
+    }
+
+    /// How many of the bricks that were told of are empty, full and mixed.
+    pub fn occupancy_statistics(&self) -> OccupancyStatistics {
+        self.bricks().occupancy_statistics()
+    }
+
+    /// The ship this mesher makes the terrain of.
+    pub fn grid(&self) -> GridId {
+        self.grid
     }
 
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.

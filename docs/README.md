@@ -35,6 +35,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 ## Reference
 
 - `pack-format.md`: writing a data pack (blocks, patches, planets). Its examples are checked by a test.
+- `shader-pack-format.md`: writing a shader pack (a folder with `pack.json` and `lighting.wgsl`), what it is given, what it may not do, and how to use one.
 - `protocol-and-replay.md`: the message stream and replay files.
 - `world-file-format.md`: the saved world.
 
@@ -43,7 +44,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 Plugins and content: `plugin-api-spec.md`, `property-bags-spec.md`, `messages-and-commands-spec.md`, `client-interface-spec.md`,
 `entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `block-textures-spec.md` (textures, and the game's own blocks as JSON; **not built**), `ui-spec.md`. The game Voxunami 2048: `2048-spec.md`.
 The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rails-and-recipes-spec.md` (orbits, planets from data),
-`great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`. Ships: `moving-grids-spec.md`.
+`great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`, `contact-trace-spec.md` (**a design; phases 0 to 2 are built (the renderer too), and the cost in real Cave is over the budget: the owner's to decide**: the sun's exact short ray through the voxels that removes the lit strip at the foot of a wall), `shader-pack-spec.md` (swappable shaders: the engine works out what is lit and a pack makes the colour; **built: the interface, and the player's side (`--shader-pack`, `.shader`)**). Ships: `moving-grids-spec.md`.
 
 ## History
 
@@ -53,6 +54,10 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `joint-probe.md` (2026-11-01: do Rapier joints hold when over-constrained, with its program in `spikes/joints/`).
 - `loop-probe.md` (2026-11-06: loops of cars on multibody or impulse joints, phantom momentum and free energy, cost against the number of cars, overlapping colliders, spin, and the accuracy of `BodyWorld` collisions; programs in `spikes/loops/`).
 - `ship-rail-frames-review.md` (2026-11-10: how a ship that turns rides a rail, steps 4c-1 and 4c-2 of the joints plan, read through with snippets, what is tested and what is not).
+- `contact-shadow-spike.md` (2026-11-09: the lit strip at the foot of a wall measured at every sun and cascade, its cause in the map's depth bias, and a prototype that walks the sun's ray through a voxel volume to remove it, with its cost on the integrated GPU; the code is in commits `3f6ffb1` and `e166faf` of the branch `worktree-shaders`, and out of the tree: see the document).
+- `shader-systems-survey.md` (2026-11-10: how shader packs work in the block-game genre, OptiFine and Iris above all, and in other games and engines, set against our `shader-pack-spec.md`, with what to keep, what is too narrow, and the owner's open questions; read from primary sources, each claim marked as re-read, inferred, run or not read).
+- `shade-study.md` (2026-11-11: whether the shade is legible at a distance, measured on ten fixed Cave views, with the shade's share of the sky's light at 70, 130 and 190; 38% of the far terrain is nearly black today).
+- `pixelated-shadows-study.md` (2026-11-11: what it costs to make each pixel of a block's picture wholly lit or shaded, as Complementary does, for everything including ships and planets: the snap is nearly free, the shadow map's resolution is what costs, measured at 1024, 2048 and 4096).
 - `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 

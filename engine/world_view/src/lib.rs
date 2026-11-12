@@ -10,13 +10,19 @@ mod grid_mesher;
 mod horizon;
 mod lod;
 mod mesher;
+mod occupancy;
 mod ray;
 mod ship_terrain_mesher;
+mod sun_boxes;
+mod sun_ray;
 
 pub use grid_mesher::GridMesher;
 pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
 pub use mesher::{
     BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
 };
+pub use occupancy::{OccupancyChange, OccupancyStatistics};
 pub use ray::{RayHit, cast_ray};
 pub use ship_terrain_mesher::{ShipTerrainMesher, ShipTerrainSource};
+pub use sun_boxes::{SunBox, sun_blocked_by_boxes};
+pub use sun_ray::{SunCell, sun_blocked, sun_blocked_by_shapes, sun_blocked_from_point};
