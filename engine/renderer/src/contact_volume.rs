@@ -51,6 +51,8 @@ const SHAPE_BYTES: usize = 64;
 pub(crate) struct ContactGpu {
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    /// The same with the specular pictures as the fourth group, for the shaders that draw pictures.
+    pipeline_layout_with_pictures: wgpu::PipelineLayout,
     windows: wgpu::Buffer,
     tables: wgpu::Buffer,
     pool: wgpu::Buffer,
@@ -92,6 +94,7 @@ impl ContactGpu {
         device: &wgpu::Device,
         frame_layout: &wgpu::BindGroupLayout,
         placement_layout: &wgpu::BindGroupLayout,
+        specular_layout: &wgpu::BindGroupLayout,
         maximum_slots: usize,
         maximum_partial_slots: usize,
     ) -> Self {
@@ -119,6 +122,17 @@ impl ContactGpu {
             bind_group_layouts: &[Some(frame_layout), Some(placement_layout), Some(&layout)],
             immediate_size: 0,
         });
+        let pipeline_layout_with_pictures =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("contact pipeline layout with pictures"),
+                bind_group_layouts: &[
+                    Some(frame_layout),
+                    Some(placement_layout),
+                    Some(&layout),
+                    Some(specular_layout),
+                ],
+                immediate_size: 0,
+            });
         let windows = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("contact windows"),
             size: size_of::<WindowsUniform>() as u64,
@@ -144,6 +158,7 @@ impl ContactGpu {
         Self {
             layout,
             pipeline_layout,
+            pipeline_layout_with_pictures,
             windows,
             tables,
             pool,
@@ -359,12 +374,12 @@ impl ContactGpu {
         }
         let shader = self.shaders[index]
             .get_or_insert_with(|| voxel_shader(device, with_pictures, walk, &self.lighting));
-        self.pipelines[index] = Some(voxel_pipelines(
-            device,
-            &self.pipeline_layout,
-            shader,
-            color_format,
-        ));
+        let layout = if with_pictures {
+            &self.pipeline_layout_with_pictures
+        } else {
+            &self.pipeline_layout
+        };
+        self.pipelines[index] = Some(voxel_pipelines(device, layout, shader, color_format));
     }
 
     /// The number of the kind of shader: with the pictures or without, and what of the walk it has.

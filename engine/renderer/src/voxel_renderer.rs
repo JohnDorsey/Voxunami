@@ -210,6 +210,24 @@ fn shadow_picture_layout(device: &wgpu::Device, frame_size: u64) -> wgpu::BindGr
     })
 }
 
+/// The layout of the bind group that holds the specular pictures that go with the pictures, an array for each size (emission, for now): the fourth group, which only the
+/// pipelines that draw pictures have in their layout. It is a group of its own, and not more bindings of the frame's, so that the pipelines that draw no pictures keep the layout
+/// they had before there were specular pictures: on the integrated AMD card that layout was measured to flake less in the shadow tests (`docs/test-flakes.md`).
+fn specular_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..crate::MOST_PICTURE_SIZES as u32)
+        .map(|binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: picture_array_type(),
+            count: None,
+        })
+        .collect();
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("specular layout"),
+        entries: &entries,
+    })
+}
+
 fn picture_array_type() -> wgpu::BindingType {
     wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -880,6 +898,10 @@ pub struct VoxelRenderer {
     picture_pipelines: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     pictures_in_use: bool,
     pipeline_layout: wgpu::PipelineLayout,
+    /// The layout of the pipelines made with the shader that draws pictures (without the walk of the sun's ray): the same, and the specular pictures as the fourth group.
+    picture_pipeline_layout: wgpu::PipelineLayout,
+    specular_layout: wgpu::BindGroupLayout,
+    specular_group: wgpu::BindGroup,
     /// Draws the sky (the stars and the sun) over the whole picture, before the terrain.
     sky_pipeline: wgpu::RenderPipeline,
     frame_layout: wgpu::BindGroupLayout,
@@ -1059,33 +1081,9 @@ impl VoxelRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // The specular pictures that go with the pictures (emission, for now), an array for each size with the layers of the pictures.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: picture_array_type(),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 10,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: picture_array_type(),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 11,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: picture_array_type(),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 12,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: picture_array_type(),
-                    count: None,
-                },
             ],
         });
+        let specular_layout = specular_layout(&device);
         let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("placement layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1104,6 +1102,18 @@ impl VoxelRenderer {
             bind_group_layouts: &[Some(&frame_layout), Some(&placement_layout)],
             immediate_size: 0,
         });
+        // (The third group is the sun's ray's, which the pipelines with the walk have and these do not: a hole keeps the specular pictures at the number the shader says.)
+        let picture_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("voxel pipeline layout with pictures"),
+                bind_group_layouts: &[
+                    Some(&frame_layout),
+                    Some(&placement_layout),
+                    None,
+                    Some(&specular_layout),
+                ],
+                immediate_size: 0,
+            });
 
         let shader = voxel_shader(&device, false, SunWalk::None, DEFAULT_LIGHTING);
         let (pipeline, detailed_pipeline) =
@@ -1160,6 +1170,7 @@ impl VoxelRenderer {
         let shadow_target = ShadowTarget::new(&device, false);
         let shadow_sampler = comparison_sampler(&device);
         let block_textures = BlockTextures::new(&device, &queue, &[]);
+        let specular_group = Self::specular_group(&device, &specular_layout, &block_textures);
         let frame_bind_group = Self::frame_bind_group(
             &device,
             &frame_layout,
@@ -1230,6 +1241,9 @@ impl VoxelRenderer {
             picture_pipelines: None,
             pictures_in_use: false,
             pipeline_layout,
+            picture_pipeline_layout,
+            specular_layout,
+            specular_group,
             sky_pipeline,
             frame_layout,
             frame_buffer,
@@ -1352,23 +1366,29 @@ impl VoxelRenderer {
                     binding: 8,
                     resource: wgpu::BindingResource::Sampler(&block_textures.sampler),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: wgpu::BindingResource::TextureView(&block_textures.specular_views[0]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::TextureView(&block_textures.specular_views[1]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::TextureView(&block_textures.specular_views[2]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 12,
-                    resource: wgpu::BindingResource::TextureView(&block_textures.specular_views[3]),
-                },
             ],
+        })
+    }
+
+    /// The group of the specular pictures, one array for each size of picture.
+    fn specular_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        block_textures: &BlockTextures,
+    ) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = block_textures
+            .specular_views
+            .iter()
+            .enumerate()
+            .map(|(binding, view)| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            })
+            .collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("specular bind group"),
+            layout,
+            entries: &entries,
         })
     }
 
@@ -1494,7 +1514,7 @@ impl VoxelRenderer {
             if self.pictures_in_use && self.picture_pipelines.is_none() {
                 self.picture_pipelines = Some(voxel_pipelines(
                     &self.device,
-                    &self.pipeline_layout,
+                    &self.picture_pipeline_layout,
                     shader,
                     self.color_format,
                 ));
@@ -1552,6 +1572,8 @@ impl VoxelRenderer {
             &self.shadow_sampler,
             &self.block_textures,
         );
+        self.specular_group =
+            Self::specular_group(&self.device, &self.specular_layout, &self.block_textures);
         self.shadow_picture_group = Self::shadow_picture_group(
             &self.device,
             &self.shadow_picture_layout,
@@ -1876,7 +1898,7 @@ impl VoxelRenderer {
             let shader = voxel_shader(&self.device, true, SunWalk::None, lighting);
             let pipelines = voxel_pipelines(
                 &self.device,
-                &self.pipeline_layout,
+                &self.picture_pipeline_layout,
                 &shader,
                 self.color_format,
             );
@@ -1997,6 +2019,7 @@ impl VoxelRenderer {
                 &self.device,
                 &self.frame_layout,
                 &self.placement_layout,
+                &self.specular_layout,
                 self.volume.maximum_slots(),
                 self.volume.maximum_partial_slots(),
             ));
@@ -2834,6 +2857,9 @@ impl VoxelRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            if with_pictures {
+                pass.set_bind_group(3, &self.specular_group, &[]);
+            }
             // (With no distance, or no picture on any block, the pipelines that read no picture: they are cheaper, by about a tenth of a frame on an integrated GPU. And while
             // nothing is traced, the ones that have no walk of the sun's ray in them.)
             let (whole_pipeline, detailed_pipeline) = match (&self.contact, tracing) {

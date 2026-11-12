@@ -6,6 +6,7 @@
 
 use block_models::BlockTable;
 
+use super::contact_trace::occupancy_where;
 use super::*;
 
 const PICTURE_PIXELS: usize = 8;
@@ -94,6 +95,43 @@ fn a_pixel_shines_by_the_emission_of_its_specular_picture_whatever_light_reaches
             assert!(
                 (found - wanted).abs() < 0.1,
                 "{name}: column {column} (alpha {}) shines {found:.3}, wanted {wanted:.3}; all: {seen:.3?}",
+                EMISSION_ALPHA[column]
+            );
+        }
+    }
+}
+
+/// The same scene with the walk of the sun's ray in the shader: shadows on, a sun whose light grazes the face (it looks at +z, the sun is over the east) and no light from the
+/// sky, so that nothing but the picture's own emission lights the face, and the block told to the volume the walk goes through. The shaders with the pictures and the walk have
+/// the specular pictures in a bind group after the walk's, which no other test of the pictures reaches.
+#[test]
+fn a_pixel_shines_the_same_in_the_shader_that_walks_the_suns_ray() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let specular = specular_picture();
+        let (mut renderer, _table) = dark_block(&context, Some(&specular));
+        renderer.set_occupancy(
+            ORIGIN_BRICK,
+            &occupancy_where(|x, y, z| [x, y, z] == [16, 16, 16]),
+        );
+        renderer.set_atmosphere(Atmosphere {
+            sun_direction: SUN_OVER_THE_EAST,
+            sun_light: 255,
+            sky_light: 0,
+            shadows: true,
+            ..Atmosphere::default()
+        });
+        let camera = camera_aimed_at([16.5, 16.5, 30.0], [16.5, 16.5, 17.0]);
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(
+            statistics.traced_windows, 1,
+            "{name}: the scene is not drawn with the walk of the sun's ray: {statistics:?}"
+        );
+        let seen = columns(&mut renderer, "traced", &name);
+        for (column, (&found, &wanted)) in seen.iter().zip(&EXPECTED).enumerate() {
+            assert!(
+                (found - wanted).abs() < 0.1,
+                "{name}: column {column} (alpha {}) shines {found:.3} with the walk, wanted {wanted:.3}; all: {seen:.3?}",
                 EMISSION_ALPHA[column]
             );
         }

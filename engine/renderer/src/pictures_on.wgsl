@@ -5,11 +5,12 @@
 @group(0) @binding(6) var pictures_2: texture_2d_array<f32>;
 @group(0) @binding(7) var pictures_3: texture_2d_array<f32>;
 @group(0) @binding(8) var picture_sampler: sampler;
-// The specular pictures that go with them (LabPBR `_s`), an array for each size with the same layers; data, not colours. Only the alpha is read so far: the emission.
-@group(0) @binding(9) var specular_0: texture_2d_array<f32>;
-@group(0) @binding(10) var specular_1: texture_2d_array<f32>;
-@group(0) @binding(11) var specular_2: texture_2d_array<f32>;
-@group(0) @binding(12) var specular_3: texture_2d_array<f32>;
+// The specular pictures that go with them (LabPBR `_s`), an array for each size with the same layers; data, not colours. Only the alpha is read so far: the emission. They are in
+// a bind group of their own (the fourth), which only the pipelines made with this file carry: the layout of the pipelines that draw no pictures is as it was before they existed.
+@group(3) @binding(0) var specular_0: texture_2d_array<f32>;
+@group(3) @binding(1) var specular_1: texture_2d_array<f32>;
+@group(3) @binding(2) var specular_2: texture_2d_array<f32>;
+@group(3) @binding(3) var specular_3: texture_2d_array<f32>;
 
 // The colour of a picture at a place on a face: `coordinates` are in voxels (the picture repeats in each), `ddx` and `ddy` how much they change across a pixel, which
 // say which smaller picture to read. The size of the picture is its number among the sizes in use (bits 1 and 2) and its place among the pictures of that size is

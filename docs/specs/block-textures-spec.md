@@ -145,7 +145,7 @@ The loader turns an emission of 255 into 0 before the GPU is given the picture, 
 `base_blocks:emission`. The engine's `Surface` has the field `emission` (`shader-pack-spec.md`).
 
 **On the wire** each picture is a byte of flags (bit 0: a specular picture follows the pixels, bit 1: a normal picture follows that) and then the pixels, the specular and then the normal; the 8 MiB limit counts the
-companions. **On the GPU** the specular pictures are one more array for each size (bindings 9 to 12 of the frame's group), with the layers of the pictures; a picture with no specular picture has the pixel
+companions. **On the GPU** the specular pictures are one more array for each size (the fourth bind group, bindings 0 to 3, which only the pipelines that draw pictures have in their layout: the default pipelines' layout is as it was before companions), with the layers of the pictures; a picture with no specular picture has the pixel
 of nothing in its layer. The normal pictures are carried to the client and **not yet drawn** (step 3: bumps).
 
 ## 5. Colours
@@ -427,11 +427,12 @@ step, which carries the companions and reads one channel of one of them.
 - `data_packs::Tile` may hold a `specular` and a `normal` picture of its own size (`with_specular`, `with_normal`, `bytes()`); `Available` (pictures.rs) takes a file ending `_s` or `_n` as a companion of the picture with the rest of the
   name, after all the pictures are in (a pack that replaces a picture drops the old one's companions and says so; a companion with no picture is a warning for a pack and an error for the game; another size is an error).
 - The package: a byte of flags before each picture's pixels, then the specular and normal pixels if the flags say (`PackageData`); the 8 MiB limit counts them. **The bytes of every package with pictures moved** (one byte a picture).
-- The renderer: `PictureSize::specular` (one `Option` a picture, or empty), a second array for each size in `Rgba8Unorm` with the layers of the pictures, bindings 9 to 12 of the frame group; `engine_specular` makes the alpha 255 a 0, and
+- The renderer: `PictureSize::specular` (one `Option` a picture, or empty), a second array for each size in `Rgba8Unorm` with the layers of the pictures, the fourth bind group (`specular_layout`: the pipelines with pictures have it, with a hole where the sun's ray's group goes when they have no walk; the others do not); `engine_specular` makes the alpha 255 a 0, and
   `data_mip_chain` averages four pixels plainly in every channel (the colour mips weigh by the alpha and work in sRGB, which would spoil data). The shader: `picture_emission` (pictures_on.wgsl; the stub in pictures_off.wgsl is 0),
   `Surface::emission`, and the default pack's `mix(lit, albedo, emission)`.
 - Tests: the loader (9, pictures.rs and tile.rs), the wire (package_data.rs and package.rs), the mips (block_textures.rs), `picture_sizes` (view.rs), and on the GPU (`emission.rs`): in the dark, a white picture whose specular alpha is 255, 127, 254 and 0 in
-  columns is seen as 0, half, all and 0 of its brightness, and a picture with no companion is black, on every adapter.
+  columns is seen as 0, half, all and 0 of its brightness, and a picture with no companion is black, on every adapter; and the same in the shader with the walk of the sun's ray (the only test that draws pictures
+  and the walk together; with the group left unbound every one of the three fails on a validation error, checked).
 - **Not done:** reading the normal picture (step 2: bumps, with a tangent frame from the screen-space derivatives of the picture's coordinates and a shading normal beside the real one; they will show only in direct sun, as lamp and sky light have no direction), the other channels of the specular
   picture, the lamp's own picture (the owner supplies the art; `lamp.json` has no `texture` yet), `check-pack` lines for companions, and a measurement of the cost on the integrated GPU (four more bindings; the trap of the
   integrated AMD GPU in `test-flakes.md` is the reason it is measured).
