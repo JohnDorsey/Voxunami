@@ -1,0 +1,93 @@
+# Motion in frames: why ship bugs keep appearing, and the options
+
+Written 2026-11-12 after the owner asked: the walker-speed bug in a burning ship "seems to be part of a larger category of physical
+un-realness bugs that we're having with ships sometimes"; is there a root cause, and is there a better way to represent and transform
+player motion so such problems "kinda solve themselves"? The owner's reasoning: a walker's velocity aboard a ship is their velocity
+through the universe minus the ship's, so move in the direction of relying on that, without getting rid of physics frames entirely.
+
+**A proposal; nothing is built.** Numbers marked *ran* were measured with a throwaway probe (Windows only; Linux not run). Statements
+marked *read* come from reading the code and the older notes, not from running or tracing anything.
+
+## A correction of an earlier claim
+
+On 2026-11-11, after the change record and the test-only renumber (`0bc4014`), I wrote that the speed lost in `agree_with` "isn't needed
+while ids only change through a split or merge, so I'd leave it until a rename is built." **That was wrong.** A real `split_grid` of the
+deck, with a walker jumping on it, changes the jump today. No renumber is involved.
+
+*Ran:* a deck burning at 5 with a pull of 5, a walker aboard, Space pressed, then the deck split into two halves N ticks after the key.
+The walker is then scripted on the part it stands on, and the highest eye rise in the ship's axes is taken over 12 ticks.
+
+| Split N ticks after the key | none (control) | 0 | 1 | 2 | 3 | 5 | 8 |
+|---|---|---|---|---|---|---|---|
+| Peak rise (m) | 0.6183 | 0.7025 | 0.6647 | 0.5933 | 0.4258 | 0.5667 | 0.6183 |
+
+A split at tick 8 comes after the peak and changes nothing. So undocking or docking with someone in the air changes their jump now. The
+effect is small in play, but real.
+
+The probe shows two effects together and I did **not** separate them. *Read:* a lower peak is `agree_with` zeroing the speed on a change
+"in or out of a ship" (`body.reframe(position, [0; 3], frame_rotation)`); a higher peak is the "first tick aboard" rule in `felt_aboard`,
+which uses zero ship acceleration for one tick (half weight). The probe file was deleted; as a regression test it should be rebuilt from
+the description above.
+
+## The root cause: three causes that stack
+
+I do not think there is one. *Read*, confidence medium to high.
+
+1. **Speed is stored against a chosen frame, and the frame's id is part of the data.**
+   - The body holds six id fields (`frame`, `buckled`, `carrier`, `departure.ship`, `motion.ship`, `motion.carrier`) and the seat holds
+     another (`Seated.ship`).
+   - Every change of frame is a hand-written conversion. *Counted by grep* in `games/voxunami_cave/src/movement.rs`: 6 `reframe`
+     calls, 1 `change_velocity`, 6 uses of `against_the_planet` / `in_the_world`, 8 of `planet_speed`.
+   - Any event that changes an id (split, merge, dock, renumber, rail exit) lands in one of those conversions, or in none of them.
+     From the older notes, the double planet speed, the walk-off bug, the rail exit and this one all look like this. The older ones were
+     not re-verified.
+2. **A ship's acceleration is not data: `felt_aboard` works it out by differencing last tick's velocity** (`Motion`).
+   - That needs memory and a special rule for the first tick, and it takes any velocity change for a force. Existing code works around
+     this: the buckle comment "so that the tick they are let go is not taken for a blow", and the `carried_through` test helper.
+3. **The walker lives in its own private physics world, and ships live in others.** Game code interprets between them. Nothing in the
+   engine makes the two agree. This is the deepest cause.
+
+## The Galilean idea
+
+A boost (a change of chart by a constant velocity) is physically equivalent for any choice. So a wrong or stale choice of chart could
+cost numerical conditioning but never give wrong physics. Rotation and acceleration are not removable by a boost. Hence option 3 below:
+free bodies in the inertial chart, standing bodies in the platform's chart, with a Galilean hand-over between them.
+
+The oracle for any new representation is `games/voxunami_cave/tests/aboard_frame_terms.rs`: it measures the jump rise in the ship's frame
+under rest, cruise, free fall, half pull and burn, independent of how the motion is stored.
+
+## Options
+
+All opinions; none tested except the probe above.
+
+1. **Tests that state the owner's sentence directly.** Tests first, before any refactor.
+   - Boost invariance: add the same velocity to a ship and to a walker aboard it; nothing relative to the ship may change.
+   - Id invariance: split, merge or renumber the ship in the middle of a scenario; the walker must not notice.
+   - Cost small; confidence it is worth doing high.
+2. **One resolver for every stale id.** Tombstones and the change record can already say "this id became that ship, with this lattice
+   transform". Make `Seated`, `Motion`, `Departure`, `buckled` and `agree_with` all ask it. The transform includes quarter-turn
+   rotations, so a merged ship's velocity vector must be rotated, not copied. This fixes the verified bug and is the only option that does.
+3. **Airborne means inertial.** While a walker is in the air or floating, store velocity in world axes and treat ships as moving
+   colliders. A hand-over to the ship's frame happens only on landing, as world velocity minus the ship's velocity at that spot.
+   - Gravity and the ship moving under the walker do all the work. Coriolis, centrifugal, Euler, `Motion`, `Departure` and the
+     first-tick rule go away for airborne bodies. A standing walker stays in the ship's frame, which keeps the exact carry; the ship's
+     acceleration only sets which way "up" points, so an error there is harmless.
+   - Open risks, none measured: ships need their collider pose set at each physics sub-step, and a fast spinning hull could catch a
+     floating walker.
+   - Confidence medium that it works; wants a prototype before a commitment.
+4. **Air speed as a function of place, not a latch.** `Departure` exists because the air in a ship moves with the ship. Make the air's
+   velocity a pure function of position (the ship you are inside, the planet's atmosphere, or none in vacuum), so it cannot go stale.
+   First to settle: how to tell "inside a hull", since the engine has no idea of a sealed room.
+5. **Ship acceleration stored as data.** Rails know it exactly, engines know thrust over mass, the solver knows its own velocity change.
+   This removes the memory and the blow misreads. It touches `world_storage`, the coasting code and the bodies.
+6. **The walker as a dynamic body in the ships' physics frames.** The only option that removes cause 3, and it would give the reaction
+   force on a ship when a player pushes. It is the biggest and riskiest: a dynamic capsule feels worse than the kinematic one on stairs
+   and slopes, and Windows/Linux determinism was not checked. Advised against for now; confidence low to medium.
+
+## Recommendation
+
+Options 1 and 2 first: they fix the verified bug and put the owner's sentence into a test. Then prototype 3 and 4 against the tests that
+already exist, and decide on 5 and 6 from what that shows. Not checked: Linux, the planet-carrier case, and the older bugs placed under
+cause 1.
+
+Related: `decisions/players-and-ships.md`, `decisions/joints-and-cars.md`, `history/ship-rail-frames-review.md`.
