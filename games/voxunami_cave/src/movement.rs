@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::aboard::{Extent, has_left, in_voxels, stands_on};
 use crate::block_properties;
-use crate::frame_terms::{frame_motion, pull_in_a_frame};
+use crate::frame_terms::{cross, frame_motion, pull_in_a_frame};
 use block_models::BlockTable;
 use game_shell::PlayerPose;
 use grid_bodies::collision::{BlockCollisions, GeneratedHull, ShipHull, ShipSource, WorldTerrain};
@@ -157,6 +157,11 @@ struct Motion {
     velocity: [f64; 3],
     spin: [f64; 3],
     carrier: Option<(GridId, [f64; 3])>,
+    /// The acceleration of the ship's centre of mass that the last step measured from the one before (in the world's axes, less the planet's), which a change of the ship's id
+    /// carries over (see [`follow_renamed_ships`]): the new ship's centre of mass may be somewhere else, and so its speed another, with nothing pushing it.
+    acceleration: [f64; 3],
+    /// Where the ship's centre of mass was, in the ship's own coordinates.
+    centre: [f64; 3],
 }
 
 impl Motion {
@@ -171,6 +176,8 @@ impl Motion {
             velocity: ship.linear_velocity,
             spin: ship.angular_velocity,
             carrier,
+            acceleration: [0.0; 3],
+            centre: ship.centre_of_mass,
         }
     }
 }
@@ -541,6 +548,28 @@ fn follow_renamed_ships(player: &mut PlayerBody, world: &ServerWorld, placement:
         }
         if let Some(motion) = player.motion.as_mut().filter(|motion| motion.ship == old) {
             motion.ship = new;
+            // The new ship's centre of mass is not the old one's (a cut puts it elsewhere, and a merge puts it among the other ship's blocks), so its speed is not the old speed
+            // and a tick of acceleration: the ship turns as it did, so a place `shift` from the old centre of mass has the speed of the old one and `spin x shift`, and goes round
+            // it, with `spin x (spin x shift)` and `spin change x shift` more. The new ship is said to have been, one tick ago, as fast as it is less the acceleration that gives:
+            // what the last step measured, and that. (The ship that has the speed the plan of a merge gives it is taken to have been going so for the tick.)
+            if let Some(ship) = grids.get(new) {
+                let before = transform.apply_point(motion.centre);
+                let shift = ship.pose.direction_to_world(
+                    [0, 1, 2].map(|axis| ship.centre_of_mass[axis] - before[axis]),
+                );
+                let spin = ship.angular_velocity;
+                let spin_change =
+                    [0, 1, 2].map(|axis| (spin[axis] - motion.spin[axis]) / TICK_SECONDS);
+                let round = cross(spin, cross(spin, shift));
+                let turning_up = cross(spin_change, shift);
+                motion.velocity = [0, 1, 2].map(|axis| {
+                    let acceleration = motion.acceleration[axis] + round[axis] + turning_up[axis];
+                    ship.linear_velocity[axis] - acceleration * TICK_SECONDS
+                });
+            }
+            if let Some((planet, speed)) = motion.carrier.as_mut() {
+                *speed = planet_speed(world, Some(*planet));
+            }
         }
     }
     // The place a body left a ship is in the coordinates of that ship, and is the same place in what took its place.
@@ -1043,6 +1072,9 @@ fn felt_aboard(player: &mut PlayerBody, world: &ServerWorld, id: GridId) -> Felt
         }
         None => ([0.0; 3], ship.angular_velocity),
     };
+    if let Some(stored) = player.motion.as_mut() {
+        stored.acceleration = acceleration;
+    }
     let motion = frame_motion(
         &ship.pose,
         acceleration,
