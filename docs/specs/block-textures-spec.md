@@ -454,5 +454,13 @@ step, which carries the companions and reads one channel of one of them.
 - Tests: on the GPU (`bumps.rs`), a picture tilted the same everywhere on three faces (+z, -x, +y: the top, whose orientation the picture tests fix) with a sun that grazes the face from each of four directions and from the opposite
   of two of them, is lit by the cosine of the tilted normal over the cosine of the face's own, to 3 percent, on every adapter, in the shader without the walk of the sun's ray and in the one with it; a flat normal picture, a picture with none, and a tilt beyond
   the picture distance all leave the face as it was; the mips (block_textures.rs: opposite tilts average to flat); `picture_sizes` (view.rs); and Cave's package carries exactly dirt's normal picture and no other companion (`block_golden.rs`).
-- **Not done:** the look under a real sun on a planet is judged from one picture of flat dirt under a low and a high sun (shown to the owner in the session, not kept), not played; bumps on slopes of terrain, ships and coarse levels were not looked at (coarse levels have no pictures); the cost on the integrated GPU is not measured
+- **Not done:** the look under a real sun on a planet is judged from one picture of flat dirt under a low and a high sun (shown to the owner in the session, not kept), not played; bumps on slopes of terrain, ships and coarse levels were not looked at (coarse levels have no pictures); the cost on the integrated GPU is measured below (+1.45 ms)
   (one more texture fetch a pixel within the picture distance, four more bindings in the pipelines with pictures); `check-pack` lines for companions.
+
+**Cost of companion pictures, measured (2026-11-12).** Release exes of `e5aff3a` (before companions) and `0060f97` (specular, bumps, group 3), run alternately, `cave --benchmark --size 1280x720 --pitch -50` from the default start (nearly all of the
+view is grass, so almost every pixel pays for the pictures and the bump, the worst case within the picture distance; grass has no normal picture, so its pixels read the no-tilt stand-in).
+- **Integrated AMD GPU, three alternating pairs: 14.48, 15.21, 15.47 ms before (mean 15.05) and 16.48, 16.64, 16.37 after (mean 16.50): +1.45 ms, +9.6 percent, 66 to 61 fps.** The spread inside each side is under 1 ms, so the difference is real; it puts the scene
+  at the edge of 60 fps (16.67 ms).
+- **RTX 3090: not usable.** The same runs gave 7.4, 3.9, 6.3 ms before and 5.2, 9.3, 4.6 after (an earlier single run of the new exe gave 3.3), the order of the pairs mattering more than the exe: the card's clocks were not steady. No claim is made for it.
+- Not known: which part costs the 1.45 ms (the extra fetches of the specular and normal arrays, the frame solve in `picture_bump` with its derivatives, or the fourth bind group). Not measured: other views (looking at stone and dirt, a night with lamps), the moving camera and sun
+  (the cached shadow work is the same in both exes).
