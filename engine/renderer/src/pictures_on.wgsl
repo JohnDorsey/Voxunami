@@ -213,6 +213,11 @@ fn picture_bump(in: VertexOutput) -> vec4<f32> {
     // The blue byte is the share of the ambient light that gets to the pixel, faded in with the picture like the tilt.
     let open = mix(1.0, texel.b, share);
     var tilt = (texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0);
+    // A pixel that does not tilt the face (the stand-in of a picture with no normal companion, which is most of what is drawn, and a flat pixel of one that has) leaves it as it is:
+    // the frame below would only find the face's own normal again.
+    if (all(tilt == vec2<f32>(0.0))) {
+        return vec4<f32>(0.0, 0.0, 0.0, open);
+    }
     let steepness = dot(tilt, tilt);
     if (steepness > 1.0) {
         tilt = tilt * inverseSqrt(steepness);
