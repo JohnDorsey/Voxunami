@@ -576,21 +576,15 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // A face that looks away from the sun, on a pixel that lets light through: the sun's light that reaches the far side of the block (where the ray leaves its slab, one
         // voxel thick along the face's normal), by the horizon and the terrain's shadow as for any place. The place is on the far face, not past it: the sun's maps keep the
         // backs of things, so a place on the face of a block against that side (stone over leaves) is behind that block's back and in its shadow, where one inside it would not
-        // be. (Only the pixels that scatter and look away pay for the second lookup.)
+        // be. (Only the pixels that scatter and look away pay for the second lookup, and it is the shadow map's alone: the walk of the sun's ray, which closes the map's gap at a
+        // contact, is not run for it, since the place is in the open on the far face, and it cost +1.0 ms on the integrated GPU in a view full of leaves for no change in any test.)
         var sun_behind = 0.0;
         let looks_away = -dot(light.normal, frame.sun_direction.xyz);
         if (material.subsurface > 0.0 && looks_away > 0.0) {
             sun_behind = light.visible;
             if (frame.shadow.x > 0.5) {
-                var far_side = shadow_face;
-                far_side.relative = shadow_face.relative + frame.sun_direction.xyz * min(1.0 / looks_away, SCATTER_MOST_THICKNESS);
-                // (Seen from the far side the face looks at the sun, as the walk wants.)
-                far_side.normal = -light.normal;
-                var through = terrain_light(far_side.relative, distance);
-                if (through > 0.0) {
-                    through = through * contact_light(far_side, distance);
-                }
-                sun_behind = sun_behind * through;
+                let far_side = shadow_face.relative + frame.sun_direction.xyz * min(1.0 / looks_away, SCATTER_MOST_THICKNESS);
+                sun_behind = sun_behind * terrain_light(far_side, distance);
             }
         }
         surface.sun_behind = sun_behind;
