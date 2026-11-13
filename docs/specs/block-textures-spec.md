@@ -462,5 +462,9 @@ view is grass, so almost every pixel pays for the pictures and the bump, the wor
 - **Integrated AMD GPU, three alternating pairs: 14.48, 15.21, 15.47 ms before (mean 15.05) and 16.48, 16.64, 16.37 after (mean 16.50): +1.45 ms, +9.6 percent, 66 to 61 fps.** The spread inside each side is under 1 ms, so the difference is real; it puts the scene
   at the edge of 60 fps (16.67 ms).
 - **RTX 3090: not usable.** The same runs gave 7.4, 3.9, 6.3 ms before and 5.2, 9.3, 4.6 after (an earlier single run of the new exe gave 3.3), the order of the pairs mattering more than the exe: the card's clocks were not steady. No claim is made for it.
-- Not known: which part costs the 1.45 ms (the extra fetches of the specular and normal arrays, the frame solve in `picture_bump` with its derivatives, or the fourth bind group). Not measured: other views (looking at stone and dirt, a night with lamps), the moving camera and sun
+- **Where it goes (bisected the next day, integrated GPU, four rounds of four exes alternating, the same view; each number is the mean of the four, every round agreeing within 0.1 ms).** Two temporary builds of `0060f97` with a function of
+  `pictures_on.wgsl` made to return at once (the file restored after; the tree was clean): `picture_bump` returning zero, and that plus `picture_emission` returning zero (the bindings and the group stay, the fetches go).
+  Before companions 14.29 ms; no bump and no emission 14.38 (**+0.09: the fourth bind group and the layouts**); no bump 14.67 (**+0.29 more: the specular fetch for emission**); everything 15.41 (**+0.74 more: the bump, the normal fetch and the frame solve**). Total +1.12 ms
+  (+7.8 percent): less than the +1.45 of the first measurement on a different hour, so the cost moves by a few tenths with the machine's state, and the shares are the better result. Not split further: the normal fetch against the
+  maths of the frame (a third build with the fetch alone would do it). Not measured: other views (looking at stone and dirt, a night with lamps), the moving camera and sun
   (the cached shadow work is the same in both exes).
