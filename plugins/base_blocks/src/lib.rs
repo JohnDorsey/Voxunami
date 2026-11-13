@@ -137,7 +137,7 @@ const BLOCK_FILES: [(&str, &str); 10] = [
 /// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
 /// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name, and the companions of a picture (`dirt_n` is the normal picture of `dirt`: a
 /// file ending `_s` is a specular picture and one ending `_n` a normal one, `docs/specs/block-textures-spec.md` section 4.4) beside the picture they go with.
-const TEXTURE_FILES: [(&str, &[u8]); 13] = [
+const TEXTURE_FILES: [(&str, &[u8]); 15] = [
     ("grass", include_bytes!("../textures/grass.png")),
     ("dirt", include_bytes!("../textures/dirt.png")),
     // (Noise, made by `textures/make_dirt_normals.py`: bumps in the sun's light.)
@@ -147,8 +147,12 @@ const TEXTURE_FILES: [(&str, &[u8]); 13] = [
     ("log_top", include_bytes!("../textures/log_top.png")),
     ("log_side", include_bytes!("../textures/log_side.png")),
     ("leaves", include_bytes!("../textures/leaves.png")),
+    // (Placeholders, made by `textures/make_placeholder_specular.py` from the pictures: the leaves let the sun through, by how thin each pixel looks.)
+    ("leaves_s", include_bytes!("../textures/leaves_s.png")),
     ("glass", include_bytes!("../textures/glass.png")),
     ("lamp", include_bytes!("../textures/lamp.png")),
+    // (A placeholder, from the same script: the lamp's bright pixels shine by themselves.)
+    ("lamp_s", include_bytes!("../textures/lamp_s.png")),
     (
         "dev_docking_port_top",
         include_bytes!("../textures/dev_docking_port_top.png"),
@@ -495,6 +499,79 @@ mod tests {
                 used.iter().any(|id| id == picture),
                 "{companion} goes with {picture}, which no block uses"
             );
+        }
+    }
+
+    /// The placeholder specular pictures (`textures/make_placeholder_specular.py`): the lamp shines where its picture is bright and the leaves let the sun through. They set no
+    /// smoothness and no reflectance (no glint), the lamp has no scatter and the leaves no emission, so that each says one thing.
+    #[test]
+    fn the_lamp_shines_where_its_picture_is_bright_and_the_leaves_let_the_sun_through() {
+        let tile = |name: &str| {
+            let texture = textures()
+                .into_iter()
+                .find(|texture| texture.id.name() == name)
+                .unwrap_or_else(|| panic!("no picture {name}"));
+            data_packs::Tile::from_png(name, &texture.bytes).expect("the picture reads")
+        };
+        let brightness = |pixel: &[u8]| {
+            0.2126 * f64::from(pixel[0])
+                + 0.7152 * f64::from(pixel[1])
+                + 0.0722 * f64::from(pixel[2])
+        };
+        let (lamp, glow) = (tile("lamp"), tile("lamp_s"));
+        assert_eq!(glow.size(), lamp.size());
+        let pairs: Vec<(f64, u8)> = lamp
+            .rgba()
+            .chunks(4)
+            .zip(glow.rgba().chunks(4))
+            .map(|(colour, specular)| {
+                assert_eq!(
+                    specular[..3],
+                    [0, 0, 0],
+                    "the lamp's glow has no glint and no scatter"
+                );
+                (brightness(colour), specular[3])
+            })
+            .collect();
+        // The dim rim does not shine at all, the bright middle shines wholly (254 is all of it; 255 would be none), and a brighter pixel never shines less than a dimmer one.
+        assert!(
+            pairs
+                .iter()
+                .any(|&(bright, glow)| bright < 190.0 && glow == 0)
+        );
+        assert!(
+            pairs
+                .iter()
+                .all(|&(bright, glow)| bright >= 190.0 || glow == 0)
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|&(bright, glow)| bright >= 240.0 && glow == 254)
+        );
+        assert!(
+            pairs
+                .iter()
+                .all(|&(bright, glow)| bright < 240.0 || glow == 254)
+        );
+        assert!(pairs.iter().all(|&(_, glow)| glow != 255));
+        for &(bright, glow) in &pairs {
+            for &(other_bright, other_glow) in &pairs {
+                assert!(bright > other_bright || glow <= other_glow || bright == other_bright);
+            }
+        }
+        // The leaves: every pixel, the holes too (so that the smaller levels keep it), has a blue byte of scatter (from 65: below it is porosity); a leaf lets through at least 0.55;
+        // there is no emission, glint or smoothness.
+        let (leaves, scatter) = (tile("leaves"), tile("leaves_s"));
+        assert_eq!(scatter.size(), leaves.size());
+        for (colour, specular) in leaves.rgba().chunks(4).zip(scatter.rgba().chunks(4)) {
+            assert_eq!([specular[0], specular[1], specular[3]], [0, 0, 0]);
+            let share = (f64::from(specular[2]) - 64.0) / 191.0;
+            assert!(share > 0.0, "a pixel lets nothing through: {specular:?}");
+            if colour[3] > 0 {
+                // (0.55 of the 191 steps above 64 is 105.05, which the script rounds to 105: a byte of 169.)
+                assert!(specular[2] >= 169, "a leaf pixel scatters {share:.3}");
+            }
         }
     }
 

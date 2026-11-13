@@ -96,6 +96,8 @@ pub(super) struct Scene<'a> {
     pub(super) sun_light: u8,
     pub(super) sky_light: u8,
     pub(super) ambient_light: u8,
+    /// Other blocks of the same kind as the one looked at (local positions in its brick), which are in the sun's way, or are not.
+    pub(super) blockers: &'a [[u8; 3]],
 }
 
 impl<'a> Scene<'a> {
@@ -111,6 +113,7 @@ impl<'a> Scene<'a> {
             sun_light: 255,
             sky_light: 0,
             ambient_light: 0,
+            blockers: &[],
         }
     }
 
@@ -130,17 +133,19 @@ impl<'a> Scene<'a> {
             }],
         );
         renderer.set_picture_distance(self.picture_distance);
-        place_blocks_in(
-            &mut renderer,
-            &table,
-            ORIGIN_BRICK,
-            &[([16, 16, 16], 1, 0)],
-            Some(0),
-        );
+        let blocks: Vec<([u8; 3], u32, u32)> = std::iter::once([16, 16, 16])
+            .chain(self.blockers.iter().copied())
+            .map(|place| (place, 1, 0))
+            .collect();
+        place_blocks_in(&mut renderer, &table, ORIGIN_BRICK, &blocks, Some(0));
         if self.traced {
             renderer.set_occupancy(
                 ORIGIN_BRICK,
-                &occupancy_where(|x, y, z| [x, y, z] == [16, 16, 16]),
+                &occupancy_where(|x, y, z| {
+                    blocks
+                        .iter()
+                        .any(|(place, _, _)| place.map(usize::from) == [x, y, z])
+                }),
             );
         }
         renderer.set_atmosphere(Atmosphere {

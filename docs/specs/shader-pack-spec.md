@@ -27,6 +27,8 @@ struct Surface {
     metal: f32,             // 1 where the green byte is 230 or more (it throws back its own colour), else 0
     shading_normal: vec3<f32>, // `normal` tilted by the picture's normal companion (a unit vector; the same as `normal` where there is none): for the sun's light alone
     ambient_occlusion: f32,    // the share of the ambient light (lamps, ambient, sky) that reaches the pixel past the normal picture's blue (0 to 1; 1 where there is none)
+    subsurface: f32,           // how much of the sun's light the pixel lets through from the far side of its block, 0 to 1 (the blue byte of the specular companion from 65: `(byte - 64) / 191`; 0 where it has none)
+    sun_behind: f32,           // for a face that looks away from the sun on such a pixel: the share of the sun that reaches the far side of the block (horizon and terrain's shadow), else 0
 }
 fn pack_shade(s: Surface) -> vec3<f32>
 ```

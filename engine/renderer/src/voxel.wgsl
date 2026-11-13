@@ -88,7 +88,24 @@ struct Surface {
     // The share of the ambient light that reaches the pixel, past the picture's ambient occlusion (0 to 1; 1 where the picture has none, or none is drawn): the light of the lamps
     // and the ambient light, and the sky's, are cut to it in a pack that looks; the sun's is not (it has a direction, and the shadow is the engine's).
     ambient_occlusion: f32,
+    // How much of the sun's light the pixel lets through from the far side of its block (0 to 1; from the blue byte of the picture's specular companion, 0 where it has none), and
+    // the share of the sun's light that reaches the far side of the block: the horizon and the terrain's shadow, looked up past the block, for a face that looks away from the
+    // sun (0 for one that looks at it, and wherever `subsurface` is 0). A pack that does not look has no scattered light.
+    subsurface: f32,
+    sun_behind: f32,
 }
+
+// What the picture's specular companion says of a pixel (`picture_material`, in `pictures_on.wgsl` and `pictures_off.wgsl`), each 0 to 1 and faded out with the picture.
+struct PictureMaterial {
+    smoothness: f32,
+    reflectance: f32,
+    metal: f32,
+    emission: f32,
+    subsurface: f32,
+}
+
+// The most a block's thickness along the sun's ray is taken to be (voxels): a face the sun grazes scatters next to nothing, by the cosine, however far the ray goes.
+const SCATTER_MOST_THICKNESS: f32 = 4.0;
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
 const AVATAR_BASE: u32 = 0xFFFFF0u;
@@ -489,7 +506,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // What the specular picture says of the pixel: how smooth, how reflective, whether a metal, and how much it shines by itself (`picture_material` is in the same two files;
     // it takes derivatives too).
     let material = picture_material(in);
-    let emission = material.w;
+    let emission = material.emission;
     // How much the picture's bumps tilt the normal, and how much of the ambient light its occlusion lets through (`picture_bump`, in the same two files; it takes derivatives too).
     let bump_and_occlusion = picture_bump(in);
     let bump = bump_and_occlusion.xyz;
@@ -517,11 +534,13 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.sky_visible = 1.0;
     surface.uncovered = 1.0;
     surface.emission = emission;
-    surface.smoothness = material.x;
-    surface.reflectance = material.y;
-    surface.metal = material.z;
+    surface.smoothness = material.smoothness;
+    surface.reflectance = material.reflectance;
+    surface.metal = material.metal;
     surface.shading_normal = tilted_normal(in.normal, bump);
     surface.ambient_occlusion = bump_and_occlusion.w;
+    surface.subsurface = material.subsurface;
+    surface.sun_behind = 0.0;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
@@ -554,6 +573,27 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             uncovered = mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
             sky_visible = sky_visible * uncovered;
         }
+        // A face that looks away from the sun, on a pixel that lets light through: the sun's light that reaches the far side of the block (where the ray leaves its slab, one
+        // voxel thick along the face's normal), by the horizon and the terrain's shadow as for any place. The place is on the far face, not past it: the sun's maps keep the
+        // backs of things, so a place on the face of a block against that side (stone over leaves) is behind that block's back and in its shadow, where one inside it would not
+        // be. (Only the pixels that scatter and look away pay for the second lookup.)
+        var sun_behind = 0.0;
+        let looks_away = -dot(light.normal, frame.sun_direction.xyz);
+        if (material.subsurface > 0.0 && looks_away > 0.0) {
+            sun_behind = light.visible;
+            if (frame.shadow.x > 0.5) {
+                var far_side = shadow_face;
+                far_side.relative = shadow_face.relative + frame.sun_direction.xyz * min(1.0 / looks_away, SCATTER_MOST_THICKNESS);
+                // (Seen from the far side the face looks at the sun, as the walk wants.)
+                far_side.normal = -light.normal;
+                var through = terrain_light(far_side.relative, distance);
+                if (through > 0.0) {
+                    through = through * contact_light(far_side, distance);
+                }
+                sun_behind = sun_behind * through;
+            }
+        }
+        surface.sun_behind = sun_behind;
         surface.normal = light.normal;
         surface.shading_normal = tilted_normal(light.normal, bump);
         surface.above_horizon = light.visible;

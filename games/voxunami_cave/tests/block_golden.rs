@@ -40,10 +40,11 @@ fn cave_numbers_its_blocks_as_it_always_did() {
     );
 }
 
-/// Dirt's bumps (2026-11-12): the package a client is sent, as the client reads it, has exactly one companion picture, a normal picture of the size of Cave's pictures (16 pixels
-/// across, which `dirt_n.png` is), and none of the other kind.
+/// Dirt's bumps (2026-11-12) and the placeholder specular pictures of the lamp and the leaves (2026-11-13): the package a client is sent, as the client reads it, has exactly three
+/// companion pictures, each of the size of Cave's pictures (16 pixels across): one normal picture (`dirt_n.png`) and two specular ones (`lamp_s.png`, `leaves_s.png`).
 #[test]
-fn the_package_cave_sends_carries_dirts_normal_picture_and_no_other_companion() {
+fn the_package_cave_sends_carries_dirts_normal_picture_and_the_lamps_and_leaves_specular_ones_and_no_other_companion()
+ {
     let sent = CaveContent::new().package_data().encode();
     let received = game_shell::PackageData::decode(&sent).expect("the package reads back");
     let companions = |kind: fn(&data_packs::Tile) -> Option<&[u8]>| {
@@ -59,7 +60,10 @@ fn the_package_cave_sends_carries_dirts_normal_picture_and_no_other_companion() 
         companions(data_packs::Tile::normal),
         [(16, Some(16 * 16 * 4))]
     );
-    assert_eq!(companions(data_packs::Tile::specular), []);
+    assert_eq!(
+        companions(data_packs::Tile::specular),
+        [(16, Some(16 * 16 * 4)), (16, Some(16 * 16 * 4))]
+    );
 }
 
 #[test]
@@ -96,7 +100,9 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// flag byte of dirt's picture was there already).
 /// Ambient occlusion (2026-11-13): the blue of `dirt_n.png` is 128 to 255 (its pits) and no longer 255 everywhere, so the length is the same (predicted, and seen) and the hash moved.
 /// The lamp's picture (2026-11-13): `lamp.png`, 16 by 16, is now the lamp's texture, so the package is 1,048 bytes longer, 16,073 to 17,121 (1,024 of them the pixels; the other 24 are the picture's name and its entry, worked out by neither of us and not itemised), the lamp's faces are pictures (6 faces by 4 shades: 24 more materials, 319 to 343 colours) and every block after it has faces numbered 24 higher.
-const PINNED_PACKAGE: (usize, u64) = (17121, 1_528_354_451_615_015_034);
+/// The placeholder specular pictures (2026-11-13): `lamp_s.png` and `leaves_s.png`, 16 by 16 of four bytes each, so the package is 2,048 bytes longer, 17,121 to 19,169 (predicted before
+/// the run, and seen: the flag byte of each picture was there already); the table is the same (a companion makes no material), and the hash moved.
+const PINNED_PACKAGE: (usize, u64) = (19169, 2_715_168_694_325_898_240);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block

@@ -46,6 +46,8 @@ mod glints;
 mod occlusion;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
 mod pixelated_shadows;
+#[path = "gpu_rendering/scatter.rs"]
+mod scatter;
 #[path = "gpu_rendering/shader_packs.rs"]
 mod shader_packs;
 
