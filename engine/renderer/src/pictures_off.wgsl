@@ -11,9 +11,9 @@ fn picture_emission(in: VertexOutput) -> f32 {
     return 0.0;
 }
 
-// How much the normal picture tilts the face's normal: none (there are no pictures, so no normal pictures to tilt it).
-fn picture_bump(in: VertexOutput) -> vec3<f32> {
-    return vec3<f32>(0.0);
+// How much the normal picture tilts the face's normal, and how much of the ambient light gets to the pixel: no tilt and all of it (there are no pictures, so no normal pictures).
+fn picture_bump(in: VertexOutput) -> vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 
 // Where the shadow of the face is looked up: where the pixel is (there are no pictures to be wholly in the light or in the shade).

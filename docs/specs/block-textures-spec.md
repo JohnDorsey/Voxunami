@@ -135,7 +135,7 @@ The pixels are **data, not colours**: they are read as the file has them (an alp
 | `_s` | blue | porosity or subsurface scattering | not yet |
 | `_s` | alpha | **emission**: 0 to 254 is none to all, **255 is none** | **yes** |
 | `_n` | red, green | the normal's x and y (z is worked out) | **yes** |
-| `_n` | blue | ambient occlusion | not yet |
+| `_n` | blue | ambient occlusion | **yes** |
 | `_n` | alpha | height | not yet |
 
 The loader turns an emission of 255 into 0 before the GPU is given the picture, so that the average of four pixels is the average of their emission.
@@ -150,7 +150,7 @@ directions along the face in which the picture's coordinates grow, found from ho
 left flat). **The tilted normal is for the sun's light alone**: the engine adds `tilted - normal`, faded out with the picture over the same band, to the normal the sun's light is the cosine of, and gives a pack the sum as
 `Surface::shading_normal` (the same as `normal` where there is no picture or no companion); the shadow, the sides of a block the sun reaches, the sky's light and the lamps' light keep the face's own normal, so a bump never lets
 the sun through a wall and shows **only in direct sun** (the lamps' light and the sky's have no direction to be bumped by). Smaller levels of the picture are the plain average of four tilts, a smaller tilt: from far off
-the bumps add up to a flatter face. The ambient occlusion and the height are carried and not read.
+the bumps add up to a flatter face. The height is carried and not read. **Ambient occlusion** (the blue byte, 255 for none): the share of the ambient light that reaches a pixel, faded in with the picture like the tilt; the default pack cuts the lamps' light, the ambient light and the sky's by it, and not the sun's.
 
 **On the wire** each picture is a byte of flags (bit 0: a specular picture follows the pixels, bit 1: a normal picture follows that) and then the pixels, the specular and then the normal; the 8 MiB limit counts the
 companions. **On the GPU** the companions are arrays for each size, with the layers of the pictures, in the fourth bind group (the specular ones at bindings 0 to 3, the normal ones at 4 to 7; only the pipelines that draw pictures have it
@@ -456,6 +456,13 @@ step, which carries the companions and reads one channel of one of them.
   the picture distance all leave the face as it was; the mips (block_textures.rs: opposite tilts average to flat); `picture_sizes` (view.rs); and Cave's package carries exactly dirt's normal picture and no other companion (`block_golden.rs`).
 - **Not done:** the look under a real sun on a planet is judged from one picture of flat dirt under a low and a high sun (shown to the owner in the session, not kept), not played; bumps on slopes of terrain, ships and coarse levels were not looked at (coarse levels have no pictures); the cost on the integrated GPU is measured below (+1.45 ms)
   (one more texture fetch a pixel within the picture distance, four more bindings in the pipelines with pictures); `check-pack` lines for companions.
+
+**Companion pictures, step 3: ambient occlusion (2026-11-13; section 4.4).**
+- The blue of a normal picture is read by the code that reads its red and green: `picture_bump` returns the bump and, as a fourth part, the share of the ambient light that gets to the pixel (`mix(1, blue, share)`, so that it fades in with the picture; 1 where there is no picture, none is drawn, or the face is edge on and the tilt is left out, which still gets its occlusion). It is one fetch for both, so the step adds no fetch. `Surface::ambient_occlusion`; the default pack makes `shaded` (`side * (lamp + sky * (1 - lamp))`) of it and leaves the sun's light alone.
+- The art: `make_dirt_normals.py` now writes the blue of `dirt_n.png`: 255 less up to half of it in the pits of the height field (by the square of how far under the top a pixel is): 128 to 255, 218 on average (so about 15 percent less ambient light on dirt, in the pictures at least; the strength is `DEEPEST_OCCLUSION`, **a first guess for the owner to judge**).
+- The pins: Cave's package has the same length and a new hash, the golden session's stream the same length and a new hash, the saved world's hash the same.
+- Tests (`occlusion.rs`, on every adapter): a face with the same blue everywhere is lit by the share (64, 128 and 192 of 255) of what an open one is in the ambient light alone and in the sky's alone, and by the same in the sun's (to 0.5 percent); the same in the shader that walks the sun's ray (the sun behind the face, as the walk is drawn only where there is a sun); and none beyond the picture distance or on a picture with no normal companion. They failed before the shader changed (1.000 against 0.251).
+- **Not done:** the cost is not measured (it should be nothing: the fetch is the bump's own); the look in a cave or by lamplight is not seen; occlusion on the lamp's light is cut as on the ambient light (a lamp's light is baked into the same number by the mesher, and cannot be told from it); the height; `check-pack` lines.
 
 **Cost of companion pictures, measured (2026-11-12).** Release exes of `e5aff3a` (before companions) and `0060f97` (specular, bumps, group 3), run alternately, `cave --benchmark --size 1280x720 --pitch -50` from the default start (nearly all of the
 view is grass, so almost every pixel pays for the pictures and the bump, the worst case within the picture distance; grass has no normal picture, so its pixels read the no-tilt stand-in).

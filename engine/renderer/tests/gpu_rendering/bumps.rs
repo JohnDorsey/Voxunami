@@ -9,7 +9,7 @@ use super::contact_trace::occupancy_where;
 use super::emission::{table, white_picture};
 use super::*;
 
-const PICTURE_PIXELS: usize = 8;
+pub(super) const PICTURE_PIXELS: usize = 8;
 /// The byte of a normal picture that is no tilt in that direction (the one `NO_NORMAL` is made of): 0 is -1 and 255 is 1 on either side of it.
 const FLAT: i32 = 128;
 /// How far from `FLAT` the tilted pictures go: a tilt of 38/127, about 0.3 (17 degrees).
@@ -19,16 +19,16 @@ const FLAT_COSINE: f64 = 0.6;
 
 /// A face of the block, and a camera that looks at it straight on from outside: the face's normal, and the directions of the picture's right and of its top as they are in the
 /// world (the picture is seen upright and the right way round from outside: `a_face_with_a_picture_shows_it_upright_and_the_right_way_round_from_outside_on_a_side_and_on_top`).
-struct Face {
-    name: &'static str,
-    camera: [f64; 3],
-    aim: [f64; 3],
-    normal: [f64; 3],
-    right: [f64; 3],
-    up: [f64; 3],
+pub(super) struct Face {
+    pub(super) name: &'static str,
+    pub(super) camera: [f64; 3],
+    pub(super) aim: [f64; 3],
+    pub(super) normal: [f64; 3],
+    pub(super) right: [f64; 3],
+    pub(super) up: [f64; 3],
 }
 
-const PLUS_Z: Face = Face {
+pub(super) const PLUS_Z: Face = Face {
     name: "+z",
     camera: [16.5, 16.5, 30.0],
     aim: [16.5, 16.5, 17.0],
@@ -62,6 +62,13 @@ fn tilted(right: i32, up: i32) -> Vec<u8> {
         .collect()
 }
 
+/// A normal picture with no tilt and the ambient occlusion byte `occlusion` (LabPBR's blue: 255 is nothing in the way of the ambient light, 0 is all of it) everywhere.
+pub(super) fn occluded(occlusion: u8) -> Vec<u8> {
+    (0..PICTURE_PIXELS * PICTURE_PIXELS)
+        .flat_map(|_| [FLAT as u8, FLAT as u8, occlusion, 255])
+        .collect()
+}
+
 fn scaled(vector: [f64; 3], by: f64) -> [f64; 3] {
     vector.map(|part| part * by)
 }
@@ -77,28 +84,35 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// One picture to take: a face of the block with the normal picture `normal` (or none), in the light of a sun in direction `sun`, with the pictures drawn up to
 /// `picture_distance`, and with the shader that walks the sun's ray (and the shadows on) or without it.
 #[derive(Clone, Copy)]
-struct Scene<'a> {
-    face: &'a Face,
-    normal: Option<&'a [u8]>,
-    sun: [f64; 3],
-    picture_distance: f32,
-    traced: bool,
+pub(super) struct Scene<'a> {
+    pub(super) face: &'a Face,
+    pub(super) normal: Option<&'a [u8]>,
+    pub(super) sun: [f64; 3],
+    pub(super) picture_distance: f32,
+    pub(super) traced: bool,
+    /// The lights of the atmosphere, 0 to 255: the sun's, the sky's and the ambient light's.
+    pub(super) sun_light: u8,
+    pub(super) sky_light: u8,
+    pub(super) ambient_light: u8,
 }
 
 impl<'a> Scene<'a> {
-    /// The scene with the pictures drawn far (100 voxels) and the walk of the sun's ray off.
-    fn new(face: &'a Face, normal: Option<&'a [u8]>, sun: [f64; 3]) -> Self {
+    /// The scene with the pictures drawn far (100 voxels), the walk of the sun's ray off, and the sun the only light.
+    pub(super) fn new(face: &'a Face, normal: Option<&'a [u8]>, sun: [f64; 3]) -> Self {
         Scene {
             face,
             normal,
             sun,
             picture_distance: 100.0,
             traced: false,
+            sun_light: 255,
+            sky_light: 0,
+            ambient_light: 0,
         }
     }
 
     /// The brightness of the face in the middle of the picture of the scene, on the adapter `name`; `what` names the saved picture.
-    fn brightness(&self, context: &GraphicsContext, name: &str, what: &str) -> f64 {
+    pub(super) fn brightness(&self, context: &GraphicsContext, name: &str, what: &str) -> f64 {
         let table = table();
         let mut renderer = new_renderer(context);
         let picture = white_picture();
@@ -128,8 +142,9 @@ impl<'a> Scene<'a> {
         }
         renderer.set_atmosphere(Atmosphere {
             sun_direction: self.sun.map(|part| part as f32),
-            sun_light: 255,
-            sky_light: 0,
+            sun_light: self.sun_light,
+            sky_light: self.sky_light,
+            ambient_light: self.ambient_light,
             shadows: self.traced,
             ..Atmosphere::default()
         });
@@ -180,7 +195,7 @@ fn cases(face: &Face) -> Vec<(&'static str, [f64; 3], i32, i32, i32)> {
     ]
 }
 
-fn sun_of(face: &Face, toward: [f64; 3]) -> [f64; 3] {
+pub(super) fn sun_of(face: &Face, toward: [f64; 3]) -> [f64; 3] {
     sum(scaled(face.normal, FLAT_COSINE), scaled(toward, 0.8))
 }
 

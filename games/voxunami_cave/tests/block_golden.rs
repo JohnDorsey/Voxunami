@@ -94,7 +94,8 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// believe and did not count separately; the stream below grew by the same 11, and the saved world's hash did not move).
 /// Bumps (2026-11-12): dirt has a normal picture, `dirt_n.png`, 16 by 16 of four bytes, so the package is 1,024 bytes longer, 15,049 to 16,073 (worked out before the run, and seen; the
 /// flag byte of dirt's picture was there already).
-const PINNED_PACKAGE: (usize, u64) = (16073, 7_358_420_615_203_573_492);
+/// Ambient occlusion (2026-11-13): the blue of `dirt_n.png` is 128 to 255 (its pits) and no longer 255 everywhere, so the length is the same (predicted, and seen) and the hash moved.
+const PINNED_PACKAGE: (usize, u64) = (16073, 17_508_484_886_644_095_798);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block

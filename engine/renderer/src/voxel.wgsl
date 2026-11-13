@@ -80,6 +80,9 @@ struct Surface {
     // sun is the cosine of this one, where it is the cosine of `normal` for a pack that does not look: the tilt is for the sun's light alone (it has a direction; the lamps'
     // light and the sky's have none), and the shadow is the face's own.
     shading_normal: vec3<f32>,
+    // The share of the ambient light that reaches the pixel, past the picture's ambient occlusion (0 to 1; 1 where the picture has none, or none is drawn): the light of the lamps
+    // and the ambient light, and the sky's, are cut to it in a pack that looks; the sun's is not (it has a direction, and the shadow is the engine's).
+    ambient_occlusion: f32,
 }
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
@@ -480,8 +483,9 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     shadow_face.relative = pixelated_place(in);
     // How much of the pixel shines by itself (`picture_emission` is in the same two files; it takes derivatives too).
     let emission = picture_emission(in);
-    // How much the picture's bumps tilt the normal (`picture_bump`, in the same two files; it takes derivatives too).
-    let bump = picture_bump(in);
+    // How much the picture's bumps tilt the normal, and how much of the ambient light its occlusion lets through (`picture_bump`, in the same two files; it takes derivatives too).
+    let bump_and_occlusion = picture_bump(in);
+    let bump = bump_and_occlusion.xyz;
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
@@ -507,6 +511,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.uncovered = 1.0;
     surface.emission = emission;
     surface.shading_normal = tilted_normal(in.normal, bump);
+    surface.ambient_occlusion = bump_and_occlusion.w;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.

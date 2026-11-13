@@ -4,7 +4,7 @@ The picture is 16 by 16 like dirt.png and tiles without a seam. Run it from this
 splitmix64 from a fixed seed, and no library does any of the arithmetic but the writing of the file).
 
 The channels are LabPBR's: red and green are the normal's x (to the right in the picture) and y (toward its top) as 128 plus or minus 127 for a tilt of 1 either way, blue is
-the ambient occlusion (255: none) and alpha is the height (0 to 255).
+the ambient occlusion (255: none; here the lower the height the darker, by a square so that only the pits are dark) and alpha is the height (0 to 255).
 """
 
 import math
@@ -16,6 +16,8 @@ SEED = 20261112
 # How steep the steepest pixel is allowed to be (a tilt of 1 is a normal lying along the face), and the tilt a pixel's neighbours' height difference makes.
 LARGEST_TILT = 0.6
 STRENGTH = 1.6
+# How much of the ambient light the lowest pixel loses (0.5: half): the pits of the height field are crevices, and the light of the sky reaches the bottom of them less.
+DEEPEST_OCCLUSION = 0.5
 
 
 def splitmix64(state):
@@ -76,7 +78,8 @@ def main():
                 tilt_y *= LARGEST_TILT / steepness
             red = round(128 + 127 * tilt_x)
             green = round(128 + 127 * tilt_y)
-            image.putpixel((x, y), (red, green, 255, round(255 * heights[y][x])))
+            open_share = 1.0 - DEEPEST_OCCLUSION * (1.0 - heights[y][x]) ** 2
+            image.putpixel((x, y), (red, green, round(255 * open_share), round(255 * heights[y][x])))
     image.save("dirt_n.png")
 
 

@@ -23,6 +23,7 @@ struct Surface {
     uncovered: f32,         // the share of the sky's light that reaches the place past what is over it, 0 to 1
     emission: f32,          // how much of the pixel shines by itself, 0 to 1 (the alpha of the picture's specular companion; 0 where it has none)
     shading_normal: vec3<f32>, // `normal` tilted by the picture's normal companion (a unit vector; the same as `normal` where there is none): for the sun's light alone
+    ambient_occlusion: f32,    // the share of the ambient light (lamps, ambient, sky) that reaches the pixel past the normal picture's blue (0 to 1; 1 where there is none)
 }
 fn pack_shade(s: Surface) -> vec3<f32>
 ```

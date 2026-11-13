@@ -390,8 +390,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Bumps (2026-11-12): dirt has a normal picture, so the package grew by 1,024 bytes (`block_golden.rs`) and the stream by 1,025, 7,218,019 to 7,219,044, predicted as 1,024 and seen as 1,025. **Believed, not
 /// measured:** the extra byte is the length of the welcome frame, a LEB128 number, taking a third byte as the frame passes 16,383 (the package alone is 16,073, and the frame has the rest of the welcome
 /// round it; an earlier note above says the same of a package that grew). The saved world's hash did not move. Windows only.
+/// Ambient occlusion (2026-11-13): the stream's hash moved to 1_351_320_025_595_871_517 and nothing else did (the length 7,219,044 and the saved world are the same: only the blue of dirt's normal picture changed, in the package at the start of the stream).
 const PINNED: (u64, usize, u64) = (
-    6_612_432_898_614_918_854,
+    1_351_320_025_595_871_517,
     7_219_044,
     15_594_210_036_057_493_535,
 );

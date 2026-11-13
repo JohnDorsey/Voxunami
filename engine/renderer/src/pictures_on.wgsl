@@ -191,20 +191,22 @@ fn picture_emission(in: VertexOutput) -> f32 {
 // The picture is LabPBR's: red and green are the normal's x and y (to the right in the picture and toward its top) as 128 plus or minus 127 for a tilt of 1 either way, and the
 // part along the face is what makes the length 1. Which way is right and up in the world is found from how the picture's coordinates and the place change across the screen,
 // so that it holds on every face and on a ship turned any way.
-fn picture_bump(in: VertexOutput) -> vec3<f32> {
+fn picture_bump(in: VertexOutput) -> vec4<f32> {
     // (These are taken before anything branches, as in `picture_albedo`.)
     let uv_across = dpdx(in.uv);
     let uv_down = dpdy(in.uv);
     let place_across = dpdx(in.relative);
     let place_down = dpdy(in.relative);
     if (in.picture == 0u || frame.pictures.y <= 0.0) {
-        return vec3<f32>(0.0);
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let share = picture_share(in.relative);
     if (share <= 0.0) {
-        return vec3<f32>(0.0);
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let texel = sample_normal(in.picture, in.uv, uv_across, uv_down);
+    // The blue byte is the share of the ambient light that gets to the pixel, faded in with the picture like the tilt.
+    let open = mix(1.0, texel.b, share);
     var tilt = (texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0);
     let steepness = dot(tilt, tilt);
     if (steepness > 1.0) {
@@ -218,7 +220,7 @@ fn picture_bump(in: VertexOutput) -> vec3<f32> {
     // on the equations have no good solution, and the face is left as it is.
     let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
     if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
-        return vec3<f32>(0.0);
+        return vec4<f32>(0.0, 0.0, 0.0, open);
     }
     let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
     let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
@@ -226,7 +228,7 @@ fn picture_bump(in: VertexOutput) -> vec3<f32> {
     let right = normalize(along_right - normal * dot(along_right, normal));
     let up = -normalize(along_down - normal * dot(along_down, normal));
     let tilted = normalize(right * tilt.x + up * tilt.y + normal * out_of_the_face);
-    return (tilted - normal) * share;
+    return vec4<f32>((tilted - normal) * share, open);
 }
 
 // ---- The shadow maps of blocks that cut holes: what leaves and glass hide of the sun is what their pictures are not clear of. ----
