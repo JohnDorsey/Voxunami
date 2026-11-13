@@ -1980,8 +1980,8 @@ mod tests {
                 }
             }
             // Beyond the scales there are none: nothing is stored at a scale a scheme does not have.
-            for scale in scheme.scales()..MAXIMUM_SCALES {
-                assert!(world.words[scale].is_empty());
+            for words in &world.words[scheme.scales()..] {
+                assert!(words.is_empty());
             }
         }
     }

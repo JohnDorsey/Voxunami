@@ -23,7 +23,6 @@ grid_bodies = { path = "engine/grid_bodies" }
 grid_lifecycle = { path = "engine/grid_lifecycle" }
 identity = { path = "engine/identity" }
 lattice = { path = "engine/lattice" }
-end_to_end_tests = { path = "engine/end_to_end_tests" }
 namespaced_id = { path = "engine/namespaced_id" }
 physics = { path = "engine/physics" }
 player_presence = { path = "engine/player_presence" }
