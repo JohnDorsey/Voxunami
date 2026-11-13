@@ -24,6 +24,8 @@ use voxel_space::{
 use world_view::sun_blocked;
 
 // (The sun's exact short ray: `docs/specs/contact-trace-spec.md`. A module of its own, which uses what is in this file.)
+#[path = "gpu_rendering/bumps.rs"]
+mod bumps;
 #[path = "gpu_rendering/contact_cutouts.rs"]
 mod contact_cutouts;
 #[path = "gpu_rendering/contact_entities.rs"]
@@ -5095,12 +5097,12 @@ fn renderer_with_pictures(context: &GraphicsContext, table: &BlockTable) -> Voxe
             PictureSize {
                 size: 8,
                 tiles: vec![&quartered, &green],
-                specular: Vec::new(),
+                ..PictureSize::default()
             },
             PictureSize {
                 size: 16,
                 tiles: vec![&blue],
-                specular: Vec::new(),
+                ..PictureSize::default()
             },
         ],
     );
@@ -5428,7 +5430,7 @@ fn renderer_with_half_clear(context: &GraphicsContext, table: &BlockTable) -> Vo
         &[PictureSize {
             size: 8,
             tiles: vec![&picture],
-            specular: Vec::new(),
+            ..PictureSize::default()
         }],
     );
     renderer.set_picture_distance(100.0);
@@ -5593,7 +5595,7 @@ fn roof_failures(
         &[PictureSize {
             size: 8,
             tiles: vec![&clear, &opaque],
-            specular: Vec::new(),
+            ..PictureSize::default()
         }],
     );
     renderer.set_picture_distance(distance);

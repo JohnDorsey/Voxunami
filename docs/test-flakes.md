@@ -110,6 +110,8 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   probe, the same 21.173). Six runs before that (6/6 passed) were thrown away with the 30 after them, which failed to compile because a test file was edited while they ran: do not edit the tree during a measurement. So the extra bindings in the shared layout were **not** the cause (4/36 against 8/84 on the
   branch is no change; the layout kept anyway, as it keeps the default pipelines as they were and the next arrays, for bumps, will not grow it). **Believed, not shown:** the flake is the one the integrated card always had, about 3 to 10 percent of runs on some days, and `main`'s 1/36 and 0/51 were luck or load;
   **not tried:** 100 or more runs of `main` and the branch alternately, the thing that would say it.
+  **Again the same day, with bumps (normal pictures, four more arrays in the same group 3):** the gate's whole-workspace run failed `a_block_and_a_roof_shade_the_floor_...` once (AMD integrated, DX12, roof level 20, the same probe, 21.173); rerun, the whole
+  renderer binary passed (162 of 162) and the two tests alone passed **12 of 12**. One failure in two whole-binary runs and 4/36 + 0/12 alone is in line with the rate above: the bumps changed nothing that can be seen in it.
 
 - `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` (`games/voxunami_cave/tests/pictures.rs`): the first frames of a fresh renderer on the integrated AMD GPU leave pixels out;
   pictures are taken once a frame repeats them (2026-10-21, Phase 30). `docs/plan.md` (the section on flaky tests) and `docs/specs/ui-spec.md`.

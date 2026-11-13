@@ -85,9 +85,13 @@ pub fn picture_sizes(tile_classes: &[Vec<Tile>]) -> Vec<PictureSize<'_>> {
                 .expect("a size of picture has pictures (a package is read with at least one)")
                 .size(),
             tiles: tiles.iter().map(|tile| tile.rgba()).collect(),
-            // (The normal pictures are not drawn yet; they are in the package for when they are.)
             specular: if tiles.iter().any(|tile| tile.specular().is_some()) {
                 tiles.iter().map(|tile| tile.specular()).collect()
+            } else {
+                Vec::new()
+            },
+            normal: if tiles.iter().any(|tile| tile.normal().is_some()) {
+                tiles.iter().map(|tile| tile.normal()).collect()
             } else {
                 Vec::new()
             },
@@ -336,6 +340,28 @@ mod tests {
             sizes[1].specular.is_empty(),
             "a size none of whose pictures has one hands on none"
         );
+    }
+
+    #[test]
+    fn the_normal_pictures_of_a_package_go_with_their_pictures_beside_the_specular_ones() {
+        let plain = |size: u32, byte: u8| {
+            Tile::from_rgba(size, vec![byte; size as usize * size as usize * 4])
+        };
+        let bumpy = plain(8, 2).with_normal(vec![9; 8 * 8 * 4]);
+        let both = plain(16, 3)
+            .with_specular(vec![4; 16 * 16 * 4])
+            .with_normal(vec![5; 16 * 16 * 4]);
+        let classes = vec![vec![plain(8, 1), bumpy], vec![both]];
+        let sizes = picture_sizes(&classes);
+        assert_eq!(sizes[0].normal.len(), 2, "one for each picture of the size");
+        assert_eq!(sizes[0].normal[0], None);
+        assert_eq!(sizes[0].normal[1], Some(&[9u8; 8 * 8 * 4][..]));
+        assert!(
+            sizes[0].specular.is_empty(),
+            "a size with normal pictures only has no specular ones"
+        );
+        assert_eq!(sizes[1].normal[0], Some(&[5u8; 16 * 16 * 4][..]));
+        assert_eq!(sizes[1].specular[0], Some(&[4u8; 16 * 16 * 4][..]));
     }
 
     #[test]

@@ -40,6 +40,28 @@ fn cave_numbers_its_blocks_as_it_always_did() {
     );
 }
 
+/// Dirt's bumps (2026-11-12): the package a client is sent, as the client reads it, has exactly one companion picture, a normal picture of the size of Cave's pictures (16 pixels
+/// across, which `dirt_n.png` is), and none of the other kind.
+#[test]
+fn the_package_cave_sends_carries_dirts_normal_picture_and_no_other_companion() {
+    let sent = CaveContent::new().package_data().encode();
+    let received = game_shell::PackageData::decode(&sent).expect("the package reads back");
+    let companions = |kind: fn(&data_packs::Tile) -> Option<&[u8]>| {
+        received
+            .tile_classes
+            .iter()
+            .flatten()
+            .filter(|tile| kind(tile).is_some())
+            .map(|tile| (tile.size(), kind(tile).map(<[u8]>::len)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        companions(data_packs::Tile::normal),
+        [(16, Some(16 * 16 * 4))]
+    );
+    assert_eq!(companions(data_packs::Tile::specular), []);
+}
+
 #[test]
 fn the_package_cave_sends_has_its_pinned_bytes() {
     let bytes = CaveContent::new().package_data().encode();
@@ -70,7 +92,9 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// seen) and the new block with its entry (171, measured by encoding the package without the block).
 /// Companion pictures (2026-11-12): each picture in the package has a byte of flags before its pixels, so the package is 11 bytes longer, 15,038 to 15,049 (11 is the number of pictures Cave's blocks use, which I
 /// believe and did not count separately; the stream below grew by the same 11, and the saved world's hash did not move).
-const PINNED_PACKAGE: (usize, u64) = (15049, 6_786_877_437_540_921_677);
+/// Bumps (2026-11-12): dirt has a normal picture, `dirt_n.png`, 16 by 16 of four bytes, so the package is 1,024 bytes longer, 15,049 to 16,073 (worked out before the run, and seen; the
+/// flag byte of dirt's picture was there already).
+const PINNED_PACKAGE: (usize, u64) = (16073, 7_358_420_615_203_573_492);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block

@@ -16,7 +16,7 @@ const EMISSION_ALPHA: [u8; PICTURE_PIXELS] = [255, 255, 127, 127, 254, 254, 0, 0
 /// shines by 127 of 254 is half of that.
 const EXPECTED: [f64; PICTURE_PIXELS] = [0.0, 0.0, 1.5, 1.5, 3.0, 3.0, 0.0, 0.0];
 
-fn white_picture() -> Vec<u8> {
+pub(super) fn white_picture() -> Vec<u8> {
     (0..PICTURE_PIXELS * PICTURE_PIXELS)
         .flat_map(|_| [255, 255, 255, 255])
         .collect()
@@ -30,7 +30,7 @@ fn specular_picture() -> Vec<u8> {
         .collect()
 }
 
-fn table() -> BlockTable {
+pub(super) fn table() -> BlockTable {
     let tile = block_models::TileRef::new(0, 0).expect("a place for the picture");
     let block = BlockDefinition::cube([0.5, 0.5, 0.5])
         .with_texture(namespaced_id::NamespacedId::new("test", "picture").unwrap())
@@ -54,6 +54,7 @@ fn dark_block(context: &GraphicsContext, specular: Option<&[u8]>) -> (VoxelRende
             size: PICTURE_PIXELS as u32,
             tiles: vec![&picture],
             specular: vec![specular],
+            ..PictureSize::default()
         }],
     );
     renderer.set_picture_distance(100.0);

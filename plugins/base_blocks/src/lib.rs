@@ -135,10 +135,13 @@ const BLOCK_FILES: [(&str, &str); 10] = [
 ];
 
 /// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
-/// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name.
-const TEXTURE_FILES: [(&str, &[u8]); 11] = [
+/// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name, and the companions of a picture (`dirt_n` is the normal picture of `dirt`: a
+/// file ending `_s` is a specular picture and one ending `_n` a normal one, `docs/specs/block-textures-spec.md` section 4.4) beside the picture they go with.
+const TEXTURE_FILES: [(&str, &[u8]); 12] = [
     ("grass", include_bytes!("../textures/grass.png")),
     ("dirt", include_bytes!("../textures/dirt.png")),
+    // (Noise, made by `textures/make_dirt_normals.py`: bumps in the sun's light.)
+    ("dirt_n", include_bytes!("../textures/dirt_n.png")),
     ("stone", include_bytes!("../textures/stone.png")),
     ("still_water", include_bytes!("../textures/still_water.png")),
     ("log_top", include_bytes!("../textures/log_top.png")),
@@ -469,12 +472,20 @@ mod tests {
         );
         used.sort();
         used.dedup();
-        let mut embedded: Vec<String> = textures()
+        // (A companion is not a picture of a block: it goes with the picture whose name is the rest of its own, which must be one of these.)
+        let (companions, mut embedded): (Vec<String>, Vec<String>) = textures()
             .iter()
             .map(|texture| texture.id.to_string())
-            .collect();
+            .partition(|id| id.ends_with("_s") || id.ends_with("_n"));
         embedded.sort();
         assert_eq!(used, embedded);
+        for companion in companions {
+            let picture = &companion[..companion.len() - 2];
+            assert!(
+                used.iter().any(|id| id == picture),
+                "{companion} goes with {picture}, which no block uses"
+            );
+        }
     }
 
     #[test]

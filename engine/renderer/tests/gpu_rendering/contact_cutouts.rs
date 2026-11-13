@@ -57,7 +57,7 @@ fn renderer_for_the_map_alone(context: &GraphicsContext, table: &BlockTable) -> 
         &[PictureSize {
             size: 8,
             tiles: vec![&picture[..]],
-            specular: Vec::new(),
+            ..PictureSize::default()
         }],
     );
     renderer.set_picture_distance(100.0);

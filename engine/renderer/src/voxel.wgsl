@@ -76,6 +76,10 @@ struct Surface {
     uncovered: f32,
     // How much of the pixel shines by itself, whatever light reaches it (0 to 1; from the alpha of the picture's specular companion, 0 where it has none).
     emission: f32,
+    // `normal` tilted by the picture's normal companion (a unit vector in the world's axes; the same as `normal` where the picture has none, or none is drawn). The light of the
+    // sun is the cosine of this one, where it is the cosine of `normal` for a pack that does not look: the tilt is for the sun's light alone (it has a direction; the lamps'
+    // light and the sky's have none), and the shadow is the face's own.
+    shading_normal: vec3<f32>,
 }
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
@@ -455,6 +459,16 @@ fn sky_openness(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> f32 {
     return open;
 }
 
+// The normal with the picture's bump added, a unit vector (the normal itself where there is no bump, or where the sum would have no direction).
+fn tilted_normal(normal: vec3<f32>, bump: vec3<f32>) -> vec3<f32> {
+    let sum = normal + bump;
+    let length_squared = dot(sum, sum);
+    if (length_squared < 1.0e-8) {
+        return normal;
+    }
+    return sum * inverseSqrt(length_squared);
+}
+
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
@@ -466,6 +480,8 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     shadow_face.relative = pixelated_place(in);
     // How much of the pixel shines by itself (`picture_emission` is in the same two files; it takes derivatives too).
     let emission = picture_emission(in);
+    // How much the picture's bumps tilt the normal (`picture_bump`, in the same two files; it takes derivatives too).
+    let bump = picture_bump(in);
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
@@ -490,6 +506,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.sky_visible = 1.0;
     surface.uncovered = 1.0;
     surface.emission = emission;
+    surface.shading_normal = tilted_normal(in.normal, bump);
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
@@ -523,6 +540,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             sky_visible = sky_visible * uncovered;
         }
         surface.normal = light.normal;
+        surface.shading_normal = tilted_normal(light.normal, bump);
         surface.above_horizon = light.visible;
         surface.sun_visible = sun_visible;
         surface.sky_visible = sky_visible;

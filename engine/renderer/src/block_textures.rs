@@ -19,6 +19,9 @@ pub struct PictureSize<'a> {
     /// The specular companion (LabPBR `_s`) of each picture, in the same order and of the same size, if it has one; or empty when none has. Its pixels are data (8-bit,
     /// not sRGB): the alpha is the emission, where 255 means none and 0 to 254 is the amount of the pixel's own light.
     pub specular: Vec<Option<&'a [u8]>>,
+    /// The normal companion (LabPBR `_n`) of each picture, as `specular`: its pixels are data (8-bit, not sRGB), the red and green the tilt of the face there (128 is none,
+    /// 0 and 255 a tilt of 1 either way) and the rest not read yet.
+    pub normal: Vec<Option<&'a [u8]>>,
 }
 
 /// The texture arrays of the pictures and their sampler, for the voxel shader.
@@ -27,6 +30,8 @@ pub(crate) struct BlockTextures {
     pub views: [wgpu::TextureView; MOST_PICTURE_SIZES],
     /// A view of the array of the specular pictures of each size, with the layers of the pictures; a size not in use is one pixel of nothing.
     pub specular_views: [wgpu::TextureView; MOST_PICTURE_SIZES],
+    /// The same of the normal pictures.
+    pub normal_views: [wgpu::TextureView; MOST_PICTURE_SIZES],
     pub sampler: wgpu::Sampler,
 }
 
@@ -53,6 +58,12 @@ impl BlockTextures {
                 .get_or_insert_with(|| stand_in_array(device, queue))
                 .clone(),
         });
+        let normal_views = std::array::from_fn(|class| match sizes.get(class) {
+            Some(size) => normal_array_of(device, queue, size),
+            None => stand_in
+                .get_or_insert_with(|| stand_in_array(device, queue))
+                .clone(),
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("block pictures"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -66,6 +77,7 @@ impl BlockTextures {
         Self {
             views,
             specular_views,
+            normal_views,
             sampler,
         }
     }
@@ -79,7 +91,7 @@ fn stand_in_array(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureVi
         &PictureSize {
             size: 1,
             tiles: vec![&[255, 0, 255, 255]],
-            specular: Vec::new(),
+            ..PictureSize::default()
         },
     )
 }
@@ -125,24 +137,78 @@ fn specular_array_of(
     queue: &wgpu::Queue,
     size: &PictureSize<'_>,
 ) -> wgpu::TextureView {
+    companion_array_of(
+        device,
+        queue,
+        size,
+        &size.specular,
+        &Companion {
+            kind: "specular",
+            label: "block specular pictures",
+            none: NO_SPECULAR,
+            engine_form: engine_specular,
+        },
+    )
+}
+
+/// The normal companions of the pictures of one size as an array with the layers of the pictures (a picture with none has the pixel of a flat face). Linear data, not
+/// colours, and a smaller level is the plain average of the four pixels it stands for, which is the right one for normals too: the average of tilts is a smaller tilt, as the
+/// bumps of a far picture add up to a flatter face.
+fn normal_array_of(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: &PictureSize<'_>,
+) -> wgpu::TextureView {
+    companion_array_of(
+        device,
+        queue,
+        size,
+        &size.normal,
+        &Companion {
+            kind: "normal",
+            label: "block normal pictures",
+            none: NO_NORMAL,
+            engine_form: <[u8]>::to_vec,
+        },
+    )
+}
+
+/// What a kind of companion picture is, to make an array of them: its name (for the messages), its label, the pixel of a picture that has none, and how the pixels of a file
+/// become the ones the shader reads.
+struct Companion {
+    kind: &'static str,
+    label: &'static str,
+    none: [u8; 4],
+    engine_form: fn(&[u8]) -> Vec<u8>,
+}
+
+/// The companions of the pictures of one size (`companions`, one for each picture or empty) as an array with the layers of the pictures, a picture with none having the
+/// pixel `none` all over, and each with its levels of smaller pictures under it.
+fn companion_array_of(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: &PictureSize<'_>,
+    companions: &[Option<&[u8]>],
+    kind: &Companion,
+) -> wgpu::TextureView {
     assert!(
-        size.specular.is_empty() || size.specular.len() == size.tiles.len(),
-        "the specular pictures are one for each picture, or none"
+        companions.is_empty() || companions.len() == size.tiles.len(),
+        "the {} pictures are one for each picture, or none",
+        kind.kind
     );
     let bytes = size.size as usize * size.size as usize * 4;
     let mut data = Vec::new();
     for layer in 0..size.tiles.len() {
-        let companion = size.specular.get(layer).copied().flatten();
-        let pixels = match companion {
+        let pixels = match companions.get(layer).copied().flatten() {
             Some(pixels) => {
                 assert_eq!(
                     pixels.len(),
                     bytes,
                     "a picture has four bytes for each pixel"
                 );
-                engine_specular(pixels)
+                (kind.engine_form)(pixels)
             }
-            None => NO_SPECULAR.repeat(bytes / 4),
+            None => kind.none.repeat(bytes / 4),
         };
         for level in data_mip_chain(size.size, &pixels) {
             data.extend_from_slice(&level);
@@ -151,7 +217,7 @@ fn specular_array_of(
     layered(
         device,
         queue,
-        "block specular pictures",
+        kind.label,
         (size.size, size.tiles.len()),
         wgpu::TextureFormat::Rgba8Unorm,
         &data,
@@ -160,6 +226,10 @@ fn specular_array_of(
 
 /// What a pixel with no specular picture is: smoothness, reflectance and porosity nothing, and no emission (see [`engine_specular`]).
 const NO_SPECULAR: [u8; 4] = [0, 0, 0, 0];
+
+/// What a pixel with no normal picture is: no tilt (128 is the middle of the red and green bytes, see `picture_bump` in `pictures_on.wgsl`), and the ambient occlusion and the
+/// height of LabPBR at their highest, which are not read.
+const NO_NORMAL: [u8; 4] = [128, 128, 255, 255];
 
 /// A texture array of `(side, layers)`, with the chain of smaller levels under each layer already in `data` (layer after layer).
 fn layered(
@@ -456,5 +526,24 @@ mod tests {
         let picture = engine_specular(&[0, 0, 0, 254, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
         let level = &data_mip_chain(2, &picture)[1];
         assert_eq!(level[3], 64, "(254 + 0 + 0 + 0 + 2) / 4");
+    }
+
+    #[test]
+    fn the_tilts_of_a_smaller_level_of_a_normal_picture_are_the_average_of_the_tilts_so_opposite_bumps_flatten()
+     {
+        // Two pixels tilted right by 127/127 and two tilted left by 127/127 (bytes 255 and 1 on either side of 128) stand for a flat place from far off; and a picture that is
+        // tilted the same everywhere keeps its tilt.
+        let opposite = [
+            255, 128, 255, 255, //
+            1, 128, 255, 255, //
+            255, 128, 255, 255, //
+            1, 128, 255, 255,
+        ];
+        assert_eq!(data_mip_chain(2, &opposite)[1], [128, 128, 255, 255]);
+        let same: Vec<u8> = (0..4).flat_map(|_| [200, 90, 255, 255]).collect();
+        assert_eq!(data_mip_chain(2, &same)[1], [200, 90, 255, 255]);
+        // The pixel a picture with no normal picture has is flat to the shader (128 is no tilt), so that it is the same at every level.
+        let none: Vec<u8> = (0..4).flat_map(|_| NO_NORMAL).collect();
+        assert_eq!(data_mip_chain(2, &none)[1], NO_NORMAL);
     }
 }

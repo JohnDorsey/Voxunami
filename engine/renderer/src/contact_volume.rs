@@ -94,7 +94,7 @@ impl ContactGpu {
         device: &wgpu::Device,
         frame_layout: &wgpu::BindGroupLayout,
         placement_layout: &wgpu::BindGroupLayout,
-        specular_layout: &wgpu::BindGroupLayout,
+        companion_layout: &wgpu::BindGroupLayout,
         maximum_slots: usize,
         maximum_partial_slots: usize,
     ) -> Self {
@@ -129,7 +129,7 @@ impl ContactGpu {
                     Some(frame_layout),
                     Some(placement_layout),
                     Some(&layout),
-                    Some(specular_layout),
+                    Some(companion_layout),
                 ],
                 immediate_size: 0,
             });

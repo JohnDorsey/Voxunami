@@ -387,8 +387,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// 12 characters), predicted from the cause before the new number was taken. **The saved world's hash did not move.** Taken on Windows; Linux has not been run for this change.
 /// Companion pictures (2026-11-12): the package the stream carries has a byte of flags before each picture, 11 bytes more, 7,218,008 to 7,218,019 (the same 11 as the package pin in `block_golden.rs`, seen and not
 /// predicted); the saved world's hash did not move. Windows only.
+/// Bumps (2026-11-12): dirt has a normal picture, so the package grew by 1,024 bytes (`block_golden.rs`) and the stream by 1,025, 7,218,019 to 7,219,044, predicted as 1,024 and seen as 1,025. **Believed, not
+/// measured:** the extra byte is the length of the welcome frame, a LEB128 number, taking a third byte as the frame passes 16,383 (the package alone is 16,073, and the frame has the rest of the welcome
+/// round it; an earlier note above says the same of a package that grew). The saved world's hash did not move. Windows only.
 const PINNED: (u64, usize, u64) = (
-    9_489_212_427_895_524_050,
-    7_218_019,
+    6_612_432_898_614_918_854,
+    7_219_044,
     15_594_210_036_057_493_535,
 );

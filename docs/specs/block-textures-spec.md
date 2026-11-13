@@ -134,7 +134,7 @@ The pixels are **data, not colours**: they are read as the file has them (an alp
 | `_s` | green | reflectance at 0 degrees (or a metal) | not yet |
 | `_s` | blue | porosity or subsurface scattering | not yet |
 | `_s` | alpha | **emission**: 0 to 254 is none to all, **255 is none** | **yes** |
-| `_n` | red, green | the normal's x and y (z is worked out) | not yet |
+| `_n` | red, green | the normal's x and y (z is worked out) | **yes** |
 | `_n` | blue | ambient occlusion | not yet |
 | `_n` | alpha | height | not yet |
 
@@ -144,9 +144,17 @@ The loader turns an emission of 255 into 0 before the GPU is given the picture, 
 (over the same band, so beyond the picture distance a face is flat colour and lit as it was). **It is not a light**: it does not light its neighbours; what a lamp lights is still the block's
 `base_blocks:emission`. The engine's `Surface` has the field `emission` (`shader-pack-spec.md`).
 
+**Bumps.** The red and green of a normal picture are the tilt of the face at the pixel: `(byte - 128) / 127` to the right in the picture and toward its top, so that **128 is no tilt** and 0 and 255 are a
+tilt of 1 either way (a tilt longer than 1 is shortened to 1); the part of the normal out of the face is what makes its length 1. The tilted normal is `right * x + up * y + normal * z`, where *right* and *up* are the
+directions along the face in which the picture's coordinates grow, found from how the coordinates and the place change across the screen (so it holds on every face and on a ship turned any way, and a face seen nearly edge on is
+left flat). **The tilted normal is for the sun's light alone**: the engine adds `tilted - normal`, faded out with the picture over the same band, to the normal the sun's light is the cosine of, and gives a pack the sum as
+`Surface::shading_normal` (the same as `normal` where there is no picture or no companion); the shadow, the sides of a block the sun reaches, the sky's light and the lamps' light keep the face's own normal, so a bump never lets
+the sun through a wall and shows **only in direct sun** (the lamps' light and the sky's have no direction to be bumped by). Smaller levels of the picture are the plain average of four tilts, a smaller tilt: from far off
+the bumps add up to a flatter face. The ambient occlusion and the height are carried and not read.
+
 **On the wire** each picture is a byte of flags (bit 0: a specular picture follows the pixels, bit 1: a normal picture follows that) and then the pixels, the specular and then the normal; the 8 MiB limit counts the
-companions. **On the GPU** the specular pictures are one more array for each size (the fourth bind group, bindings 0 to 3, which only the pipelines that draw pictures have in their layout: the default pipelines' layout is as it was before companions), with the layers of the pictures; a picture with no specular picture has the pixel
-of nothing in its layer. The normal pictures are carried to the client and **not yet drawn** (step 3: bumps).
+companions. **On the GPU** the companions are arrays for each size, with the layers of the pictures, in the fourth bind group (the specular ones at bindings 0 to 3, the normal ones at 4 to 7; only the pipelines that draw pictures have it
+in their layout: the default pipelines' layout is as it was before companions); a picture with no specular picture has the pixel of nothing in its layer, and one with no normal picture the pixel of no tilt (128, 128).
 
 ## 5. Colours
 
@@ -427,12 +435,24 @@ step, which carries the companions and reads one channel of one of them.
 - `data_packs::Tile` may hold a `specular` and a `normal` picture of its own size (`with_specular`, `with_normal`, `bytes()`); `Available` (pictures.rs) takes a file ending `_s` or `_n` as a companion of the picture with the rest of the
   name, after all the pictures are in (a pack that replaces a picture drops the old one's companions and says so; a companion with no picture is a warning for a pack and an error for the game; another size is an error).
 - The package: a byte of flags before each picture's pixels, then the specular and normal pixels if the flags say (`PackageData`); the 8 MiB limit counts them. **The bytes of every package with pictures moved** (one byte a picture).
-- The renderer: `PictureSize::specular` (one `Option` a picture, or empty), a second array for each size in `Rgba8Unorm` with the layers of the pictures, the fourth bind group (`specular_layout`: the pipelines with pictures have it, with a hole where the sun's ray's group goes when they have no walk; the others do not); `engine_specular` makes the alpha 255 a 0, and
+- The renderer: `PictureSize::specular` (one `Option` a picture, or empty), a second array for each size in `Rgba8Unorm` with the layers of the pictures, the fourth bind group (`specular_layout`, since renamed `companion_layout`: the pipelines with pictures have it, with a hole where the sun's ray's group goes when they have no walk; the others do not); `engine_specular` makes the alpha 255 a 0, and
   `data_mip_chain` averages four pixels plainly in every channel (the colour mips weigh by the alpha and work in sRGB, which would spoil data). The shader: `picture_emission` (pictures_on.wgsl; the stub in pictures_off.wgsl is 0),
   `Surface::emission`, and the default pack's `mix(lit, albedo, emission)`.
 - Tests: the loader (9, pictures.rs and tile.rs), the wire (package_data.rs and package.rs), the mips (block_textures.rs), `picture_sizes` (view.rs), and on the GPU (`emission.rs`): in the dark, a white picture whose specular alpha is 255, 127, 254 and 0 in
   columns is seen as 0, half, all and 0 of its brightness, and a picture with no companion is black, on every adapter; and the same in the shader with the walk of the sun's ray (the only test that draws pictures
   and the walk together; with the group left unbound every one of the three fails on a validation error, checked).
-- **Not done:** reading the normal picture (step 2: bumps, with a tangent frame from the screen-space derivatives of the picture's coordinates and a shading normal beside the real one; they will show only in direct sun, as lamp and sky light have no direction), the other channels of the specular
-  picture, the lamp's own picture (the owner supplies the art; `lamp.json` has no `texture` yet), `check-pack` lines for companions, and a measurement of the cost on the integrated GPU (four more bindings; the trap of the
-  integrated AMD GPU in `test-flakes.md` is the reason it is measured).
+- **Not done:** the other channels of the specular picture, the lamp's own picture (the owner supplies the art; `lamp.json` has no `texture` yet), `check-pack` lines for companions, and a measurement of the cost on the
+  integrated GPU (the trap of the integrated AMD GPU in `test-flakes.md` is the reason it is measured).
+
+**Companion pictures, step 2: bumps and the noise dirt (2026-11-12; section 4.4).** Asked for by the owner, with "a noise texture for dirt normals".
+- The renderer: `PictureSize::normal` (as `specular`), `normal_array_of` (the same builder as the specular arrays, `companion_array_of`, with the pixel of no tilt for a picture without one), bindings 4 to 7 of the fourth bind group (renamed
+  `companion_layout` and `companion_group`), `picture_bump` in `pictures_on.wgsl` (the stub in `pictures_off.wgsl` is zero), `Surface::shading_normal`, and the default pack's sun term made from it. `game_shell::picture_sizes` hands the normal pictures on.
+- **Found on the way and fixed:** the usual cotangent frame turns both directions of the picture around here, because the screen's rows count downward; the frame is solved from the two equations instead (a probe: a tilt toward the top of the picture lit the face as a tilt toward its bottom).
+- The art: `plugins/base_blocks/textures/dirt_n.png`, 16 by 16, made by `make_dirt_normals.py` (splitmix64 noise from a fixed seed, blurred a little, tiling, as a height field turned into tilts of up to 0.6, about 0.32 on
+  average), listed in `TEXTURE_FILES` in `plugins/base_blocks/src/lib.rs` beside `dirt`. **The strength is a first guess for the owner to judge**; the script's `STRENGTH` and `LARGEST_TILT` change it.
+- The pins: Cave's package is 1,024 bytes longer (15,049 to 16,073: one 16 by 16 picture of four bytes) and the golden session's stream 1,025 (the extra byte believed to be the welcome frame's length growing past 16,383, not measured); the saved world's hash did not move.
+- Tests: on the GPU (`bumps.rs`), a picture tilted the same everywhere on three faces (+z, -x, +y: the top, whose orientation the picture tests fix) with a sun that grazes the face from each of four directions and from the opposite
+  of two of them, is lit by the cosine of the tilted normal over the cosine of the face's own, to 3 percent, on every adapter, in the shader without the walk of the sun's ray and in the one with it; a flat normal picture, a picture with none, and a tilt beyond
+  the picture distance all leave the face as it was; the mips (block_textures.rs: opposite tilts average to flat); `picture_sizes` (view.rs); and Cave's package carries exactly dirt's normal picture and no other companion (`block_golden.rs`).
+- **Not done:** the look under a real sun on a planet is judged from one picture of flat dirt under a low and a high sun (shown to the owner in the session, not kept), not played; bumps on slopes of terrain, ships and coarse levels were not looked at (coarse levels have no pictures); the cost on the integrated GPU is not measured
+  (one more texture fetch a pixel within the picture distance, four more bindings in the pipelines with pictures); `check-pack` lines for companions.

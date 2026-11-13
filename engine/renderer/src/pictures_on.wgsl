@@ -11,6 +11,11 @@
 @group(3) @binding(1) var specular_1: texture_2d_array<f32>;
 @group(3) @binding(2) var specular_2: texture_2d_array<f32>;
 @group(3) @binding(3) var specular_3: texture_2d_array<f32>;
+// And the normal pictures (LabPBR `_n`), the same: data, not colours. The red and green are the tilt of the face at the pixel; the rest is not read yet.
+@group(3) @binding(4) var normals_0: texture_2d_array<f32>;
+@group(3) @binding(5) var normals_1: texture_2d_array<f32>;
+@group(3) @binding(6) var normals_2: texture_2d_array<f32>;
+@group(3) @binding(7) var normals_3: texture_2d_array<f32>;
 
 // The colour of a picture at a place on a face: `coordinates` are in voxels (the picture repeats in each), `ddx` and `ddy` how much they change across a pixel, which
 // say which smaller picture to read. The size of the picture is its number among the sizes in use (bits 1 and 2) and its place among the pictures of that size is
@@ -54,6 +59,28 @@ fn sample_specular(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: ve
         }
         default: {
             texel = textureSampleGrad(specular_3, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+    }
+    return texel;
+}
+
+// The normal picture of a picture at a place on a face, read as `sample_picture` reads the picture. A picture with no normal companion has the pixel of a flat face (128, 128).
+fn sample_normal(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let layer = i32((picture >> 3u) & 255u);
+    let wrapped = fract(coordinates);
+    var texel = vec4<f32>(128.0 / 255.0, 128.0 / 255.0, 1.0, 1.0);
+    switch ((picture >> 1u) & 3u) {
+        case 0u: {
+            texel = textureSampleGrad(normals_0, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 1u: {
+            texel = textureSampleGrad(normals_1, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 2u: {
+            texel = textureSampleGrad(normals_2, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        default: {
+            texel = textureSampleGrad(normals_3, picture_sampler, wrapped, layer, ddx, ddy);
         }
     }
     return texel;
@@ -155,6 +182,51 @@ fn picture_emission(in: VertexOutput) -> f32 {
     }
     let texel = sample_specular(in.picture, in.uv, picture_dx, picture_dy);
     return min(texel.a * (255.0 / 254.0), 1.0) * share;
+}
+
+// How much the normal picture tilts the face's normal at this pixel: the tilted normal minus the face's own, in the world's axes, faded out with the picture over the same band
+// (so that beyond the picture distance a face is as flat as it is in the colour and the shadow). It is added to the normal that the sun's light is the cosine of (and to no
+// other: the shadow, which sides of a block the sun reaches, and the sky's light keep the face's own normal, so that a bump never lets the sun through a wall).
+//
+// The picture is LabPBR's: red and green are the normal's x and y (to the right in the picture and toward its top) as 128 plus or minus 127 for a tilt of 1 either way, and the
+// part along the face is what makes the length 1. Which way is right and up in the world is found from how the picture's coordinates and the place change across the screen,
+// so that it holds on every face and on a ship turned any way.
+fn picture_bump(in: VertexOutput) -> vec3<f32> {
+    // (These are taken before anything branches, as in `picture_albedo`.)
+    let uv_across = dpdx(in.uv);
+    let uv_down = dpdy(in.uv);
+    let place_across = dpdx(in.relative);
+    let place_down = dpdy(in.relative);
+    if (in.picture == 0u || frame.pictures.y <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let share = picture_share(in.relative);
+    if (share <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let texel = sample_normal(in.picture, in.uv, uv_across, uv_down);
+    var tilt = (texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0);
+    let steepness = dot(tilt, tilt);
+    if (steepness > 1.0) {
+        tilt = tilt * inverseSqrt(steepness);
+    }
+    let out_of_the_face = sqrt(max(1.0 - dot(tilt, tilt), 0.0));
+    let normal = normalize(in.normal);
+    // Where the picture's coordinates grow, along the face: the place changes by `place_across` and `place_down` while the coordinates change by `uv_across` and `uv_down`,
+    // so the change of the place with u (to the right in the picture) and with v (down it: rows count from the top) is the solution of two equations. (Solved, and not the
+    // usual cotangent frame, whose signs follow which way the screen's rows count and so turn the picture's directions both around on this one.) Where the face is nearly edge
+    // on the equations have no good solution, and the face is left as it is.
+    let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
+    if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
+        return vec3<f32>(0.0);
+    }
+    let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
+    let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
+    // (Taken along the face, and of length 1.)
+    let right = normalize(along_right - normal * dot(along_right, normal));
+    let up = -normalize(along_down - normal * dot(along_down, normal));
+    let tilted = normalize(right * tilt.x + up * tilt.y + normal * out_of_the_face);
+    return (tilted - normal) * share;
 }
 
 // ---- The shadow maps of blocks that cut holes: what leaves and glass hide of the sun is what their pictures are not clear of. ----
