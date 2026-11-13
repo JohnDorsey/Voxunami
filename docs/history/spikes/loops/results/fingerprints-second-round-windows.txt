@@ -1,0 +1,84 @@
+fingerprint tower 4 s                      one world, converged           a3130fcdda110af6
+fingerprint tower 4 s                      one world, game (today)        ded728cd0c4aa7d8
+fingerprint tower 4 s                      ghost world, impulses          7b009aeea49e27e6
+fingerprint tower 4 s                      ghost worlds, difference       66c0e6394889d063
+fingerprint tower 4 s                      whole, rigid                   7a406aa58237e891
+fingerprint tower 4 s                      whole, impulse                 a48ff67bc65a9eb2
+fingerprint tower 4 s                      cluster, impulse               a48ff67bc65a9eb2
+fingerprint tower 4 s                      per car, impulse               128656808b473e36
+fingerprint tower 4 s                      per car, impulse, +2 rounds    2f342db87b380d88
+fingerprint tower 4 s                      whole, impulse, +2 rounds      c3c1107c9bf0a114
+fingerprint tower 4 s                      welded ghost, impulses         5e8a19c93d11ece9
+fingerprint tower 4 s                      welded ghosts, difference      3dee044c82d0e13e
+fingerprint tower 4 s                      per car, impulse, load         f126d24c84ecb5b3
+fingerprint tower 4 s                      cluster, impulse, load (persistent), +2 rounds f478331797e51265
+fingerprint gear 2 m/s, 4 s                one world, converged           21f69bdfadcf7536
+fingerprint gear 2 m/s, 4 s                one world, game (today)        d7b60b5b3181d85f
+fingerprint gear 2 m/s, 4 s                ghost world, impulses          a3243bf258ea24f4
+fingerprint gear 2 m/s, 4 s                ghost worlds, difference       23e9b4e28ba9fcb9
+fingerprint gear 2 m/s, 4 s                whole, rigid                   f12cc78480e4df78
+fingerprint gear 2 m/s, 4 s                whole, impulse                 b5eefba37f31186a
+fingerprint gear 2 m/s, 4 s                cluster, impulse               46eea8d13a62a1f5
+fingerprint gear 2 m/s, 4 s                per car, impulse               46eea8d13a62a1f5
+fingerprint gear 2 m/s, 4 s                per car, impulse, +2 rounds    06cb33cc99be2d0c
+fingerprint gear 2 m/s, 4 s                whole, impulse, +2 rounds      a045cdb794549ab3
+fingerprint gear 2 m/s, 4 s                welded ghost, impulses         d7b004b63c8fee0e
+fingerprint gear 2 m/s, 4 s                welded ghosts, difference      1654d018d11745c0
+fingerprint gear 2 m/s, 4 s                per car, impulse, load         acb75465fc916183
+fingerprint gear 2 m/s, 4 s                cluster, impulse, load (persistent), +2 rounds d0cf4ae1b914544c
+fingerprint door on a spring, 2 s          one world, converged           ec54cb407f9984c3
+fingerprint door on a spring, 2 s          one world, game (today)        575c03134372ec9b
+fingerprint door on a spring, 2 s          ghost world, impulses          82cbce5cfabddd44
+fingerprint door on a spring, 2 s          ghost worlds, difference       d7f5ef06d4590911
+fingerprint door on a spring, 2 s          whole, rigid                   3f72afe723ec06c1
+fingerprint door on a spring, 2 s          whole, impulse                 fbd9fe72ecccf65d
+fingerprint door on a spring, 2 s          cluster, impulse               910f98666614e14f
+fingerprint door on a spring, 2 s          per car, impulse               910f98666614e14f
+fingerprint door on a spring, 2 s          per car, impulse, +2 rounds    eaaa66288e3c648b
+fingerprint door on a spring, 2 s          whole, impulse, +2 rounds      4faec3f431e4d9ed
+fingerprint door on a spring, 2 s          welded ghost, impulses         24375148af156984
+fingerprint door on a spring, 2 s          welded ghosts, difference      be3688ef21cf64a2
+fingerprint door on a spring, 2 s          per car, impulse, load         121c50d8dc9922ee
+fingerprint door on a spring, 2 s          cluster, impulse, load (persistent), +2 rounds f208d0880baf89e2
+fingerprint carrier at rest, 3 s           one world, converged           a69363bb19c40785
+fingerprint carrier at rest, 3 s           one world, game (today)        c5f39249f33d7a9e
+fingerprint carrier at rest, 3 s           ghost world, impulses          9fc0be131a1d2941
+fingerprint carrier at rest, 3 s           ghost worlds, difference       4c3af62e6b80aa83
+fingerprint carrier at rest, 3 s           whole, rigid                   e7a2805fc118d04c
+fingerprint carrier at rest, 3 s           whole, impulse                 db7d8e9e07903c41
+fingerprint carrier at rest, 3 s           cluster, impulse               baf0531d738b1496
+fingerprint carrier at rest, 3 s           per car, impulse               baf0531d738b1496
+fingerprint carrier at rest, 3 s           per car, impulse, +2 rounds    ad4e2893d1dc947f
+fingerprint carrier at rest, 3 s           whole, impulse, +2 rounds      423aac84968e546c
+fingerprint carrier at rest, 3 s           welded ghost, impulses         b1032fac8d5de2fb
+fingerprint carrier at rest, 3 s           welded ghosts, difference      7ba519eb3b6ea728
+fingerprint carrier at rest, 3 s           per car, impulse, load         2e7aec20422e3d41
+fingerprint carrier at rest, 3 s           cluster, impulse, load (persistent), +2 rounds 2a89dee1a639d054
+fingerprint rover coasting, 3 s            one world, converged           f758a8566965ca80
+fingerprint rover coasting, 3 s            one world, game (today)        aeafd34658182950
+fingerprint rover coasting, 3 s            ghost world, impulses          7bcae157b3aff8ec
+fingerprint rover coasting, 3 s            ghost worlds, difference       13a492bdceceacf9
+fingerprint rover coasting, 3 s            whole, rigid                   c2ede83d7fc82dd8
+fingerprint rover coasting, 3 s            whole, impulse                 9a686cf7e5c87d84
+fingerprint rover coasting, 3 s            cluster, impulse               dc4450ec56af5e88
+fingerprint rover coasting, 3 s            per car, impulse               dc4450ec56af5e88
+fingerprint rover coasting, 3 s            per car, impulse, +2 rounds    aa7d3cc1a957cf74
+fingerprint rover coasting, 3 s            whole, impulse, +2 rounds      0c64b1ae418830c2
+fingerprint rover coasting, 3 s            welded ghost, impulses         373129e880f4b593
+fingerprint rover coasting, 3 s            welded ghosts, difference      469d476e81b08f03
+fingerprint rover coasting, 3 s            per car, impulse, load         681542261eb940bb
+fingerprint rover coasting, 3 s            cluster, impulse, load (persistent), +2 rounds f6cc26247211b845
+fingerprint hinged chain hit across, 1 s   one world, converged           722f37c4a5013e07
+fingerprint hinged chain hit across, 1 s   one world, game (today)        7abf0f8c0e0d3d64
+fingerprint hinged chain hit across, 1 s   ghost world, impulses          4a64a72aeac553a5
+fingerprint hinged chain hit across, 1 s   ghost worlds, difference       7624f78f3ff8ff16
+fingerprint hinged chain hit across, 1 s   whole, rigid                   f56f2d2098fc6363
+fingerprint hinged chain hit across, 1 s   whole, impulse                 68eba7967058c2f9
+fingerprint hinged chain hit across, 1 s   cluster, impulse               99e9fb3da46f1cf2
+fingerprint hinged chain hit across, 1 s   per car, impulse               99e9fb3da46f1cf2
+fingerprint hinged chain hit across, 1 s   per car, impulse, +2 rounds    f745b726f1a8ddb7
+fingerprint hinged chain hit across, 1 s   whole, impulse, +2 rounds      c181302aee2d178e
+fingerprint hinged chain hit across, 1 s   welded ghost, impulses         d1cb0a6fe7cefc8d
+fingerprint hinged chain hit across, 1 s   welded ghosts, difference      fa104e36507525f7
+fingerprint hinged chain hit across, 1 s   per car, impulse, load         a73b25393c09b55a
+fingerprint hinged chain hit across, 1 s   cluster, impulse, load (persistent), +2 rounds 90a66fdc23c715d2

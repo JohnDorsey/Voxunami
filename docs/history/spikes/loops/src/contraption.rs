@@ -123,15 +123,23 @@ pub struct CarSpec {
     pub friction: f64,
     /// The principal moments of inertia, if not those of a solid of the shape.
     pub inertia: Option<Vector>,
+    /// Who yields in a contact between two cars of different groups, when the priority rule is on: the car of the higher priority is not given the impulse (a thing
+    /// inside a ship does not move the ship).
+    pub priority: i8,
 }
 
 impl CarSpec {
     pub fn new(name: &str, group: usize, shape: Shape, mass: f64, place: Vector) -> Self {
-        Self { name: name.to_string(), group, shape, mass, pose: Pose::from_translation(place), linvel: Vector::ZERO, angvel: Vector::ZERO, friction: 0.8, inertia: None }
+        Self { name: name.to_string(), group, shape, mass, pose: Pose::from_translation(place), linvel: Vector::ZERO, angvel: Vector::ZERO, friction: 0.8, inertia: None, priority: 0 }
     }
 
     pub fn with_inertia(mut self, inertia: Vector) -> Self {
         self.inertia = Some(inertia);
+        self
+    }
+
+    pub fn priority(mut self, priority: i8) -> Self {
+        self.priority = priority;
         self
     }
 
@@ -184,11 +192,14 @@ pub struct Scene {
     pub pushes: Vec<Push>,
     pub changes: Vec<MotorChange>,
     pub seconds: f64,
+    /// Joints that are to be taken as rigid where a scheme welds the rigid parts of a mechanism into one body (fixed joints always are; this is for a joint that is
+    /// immobilized or locked: it still moves in the group's own world).
+    pub welds: Vec<usize>,
 }
 
 impl Scene {
     pub fn new(title: &str, seconds: f64) -> Self {
-        Self { title: title.to_string(), cars: Vec::new(), joints: Vec::new(), ground: Vec::new(), gravity: Vector::ZERO, pushes: Vec::new(), changes: Vec::new(), seconds }
+        Self { title: title.to_string(), cars: Vec::new(), joints: Vec::new(), ground: Vec::new(), gravity: Vector::ZERO, pushes: Vec::new(), changes: Vec::new(), seconds, welds: Vec::new() }
     }
 
     pub fn add_car(&mut self, car: CarSpec) -> usize {
@@ -227,14 +238,35 @@ pub enum Handback {
     Impulse,
 }
 
+/// What a proxy is told of the load its car's joints carry (the contact pass cannot see a load that comes through a joint).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Feedback {
+    None,
+    /// The net joint force of the last step.
+    Last,
+    /// Only the part that the last two steps agree on (per component: the smaller if the signs are the same, else none), so that a shock is not fed back.
+    Persistent,
+    /// A running average of the last steps' forces: `new = alpha * last + (1 - alpha) * used before`.
+    Relaxed(f64),
+    /// `Last`, but only the part along the direction the car's contacts pushed it in the last step (a support load), and no torque.
+    LastNormal,
+    /// `Persistent`, but only the part along the direction the car's contacts pushed it in the last step, and no torque.
+    PersistentNormal,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Scheme {
     Hi,
     Game,
-    Proxy { partition: Partition, handback: Handback, rounds: usize },
+    /// `feedback`: each car's net joint force of the last step (from its change of velocity) is put on its proxy as an outside force, so that the contact pass sees the load a joint carries.
+    Proxy { partition: Partition, handback: Handback, rounds: usize, feedback: Feedback },
     Ghost,
     /// Two ghost worlds, one with the contacts and one without; what the contacts did (the difference of the two, in places and velocities) is given to the truth.
     GhostDifference,
+    /// `Ghost`, with the rigid parts (fixed joints, and the joints of `Scene::welds`) of every group welded into one body in the ghost.
+    GhostWelded,
+    /// `GhostDifference`, with the rigid parts welded in both ghosts.
+    GhostWeldedDifference,
 }
 
 impl Scheme {
@@ -244,7 +276,9 @@ impl Scheme {
             Scheme::Game => "one world, game (today)".to_string(),
             Scheme::Ghost => "ghost world, impulses".to_string(),
             Scheme::GhostDifference => "ghost worlds, difference".to_string(),
-            Scheme::Proxy { partition, handback, rounds } => {
+            Scheme::GhostWelded => "welded ghost, impulses".to_string(),
+            Scheme::GhostWeldedDifference => "welded ghosts, difference".to_string(),
+            Scheme::Proxy { partition, handback, rounds, feedback } => {
                 let part = match partition {
                     Partition::Whole => "whole",
                     Partition::Clusters => "cluster",
@@ -254,16 +288,26 @@ impl Scheme {
                     Handback::Rigid => "rigid",
                     Handback::Impulse => "impulse",
                 };
-                if rounds == 0 { format!("{part}, {back}") } else { format!("{part}, {back}, +{rounds} rounds") }
+                let load = match feedback {
+                    Feedback::None => String::new(),
+                    Feedback::Last => ", load".to_string(),
+                    Feedback::Persistent => ", load (persistent)".to_string(),
+                    Feedback::Relaxed(alpha) => format!(", load (relaxed {alpha})"),
+                    Feedback::LastNormal => ", load (normal)".to_string(),
+                    Feedback::PersistentNormal => ", load (persistent, normal)".to_string(),
+                };
+                if rounds == 0 { format!("{part}, {back}{load}") } else { format!("{part}, {back}{load}, +{rounds} rounds") }
             }
         }
     }
 }
 
-pub const WHOLE_RIGID: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Rigid, rounds: 0 };
-pub const WHOLE_IMPULSE: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Impulse, rounds: 0 };
-pub const CLUSTER_IMPULSE: Scheme = Scheme::Proxy { partition: Partition::Clusters, handback: Handback::Impulse, rounds: 0 };
-pub const PER_CAR: Scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 0 };
+pub const WHOLE_RIGID: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Rigid, rounds: 0, feedback: Feedback::None };
+pub const WHOLE_IMPULSE: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Impulse, rounds: 0, feedback: Feedback::None };
+pub const CLUSTER_IMPULSE: Scheme = Scheme::Proxy { partition: Partition::Clusters, handback: Handback::Impulse, rounds: 0, feedback: Feedback::None };
+pub const PER_CAR_LOAD: Scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 0, feedback: Feedback::Last };
+pub const WHOLE_LOAD: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Impulse, rounds: 0, feedback: Feedback::Last };
+pub const PER_CAR: Scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 0, feedback: Feedback::None };
 
 pub fn hi_settings() -> Settings {
     Settings { steps_per_tick: 12, substeps: 16, pgs_iterations: 32, ..Settings::default() }
@@ -333,6 +377,158 @@ pub struct Built {
     pub bodies: Vec<Option<RigidBodyHandle>>,
     pub colliders: Vec<Option<ColliderHandle>>,
     pub joints: Vec<Option<ImpulseJointHandle>>,
+    /// Sets of cars welded into one body (empty: every car is its own body).
+    pub clusters: Vec<Cluster>,
+}
+
+/// Cars welded into one body: the body's frame is that of the first member, the others sit at fixed offsets from it.
+pub struct Cluster {
+    pub body: RigidBodyHandle,
+    pub members: Vec<usize>,
+    pub offsets: Vec<Vector>,
+    pub local_com: Vector,
+}
+
+impl Built {
+    /// Puts the cars' states into the world (a welded body takes the first member's place and the members' momenta).
+    fn sync(&mut self, scene: &Scene, truth: &[CarState]) {
+        if self.clusters.is_empty() {
+            for (i, state) in truth.iter().enumerate() {
+                if let Some(handle) = self.bodies[i] {
+                    write_body(&mut self.world, handle, *state);
+                }
+            }
+            return;
+        }
+        let velocities: Vec<(Vector, Vector)> = truth.iter().map(|s| (s.linvel, s.angvel)).collect();
+        for cluster in &self.clusters {
+            let l = lump(scene, &cluster.members, truth, &velocities);
+            let body = &mut self.world.bodies[cluster.body];
+            body.set_position(truth[cluster.members[0]].pose, false);
+            body.set_linvel(l.velocity, false);
+            body.set_angvel(l.turn, false);
+        }
+    }
+
+    /// Every car's state, in the scene's order.
+    fn states(&self, scene: &Scene) -> Vec<CarState> {
+        if self.clusters.is_empty() {
+            return self.bodies.iter().map(|b| read_body(&self.world, b.expect("body"))).collect();
+        }
+        let mut out = vec![CarState { pose: Pose::IDENTITY, linvel: Vector::ZERO, angvel: Vector::ZERO }; scene.cars.len()];
+        for cluster in &self.clusters {
+            let body = &self.world.bodies[cluster.body];
+            let pose = *body.position();
+            let centre = pose.transform_point(cluster.local_com);
+            for (&i, &offset) in cluster.members.iter().zip(&cluster.offsets) {
+                let place = pose.transform_point(offset);
+                out[i] = CarState { pose: Pose::from_parts(place, pose.rotation), linvel: body.linvel() + body.angvel().cross(place - centre), angvel: body.angvel() };
+            }
+        }
+        out
+    }
+
+    /// Sets the pushes (outside forces on cars) on the world's bodies.
+    fn set_pushes(&mut self, scene: &Scene, truth: &[CarState], forces: &[Vector]) {
+        if self.clusters.is_empty() {
+            let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
+            Sim::apply_forces(&mut self.world, &self.bodies, forces, &none);
+            return;
+        }
+        let velocities: Vec<(Vector, Vector)> = truth.iter().map(|s| (s.linvel, s.angvel)).collect();
+        for cluster in &self.clusters {
+            let l = lump(scene, &cluster.members, truth, &velocities);
+            let (mut force, mut torque) = (Vector::ZERO, Vector::ZERO);
+            for &i in &cluster.members {
+                force += forces[i];
+                torque += (truth[i].pose.translation - l.centre).cross(forces[i]);
+            }
+            let body = &mut self.world.bodies[cluster.body];
+            body.reset_forces(false);
+            body.reset_torques(false);
+            if force.length_squared() > 0.0 {
+                body.add_force(force, true);
+            }
+            if torque.length_squared() > 0.0 {
+                body.add_torque(torque, true);
+            }
+        }
+    }
+
+    /// Extra solver work for the islands these bodies are in (substeps, and passes inside each).
+    fn set_effort(&mut self, effort: (usize, usize)) {
+        for (_, body) in self.world.bodies.iter_mut() {
+            body.set_additional_solver_iterations(effort.0);
+            body.set_additional_pgs_iterations(effort.1);
+        }
+    }
+}
+
+/// The cars joined by fixed joints (and the joints of `Scene::welds`), as sets.
+pub fn weld_sets(scene: &Scene) -> Vec<Vec<usize>> {
+    clusters_of(scene)
+}
+
+/// The contact copy of the world with every set of rigidly joined cars welded into one body (the cars must start unrotated). Joints between sets are kept, with their
+/// anchors put in the sets' frames.
+pub fn build_welded(scene: &Scene, settings: Settings, colliders: bool, ground: bool) -> Built {
+    let mut world = World::new(settings, scene.gravity);
+    world.parameters.friction_model = FrictionModel::Coulomb;
+    let n = scene.cars.len();
+    let mut bodies = vec![None; n];
+    let mut collider_handles = vec![None; n];
+    let mut clusters = Vec::new();
+    let mut offset_of = vec![Vector::ZERO; n];
+    for members in weld_sets(scene) {
+        let reference = members[0];
+        let origin = scene.cars[reference].pose.translation;
+        let mass: f64 = members.iter().map(|&i| scene.cars[i].mass).sum();
+        let com = members.iter().fold(Vector::ZERO, |sum, &i| sum + scene.cars[i].pose.translation * scene.cars[i].mass) / mass;
+        let mut inertia = Matrix::ZERO;
+        for &i in &members {
+            let car = &scene.cars[i];
+            assert!(car.pose.rotation.angle_between(Rotation::IDENTITY) < 1e-9, "welded cars must start unrotated");
+            let arm = car.pose.translation - com;
+            inertia += world_inertia(car, &car.pose) + (Matrix::IDENTITY * arm.dot(arm) - outer(arm, arm)) * car.mass;
+        }
+        let properties = MassProperties::with_inertia_matrix(com - origin, mass, inertia);
+        let body = world.bodies.insert(RigidBodyBuilder::dynamic().pose(Pose::from_translation(origin)).can_sleep(false).additional_mass_properties(properties));
+        let mut offsets = Vec::new();
+        for &i in &members {
+            let car = &scene.cars[i];
+            let offset = car.pose.translation - origin;
+            offset_of[i] = offset;
+            offsets.push(offset);
+            bodies[i] = Some(body);
+            if colliders {
+                let collider = world.colliders.insert_with_parent(
+                    car.shape.builder().density(0.0).friction(car.friction).restitution(0.0).collision_groups(car_filter(car.group)).position_wrt_parent(Pose::from_translation(offset)),
+                    body,
+                    &mut world.bodies,
+                );
+                collider_handles[i] = Some(collider);
+            }
+        }
+        clusters.push(Cluster { body, members, offsets, local_com: com - origin });
+    }
+    if ground {
+        add_ground(&mut world, scene);
+    }
+    let welded: Vec<Vec<usize>> = clusters.iter().map(|c| c.members.clone()).collect();
+    let same_set = |a: usize, b: usize| welded.iter().any(|set| set.contains(&a) && set.contains(&b));
+    let mut joints = Vec::new();
+    for spec in &scene.joints {
+        if same_set(spec.a, spec.b) {
+            joints.push(None);
+            continue;
+        }
+        let mut moved = spec.clone();
+        moved.anchor_a = offset_of[spec.a] + spec.anchor_a;
+        moved.anchor_b = offset_of[spec.b] + spec.anchor_b;
+        joints.push(Some(world.impulse_joints.insert(bodies[spec.a].expect("body"), bodies[spec.b].expect("body"), make_joint(&moved), true)));
+    }
+    world.tick_length = settings.tick_length;
+    Built { world, bodies, colliders: collider_handles, joints, clusters }
 }
 
 pub fn build(scene: &Scene, settings: Settings, only_group: Option<usize>, colliders: bool, ground: bool, coulomb: bool) -> Built {
@@ -380,7 +576,7 @@ pub fn build(scene: &Scene, settings: Settings, only_group: Option<usize>, colli
         }
     }
     world.tick_length = settings.tick_length;
-    Built { world, bodies, colliders: collider_handles, joints }
+    Built { world, bodies, colliders: collider_handles, joints, clusters: Vec::new() }
 }
 
 fn add_ground(world: &mut World, scene: &Scene) {
@@ -459,6 +655,8 @@ struct Hit {
     point: Vector,
     /// The part of the impulse along the contact normal (the rest is friction), for diagnostics.
     normal_part: Vector,
+    /// The car on the other side of the contact, if it is one.
+    other: Option<usize>,
 }
 
 /// A step's results for the cars: the change of velocity (linear, angular) the contact gave each.
@@ -484,8 +682,22 @@ pub struct Sim {
     ghost: Option<Built>,
     /// The ghost world without the contacts (`GhostDifference`).
     free_ghost: Option<Built>,
+    /// Extra solver work for the ghost worlds (substeps, passes), and whether only while something was touched in the last step.
+    pub ghost_effort: (usize, usize),
+    pub effort_when_touched: bool,
+    touched_last_step: bool,
+    /// Whether the car of the higher priority is left out of the impulses of a contact (see `CarSpec::priority`).
+    pub priority_rule: bool,
     /// Calls of the ghost worlds' step per step of the joint worlds (a ghost lives in another frame, with its own number of steps).
     pub ghost_calls: usize,
+    /// The cars' states at the start of the last step, and the outside force and torque on each over it (the pushes and what was handed back), for the load feedback.
+    previous: Option<Vec<CarState>>,
+    last_outside: Vec<(Vector, Vector)>,
+    /// The last two estimates of each car's joint load, and the one that was used last (for the filters of the load feedback).
+    load_history: Vec<[(Vector, Vector); 2]>,
+    load_used: Vec<(Vector, Vector)>,
+    /// The direction each car's contacts pushed it in the last step (zero: no contact).
+    last_push: Vec<Vector>,
     /// The worst difference between a proxy's change of momentum and the sum of its contact impulses, over the change (0 if there was none to speak of).
     pub worst_balance: f64,
     pub spent: Duration,
@@ -508,8 +720,8 @@ pub fn clusters_of(scene: &Scene) -> Vec<Vec<usize>> {
         }
         root
     }
-    for joint in &scene.joints {
-        if joint.kind == JointKind::Fixed {
+    for (index, joint) in scene.joints.iter().enumerate() {
+        if joint.kind == JointKind::Fixed || scene.welds.contains(&index) {
             let (a, b) = (find(&mut parent, joint.a), find(&mut parent, joint.b));
             if a != b {
                 parent[a.max(b)] = a.min(b);
@@ -555,13 +767,29 @@ impl Sim {
             owner: HashMap::new(),
             ghost: None,
             free_ghost: None,
+            ghost_effort: (0, 0),
+            effort_when_touched: false,
+            touched_last_step: false,
+            priority_rule: false,
             ghost_calls: 1,
+            previous: None,
+            last_outside: Vec::new(),
+            load_history: Vec::new(),
+            load_used: Vec::new(),
+            last_push: Vec::new(),
             worst_balance: 0.0,
             spent: Duration::ZERO,
             steps_with_hits: 0,
         };
         match scheme {
             Scheme::Hi | Scheme::Game => sim.one = Some(build(scene, settings, None, true, true, true)),
+            Scheme::GhostWelded | Scheme::GhostWeldedDifference => {
+                sim.groups = (0..scene.groups()).map(|g| build(scene, settings, Some(g), false, false, true)).collect();
+                sim.ghost = Some(build_welded(scene, settings, true, true));
+                if scheme == Scheme::GhostWeldedDifference {
+                    sim.free_ghost = Some(build_welded(scene, settings, false, false));
+                }
+            }
             Scheme::Ghost | Scheme::GhostDifference => {
                 sim.groups = (0..scene.groups()).map(|g| build(scene, settings, Some(g), false, false, true)).collect();
                 sim.ghost = Some(build(scene, settings, None, true, true, true));
@@ -708,8 +936,9 @@ impl Sim {
                 built.world.step();
             }
             Scheme::Ghost => self.ghost_step(&forces),
-            Scheme::GhostDifference => self.difference_step(&forces),
-            Scheme::Proxy { partition: _, handback, rounds } => self.proxy_step(&forces, handback, rounds),
+            Scheme::GhostDifference | Scheme::GhostWeldedDifference => self.difference_step(&forces),
+            Scheme::GhostWelded => self.ghost_step(&forces),
+            Scheme::Proxy { partition: _, handback, rounds, feedback } => self.proxy_step(&forces, handback, rounds, feedback),
         }
         self.time += self.dt;
         self.spent += started.elapsed();
@@ -752,10 +981,10 @@ impl Sim {
                     let key = (call, first.into_raw_parts().0, second.into_raw_parts().0, manifold_index, point_index);
                     let normal_on_first = force_direction * point.data.impulse;
                     if let Some(car) = car1 {
-                        hits.push(Hit { car, key, impulse: on_first, point: pose1.transform_point(point.local_p1), normal_part: normal_on_first });
+                        hits.push(Hit { car, key, impulse: on_first, point: pose1.transform_point(point.local_p1), normal_part: normal_on_first, other: car2 });
                     }
                     if let Some(car) = car2 {
-                        hits.push(Hit { car, key, impulse: -on_first, point: pose2.transform_point(point.local_p2), normal_part: -normal_on_first });
+                        hits.push(Hit { car, key, impulse: -on_first, point: pose2.transform_point(point.local_p2), normal_part: -normal_on_first, other: car1 });
                     }
                 }
             }
@@ -768,6 +997,9 @@ impl Sim {
         let mut impulses = vec![Vector::ZERO; self.scene.cars.len()];
         let mut moments = vec![Vector::ZERO; self.scene.cars.len()];
         for hit in hits {
+            if self.priority_rule && hit.other.is_some_and(|other| self.scene.cars[other].priority < self.scene.cars[hit.car].priority) {
+                continue;
+            }
             impulses[hit.car] += hit.impulse;
             moments[hit.car] += (hit.point - states[hit.car].pose.translation).cross(hit.impulse);
         }
@@ -779,14 +1011,16 @@ impl Sim {
             .collect()
     }
 
+    fn effort_now(&self) -> (usize, usize) {
+        if self.effort_when_touched && !self.touched_last_step { (0, 0) } else { self.ghost_effort }
+    }
+
     fn ghost_step(&mut self, forces: &[Vector]) {
         let truth = self.truth_states();
         let mut ghost = self.ghost.take().expect("ghost");
-        for (i, state) in truth.iter().enumerate() {
-            write_body(&mut ghost.world, ghost.bodies[i].expect("body"), *state);
-        }
-        let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
-        Self::apply_forces(&mut ghost.world, &ghost.bodies, forces, &none);
+        ghost.sync(&self.scene, &truth);
+        ghost.set_pushes(&self.scene, &truth, forces);
+        ghost.set_effort(self.effort_now());
         self.owner_from(&ghost);
         let mut hits = Vec::new();
         let saved = ghost.world.parameters.dt;
@@ -797,6 +1031,7 @@ impl Sim {
         }
         ghost.world.parameters.dt = saved;
         self.ghost = Some(ghost);
+        self.touched_last_step = !hits.is_empty();
         if !hits.is_empty() {
             self.steps_with_hits += 1;
         }
@@ -807,18 +1042,16 @@ impl Sim {
 
     /// Steps a ghost world from the truth's state (in `ghost_calls` pieces); returns the cars' states after.
     fn ghost_states(&self, built: &mut Built, truth: &[CarState], forces: &[Vector]) -> Vec<CarState> {
-        for (i, state) in truth.iter().enumerate() {
-            write_body(&mut built.world, built.bodies[i].expect("body"), *state);
-        }
-        let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
-        Self::apply_forces(&mut built.world, &built.bodies, forces, &none);
+        built.sync(&self.scene, truth);
+        built.set_pushes(&self.scene, truth, forces);
+        built.set_effort(self.effort_now());
         let saved = built.world.parameters.dt;
         built.world.parameters.dt = self.dt / self.ghost_calls as f64;
         for _ in 0..self.ghost_calls {
             built.world.step();
         }
         built.world.parameters.dt = saved;
-        built.bodies.iter().map(|b| read_body(&built.world, b.expect("body"))).collect()
+        built.states(&self.scene)
     }
 
     fn difference_step(&mut self, forces: &[Vector]) {
@@ -847,6 +1080,7 @@ impl Sim {
             body.set_linvel(after[i].linvel + dv, false);
             body.set_angvel(after[i].angvel + dw, false);
         }
+        self.touched_last_step = changed;
         if changed {
             self.steps_with_hits += 1;
         }
@@ -863,7 +1097,7 @@ impl Sim {
         }
     }
 
-    fn proxy_step(&mut self, forces: &[Vector], handback: Handback, rounds: usize) {
+    fn proxy_step(&mut self, forces: &[Vector], handback: Handback, rounds: usize, feedback: Feedback) {
         let dt = self.dt;
         let truth = self.truth_states();
         let count = self.scene.cars.len();
@@ -872,6 +1106,7 @@ impl Sim {
         let mut free: Vec<(Vector, Vector)> = (0..count).map(|i| (truth[i].linvel + forces[i] / self.scene.cars[i].mass * dt, truth[i].angvel)).collect();
         let mut kicks: Vec<Kick> = vec![(Vector::ZERO, Vector::ZERO); count];
         let mut final_hits: Vec<Hit> = Vec::new();
+        let loads: Vec<(Vector, Vector)> = if feedback != Feedback::None { self.joint_loads(&truth, feedback) } else { vec![(Vector::ZERO, Vector::ZERO); count] };
         for round in 0..=rounds {
             // 1. the contact world, from the truth's places and the free velocities.
             let mut contact = self.contact.take().expect("contact world");
@@ -886,6 +1121,22 @@ impl Sim {
                 body.set_position(Pose::from_translation(l.centre), false);
                 body.set_linvel(l.velocity, false);
                 body.set_angvel(l.turn, false);
+                // The load the joints carried over the last step, as an outside force (what a joint will hold up or pull during this one).
+                body.reset_forces(false);
+                body.reset_torques(false);
+                if feedback != Feedback::None && round == 0 {
+                    let (mut force, mut torque) = (Vector::ZERO, Vector::ZERO);
+                    for &i in &proxy.cars {
+                        force += loads[i].0;
+                        torque += loads[i].1 + (truth[i].pose.translation - l.centre).cross(loads[i].0);
+                    }
+                    if force.length_squared() > 0.0 {
+                        body.add_force(force, true);
+                    }
+                    if torque.length_squared() > 0.0 {
+                        body.add_torque(torque, true);
+                    }
+                }
             }
             // 2. the step (in `contact_calls` pieces), and what the pairs say.
             let mut hits: Vec<Hit> = Vec::new();
@@ -965,8 +1216,88 @@ impl Sim {
         if !final_hits.is_empty() {
             self.steps_with_hits += 1;
         }
+        if std::env::var("HANDBACK_WHEEL").is_ok() && self.time < 0.6 {
+            // The first wheel (car 1): its place, its speed and spin, the loads fed back, and what the contact gave it.
+            let wheel = 1;
+            let (mut normal, mut tangent) = (Vector::ZERO, Vector::ZERO);
+            for hit in final_hits.iter().filter(|h| h.car == wheel) {
+                normal += hit.normal_part;
+                tangent += hit.impulse - hit.normal_part;
+            }
+            println!(
+                "t {:.3} wheel y {:.4} vx {:+.4} spin {:+.3} rim {:+.3} slip {:+.4}  load {:+.1?} {:+.1?}  contact normal {:+.1} tangent x {:+.2}  chassis vx {:+.4}",
+                self.time,
+                truth[wheel].pose.translation.y,
+                truth[wheel].linvel.x,
+                truth[wheel].angvel.z,
+                -truth[wheel].angvel.z * 0.4,
+                truth[wheel].linvel.x + truth[wheel].angvel.z * 0.4,
+                loads[wheel].0.x,
+                loads[wheel].0.y,
+                normal.y,
+                tangent.x,
+                truth[0].linvel.x
+            );
+        }
         let handed_back = self.kick_forces(&kicks, &truth);
+        self.last_outside = (0..count).map(|i| (forces[i] + handed_back[i].0, handed_back[i].1)).collect();
+        let mut pushes = vec![Vector::ZERO; count];
+        for hit in &final_hits {
+            pushes[hit.car] += hit.normal_part;
+        }
+        self.last_push = pushes.into_iter().map(|p| if p.length_squared() > 1e-12 { p.normalize() } else { Vector::ZERO }).collect();
+        self.previous = Some(truth);
         self.step_joint_worlds(forces, &handed_back);
+    }
+
+    /// What each car's joints (and their motors) did to it over the last step: its change of velocity over the step, times its mass, less gravity and the outside forces that were put on it.
+    fn joint_loads(&mut self, truth: &[CarState], mode: Feedback) -> Vec<(Vector, Vector)> {
+        let n = truth.len();
+        let Some(previous) = &self.previous else { return vec![(Vector::ZERO, Vector::ZERO); n] };
+        let estimate: Vec<(Vector, Vector)> = (0..n)
+            .map(|i| {
+                let spec = &self.scene.cars[i];
+                let force = (truth[i].linvel - previous[i].linvel) * (spec.mass / self.dt) - self.scene.gravity * spec.mass - self.last_outside[i].0;
+                let torque = world_inertia(spec, &truth[i].pose) * ((truth[i].angvel - previous[i].angvel) / self.dt) - self.last_outside[i].1;
+                (force, torque)
+            })
+            .collect();
+        if self.load_history.len() != n {
+            self.load_history = vec![[(Vector::ZERO, Vector::ZERO); 2]; n];
+            self.load_used = vec![(Vector::ZERO, Vector::ZERO); n];
+        }
+        let agree = |a: f64, b: f64| if a * b > 0.0 { a.signum() * a.abs().min(b.abs()) } else { 0.0 };
+        let used: Vec<(Vector, Vector)> = (0..n)
+            .map(|i| {
+                let [before, _] = self.load_history[i];
+                let along = |load: (Vector, Vector)| {
+                    let direction = self.last_push.get(i).copied().unwrap_or(Vector::ZERO);
+                    (direction * direction.dot(load.0), Vector::ZERO)
+                };
+                match mode {
+                    Feedback::None => (Vector::ZERO, Vector::ZERO),
+                    Feedback::Last => estimate[i],
+                    Feedback::LastNormal => along(estimate[i]),
+                    Feedback::PersistentNormal => {
+                        let persistent = (
+                            Vector::new(agree(estimate[i].0.x, before.0.x), agree(estimate[i].0.y, before.0.y), agree(estimate[i].0.z, before.0.z)),
+                            Vector::ZERO,
+                        );
+                        along(persistent)
+                    }
+                    Feedback::Persistent => (
+                        Vector::new(agree(estimate[i].0.x, before.0.x), agree(estimate[i].0.y, before.0.y), agree(estimate[i].0.z, before.0.z)),
+                        Vector::new(agree(estimate[i].1.x, before.1.x), agree(estimate[i].1.y, before.1.y), agree(estimate[i].1.z, before.1.z)),
+                    ),
+                    Feedback::Relaxed(alpha) => (estimate[i].0 * alpha + self.load_used[i].0 * (1.0 - alpha), estimate[i].1 * alpha + self.load_used[i].1 * (1.0 - alpha)),
+                }
+            })
+            .collect();
+        for i in 0..n {
+            self.load_history[i] = [estimate[i], self.load_history[i][0]];
+        }
+        self.load_used = used.clone();
+        used
     }
 
     fn read_hits_unsorted(&self, contact: &World, call: usize, hits: &mut Vec<Hit>) {
@@ -998,11 +1329,16 @@ pub struct Options {
     pub contact_calls: usize,
     /// Calls of a ghost world's step per step of the joint worlds (a ghost lives in another frame, with its own number of steps).
     pub ghost_calls: usize,
+    /// Extra solver work (substeps, passes) for the ghost worlds, and whether only in a step after one in which something was touched.
+    pub ghost_effort: (usize, usize),
+    pub effort_when_touched: bool,
+    /// The car of the higher priority is not given the impulse of a contact with a car of a lower one.
+    pub priority_rule: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { contact_calls: 1, ghost_calls: 1 }
+        Self { contact_calls: 1, ghost_calls: 1, ghost_effort: (0, 0), effort_when_touched: false, priority_rule: false }
     }
 }
 
@@ -1010,6 +1346,9 @@ pub fn run_options(scene: &Scene, scheme: Scheme, settings: Settings, options: O
     let mut sim = Sim::new(scene, scheme, settings);
     sim.contact_calls = options.contact_calls;
     sim.ghost_calls = options.ghost_calls;
+    sim.ghost_effort = options.ghost_effort;
+    sim.effort_when_touched = options.effort_when_touched;
+    sim.priority_rule = options.priority_rule;
     let mut frames = vec![sim.states()];
     let ticks = (scene.seconds / sim.settings.tick_length).round() as usize;
     for _ in 0..ticks {

@@ -7,8 +7,8 @@ use loop_probe::contraption::Shape;
 use loop_probe::contraption::*;
 use loop_probe::*;
 
-const PER_CAR_ROUNDS_2: Scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 2 };
-const WHOLE_ROUNDS_2: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Impulse, rounds: 2 };
+const PER_CAR_ROUNDS_2: Scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 2, feedback: Feedback::None };
+const WHOLE_ROUNDS_2: Scheme = Scheme::Proxy { partition: Partition::Whole, handback: Handback::Impulse, rounds: 2, feedback: Feedback::None };
 
 /// The schemes of the main tables, in the order they are printed (the first is the reference).
 const SCHEMES: [Scheme; 10] = [Scheme::Hi, Scheme::Game, Scheme::Ghost, Scheme::GhostDifference, WHOLE_RIGID, WHOLE_IMPULSE, CLUSTER_IMPULSE, PER_CAR, PER_CAR_ROUNDS_2, WHOLE_ROUNDS_2];
@@ -586,7 +586,7 @@ fn cost() {
     println!("\ncost: hinged chains of N cars hit across, microseconds per tick (3 steps) for the whole step (the one world, or the joint worlds and the contact world)");
     println!("{:<30} {:>9} {:>9} {:>9} {:>9}", "scheme", "N=8", "N=32", "N=128", "N=256");
     let mut table: Vec<(String, Vec<f64>)> = Vec::new();
-    for scheme in [Scheme::Game, Scheme::Ghost, Scheme::GhostDifference, WHOLE_RIGID, WHOLE_IMPULSE, CLUSTER_IMPULSE, PER_CAR, PER_CAR_ROUNDS_2] {
+    for scheme in [Scheme::Game, Scheme::Ghost, Scheme::GhostDifference, Scheme::GhostWelded, Scheme::GhostWeldedDifference, WHOLE_RIGID, WHOLE_IMPULSE, CLUSTER_IMPULSE, PER_CAR, PER_CAR_ROUNDS_2, Scheme::Proxy { partition: Partition::Clusters, handback: Handback::Impulse, rounds: 2, feedback: Feedback::Last }] {
         let mut row = Vec::new();
         for cars in [8usize, 32, 128, 256] {
             let mut scene = chain_scene(JointKind::Hinge, Hit::Transverse, 1000.0, cars);
@@ -613,7 +613,7 @@ fn nearness() {
 the landing-gear ship with and without a 1 t cube standing on the floor 1.5 m from its hull (touching nothing), 3 s: the greatest difference in any car's place (m) and velocity (m/s), and whether every bit agrees");
     println!("{:<34} {:>12} {:>12} {:>10}", "scheme", "place", "velocity", "same bits");
     for (scheme, ghost_calls) in [(Scheme::Hi, 1), (Scheme::Game, 1), (Scheme::Ghost, 1), (Scheme::Ghost, 2), (Scheme::GhostDifference, 1), (Scheme::GhostDifference, 2), (WHOLE_IMPULSE, 1), (PER_CAR, 1), (WHOLE_RIGID, 1)] {
-        let options = Options { contact_calls: 1, ghost_calls };
+        let options = Options { ghost_calls, ..Options::default() };
         let a = run_options(&alone, scheme, Settings::default(), options);
         let b = run_options(&with, scheme, Settings::default(), options);
         let (mut place, mut velocity) = (0.0f64, 0.0f64);
@@ -647,9 +647,16 @@ fn fingerprints() {
     let mut chain = chain_scene(JointKind::Hinge, Hit::Transverse, 1000.0, 4);
     chain.seconds = 1.0;
     scenes.push(("hinged chain hit across, 1 s".to_string(), chain));
+    let mut schemes = SCHEMES.to_vec();
+    schemes.extend([
+        Scheme::GhostWelded,
+        Scheme::GhostWeldedDifference,
+        Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 0, feedback: Feedback::Last },
+        Scheme::Proxy { partition: Partition::Clusters, handback: Handback::Impulse, rounds: 2, feedback: Feedback::Persistent },
+    ]);
     for (name, scene) in &scenes {
-        for scheme in SCHEMES {
-            let t = run_options(scene, scheme, Settings::default(), Options { contact_calls: 1, ghost_calls: 2 });
+        for &scheme in &schemes {
+            let t = run_options(scene, scheme, Settings::default(), Options { ghost_calls: 2, ..Options::default() });
             println!("fingerprint {name:<30} {:<30} {:016x}", scheme.name(), t.fingerprint());
         }
     }
@@ -674,7 +681,7 @@ fn variants() {
         let reference = run(&scene, Scheme::Hi, Settings::default());
         let mut rows = Vec::new();
         for (name, scheme, calls) in &ghost_variants {
-            let t = run_options(&scene, *scheme, Settings::default(), Options { contact_calls: 1, ghost_calls: *calls });
+            let t = run_options(&scene, *scheme, Settings::default(), Options { ghost_calls: *calls, ..Options::default() });
             let r = gear_report(&scene, &ids, &t, &reference);
             rows.push((name.clone(), vec![r.peak_g, r.least_extension, r.final_height_error_mm, r.jitter_mm_s, r.foot_below_mm, r.worst_gap_mm]));
         }
@@ -685,7 +692,7 @@ fn variants() {
         let scene = door_scene(false, 1000.0, 4.0);
         let mut rows = Vec::new();
         for (name, scheme, calls) in &ghost_variants {
-            let t = run_options(&scene, *scheme, Settings::default(), Options { contact_calls: 1, ghost_calls: *calls });
+            let t = run_options(&scene, *scheme, Settings::default(), Options { ghost_calls: *calls, ..Options::default() });
             let peak_angle = max_of(t.frames.iter().map(|f| joint_coordinate(&scene.joints[0], f).abs()));
             rows.push((name.clone(), vec![t.last()[2].linvel.z, t.last()[0].linvel.length(), peak_angle]));
         }
@@ -700,7 +707,7 @@ fn variants() {
         scene.seconds = 1.25;
         let mut rows = Vec::new();
         for (name, scheme, calls) in &ghost_variants {
-            let t = run_options(&scene, *scheme, Settings::default(), Options { contact_calls: 1, ghost_calls: *calls });
+            let t = run_options(&scene, *scheme, Settings::default(), Options { ghost_calls: *calls, ..Options::default() });
             let overlap = max_of(t.frames.iter().map(|f| (1.0 - (f[3].pose.translation - f[last].pose.translation).length()) * 1e3));
             rows.push((name.clone(), vec![t.last()[last].linvel.x, t.last()[3].linvel.x, overlap]));
         }
@@ -712,7 +719,7 @@ fn variants() {
         let reference = run(&scene, Scheme::Hi, Settings::default());
         let mut rows = Vec::new();
         for rounds in [0usize, 1, 2, 4, 8, 16] {
-            let scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds };
+            let scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds, feedback: Feedback::None };
             let t = run(&scene, scheme, Settings::default());
             let r = gear_report(&scene, &ids, &t, &reference);
             rows.push((format!("per car, {rounds} extra rounds"), vec![r.peak_g, r.least_extension, r.final_height_error_mm, r.jitter_mm_s, r.foot_below_mm, t.micros_per_tick]));
@@ -732,6 +739,283 @@ fn variants() {
         }
         print_table("landing gear at 2 m/s with one coupling step of 1/20 s a tick (12 substeps) instead of three of 1/60 s", &["peak g", "least ext", "err mm", "jitter", "foot below", "gap mm"], &rows, &[2, 3, 1, 2, 1, 2]);
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// The scoreboard: one row of the key numbers of ten scenes for a scheme, to compare fixes and variants at a glance.
+
+/// How a column is printed: as it is, or as the difference from the converged row in millimetres.
+#[derive(Clone, Copy)]
+enum Show {
+    Raw,
+    DifferenceMillimetres,
+}
+
+const SCORE_COLUMNS: [(&str, Show, usize); 15] = [
+    ("tower off", Show::Raw, 0),
+    ("gear g", Show::Raw, 2),
+    ("gear mm", Show::DifferenceMillimetres, 1),
+    ("door rad", Show::Raw, 3),
+    ("door exit", Show::Raw, 3),
+    ("drive v", Show::Raw, 2),
+    ("coast v", Show::Raw, 2),
+    ("carrier mm", Show::DifferenceMillimetres, 0),
+    ("carried mm", Show::DifferenceMillimetres, 0),
+    ("land g", Show::Raw, 2),
+    ("across 16", Show::Raw, 3),
+    ("far mm", Show::DifferenceMillimetres, 0),
+    ("along 8", Show::Raw, 3),
+    ("stiff vx", Show::Raw, 3),
+    ("stiff lap", Show::Raw, 0),
+];
+
+fn score(scheme: Scheme, options: Options) -> Vec<f64> {
+    let settings = Settings::default();
+    let mut row = Vec::new();
+    // 0: a tower of cubes at rest, 8 s: how far it walks off its axis (mm).
+    {
+        let scene = tower_scene(4, 8.0);
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(max_of(t.frames.iter().map(|f| f.iter().map(|s| (s.pose.translation.x.powi(2) + s.pose.translation.z.powi(2)).sqrt()).fold(0.0, f64::max))) * 1e3);
+    }
+    // 1, 2: the landing gear at 2 m/s: peak g, settled hull height.
+    {
+        let (scene, ids) = gear_scene(2.0, 6.0);
+        let t = run_options(&scene, scheme, settings, options);
+        let dt = t.dt;
+        let mut peak = 0.0f64;
+        for pair in t.frames.windows(2) {
+            peak = peak.max(((pair[1][ids.hull].linvel.y - pair[0][ids.hull].linvel.y) / dt + 9.81) / 9.81);
+        }
+        row.push(peak);
+        row.push(mean_of(t.since(scene.seconds - 2.0).iter().map(|f| f[ids.hull].pose.translation.y)));
+    }
+    // 3, 4: the spring door hit by 1000 kg: peak angle, the stranger's exit speed.
+    {
+        let scene = door_scene(false, 1000.0, 4.0);
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(max_of(t.frames.iter().map(|f| joint_coordinate(&scene.joints[0], f).abs())));
+        row.push(t.last()[2].linvel.z);
+    }
+    // 5, 6: the rover driving, and coasting: speed at 8 s.
+    for (drive, coasting) in [(true, false), (false, true)] {
+        let (scene, ids) = rover_scene(drive, coasting);
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(t.last()[ids.chassis].linvel.x);
+    }
+    // 7, 8, 9: the carrier at rest (heights of the two hulls), and the ship dropped on it (peak g of the carried hull).
+    {
+        let (scene, carrier, carried) = carrier_scene(CarrierRun::Rest);
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(t.last()[carrier.hull].pose.translation.y);
+        row.push(t.last()[carried.hull].pose.translation.y);
+        let (scene, _carrier, carried) = carrier_scene(CarrierRun::Land);
+        let t = run_options(&scene, scheme, settings, options);
+        let mut peak = 0.0f64;
+        for pair in t.frames.windows(2) {
+            peak = peak.max(((pair[1][carried.hull].linvel.y - pair[0][carried.hull].linvel.y) / t.dt + 9.81) / 9.81);
+        }
+        row.push(peak);
+    }
+    // 10, 11: a hinged chain of 16 hit across: the stranger's exit speed, the far car's height.
+    {
+        let scene = chain_scene(JointKind::Hinge, Hit::Transverse, 1000.0, 16);
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(t.last()[16].linvel.y);
+        row.push(t.last()[15].pose.translation.y);
+    }
+    // 12: a hinged chain of 8 hit along: the stranger's exit speed.
+    {
+        let scene = chain_scene(JointKind::Hinge, Hit::Axial, 1000.0, 8);
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(t.last()[8].linvel.x);
+    }
+    // 13, 14: a stranger at 20 m/s onto a stiff chain of 4: its exit speed, the deepest overlap (mm).
+    {
+        let mut scene = chain_scene(JointKind::Fixed, Hit::Axial, 1000.0, 4);
+        let last = scene.cars.len() - 1;
+        scene.cars[last].pose = Pose::from_translation(v(9.0, 0.0, 0.0));
+        scene.cars[last].linvel = v(-20.0, 0.0, 0.0);
+        scene.seconds = 1.25;
+        let t = run_options(&scene, scheme, settings, options);
+        row.push(t.last()[last].linvel.x);
+        row.push(max_of(t.frames.iter().map(|f| (1.0 - (f[3].pose.translation - f[last].pose.translation).length()) * 1e3)));
+    }
+    row
+}
+
+fn print_scoreboard(title: &str, rows: &[(String, Scheme, Options)]) {
+    println!("\n{title}");
+    print!("{:<34}", "scheme");
+    for (name, _, _) in SCORE_COLUMNS {
+        print!(" {name:>10}");
+    }
+    println!();
+    let truth = score(Scheme::Hi, Options::default());
+    print!("{:<34}", "converged (truth; hull heights in m)");
+    for (k, (_, show, precision)) in SCORE_COLUMNS.iter().enumerate() {
+        let places = if matches!(show, Show::DifferenceMillimetres) { 3 } else { *precision };
+        print!(" {:>10.places$}", truth[k]);
+    }
+    println!();
+    for (name, scheme, options) in rows {
+        let values = score(*scheme, *options);
+        print!("{name:<34}");
+        for (k, (_, show, precision)) in SCORE_COLUMNS.iter().enumerate() {
+            let value = match show {
+                Show::Raw => values[k],
+                Show::DifferenceMillimetres => (values[k] - truth[k]) * 1e3,
+            };
+            print!(" {value:>10.precision$}", precision = *precision);
+        }
+        println!();
+    }
+}
+
+fn fixes() {
+    let plain = Options::default();
+    let with = |partition: Partition, rounds: usize, feedback: Feedback| Scheme::Proxy { partition, handback: Handback::Impulse, rounds, feedback };
+    let rows: Vec<(String, Scheme, Options)> = vec![
+        ("one world, game (today)".to_string(), Scheme::Game, plain),
+        ("ghost, impulses".to_string(), Scheme::Ghost, plain),
+        ("ghost, difference".to_string(), Scheme::GhostDifference, plain),
+        ("welded ghost, impulses".to_string(), Scheme::GhostWelded, plain),
+        ("welded ghosts, difference".to_string(), Scheme::GhostWeldedDifference, plain),
+        ("whole body, impulse (owner)".to_string(), WHOLE_IMPULSE, plain),
+        ("per car".to_string(), PER_CAR, plain),
+        ("per car + load".to_string(), with(Partition::PerCar, 0, Feedback::Last), plain),
+        ("per car + load (persistent)".to_string(), with(Partition::PerCar, 0, Feedback::Persistent), plain),
+        ("cluster + load (persistent)".to_string(), with(Partition::Clusters, 0, Feedback::Persistent), plain),
+        ("cluster + load + 2 rounds".to_string(), with(Partition::Clusters, 2, Feedback::Last), plain),
+        ("cluster + load (persistent) + 2 rounds".to_string(), with(Partition::Clusters, 2, Feedback::Persistent), plain),
+    ];
+    print_scoreboard(
+        "scoreboard (columns: tower off axis mm; gear peak g, hull height error mm; door peak angle, stranger exit; rover speed driving, coasting; carrier and carried hull height error mm, landing g; hinged chain of 16 across: stranger exit vy, far car error mm; chain of 8 along: exit vx; stiff chain at 20 m/s: exit vx, overlap mm)",
+        &rows,
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Part priorities, in three forms: solver work (per island), welding the rigid parts into one body, and who receives the impulse of a contact.
+
+fn stiff_approach_scene(speed: f64) -> Scene {
+    let mut scene = chain_scene(JointKind::Fixed, Hit::Axial, 1000.0, 4);
+    let last = scene.cars.len() - 1;
+    scene.cars[last].pose = Pose::from_translation(v(3.0 + 0.5 + 5.0 + 0.5, 0.0, 0.0));
+    scene.cars[last].linvel = v(-speed, 0.0, 0.0);
+    scene.seconds = (5.0 / speed + 1.0).max(1.0);
+    scene
+}
+
+fn effort() {
+    println!("\nsolver work as a priority: the ghost worlds given extra substeps and passes (Rapier applies them to a whole island, the largest request of its bodies), always or only after a step in which something was touched");
+    println!("{:<44} {:>10} {:>10} {:>10} {:>10} {:>10}", "ghost, difference form; extra (substeps, passes)", "stiff 5", "stiff 20", "along 8", "gear g", "us/tick");
+    let stiff_5 = stiff_approach_scene(5.0);
+    let stiff_20 = stiff_approach_scene(20.0);
+    let along_8 = chain_scene(JointKind::Hinge, Hit::Axial, 1000.0, 8);
+    let (gear, ids) = gear_scene(2.0, 6.0);
+    println!("{:<44} {:>10.3} {:>10.3} {:>10.3} {:>10.2}   (converged: stranger exit -1.000, -4.000, -0.553; gear 2.49 g)", "converged", -1.0, -4.0, -0.553, 2.49);
+    for (label, effort, touched) in [
+        ("none (today)", (0usize, 0usize), false),
+        ("(0, 3)", (0, 3), false),
+        ("(0, 7)", (0, 7), false),
+        ("(0, 15)", (0, 15), false),
+        ("(4, 0)", (4, 0), false),
+        ("(4, 7)", (4, 7), false),
+        ("(12, 31) = the converged settings' work", (12, 31), false),
+        ("(4, 7), only after a touch", (4, 7), true),
+        ("(12, 31), only after a touch", (12, 31), true),
+    ] {
+        let options = Options { ghost_effort: effort, effort_when_touched: touched, ..Options::default() };
+        let exit_of = |scene: &Scene, index: usize| run_options(scene, Scheme::GhostDifference, Settings::default(), options).last()[index].linvel.x;
+        let a = exit_of(&stiff_5, 4);
+        let b = exit_of(&stiff_20, 4);
+        let c = exit_of(&along_8, 8);
+        let t = run_options(&gear, Scheme::GhostDifference, Settings::default(), options);
+        let mut peak = 0.0f64;
+        for pair in t.frames.windows(2) {
+            peak = peak.max(((pair[1][ids.hull].linvel.y - pair[0][ids.hull].linvel.y) / t.dt + 9.81) / 9.81);
+        }
+        println!("{label:<44} {a:>10.3} {b:>10.3} {c:>10.3} {peak:>10.2} {:>10.0}", t.micros_per_tick);
+    }
+}
+
+fn welds() {
+    // The locked door: the hinge is held by a very stiff motor; the scene says it is to be taken as rigid where a scheme welds.
+    let mut locked = door_scene(true, 1000.0, 4.0);
+    locked.welds.push(0);
+    let mut spring = door_scene(false, 1000.0, 4.0);
+    spring.welds.push(0);
+    let stiff_5 = stiff_approach_scene(5.0);
+    let stiff_20 = stiff_approach_scene(20.0);
+    let stiff_60 = stiff_approach_scene(60.0);
+    let tower = tower_scene(4, 8.0);
+    let (gear, gear_ids) = gear_scene(2.0, 6.0);
+    println!("\nwelding the rigid parts of a mechanism into one body in the ghost (fixed joints, and a joint the scene marks as immobilized): the stranger's exit speed after a hit on");
+    println!("{:<34} {:>10} {:>10} {:>10} {:>10} {:>12} {:>10} {:>10} {:>9}", "scheme", "stiff 5", "stiff 20", "stiff 60", "door lock", "door spring*", "tower off", "gear g", "us/tick 4");
+    println!("{:<34} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>12.3} {:>10.1} {:>10.2}   (converged; * welded although it is a spring: wrong on purpose)", "converged", -1.0, -4.0, -11.983, -1.985, -1.507, 0.0, 2.49);
+    for scheme in [Scheme::Game, Scheme::Ghost, Scheme::GhostWelded, Scheme::GhostDifference, Scheme::GhostWeldedDifference, WHOLE_IMPULSE] {
+        let stranger_exit = |scene: &Scene, index: usize| run(scene, scheme, Settings::default()).last()[index].linvel;
+        let a = stranger_exit(&stiff_5, 4).x;
+        let b = stranger_exit(&stiff_20, 4).x;
+        let c = stranger_exit(&stiff_60, 4).x;
+        let d = stranger_exit(&locked, 2).z;
+        let e = stranger_exit(&spring, 2).z;
+        let tw = run(&tower, scheme, Settings::default());
+        let off = max_of(tw.frames.iter().map(|f| f.iter().map(|s| (s.pose.translation.x.powi(2) + s.pose.translation.z.powi(2)).sqrt()).fold(0.0, f64::max))) * 1e3;
+        let t = run(&gear, scheme, Settings::default());
+        let mut peak = 0.0f64;
+        for pair in t.frames.windows(2) {
+            peak = peak.max(((pair[1][gear_ids.hull].linvel.y - pair[0][gear_ids.hull].linvel.y) / t.dt + 9.81) / 9.81);
+        }
+        let cost = run(&stiff_20, scheme, Settings::default()).micros_per_tick;
+        println!("{:<34} {a:>10.3} {b:>10.3} {c:>10.3} {d:>10.3} {e:>12.3} {off:>10.1} {peak:>10.2} {cost:>9.0}", scheme.name());
+    }
+}
+
+fn priority() {
+    // A 100 kg crate thrown at the wall of a 8 t ship (a different group), as a thing inside a ship would be: the ship must not be moved by it.
+    let mut scene = Scene::new("crate against a hull", 1.0);
+    let hull = scene.add_car(CarSpec::new("hull", 0, Shape::Cuboid(v(1.5, 1.0, 1.5)), 8000.0, v(0.0, 0.0, 0.0)).priority(1));
+    let crate_car = scene.add_car(CarSpec::new("crate", 1, Shape::Cuboid(Vector::splat(0.25)), 100.0, v(1.5 + 0.25 + 0.5, 0.0, 0.0)).moving(v(-5.0, 0.0, 0.0)));
+    println!("\npriority as who is given the impulse: a 100 kg crate at 5 m/s into the wall of an 8 t ship (the ship has the higher priority); speeds after 1 s (m/s)");
+    println!("{:<44} {:>12} {:>12} {:>12}", "scheme", "ship vx", "crate vx", "momentum");
+    for (name, scheme, rule) in [
+        ("one world, game", Scheme::Game, false),
+        ("ghost, impulses", Scheme::Ghost, false),
+        ("ghost, impulses, priority rule", Scheme::Ghost, true),
+        ("welded ghost, impulses, priority rule", Scheme::GhostWelded, true),
+        ("per car, priority rule", PER_CAR, true),
+        ("whole body, impulse, priority rule", WHOLE_IMPULSE, true),
+    ] {
+        let t = run_options(&scene, scheme, Settings::default(), Options { priority_rule: rule, ..Options::default() });
+        let end = t.last();
+        let momentum = total_momentum(&scene, end).x - total_momentum(&scene, &t.frames[0]).x;
+        println!("{name:<44} {:>12.5} {:>12.4} {:>12.2}", end[hull].linvel.x, end[crate_car].linvel.x, momentum);
+    }
+}
+
+fn lod() {
+    // Far parts as one body (a level of detail by distance from the hit): a hinged chain of 16 cars hit at its last car, the first 8 or 12 welded in the ghost.
+    println!("\nlevel of detail as a priority: a hinged chain of 16 cars hit at the last car by 1000 kg at 5 m/s; the ghost (difference form) with the first cars welded into one body, 1 s");
+    println!("{:<44} {:>10} {:>10} {:>10} {:>10} {:>10}", "welded in the ghost", "across vy", "far off mm", "along vx", "far off mm", "us/tick");
+    for welded_cars in [0usize, 4, 8, 12] {
+        let mut row = Vec::new();
+        let mut micros = 0.0;
+        for hit in [Hit::Transverse, Hit::Axial] {
+            let mut scene = chain_scene(JointKind::Hinge, hit, 1000.0, 16);
+            scene.welds = (0..welded_cars.saturating_sub(1)).collect();
+            let reference = run(&chain_scene(JointKind::Hinge, hit, 1000.0, 16), Scheme::Hi, Settings::default());
+            let t = run(&scene, Scheme::GhostWeldedDifference, Settings::default());
+            let end = t.last();
+            row.push(if hit == Hit::Transverse { end[16].linvel.y } else { end[16].linvel.x });
+            row.push((end[15].pose.translation - reference.last()[15].pose.translation).length() * 1e3);
+            micros = t.micros_per_tick;
+        }
+        let label = if welded_cars == 0 { "none".to_string() } else { format!("the first {welded_cars} cars") };
+        println!("{label:<44} {:>10.3} {:>10.1} {:>10.3} {:>10.1} {micros:>10.0}", row[0], row[1], row[2], row[3]);
+    }
+    println!("{:<44} {:>10.3} {:>10} {:>10.3}   (converged)", "", -2.174, "", -0.232);
 }
 
 fn main() {
@@ -762,7 +1046,7 @@ fn main() {
             let reference = run(&scene, Scheme::Hi, Settings::default());
             let mut rows = Vec::new();
             for rounds in [0usize, 1, 2, 4, 8, 32] {
-                let scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds };
+                let scheme = Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds, feedback: Feedback::None };
                 let t = run(&scene, scheme, Settings::default());
                 let end = t.last();
                 let off = (end[3].pose.translation - reference.last()[3].pose.translation).length() * 1e3;
@@ -770,6 +1054,32 @@ fn main() {
                 rows.push((format!("per car, {rounds} extra rounds"), vec![end[4].linvel.x, end[4].linvel.y, off, overlap]));
             }
             print_table(&format!("hinged chain of 4 hit {} (converged stranger exit: {:+.3}, {:+.3})", if hit == Hit::Axial { "along" } else { "across" }, reference.last()[4].linvel.x, reference.last()[4].linvel.y), &["exit vx", "exit vy", "end off mm", "overlap"], &rows, &[3, 3, 1, 1]);
+        }
+    }
+    if which == "fixes" {
+        fixes();
+    }
+    for (name, function) in [("effort", effort as fn()), ("welds", welds), ("priority", priority), ("lod", lod)] {
+        if which == name || which == "priorities" {
+            function();
+        }
+    }
+    if which == "rovertrace" {
+        // The coasting rover under a feedback scheme, second by second: where does its extra speed come from?
+        let name = std::env::args().nth(2).unwrap_or_else(|| "load".to_string());
+        let scheme = match name.as_str() {
+            "game" => Scheme::Game,
+            "normal" => Scheme::Proxy { partition: Partition::PerCar, handback: Handback::Impulse, rounds: 0, feedback: Feedback::LastNormal },
+            "none" => PER_CAR,
+            _ => PER_CAR_LOAD,
+        };
+        let (scene, ids) = rover_scene(false, true);
+        let t = run(&scene, scheme, Settings::default());
+        for k in (0..t.frames.len()).step_by(12) {
+            let f = &t.frames[k];
+            let rims: Vec<String> = ids.wheels.iter().map(|&w| format!("{:+.2}", -f[w].angvel.z * 0.4)).collect();
+            let wheel_v: Vec<String> = ids.wheels.iter().map(|&w| format!("{:+.2}", f[w].linvel.x)).collect();
+            println!("t {:.2} chassis vx {:+.3} y {:.3}  wheel vx [{}] rim [{}]  chassis tilt z {:+.4}", k as f64 * t.dt, f[ids.chassis].linvel.x, f[ids.chassis].pose.translation.y, wheel_v.join(" "), rims.join(" "), f[ids.chassis].angvel.z);
         }
     }
     if which == "fingerprints" {
