@@ -95,7 +95,8 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// Bumps (2026-11-12): dirt has a normal picture, `dirt_n.png`, 16 by 16 of four bytes, so the package is 1,024 bytes longer, 15,049 to 16,073 (worked out before the run, and seen; the
 /// flag byte of dirt's picture was there already).
 /// Ambient occlusion (2026-11-13): the blue of `dirt_n.png` is 128 to 255 (its pits) and no longer 255 everywhere, so the length is the same (predicted, and seen) and the hash moved.
-const PINNED_PACKAGE: (usize, u64) = (16073, 17_508_484_886_644_095_798);
+/// The lamp's picture (2026-11-13): `lamp.png`, 16 by 16, is now the lamp's texture, so the package is 1,048 bytes longer, 16,073 to 17,121 (1,024 of them the pixels; the other 24 are the picture's name and its entry, worked out by neither of us and not itemised), the lamp's faces are pictures (6 faces by 4 shades: 24 more materials, 319 to 343 colours) and every block after it has faces numbered 24 higher.
+const PINNED_PACKAGE: (usize, u64) = (17121, 1_528_354_451_615_015_034);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block
@@ -108,15 +109,15 @@ const PINNED_TABLE: &[&str] = &[
     " 1 base_blocks:stone: colour #606060, 7 states, state 0 faces [31 32 33 34 35 36], front none, axis none, docking none, joint none, placement Fixed, behaviour 45d1c66c71ddf09a",
     " 2 base_blocks:dirt: colour #81703b, 7 states, state 0 faces [55 56 57 58 59 60], front none, axis none, docking none, joint none, placement Fixed, behaviour 5340549e51b02ccb",
     " 3 base_blocks:grass: colour #1e8929, 7 states, state 0 faces [79 80 81 82 83 84], front none, axis none, docking none, joint none, placement Fixed, behaviour c916d62631fb8f64",
-    " 4 base_blocks:lamp: colour #ffeba6, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, joint none, placement Fixed, behaviour 7eb062a847a2466e",
-    " 5 base_blocks:wood: colour #887433, 7 states, state 0 faces [103 104 105 106 107 108], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour 82ef47c6c8aab91c",
+    " 4 base_blocks:lamp: colour #ffeba6, 1 states, state 0 faces [103 104 105 106 107 108], front none, axis none, docking none, joint none, placement Fixed, behaviour 4bdcd5b749ef3b3a",
+    " 5 base_blocks:wood: colour #887433, 7 states, state 0 faces [127 128 129 130 131 132], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour ec40bfc1aa635732",
     " 6 base_blocks:fire: colour #f2801a, 1 states, state 0 faces [14 14 14 14 14 14], front none, axis none, docking none, joint none, placement Fixed, behaviour c66e9976277fd57f",
-    " 7 base_blocks:great_river_water: colour #283de8, 1 states, state 0 faces [151 152 153 154 155 156], front none, axis none, docking none, joint none, placement Fixed, behaviour 74b7fc97dc880963",
-    " 8 base_blocks:leaves: colour #1e862c, 1 states, state 0 faces [175 176 177 178 179 180], front none, axis none, docking none, joint none, placement Fixed, behaviour ef3f0be14491ed72",
-    " 9 base_blocks:glass: colour #e1f3ff, 1 states, state 0 faces [199 200 201 202 203 204], front none, axis none, docking none, joint none, placement Fixed, behaviour cab6e82df78b3f5b",
-    "10 voxunami_cave:dev_docking_port: colour #797658, 1 states, state 0 faces [223 224 225 226 227 228], front PositiveX, axis PositiveY, docking PositiveX, joint none, placement AlongPlacedFaceFacingPlayer { axis: PositiveY, front: PositiveX }, behaviour 5801f1911be93a80",
+    " 7 base_blocks:great_river_water: colour #283de8, 1 states, state 0 faces [175 176 177 178 179 180], front none, axis none, docking none, joint none, placement Fixed, behaviour 46d6c96fe570a4c3",
+    " 8 base_blocks:leaves: colour #1e862c, 1 states, state 0 faces [199 200 201 202 203 204], front none, axis none, docking none, joint none, placement Fixed, behaviour 579f86e92b2c37d4",
+    " 9 base_blocks:glass: colour #e1f3ff, 1 states, state 0 faces [223 224 225 226 227 228], front none, axis none, docking none, joint none, placement Fixed, behaviour ce916efb3085d083",
+    "10 voxunami_cave:dev_docking_port: colour #797658, 1 states, state 0 faces [247 248 249 250 251 252], front PositiveX, axis PositiveY, docking PositiveX, joint none, placement AlongPlacedFaceFacingPlayer { axis: PositiveY, front: PositiveX }, behaviour a09ca77ab0a2da69",
     "11 voxunami_cave:dev_command_seat: colour #2b3638, 1 states, state 0 faces [11 28 28 11 11 11], front PositiveX, axis none, docking none, joint none, placement FrontToPlayer(PositiveX), behaviour ebf14fd87d07012f",
     "12 voxunami_cave:dev_rocket_engine: colour #2b3638, 1 states, state 0 faces [12 12 12 29 12 12], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour e7cee0eace873bf3",
     "13 voxunami_cave:dev_ball_joint: colour #2b3638, 1 states, state 0 faces [13 13 13 30 13 13], front none, axis PositiveY, docking none, joint PositiveY, placement AlongPlacedFace(PositiveY), behaviour ae8a711cbe186306",
-    "palette: 319 colours, digest 3b9ed46fb520219f, pictures 288 on it, digest f496cca458ada405",
+    "palette: 343 colours, digest c0e7f30340dd5f9f, pictures 312 on it, digest 33e27e72f3d797f5",
 ];

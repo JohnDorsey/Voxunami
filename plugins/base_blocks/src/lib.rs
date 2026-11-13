@@ -137,7 +137,7 @@ const BLOCK_FILES: [(&str, &str); 10] = [
 /// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
 /// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name, and the companions of a picture (`dirt_n` is the normal picture of `dirt`: a
 /// file ending `_s` is a specular picture and one ending `_n` a normal one, `docs/specs/block-textures-spec.md` section 4.4) beside the picture they go with.
-const TEXTURE_FILES: [(&str, &[u8]); 12] = [
+const TEXTURE_FILES: [(&str, &[u8]); 13] = [
     ("grass", include_bytes!("../textures/grass.png")),
     ("dirt", include_bytes!("../textures/dirt.png")),
     // (Noise, made by `textures/make_dirt_normals.py`: bumps in the sun's light.)
@@ -148,6 +148,7 @@ const TEXTURE_FILES: [(&str, &[u8]); 12] = [
     ("log_side", include_bytes!("../textures/log_side.png")),
     ("leaves", include_bytes!("../textures/leaves.png")),
     ("glass", include_bytes!("../textures/glass.png")),
+    ("lamp", include_bytes!("../textures/lamp.png")),
     (
         "dev_docking_port_top",
         include_bytes!("../textures/dev_docking_port_top.png"),
@@ -447,8 +448,17 @@ mod tests {
             .expect("the pictures are not clear");
             assert_eq!(definition.color, average, "{name}");
         }
-        // The air, the lamp and the fire have none.
-        for number in [blocks.air, blocks.lamp, blocks.fire] {
+        // The lamp has a picture and keeps the colour its file gives it (which the far levels show and the light it gives is not made of): it is not the average of its picture.
+        let (_, lamp) = blocks.blocks.iter().nth(blocks.lamp as usize).unwrap();
+        let lamp_definition = lamp.content().unwrap();
+        assert_eq!(
+            lamp_definition.texture().map(ToString::to_string),
+            Some("base_blocks:lamp".to_owned())
+        );
+        assert!(!lamp_definition.color_from_pictures());
+        assert!(blocks.pictures().pictures.contains_key(lamp.identifier()));
+        // The air and the fire have none.
+        for number in [blocks.air, blocks.fire] {
             let (_, entry) = blocks.blocks.iter().nth(number as usize).unwrap();
             assert_eq!(entry.content().unwrap().texture(), None);
             assert!(!blocks.pictures().pictures.contains_key(entry.identifier()));

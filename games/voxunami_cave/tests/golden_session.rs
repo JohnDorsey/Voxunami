@@ -391,8 +391,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// measured:** the extra byte is the length of the welcome frame, a LEB128 number, taking a third byte as the frame passes 16,383 (the package alone is 16,073, and the frame has the rest of the welcome
 /// round it; an earlier note above says the same of a package that grew). The saved world's hash did not move. Windows only.
 /// Ambient occlusion (2026-11-13): the stream's hash moved to 1_351_320_025_595_871_517 and nothing else did (the length 7,219,044 and the saved world are the same: only the blue of dirt's normal picture changed, in the package at the start of the stream).
+/// The lamp's picture (2026-11-13): the stream is 1,049 bytes longer (the package's 1,048 and one more, that I believe is the frame's length number as before, not measured), its hash moved to 6_558_331_654_068_808_049, and the saved world's did not.
 const PINNED: (u64, usize, u64) = (
-    1_351_320_025_595_871_517,
-    7_219_044,
+    6_558_331_654_068_808_049,
+    7_220_093,
     15_594_210_036_057_493_535,
 );
