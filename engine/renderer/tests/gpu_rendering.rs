@@ -40,6 +40,8 @@ mod contact_trace;
 mod emission;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
+#[path = "gpu_rendering/glints.rs"]
+mod glints;
 #[path = "gpu_rendering/occlusion.rs"]
 mod occlusion;
 #[path = "gpu_rendering/pixelated_shadows.rs"]

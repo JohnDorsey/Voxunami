@@ -87,6 +87,8 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 pub(super) struct Scene<'a> {
     pub(super) face: &'a Face,
     pub(super) normal: Option<&'a [u8]>,
+    /// The specular picture (LabPBR `_s`) of the picture, if it has one.
+    pub(super) specular: Option<&'a [u8]>,
     pub(super) sun: [f64; 3],
     pub(super) picture_distance: f32,
     pub(super) traced: bool,
@@ -102,6 +104,7 @@ impl<'a> Scene<'a> {
         Scene {
             face,
             normal,
+            specular: None,
             sun,
             picture_distance: 100.0,
             traced: false,
@@ -123,7 +126,7 @@ impl<'a> Scene<'a> {
                 size: PICTURE_PIXELS as u32,
                 tiles: vec![&picture],
                 normal: vec![self.normal],
-                ..PictureSize::default()
+                specular: vec![self.specular],
             }],
         );
         renderer.set_picture_distance(self.picture_distance);

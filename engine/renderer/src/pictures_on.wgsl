@@ -167,21 +167,24 @@ fn picture_albedo(in: VertexOutput) -> vec4<f32> {
     return vec4<f32>(albedo, coverage);
 }
 
-// How much of the pixel shines by itself, 0 to 1: the alpha of the picture's specular companion (LabPBR: 0 to 254 is none to all, and the loader has made 255, none, a 0), faded
-// out with the picture over the same band, so that beyond the picture distance a face is as flat as it is in the colour and the shadow.
-fn picture_emission(in: VertexOutput) -> f32 {
+// What the picture's specular companion says of the pixel (LabPBR `_s`), faded out with the picture over the same band, so that beyond the picture distance a face is as flat as it
+// is in the colour and the shadow: x is how smooth it is (the red byte, 0 to 1), y how much light it throws back straight on (the green byte, 0 to 1), z whether it is a metal
+// (1 from a green byte of 230, which throws back its own colour: 0 otherwise), and w how much of it shines by itself, 0 to 1 (the alpha: 0 to 254 is none to all, and the loader
+// has made 255, none, a 0).
+fn picture_material(in: VertexOutput) -> vec4<f32> {
     // (How the coordinates of the picture change across a pixel is taken here, before anything branches, as in `picture_albedo`.)
     let picture_dx = dpdx(in.uv);
     let picture_dy = dpdy(in.uv);
     if (in.picture == 0u || frame.pictures.y <= 0.0) {
-        return 0.0;
+        return vec4<f32>(0.0);
     }
     let share = picture_share(in.relative);
     if (share <= 0.0) {
-        return 0.0;
+        return vec4<f32>(0.0);
     }
     let texel = sample_specular(in.picture, in.uv, picture_dx, picture_dy);
-    return min(texel.a * (255.0 / 254.0), 1.0) * share;
+    let metal = select(0.0, 1.0, texel.g * 255.0 >= 229.5);
+    return vec4<f32>(texel.r, texel.g, metal, min(texel.a * (255.0 / 254.0), 1.0)) * share;
 }
 
 // How much the normal picture tilts the face's normal at this pixel: the tilted normal minus the face's own, in the world's axes, faded out with the picture over the same band

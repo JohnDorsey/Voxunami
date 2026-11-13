@@ -6,9 +6,9 @@ fn picture_albedo(in: VertexOutput) -> vec4<f32> {
     return vec4<f32>(in.albedo, 1.0);
 }
 
-// How much of the pixel shines by itself: none (there are no pictures, so no specular pictures to give emission).
-fn picture_emission(in: VertexOutput) -> f32 {
-    return 0.0;
+// What the specular picture says of the pixel (smoothness, reflectance, metal, emission): nothing (there are no pictures, so no specular pictures).
+fn picture_material(in: VertexOutput) -> vec4<f32> {
+    return vec4<f32>(0.0);
 }
 
 // How much the normal picture tilts the face's normal, and how much of the ambient light gets to the pixel: no tilt and all of it (there are no pictures, so no normal pictures).

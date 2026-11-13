@@ -76,6 +76,11 @@ struct Surface {
     uncovered: f32,
     // How much of the pixel shines by itself, whatever light reaches it (0 to 1; from the alpha of the picture's specular companion, 0 where it has none).
     emission: f32,
+    // How smooth the pixel is and how much light it throws back straight on (0 to 1; the red and green bytes of the picture's specular companion, 0 where it has none), and
+    // whether it is a metal (1 from a green byte of 230: it throws back its own colour; 0 otherwise). A pack that does not look has no glints.
+    smoothness: f32,
+    reflectance: f32,
+    metal: f32,
     // `normal` tilted by the picture's normal companion (a unit vector in the world's axes; the same as `normal` where the picture has none, or none is drawn). The light of the
     // sun is the cosine of this one, where it is the cosine of `normal` for a pack that does not look: the tilt is for the sun's light alone (it has a direction; the lamps'
     // light and the sky's have none), and the shadow is the face's own.
@@ -481,8 +486,10 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // `pictures_off.wgsl` or `pictures_on.wgsl`; it takes derivatives, so it is here before anything branches).
     var shadow_face = in;
     shadow_face.relative = pixelated_place(in);
-    // How much of the pixel shines by itself (`picture_emission` is in the same two files; it takes derivatives too).
-    let emission = picture_emission(in);
+    // What the specular picture says of the pixel: how smooth, how reflective, whether a metal, and how much it shines by itself (`picture_material` is in the same two files;
+    // it takes derivatives too).
+    let material = picture_material(in);
+    let emission = material.w;
     // How much the picture's bumps tilt the normal, and how much of the ambient light its occlusion lets through (`picture_bump`, in the same two files; it takes derivatives too).
     let bump_and_occlusion = picture_bump(in);
     let bump = bump_and_occlusion.xyz;
@@ -510,6 +517,9 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.sky_visible = 1.0;
     surface.uncovered = 1.0;
     surface.emission = emission;
+    surface.smoothness = material.x;
+    surface.reflectance = material.y;
+    surface.metal = material.z;
     surface.shading_normal = tilted_normal(in.normal, bump);
     surface.ambient_occlusion = bump_and_occlusion.w;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {

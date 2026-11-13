@@ -22,6 +22,9 @@ struct Surface {
     sky_visible: f32,       // the share of the sky's light that reaches the place past the terrain's shadow, 0 to 1
     uncovered: f32,         // the share of the sky's light that reaches the place past what is over it, 0 to 1
     emission: f32,          // how much of the pixel shines by itself, 0 to 1 (the alpha of the picture's specular companion; 0 where it has none)
+    smoothness: f32,        // how smooth the pixel is, 0 to 1 (the red byte of the picture's specular companion; 0 where it has none)
+    reflectance: f32,       // how much light it throws back straight on, 0 to 1 (the green byte)
+    metal: f32,             // 1 where the green byte is 230 or more (it throws back its own colour), else 0
     shading_normal: vec3<f32>, // `normal` tilted by the picture's normal companion (a unit vector; the same as `normal` where there is none): for the sun's light alone
     ambient_occlusion: f32,    // the share of the ambient light (lamps, ambient, sky) that reaches the pixel past the normal picture's blue (0 to 1; 1 where there is none)
 }
