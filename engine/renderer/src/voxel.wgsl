@@ -93,6 +93,18 @@ struct Surface {
     // sun (0 for one that looks at it, and wherever `subsurface` is 0). A pack that does not look has no scattered light.
     subsurface: f32,
     sun_behind: f32,
+    // The share of the sun's light that gets past the picture's own relief (0 to 1; from the alpha of the picture's normal companion, its height, where it has one; 1 where it has
+    // none, or none is drawn): a pixel that a higher one toward the sun stands over is in its shade. It is the picture's alone: the terrain's shadow is `sun_visible`, and a pack
+    // that wants the shade of the relief multiplies the sun's light by this one too.
+    relief_sun: f32,
+}
+
+// What the picture's normal companion says of a pixel (`picture_bump`, in `pictures_on.wgsl` and `pictures_off.wgsl`), faded out with the picture: how much it tilts the face's
+// normal (the tilted normal minus the face's own, in the world's axes), how much of the ambient light gets to it, and how much of the sun's light gets past the relief.
+struct PictureBump {
+    tilt: vec3<f32>,
+    open: f32,
+    sun: f32,
 }
 
 // What the picture's specular companion says of a pixel (`picture_material`, in `pictures_on.wgsl` and `pictures_off.wgsl`), each 0 to 1 and faded out with the picture.
@@ -507,9 +519,10 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // it takes derivatives too).
     let material = picture_material(in);
     let emission = material.emission;
-    // How much the picture's bumps tilt the normal, and how much of the ambient light its occlusion lets through (`picture_bump`, in the same two files; it takes derivatives too).
-    let bump_and_occlusion = picture_bump(in);
-    let bump = bump_and_occlusion.xyz;
+    // How much the picture's bumps tilt the normal, how much of the ambient light its occlusion lets through, and how much of the sun's light its relief lets through
+    // (`picture_bump`, in the same two files; it takes derivatives too).
+    let relief = picture_bump(in);
+    let bump = relief.tilt;
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
@@ -538,9 +551,10 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.reflectance = material.reflectance;
     surface.metal = material.metal;
     surface.shading_normal = tilted_normal(in.normal, bump);
-    surface.ambient_occlusion = bump_and_occlusion.w;
+    surface.ambient_occlusion = relief.open;
     surface.subsurface = material.subsurface;
     surface.sun_behind = 0.0;
+    surface.relief_sun = relief.sun;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.

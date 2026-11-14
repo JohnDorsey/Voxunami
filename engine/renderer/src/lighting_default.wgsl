@@ -3,7 +3,8 @@
 //
 // The sky's light lights every face the sun can reach, as much as its side allows, like another lamp; at night the light of the stars lights what the sun does not reach, where the
 // sky is open, as the sky's light does by day; the sun lights the faces that look at it, by the cosine of the angle (of the normal the picture's bumps tilt: `shading_normal`);
-// the picture's ambient occlusion cuts the lamps' light, the ambient light and the sky's (not the sun's: `ambient_occlusion`);
+// the picture's ambient occlusion cuts the lamps' light, the ambient light and the sky's (not the sun's: `ambient_occlusion`), and the shade of its own relief cuts the sun's
+// (`relief_sun`, and so the glint too);
 // the sun's light that a thin block lets through (`sun_scatter`) lights a face turned from the sun like the sun does a face that looks at it;
 // and the sun's glint (`sun_glint`) is added on top, where the picture says a pixel is smooth and throws light back;
 // and the lights combine like a screen blend: each is the share
@@ -35,7 +36,7 @@ fn sun_glint(s: Surface) -> vec3<f32> {
     let fresnel = straight_on + (vec3<f32>(1.0) - straight_on) * pow(1.0 - sun_to_halfway, 5.0);
     let visibility = 0.25 / max(sun_to_halfway * sun_to_halfway, 0.01);
     let cosine = max(dot(s.shading_normal, to_the_sun), 0.0);
-    return fresnel * (patch_strength * visibility * cosine * frame.sun_light.x * s.sun_visible);
+    return fresnel * (patch_strength * visibility * cosine * frame.sun_light.x * s.sun_visible * s.relief_sun);
 }
 
 // The sun's light that a thin block lets through to a face turned from the sun (leaves: the picture's subsurface scattering): the share of the sun that reaches the far side of the
@@ -48,7 +49,7 @@ fn sun_scatter(s: Surface) -> f32 {
 fn pack_shade(s: Surface) -> vec3<f32> {
     let sky = frame.sun_light.y * s.sky_visible + frame.heavens.w * (1.0 - s.above_horizon) * s.uncovered;
     let shaded = s.ambient_occlusion * s.side * (s.lamp + sky * (1.0 - s.lamp));
-    let sun = frame.sun_light.x * max(dot(s.shading_normal, frame.sun_direction.xyz), 0.0) * s.sun_visible;
+    let sun = frame.sun_light.x * max(dot(s.shading_normal, frame.sun_direction.xyz), 0.0) * s.sun_visible * s.relief_sun;
     let lit = s.albedo * (shaded + (sun + sun_scatter(s)) * (1.0 - shaded)) + sun_glint(s);
     // What shines by itself shows its colour whatever the light: the pixel is its colour by the share it shines, and lit as it was by the rest.
     return mix(lit, s.albedo, s.emission);

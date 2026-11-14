@@ -29,6 +29,7 @@ struct Surface {
     ambient_occlusion: f32,    // the share of the ambient light (lamps, ambient, sky) that reaches the pixel past the normal picture's blue (0 to 1; 1 where there is none)
     subsurface: f32,           // how much of the sun's light the pixel lets through from the far side of its block, 0 to 1 (the blue byte of the specular companion from 65: `(byte - 64) / 191`; 0 where it has none)
     sun_behind: f32,           // for a face that looks away from the sun on such a pixel: the share of the sun that reaches the far side of the block (horizon and terrain's shadow), else 0
+    relief_sun: f32,           // the share of the sun's light that gets past the normal picture's own relief (its alpha, a height), 0 to 1; 1 where there is none: the picture's shade, apart from the terrain's (`sun_visible`)
 }
 fn pack_shade(s: Surface) -> vec3<f32>
 ```

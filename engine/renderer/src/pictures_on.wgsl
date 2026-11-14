@@ -196,27 +196,29 @@ fn picture_material(in: VertexOutput) -> PictureMaterial {
 // The picture is LabPBR's: red and green are the normal's x and y (to the right in the picture and toward its top) as 128 plus or minus 127 for a tilt of 1 either way, and the
 // part along the face is what makes the length 1. Which way is right and up in the world is found from how the picture's coordinates and the place change across the screen,
 // so that it holds on every face and on a ship turned any way.
-fn picture_bump(in: VertexOutput) -> vec4<f32> {
+fn picture_bump(in: VertexOutput) -> PictureBump {
     // (These are taken before anything branches, as in `picture_albedo`.)
     let uv_across = dpdx(in.uv);
     let uv_down = dpdy(in.uv);
     let place_across = dpdx(in.relative);
     let place_down = dpdy(in.relative);
     if (in.picture == 0u || frame.pictures.y <= 0.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return PictureBump(vec3<f32>(0.0), 1.0, 1.0);
     }
     let share = picture_share(in.relative);
     if (share <= 0.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return PictureBump(vec3<f32>(0.0), 1.0, 1.0);
     }
     let texel = sample_normal(in.picture, in.uv, uv_across, uv_down);
     // The blue byte is the share of the ambient light that gets to the pixel, faded in with the picture like the tilt.
     let open = mix(1.0, texel.b, share);
     var tilt = (texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0);
-    // A pixel that does not tilt the face (the stand-in of a picture with no normal companion, which is most of what is drawn, and a flat pixel of one that has) leaves it as it is:
-    // the frame below would only find the face's own normal again.
-    if (all(tilt == vec2<f32>(0.0))) {
-        return vec4<f32>(0.0, 0.0, 0.0, open);
+    // A pixel that does not tilt the face and is at the top of the relief (the stand-in of a picture with no normal companion, which is most of what is drawn: 128, 128 and a
+    // height of 255; and a flat pixel at the top of one that has) leaves the face as it is: the frame below would only find the face's own normal again, and nothing is higher
+    // than the top to shade it.
+    let at_the_top = texel.a > 0.999;
+    if (all(tilt == vec2<f32>(0.0)) && at_the_top) {
+        return PictureBump(vec3<f32>(0.0), open, 1.0);
     }
     let steepness = dot(tilt, tilt);
     if (steepness > 1.0) {
@@ -230,7 +232,7 @@ fn picture_bump(in: VertexOutput) -> vec4<f32> {
     // on the equations have no good solution, and the face is left as it is.
     let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
     if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
-        return vec4<f32>(0.0, 0.0, 0.0, open);
+        return PictureBump(vec3<f32>(0.0), open, 1.0);
     }
     let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
     let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
@@ -238,7 +240,44 @@ fn picture_bump(in: VertexOutput) -> vec4<f32> {
     let right = normalize(along_right - normal * dot(along_right, normal));
     let up = -normalize(along_down - normal * dot(along_down, normal));
     let tilted = normalize(right * tilt.x + up * tilt.y + normal * out_of_the_face);
-    return vec4<f32>((tilted - normal) * share, open);
+    var sun = 1.0;
+    if (!at_the_top && frame.sun_light.x > 0.0) {
+        sun = 1.0 - share * (1.0 - relief_sun(in.picture, in.uv, uv_across, uv_down, texel.a, normal, right, up));
+    }
+    return PictureBump((tilted - normal) * share, open, sun);
+}
+
+// How deep the relief of a normal picture is, in voxels, from the top (a height of 255) to the lowest (0): the art of the dirt makes its tilts from a height field that is 1.6
+// pixels of its 16 deep, so a tenth of a voxel; how far along the sun's ray a pixel looks for something higher than the ray (voxels, a few pixels of a picture of 16: the shade of
+// a bump is short, and a longer look would find the next block's picture, which the repeat of this one stands for badly); and how soft the edge of a shade is (voxels of height
+// between the ray being clear of the ground and being under it).
+const RELIEF_DEPTH: f32 = 0.1;
+const RELIEF_REACH: f32 = 0.25;
+const RELIEF_SOFTNESS: f32 = 0.01;
+const RELIEF_STEPS: i32 = 4;
+
+// The share of the sun's light that gets past the relief of the picture to a pixel `height` high (0 to 1, 1 for the top), on a face whose normal is `normal` and in which the picture's
+// right and top are the directions `right` and `up`: the ray from the pixel toward the sun climbs as it goes along the face, and if the picture's height at a place under the ray
+// (looked at in a few steps, as far as the ray takes to climb past the top, and no farther than `RELIEF_REACH`) is above the ray, something stands over the pixel. A face turned
+// from the sun has nothing of the sun to be shaded from. The coordinates of the picture are in voxels, as the place is, so a step of the ray along the face is the same step in them
+// (to the right where the ray goes along `right`, and down the rows where it goes along `up`' opposite).
+fn relief_sun(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>, height: f32, normal: vec3<f32>, right: vec3<f32>, up: vec3<f32>) -> f32 {
+    let to_the_sun = frame.sun_direction.xyz;
+    let climb = dot(to_the_sun, normal);
+    if (climb <= 0.02) {
+        return 1.0;
+    }
+    let start = RELIEF_DEPTH * (height - 1.0);
+    let reach = min(-start / climb, RELIEF_REACH);
+    let step_in_the_picture = vec2<f32>(dot(to_the_sun, right), -dot(to_the_sun, up));
+    var blocked = 0.0;
+    for (var index = 1; index <= RELIEF_STEPS; index = index + 1) {
+        let along = reach * f32(index) / f32(RELIEF_STEPS);
+        let ray = start + climb * along;
+        let ground = RELIEF_DEPTH * (sample_normal(picture, coordinates + step_in_the_picture * along, ddx, ddy).a - 1.0);
+        blocked = max(blocked, smoothstep(0.0, RELIEF_SOFTNESS, ground - ray));
+    }
+    return 1.0 - blocked;
 }
 
 // ---- The shadow maps of blocks that cut holes: what leaves and glass hide of the sun is what their pictures are not clear of. ----
