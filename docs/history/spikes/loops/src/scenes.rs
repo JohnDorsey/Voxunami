@@ -222,6 +222,11 @@ pub fn carried_legs() -> Legs {
 }
 
 pub fn carrier_scene(run_kind: CarrierRun) -> (Scene, ShipIds, ShipIds) {
+    carrier_scene_with(run_kind, 0.3, 1.5)
+}
+
+/// `land_gap` (m) and `land_speed` (m/s): where the carried ship is above the deck and how fast it comes down, for `CarrierRun::Land`.
+pub fn carrier_scene_with(run_kind: CarrierRun, land_gap: f64, land_speed: f64) -> (Scene, ShipIds, ShipIds) {
     let carrier_legs = carrier_legs();
     let carried_legs = carried_legs();
     let mut scene = Scene::new(
@@ -237,7 +242,7 @@ pub fn carrier_scene(run_kind: CarrierRun) -> (Scene, ShipIds, ShipIds) {
     let carrier_height = carrier_legs.drop_below_hull() + 0.01;
     let carrier = add_ship(&mut scene, 0, "carrier", &carrier_legs, v(0.0, carrier_height, 0.0), Vector::ZERO);
     let deck = carrier_height + carrier_legs.hull_half.y;
-    let (gap, speed) = if run_kind == CarrierRun::Land { (0.3, 1.5) } else { (0.01, 0.0) };
+    let (gap, speed) = if run_kind == CarrierRun::Land { (land_gap, land_speed) } else { (0.01, 0.0) };
     let carried_height = deck + carried_legs.drop_below_hull() + gap;
     let carried = add_ship(&mut scene, 1, "carried", &carried_legs, v(0.0, carried_height, 0.0), v(0.0, -speed, 0.0));
     if run_kind == CarrierRun::Drive {
@@ -253,4 +258,21 @@ pub fn stiff_approach_scene(speed: f64) -> Scene {
     scene.cars[last].linvel = v(-speed, 0.0, 0.0);
     scene.seconds = (5.0 / speed + 1.0).max(1.0);
     scene
+}
+
+/// A ship on four sprung legs standing on the floor, and a stranger ball held up by its own thrust (a force of its weight) that flies at the hull's wall so as to hit it `arrival`
+/// seconds in, when the ship has settled. Returns the scene, the ship's ids and the stranger's car.
+pub fn gear_hit_scene(stranger_mass: f64, speed: f64, arrival: f64, seconds: f64) -> (Scene, ShipIds, usize) {
+    let legs = small_legs();
+    let mut scene = Scene::new("landing gear hit", seconds);
+    scene.gravity = v(0.0, -9.81, 0.0);
+    scene.ground.push(ground_floor(0.8));
+    let hull_height = legs.drop_below_hull() + 0.01;
+    let ids = add_ship(&mut scene, 0, "ship", &legs, v(0.0, hull_height, 0.0), Vector::ZERO);
+    // The stranger flies level at the height of the hull's middle once the legs have sagged (about 0.25 m), and meets the wall `arrival` seconds in.
+    let height = hull_height - 0.25;
+    let start_x = -(legs.hull_half.x + 0.5 + speed * arrival);
+    let stranger = scene.add_car(CarSpec::new("stranger", 1, Shape::Ball(0.5), stranger_mass, v(start_x, height, 0.0)).moving(v(speed, 0.0, 0.0)).friction(0.3));
+    scene.pushes.push(Push { car: stranger, force: v(0.0, stranger_mass * 9.81, 0.0), from: 0.0, until: seconds });
+    (scene, ids, stranger)
 }

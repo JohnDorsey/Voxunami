@@ -1,0 +1,322 @@
+=================================================================== ghosts hicheck
+
+the reference against itself: `Hi` (12 steps a tick, 16 substeps, 32 passes) against a world twice as fine in each (24, 32, 64): the farthest any car is, over the whole run
+scene                                          place mm   speed mm/s    turn mrad Hi ms/tick
+hinged chain of 4 hit across at 5 m/s            4.6941    2500.0000       0.0000        1.5
+hinged chain of 8 hit along at 5 m/s             1.1282    2500.0000       0.0000        2.8
+stiff chain, stranger at 20 m/s                  0.0041       0.0041       0.0000        1.7
+door on a spring hit by 1 t at 4 m/s           103.5909     230.2355       3.4974        0.7
+landing gear lands at 2 m/s (6 s)                0.8239      11.3202       0.2817        2.9
+ship lands on a carrier (7 s)                    7.9780      39.8727       5.3885        7.7
+rover coasting (8 s)                             0.3203      13.5873       0.0000        1.9
+=================================================================== ghosts reference 24
+
+how settled is the reference? 24 random hits (the sweep's), the converged world (12 steps, 16 substeps, 32 passes) and one twice as fine (24, 32, 64) each against one twice as fine again (48, 64, 128): greatest distance over the cars, from 0.25 s after the hit
+against the finest                 |  place50  place90 placeMax |  speed50  speed90 speedMax | visible
+converged (12, 16, 32)             |     8.04    18.46     46.1 |     19.2     81.6    201.1 |     46%
+finer (24, 32, 64)                 |     5.80    13.76     22.6 |      9.6     52.2     66.0 |     33%
+=================================================================== ghosts pop
+
+what a change of the number of steps a tick is cut into does to a mechanism (today's combined world: a frame cuts its tick by its fastest body, 3 to 24). The same scene always cut in 3, and cut in n for 40 ticks (2 s) and back to 3.
+pop = how far the first tick in the new cut ends from the always-3 run; inside = the most during the 40 ticks; back = the first tick after returning to 3; wake = the most after that. mm and mm/s.
+scene (the window starts at)         n |   pop mm     mm/s |   inside     mm/s |  back mm     mm/s |  wake mm     mm/s
+landing gear at rest (5 s)           6 |    0.889    29.51 |    3.220    93.21 |    1.423    76.32 |    3.969    87.23
+landing gear at rest (5 s)          12 |    0.490    13.32 |    4.455    68.05 |    3.140    77.35 |    6.050    95.14
+landing gear at rest (5 s)          24 |    0.711    11.94 |    4.068    67.40 |    4.103    79.48 |    6.994   105.01
+tower of 4 at rest (5 s)             6 |    0.506     1.44 |    0.511     1.44 |    0.160     5.82 |    0.160     5.82
+tower of 4 at rest (5 s)            12 |    0.779     2.58 |    0.779     2.58 |    0.265     8.84 |    0.265     8.84
+tower of 4 at rest (5 s)            24 |    1.036    17.01 |    1.036    17.01 |    0.272    10.39 |    0.272    10.39
+carrier with a ship at rest (5 s)    6 |    3.063    83.78 |    5.234    91.29 |    4.742    79.27 |    8.232   105.17
+carrier with a ship at rest (5 s)   12 |    3.165    60.22 |    5.434    90.31 |    4.902    64.12 |    7.629   124.73
+carrier with a ship at rest (5 s)   24 |    3.086    64.18 |    7.196    79.90 |    5.879    64.89 |   11.559   138.38
+rover coasting (3 s)                 6 |    2.917   783.34 |   19.586   783.34 |   19.881   150.80 |   42.363   150.80
+rover coasting (3 s)                12 |    3.025   783.32 |   21.231   783.45 |   21.512   151.22 |   47.099   167.14
+rover coasting (3 s)                24 |    3.099   783.34 |   21.152   783.45 |   21.411   151.21 |   46.853   160.29
+chain whipping in no gravity (1 s)   6 |    0.020     1.00 |    0.444     1.41 |    0.464     0.53 |    0.855     0.72
+chain whipping in no gravity (1 s)  12 |    0.024     1.49 |    0.658     2.12 |    0.689     0.79 |    1.276     1.08
+chain whipping in no gravity (1 s)  24 |    0.026     1.74 |    0.763     2.47 |    0.799     0.92 |    1.484     1.26
+door struck and swinging (0.5 s)     6 |    0.113     5.95 |   17.731    18.15 |   18.186     9.10 |   40.471    14.72
+door struck and swinging (0.5 s)    12 |    0.136     8.16 |   24.585    25.10 |   25.217    12.66 |   56.224    20.42
+door struck and swinging (0.5 s)    24 |    0.110     8.99 |   27.469    27.65 |   28.178    14.18 |   62.924    22.92
+landing gear landing (0.05 s)        6 |    2.731    33.93 |    8.344   167.56 |    1.785    80.11 |    4.054    97.24
+landing gear landing (0.05 s)       12 |    3.677    59.82 |    9.293   138.82 |    2.525    80.05 |    6.189   109.97
+landing gear landing (0.05 s)       24 |    3.850    51.83 |    9.452   155.91 |    4.127    81.34 |    6.686    81.34
+=================================================================== ghosts effortpop
+
+what a change of the solver's work does to a mechanism: the same scene always at today's work, and with extra (substeps, passes) for 40 ticks (2 s) and back. The same columns as `pop` (mm, mm/s).
+scene (the window starts at)            extra |   pop mm     mm/s |   inside     mm/s |  back mm     mm/s |  wake mm     mm/s
+landing gear at rest (5 s)             (0, 3) |    0.794    16.48 |    3.730    92.53 |    3.110    34.20 |    5.349   107.73
+landing gear at rest (5 s)            (0, 15) |    1.006    20.95 |    4.467    71.82 |    4.049    61.41 |    7.335   136.49
+landing gear at rest (5 s)            (4, 15) |    1.114    17.29 |    4.597    69.58 |    4.632    68.53 |    5.975    86.32
+tower of 4 at rest (5 s)               (0, 3) |    0.557     7.66 |    0.657     7.66 |    0.317     5.21 |    0.317     5.25
+tower of 4 at rest (5 s)              (0, 15) |    0.687     0.77 |    0.687     0.86 |    0.096     2.35 |    0.096     2.35
+tower of 4 at rest (5 s)              (4, 15) |    0.847     3.11 |    0.847     3.11 |    0.182     5.55 |    0.182     5.55
+carrier with a ship at rest (5 s)      (0, 3) |    2.257    53.94 |    6.769    81.38 |    5.365    83.14 |   11.251   106.20
+carrier with a ship at rest (5 s)     (0, 15) |    1.656    68.74 |    8.477    83.23 |    5.091    80.24 |   12.223   168.50
+carrier with a ship at rest (5 s)     (4, 15) |    2.464    66.94 |    9.052    80.77 |    5.502    76.73 |   13.228   196.34
+rover coasting (3 s)                   (0, 3) |    1.613   785.66 |   19.226   785.66 |   19.783   150.09 |   44.817   150.35
+rover coasting (3 s)                  (0, 15) |    1.812   747.93 |   18.230   747.93 |   18.699   149.95 |   41.643   150.21
+rover coasting (3 s)                  (4, 15) |    1.587   740.49 |   20.133   740.49 |   20.713   150.24 |   45.601   150.38
+chain whipping in no gravity (1 s)     (0, 3) |    0.019     0.01 |    0.037     0.02 |    0.032     0.02 |    0.032     0.02
+chain whipping in no gravity (1 s)    (0, 15) |    0.020     0.01 |    0.039     0.02 |    0.034     0.02 |    0.034     0.02
+chain whipping in no gravity (1 s)    (4, 15) |    0.025     1.00 |    0.453     1.42 |    0.473     0.53 |    0.864     0.73
+door struck and swinging (0.5 s)       (0, 3) |    0.293     7.92 |   19.678    21.38 |   20.163     9.71 |   43.945    15.37
+door struck and swinging (0.5 s)      (0, 15) |    0.302     8.14 |   20.278    21.96 |   20.778    10.00 |   45.289    15.85
+door struck and swinging (0.5 s)      (4, 15) |    0.161     8.97 |   25.119    25.59 |   25.757    12.76 |   57.018    20.44
+landing gear landing (0.05 s)          (0, 3) |    2.711    37.06 |    8.816   160.80 |    6.505    56.88 |    9.383   102.25
+landing gear landing (0.05 s)         (0, 15) |    3.011    44.75 |    8.956   151.94 |    4.138    62.99 |    6.814   122.53
+landing gear landing (0.05 s)         (4, 15) |    3.239    44.14 |    8.833   151.54 |    4.642    69.45 |    6.719    94.86
+=================================================================== ghosts invariance
+
+how much of what a player sees depends on how the world was stepped. Outcomes of nine hits and landings (stranger's exit speed after a stiff chain at 20 m/s (true -4), a hinged chain of 8 hit along and of 16 across, a spring door: exit and peak angle; landing gear: peak g and settled height; a ship dropped on a carrier: peak g; a coasting rover's speed).
+reference                                      stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+one world, converged                                  -4.000        -0.553        -2.174        -1.507         0.288          2.49        1.1461          2.56         5.000
+one world, finer than converged                       -4.000        -0.555        -2.173        -1.494         0.288          2.48        1.1461          2.62         5.000
+
+today: one combined world in a frame that cuts its tick into n steps (3 is a group alone; more when a body is fast)
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+one world, 3 steps a tick                             -2.283        -0.240        -2.174        -1.494         0.305          2.45        1.1465          2.49         4.999
+one world, 4 steps a tick                             -2.407        -0.243        -2.168        -1.515         0.294          2.58        1.1467          2.47         4.999
+one world, 6 steps a tick                             -2.517        -0.247        -2.171        -1.515         0.290          2.49        1.1471          2.56         5.000
+one world, 8 steps a tick                             -2.617        -0.254        -2.174        -1.512         0.289          2.61        1.1473          2.62         4.999
+one world, 12 steps a tick                            -2.544        -0.264        -2.165        -1.509         0.289          2.55        1.1470          2.59         5.000
+one world, 24 steps a tick                            -3.188        -0.304        -2.172        -1.493         0.288          2.52        1.1464          2.60         5.000
+  spread over the configurations                       0.905         0.064         0.009         0.023         0.016          0.16        0.0009          0.15         0.001
+  worst distance from converged                        1.717         0.314         0.009         0.014         0.017          0.13        0.0011          0.09         0.001
+
+the ghost (difference form): the groups' own worlds always 3 steps; the ghost's steps follow the need
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+ghost difference, truth 3 steps, ghost x1             -2.283        -0.240        -2.174        -1.494         0.305          2.45        1.1465          2.49         4.999
+ghost difference, truth 3 steps, ghost x2             -2.381        -0.248        -2.168        -1.517         0.300          2.46        1.1443          2.49         5.000
+ghost difference, truth 3 steps, ghost x4             -2.544        -0.264        -2.165        -1.507         0.301          2.45        1.1428          2.48         5.000
+ghost difference, truth 3 steps, ghost x8             -2.777        -0.311        -2.167        -1.519         0.300          2.45        1.1417          2.48         5.000
+  spread over the configurations                       0.494         0.071         0.009         0.025         0.005          0.01        0.0048          0.01         0.001
+  worst distance from converged                        1.717         0.314         0.009         0.013         0.017          0.04        0.0045          0.08         0.001
+
+the ghost (difference form) with more solver work in the ghost
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+ghost difference, x1, extra (0, 0)                    -2.283        -0.240        -2.174        -1.494         0.305          2.45        1.1465          2.49         4.999
+ghost difference, x1, extra (0, 7)                    -3.763        -0.388        -2.171        -1.517         0.302          2.43        1.1463          2.48         4.999
+ghost difference, x1, extra (0, 15)                   -3.992        -0.465        -2.171        -1.517         0.302          2.43        1.1461          2.47         4.999
+ghost difference, x4, extra (0, 15)                   -3.994        -0.533        -2.171        -1.508         0.301          2.39        1.1429          2.48         5.000
+ghost difference, x4, extra (4, 15)                   -3.996        -0.550        -2.167        -1.506         0.302          2.39        1.1421          2.50         5.000
+ghost difference, x4, extra (12, 31)                  -4.000        -0.553        -2.069        -1.506         0.302          2.39        1.1414          2.46         4.999
+  spread over the configurations                       1.717         0.314         0.105         0.023         0.004          0.07        0.0051          0.04         0.001
+  worst distance from converged                        1.717         0.314         0.105         0.013         0.017          0.10        0.0047          0.10         0.001
+
+the welded ghosts (rigid parts one body), difference form
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+welded ghosts, difference, x1, extra (0, 0)           -4.000        -0.240        -2.174        -1.494         0.305          2.45        1.1465          2.49         4.999
+welded ghosts, difference, x1, extra (0, 15)          -4.000        -0.465        -2.171        -1.517         0.302          2.43        1.1461          2.47         4.999
+welded ghosts, difference, x4, extra (0, 15)          -4.000        -0.533        -2.171        -1.508         0.301          2.39        1.1429          2.48         5.000
+welded ghosts, difference, x4, extra (4, 15)          -4.000        -0.550        -2.167        -1.506         0.302          2.39        1.1421          2.50         5.000
+  spread over the configurations                       0.000         0.311         0.006         0.023         0.004          0.07        0.0043          0.03         0.001
+  worst distance from converged                        0.000         0.314         0.006         0.013         0.017          0.10        0.0040          0.09         0.001
+=================================================================== ghosts invariancecut
+
+the same nine outcomes with the measures that make a hit settled: extra passes in the solver, and a step cut where the first touch is. The spread over the frame's step count is what a change of frame would show.
+reference                                      stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+the world twice as fine as converged                  -4.000        -0.555        -2.173        -1.494         0.288          2.48        1.1461          2.62         5.000
+
+one world, extra passes 15, the frame cut into n steps
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+one world, 3 steps, passes 15                         -3.992        -0.465        -2.173        -1.502         0.290          2.43        1.1461          2.47         4.999
+one world, 4 steps, passes 15                         -3.982        -0.480        -2.173        -1.517         0.285          2.61        1.1461          2.51         4.999
+one world, 6 steps, passes 15                         -3.983        -0.450        -2.174        -1.517         0.286          2.44        1.1461          2.49         5.000
+one world, 8 steps, passes 15                         -3.984        -0.524        -2.173        -1.513         0.287          2.62        1.1461          2.57         5.000
+one world, 12 steps, passes 15                        -3.994        -0.533        -2.174        -1.510         0.287          2.49        1.1461          2.53         5.000
+one world, 24 steps, passes 15                        -3.990        -0.507        -2.172        -1.493         0.288          2.46        1.1461          2.59         5.000
+  spread over the configurations                       0.013         0.082         0.002         0.024         0.004          0.19        0.0000          0.12         0.000
+  worst distance from converged                        0.018         0.105         0.001         0.024         0.003          0.14        0.0000          0.15         0.000
+
+the same, with the step cut where the first touch is
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+one world, 3 steps, passes 15, cut                    -3.992        -0.465        -2.173        -1.516         0.285          2.43        1.1461          2.47         4.999
+one world, 4 steps, passes 15, cut                    -3.982        -0.480        -2.173        -1.517         0.285          2.43        1.1461          2.47         4.999
+one world, 6 steps, passes 15, cut                    -3.983        -0.450        -2.174        -1.517         0.286          2.43        1.1461          2.49         5.000
+one world, 8 steps, passes 15, cut                    -3.984        -0.524        -2.173        -1.513         0.287          2.43        1.1461          2.49         5.000
+one world, 12 steps, passes 15, cut                   -3.994        -0.533        -2.174        -1.510         0.287          2.49        1.1461          2.52         5.000
+one world, 24 steps, passes 15, cut                   -3.990        -0.534        -2.172        -1.493         0.288          2.44        1.1461          2.58         5.000
+  spread over the configurations                       0.013         0.084         0.002         0.025         0.003          0.06        0.0000          0.12         0.000
+  worst distance from converged                        0.018         0.105         0.001         0.024         0.003          0.06        0.0000          0.15         0.000
+
+welded ghosts (difference), the groups' worlds at n steps, passes 15 everywhere, cut
+configuration                                  stiff 20 exit  along 8 exit across 16 exit     door exit    door angle        gear g   gear height     landing g   rover coast
+welded ghosts, 3 steps, passes 15, cut                -4.000        -0.465        -2.173        -1.516         0.285          2.43        1.1461          2.47         4.999
+welded ghosts, 4 steps, passes 15, cut                -4.000        -0.480        -2.173        -1.517         0.285          2.43        1.1461          2.47         4.999
+welded ghosts, 6 steps, passes 15, cut                -4.000        -0.450        -2.174        -1.517         0.286          2.43        1.1461          2.49         5.000
+welded ghosts, 8 steps, passes 15, cut                -4.000        -0.524        -2.173        -1.513         0.287          2.43        1.1461          2.49         5.000
+welded ghosts, 12 steps, passes 15, cut               -4.000        -0.533        -2.174        -1.510         0.287          2.48        1.1461          2.52         5.000
+welded ghosts, 24 steps, passes 15, cut               -4.000        -0.534        -2.172        -1.493         0.288          2.44        1.1461          2.58         5.000
+  spread over the configurations                       0.000         0.084         0.002         0.025         0.003          0.05        0.0000          0.11         0.000
+  worst distance from converged                        0.000         0.105         0.001         0.024         0.003          0.06        0.0000          0.15         0.000
+=================================================================== ghosts sweep 80 main 10
+
+the sweep: 80 random hits (chains, doors, a landed ship hit from the side, a ship dropped on a carrier; random masses, speeds, and moments of the tick), each design against the world twice as fine as the converged one.
+The distance is the greatest of any car's place, turn and speed from the reference's, at the end of every tick from 0.25 s after the first hit to the end of the run. Visible: place over 10 mm, turn over 5 mrad (a ball's turn is not counted) or speed over 50 mm/s.
+design                                             |  place50  place90 placeMax |  speed50  speed90 speedMax | visible  within | overlap90 us/tick
+                                                   |       mm       mm       mm |     mm/s     mm/s     mm/s |  of all  of all |       mm  median
+converged (12 steps, 16, 32)                       |     4.71    23.09    107.1 |     13.5     61.9    213.4 |     38%    100% |     10.9    4024
+today: one world, 3 steps                          |    54.45   391.48   2987.5 |    112.4    516.6   3978.2 |     99%      2% |     87.8      74
+one world, 3 steps, (0, 15)                        |    24.04   123.94    784.9 |     34.3    165.0    744.0 |     69%     42% |    101.5     159
+one world, 3 steps, (0, 15), cut at touch          |    13.18    42.38    193.9 |     22.0    111.5    243.2 |     62%     54% |      9.1     176
+one world, 6 steps, (0, 15)                        |    11.59    49.45    233.4 |     19.6     98.9    332.9 |     56%     62% |     31.2     336
+one world, 12 steps, (0, 15)                       |     7.09    25.05    190.6 |     17.0     59.0    244.2 |     42%     89% |     12.0     644
+one world, 12 steps, (4, 15)                       |     5.68    21.85    169.3 |     15.9     64.2    218.2 |     38%     98% |     11.3    1229
+ghost diff, x4, (0, 15)                            |    13.48    33.24    190.6 |     78.5    142.0    244.2 |     86%     21% |     14.8    1174
+ghost diff, x4, (0, 15), truth (0, 15)             |    13.03    31.21    190.6 |     78.3    122.4    244.2 |     72%     39% |     17.2    1266
+ghost diff, cut, (0, 15), truth (0, 15)            |    13.71    41.98    193.9 |     20.7    111.8    241.2 |     62%     54% |      9.1     476
+welded ghost diff, cut, (0,15), truth (0,15)       |    13.71    41.98    154.3 |     22.5    111.8    241.2 |     60%     58% |      8.8     491
+ghost impulses, cut, (0, 15), truth (0, 15)        |    21.92    81.22    164.7 |     34.0    141.3    229.9 |     74%     41% |     29.0     340
+ghost diff, adaptive 2%, cut, truth (0, 15)        |    10.76    44.84    198.0 |     22.1    105.9    229.6 |     59%     61% |      8.9     520
+
+visible, by family (chains, doors, a landed ship hit, a ship on a carrier):
+converged (12 steps, 16, 32)                          4/20    9/20   11/20    6/20 
+today: one world, 3 steps                            19/20   20/20   20/20   20/20 
+one world, 3 steps, (0, 15)                          13/20   16/20   20/20    6/20 
+one world, 3 steps, (0, 15), cut at touch             9/20   17/20   20/20    4/20 
+one world, 6 steps, (0, 15)                          10/20   12/20   19/20    4/20 
+one world, 12 steps, (0, 15)                          8/20    8/20   14/20    4/20 
+one world, 12 steps, (4, 15)                          5/20    9/20   12/20    4/20 
+ghost diff, x4, (0, 15)                              10/20   19/20   20/20   20/20 
+ghost diff, x4, (0, 15), truth (0, 15)                9/20    9/20   20/20   20/20 
+ghost diff, cut, (0, 15), truth (0, 15)               9/20   17/20   20/20    4/20 
+welded ghost diff, cut, (0,15), truth (0,15)          7/20   17/20   20/20    4/20 
+ghost impulses, cut, (0, 15), truth (0, 15)          17/20   17/20   20/20    5/20 
+ghost diff, adaptive 2%, cut, truth (0, 15)           9/20   15/20   19/20    4/20 
+
+the 6 hits where today's design is farthest from the reference (place mm / speed mm/s), the reference's own uncertainty (the converged world's distance), and the best two designs there:
+  Hinge chain of 3, along by 2246 kg at 32.3 m/s                 today  2987.5 /    3978   floor    4.7   best: ghost diff, cut, (0, 15), truth (0, 15) 2.1, welded ghost diff, cut, (0,15), truth (0,15) 2.1
+  Fixed chain of 4, along by 1687 kg at 12.7 m/s                 today  1285.0 /    1687   floor    0.9   best: welded ghost diff, cut, (0,15), truth (0,15) 0.1, one world, 12 steps, (4, 15) 2.1
+  locked door, hit by 228 kg at 10.4 m/s                         today  1187.3 /     905   floor   85.7   best: ghost impulses, cut, (0, 15), truth (0, 15) 68.4, ghost diff, adaptive 2%, cut, truth (0, 15) 72.3
+  Hinge chain of 2, along by 1221 kg at 18.8 m/s                 today   949.0 /    1166   floor    0.0   best: one world, 12 steps, (4, 15) 0.1, one world, 3 steps, (0, 15) 0.2
+  Fixed chain of 4, along by 5877 kg at 6.1 m/s                  today   821.5 /    1108   floor    6.0   best: welded ghost diff, cut, (0,15), truth (0,15) 0.1, ghost diff, adaptive 2%, cut, truth (0, 15) 4.4
+  Fixed chain of 6, across by 1129 kg at 12.2 m/s                today   576.4 /     829   floor   27.5   best: welded ghost diff, cut, (0,15), truth (0,15) 10.0, ghost impulses, cut, (0, 15), truth (0, 15) 164.7
+
+what is left for 'welded ghost diff, cut, (0,15), truth (0,15)': 33 hits are beyond twice the reference's uncertainty (place mm; the floor; speed mm/s):
+  Hinge chain of 8, along by 2166 kg at 5.3 m/s                    154.3  floor    1.2  speed    184  (today   436.3)
+  locked door, hit by 2509 kg at 2.6 m/s                            69.8  floor    0.6  speed     53  (today   352.6)
+  Fixed chain of 3, across by 7513 kg at 5.5 m/s                    40.4  floor    1.7  speed    107  (today   105.1)
+  spring door, hit by 187 kg at 5.3 m/s                             44.8  floor    6.7  speed     38  (today    50.4)
+  landed ship hit on the hull by 2359 kg at 10.2 m/s                40.7  floor    4.8  speed    159  (today    82.4)
+  locked door, hit by 471 kg at 1.9 m/s                             31.3  floor    0.3  speed     23  (today   190.6)
+  landed ship hit on the hull by 3176 kg at 7.9 m/s                 37.3  floor    4.7  speed     98  (today    84.4)
+  landed ship hit on the hull by 3038 kg at 1.3 m/s                 30.4  floor    1.7  speed     85  (today    77.3)
+  spring door, hit by 173 kg at 4.0 m/s                             25.9  floor    0.8  speed     24  (today    26.2)
+  landed ship hit on the hull by 4988 kg at 3.2 m/s                 29.1  floor    2.5  speed     78  (today    42.0)
+=================================================================== ghosts sweep 80 knee 10
+
+the sweep: 80 random hits (chains, doors, a landed ship hit from the side, a ship dropped on a carrier; random masses, speeds, and moments of the tick), each design against the world twice as fine as the converged one.
+The distance is the greatest of any car's place, turn and speed from the reference's, at the end of every tick from 0.25 s after the first hit to the end of the run. Visible: place over 10 mm, turn over 5 mrad (a ball's turn is not counted) or speed over 50 mm/s.
+design                                             |  place50  place90 placeMax |  speed50  speed90 speedMax | visible  within | overlap90 us/tick
+                                                   |       mm       mm       mm |     mm/s     mm/s     mm/s |  of all  of all |       mm  median
+converged (12 steps, 16, 32)                       |     4.71    23.09    107.1 |     13.5     61.9    213.4 |     38%    100% |     10.9    4119
+today: one world, 3 steps                          |    54.45   391.48   2987.5 |    112.4    516.6   3978.2 |     99%      2% |     87.8      68
+one world, 3 steps, passes 3                       |    38.62   249.47   1390.2 |     86.8    286.8   1994.6 |     86%     22% |    100.7      85
+one world, 3 steps, passes 7                       |    25.90   159.40    849.8 |     61.2    216.0    862.6 |     70%     42% |    101.7     118
+one world, 3 steps, passes 15                      |    24.04   123.94    784.9 |     34.3    165.0    744.0 |     69%     42% |    101.5     166
+one world, 3 steps, passes 31                      |    23.29    89.36    752.6 |     34.3    159.1    744.0 |     66%     45% |    101.5     270
+one world, 3 steps, passes 3, cut                  |    29.00   142.25   1127.5 |     74.1    168.7   1367.1 |     86%     24% |      9.2     108
+one world, 3 steps, passes 7, cut                  |    25.90    97.75    299.8 |     46.4    140.8    359.6 |     69%     49% |      9.0     124
+one world, 3 steps, passes 15, cut                 |    13.18    42.38    193.9 |     22.0    111.5    243.2 |     62%     54% |      9.1     207
+one world, 3 steps, passes 31, cut                 |    12.00    39.95     97.7 |     20.4    107.9    239.2 |     58%     59% |      9.1     277
+one world, 3 steps, substeps 4, passes 15, cut     |    10.19    37.37    182.8 |     17.9    111.2    244.3 |     56%     62% |      8.9     324
+one world, 6 steps, passes 15, cut                 |     8.73    32.13    181.6 |     16.0     65.0    212.7 |     52%     70% |      8.8     354
+
+visible, by family (chains, doors, a landed ship hit, a ship on a carrier):
+converged (12 steps, 16, 32)                          4/20    9/20   11/20    6/20 
+today: one world, 3 steps                            19/20   20/20   20/20   20/20 
+one world, 3 steps, passes 3                         18/20   16/20   20/20   15/20 
+one world, 3 steps, passes 7                         15/20   16/20   20/20    5/20 
+one world, 3 steps, passes 15                        13/20   16/20   20/20    6/20 
+one world, 3 steps, passes 31                        12/20   16/20   20/20    5/20 
+one world, 3 steps, passes 3, cut                    16/20   17/20   20/20   16/20 
+one world, 3 steps, passes 7, cut                    14/20   17/20   20/20    4/20 
+one world, 3 steps, passes 15, cut                    9/20   17/20   20/20    4/20 
+one world, 3 steps, passes 31, cut                    5/20   17/20   20/20    4/20 
+one world, 3 steps, substeps 4, passes 15, cut        7/20   14/20   20/20    4/20 
+one world, 6 steps, passes 15, cut                    6/20   13/20   19/20    4/20 
+
+the 6 hits where today's design is farthest from the reference (place mm / speed mm/s), the reference's own uncertainty (the converged world's distance), and the best two designs there:
+  Hinge chain of 3, along by 2246 kg at 32.3 m/s                 today  2987.5 /    3978   floor    4.7   best: one world, 3 steps, passes 31, cut 1.2, one world, 6 steps, passes 15, cut 1.5
+  Fixed chain of 4, along by 1687 kg at 12.7 m/s                 today  1285.0 /    1687   floor    0.9   best: one world, 3 steps, passes 31, cut 0.1, one world, 6 steps, passes 15, cut 7.7
+  locked door, hit by 228 kg at 10.4 m/s                         today  1187.3 /     905   floor   85.7   best: one world, 6 steps, passes 15, cut 65.5, one world, 3 steps, passes 31, cut 71.3
+  Hinge chain of 2, along by 1221 kg at 18.8 m/s                 today   949.0 /    1166   floor    0.0   best: one world, 3 steps, passes 7 0.2, one world, 3 steps, passes 15 0.2
+  Fixed chain of 4, along by 5877 kg at 6.1 m/s                  today   821.5 /    1108   floor    6.0   best: one world, 6 steps, passes 15, cut 6.8, one world, 3 steps, substeps 4, passes 15, cut 6.9
+  Fixed chain of 6, across by 1129 kg at 12.2 m/s                today   576.4 /     829   floor   27.5   best: one world, 3 steps, passes 31, cut 80.9, one world, 6 steps, passes 15, cut 181.6
+
+what is left for 'one world, 3 steps, substeps 4, passes 15, cut': 24 hits are beyond twice the reference's uncertainty (place mm; the floor; speed mm/s):
+  Fixed chain of 6, across by 1129 kg at 12.2 m/s                  182.8  floor   27.5  speed    214  (today   576.4)
+  Hinge chain of 8, along by 2166 kg at 5.3 m/s                     83.9  floor    1.2  speed    100  (today   436.3)
+  Hinge chain of 6, along by 4002 kg at 3.8 m/s                     59.3  floor   11.1  speed     73  (today   281.1)
+  locked door, hit by 2509 kg at 2.6 m/s                            36.4  floor    0.6  speed     29  (today   352.6)
+  spring door, hit by 187 kg at 5.3 m/s                             38.6  floor    6.7  speed     30  (today    50.4)
+  Hinge chain of 6, along by 2229 kg at 3.5 m/s                     27.2  floor    1.7  speed     33  (today   277.2)
+  spring door, hit by 173 kg at 4.0 m/s                             21.1  floor    0.8  speed     16  (today    26.2)
+  locked door, hit by 471 kg at 1.9 m/s                             14.7  floor    0.3  speed     11  (today   190.6)
+  Fixed chain of 3, across by 7513 kg at 5.5 m/s                    16.5  floor    1.7  speed     46  (today   105.1)
+  spring door, hit by 119 kg at 4.7 m/s                             26.5  floor    7.6  speed     19  (today    55.6)
+=================================================================== ghosts fast
+
+fast hits: a 1000 kg stranger comes at a stiff chain of 4 (fixed joints) from 5 m away; the stranger's exit speed (true: 0.2 of the closing speed, kept with the chain), the deepest overlap (mm), and the chain's end off the converged one (mm). Impact moment random (the median of 5 moments).
+design                                       |  20 m/s overlap end off |  60 m/s overlap end off | 150 m/s overlap end off | 300 m/s overlap end off
+today: one world, 3 steps                    |   0.101     133     481 |   0.104     400    1304 |   0.117     500    3095 |   0.195      14    6294
+one world, 3 steps, (0, 15), cut             |   0.200       0       2 |   0.199      21      10 |   0.199      52      24 |   0.199     104      49
+ghost impulses, x1                           |   0.101     223     458 |   0.109     670    1239 |   0.200     704     732 |   0.203       0    1525
+ghost impulses, x1, (0, 15), cut             |   0.199       0      25 |   0.199       0      72 |   0.199       0     121 |   0.199       0     285
+ghost diff, x1, (0, 15), cut                 |   0.200       0       2 |   0.199      21      10 |   0.199      52      24 |   0.199     104      49
+welded ghost diff, x1, cut                   |   0.200       0       0 |   0.200      13       1 |   0.200      33       2 |   0.200      65       3
+ghost diff, rule 0.8 m a piece, (0, 15)      |   0.183     133      67 |   0.191     200      98 |   0.195     283     135 |   0.197     369     129
+ghost diff, rule 0.8 m, (0, 15), cut         |   0.200       0       2 |   0.199      19       9 |   0.199      43      20 |   0.199      67      28
+=================================================================== ghosts rest
+
+resting for 20 s: a tower of 4 cubes, the landing gear (it lands at 2 m/s first), a carrier with a ship on its deck. Per scene: speed noise in the last 5 s (mm/s), the drift of the hull between 10 s and 20 s (mm), and how far the settled height is from the converged world's (mm).
+design                                                   |  tower v   drift  height |   gear v   drift  height | carrier+ship v   drift  height |  us/tick
+converged (12 steps, 16, 32)                             |      0.0    0.00    0.00 |      0.0    0.00    0.00 |      0.0    0.00   -0.00 |     4367
+today: one world, 3 steps                                |      0.0    0.00    0.00 |     64.9   -0.00    0.31 |    112.8    0.11    1.33 |       69
+one world, 3 steps, (0, 15)                              |      0.0    0.00   -0.01 |      0.0   -0.00   -0.00 |      0.0   -0.00    0.00 |      170
+one world, 3 steps, (0, 15), cut                         |      0.0    0.00   -0.01 |      0.0   -0.00   -0.00 |      0.0   -0.00    0.00 |      207
+one world, 12 steps, (0, 15)                             |      0.0    0.00   -0.00 |      0.0   -0.00   -0.00 |      0.0   -0.00   -0.00 |      666
+ghost diff, x1                                           |      0.0    0.00    0.00 |     64.9   -0.00    0.31 |    113.6    0.25    1.47 |      138
+ghost diff, x1, (0, 15), truth (0, 15), cut              |      0.0    0.00   -0.01 |      0.0   -0.00   -0.00 |      0.0   -0.00    0.00 |      680
+ghost diff, x4, (0, 15), truth (0, 15)                   |     13.6   -0.00   -1.05 |     56.8   -0.00   -3.21 |     63.3   -0.00   -4.11 |     1577
+ghost diff, x4, (0, 15), truth today's                   |     13.6    0.00   -1.05 |     57.2   -0.00   -3.26 |     63.8   -0.00   -4.19 |     1553
+ghost impulses, x1, (0, 15), truth (0, 15), cut          |      0.0    0.00   -0.00 |      0.0    0.00   -0.00 |      0.0    0.00    0.00 |      440
+own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   |      0.0    0.00   -0.01 |      0.0   -0.00   -0.00 |      0.0   -0.00    0.00 |      692
+own-ground ghost impulses, (0, 15), truth (0, 15), cut   |      0.0    0.00   -0.01 |      0.0   -0.00   -0.00 |      0.0    0.00    0.00 |      474
+=================================================================== ghosts birth
+
+a ghost that is born late (nothing warm in it: no contact has been solved before, no joint has a warm start) against one that was there from the start: how far the run is, from the first touch on, when the ghost is born k steps before the touch (k < 0: after it). Both ghosts are the welded difference form at passes 15 with the cut.
+scene                                                         touch s |    k = 12           |     k = 3           |     k = 1           |    k = -1          
+                                                                      |        mm      mm/s |        mm      mm/s |        mm      mm/s |        mm      mm/s
+landing gear lands on the ground, ground in the ghost           0.083 |      0.00       0.0 |      0.00       0.0 |      0.00       0.0 |     47.51    2969.2 |
+a ship lands on a carrier, ground in the ghost                  0.138 |      0.00       0.0 |     39.80     974.1 |     59.52     974.1 |    101.27    1466.3 |
+a ship lands on a carrier, ground in the groups' own worlds     0.138 |      0.00       0.0 |      0.01       0.1 |      0.04       0.2 |      2.88      24.0 |
+=================================================================== ghosts conserve
+
+what a hit keeps, in no gravity: the change of the whole system's momentum over the hit (kg m/s; it must be 0) and the energy kept (the converged world's in brackets). Hinged and stiff chains hit at 20 m/s by 1000 kg.
+design                                             |     stiff dP     energy |    hinged dP     energy
+converged (12 steps, 16, 32)                       |    3.638e-12     0.2000 |    1.035e-28     0.1111 |
+today: one world, 3 steps                          |      0.000e0     0.2092 |    1.531e-28     0.1201 |
+one world, 3 steps, (0, 15)                        |    3.638e-12     0.2000 |    3.638e-12     0.1135 |
+one world, 3 steps, (0, 15), cut                   |    3.638e-12     0.2000 |    7.276e-12     0.1112 |
+one world, 12 steps, (0, 15)                       |    3.638e-12     0.2000 |    1.518e-29     0.1111 |
+ghost diff, x1                                     |      0.000e0     0.2092 |    1.296e-28     0.1201 |
+ghost diff, x1, (0, 15), truth (0, 15), cut        |    3.638e-12     0.2000 |    7.276e-12     0.1112 |
+ghost diff, x4, (0, 15), truth (0, 15)             |    3.638e-12     0.2000 |    3.638e-12     0.1111 |
+ghost diff, x4, (0, 15), truth today's             |    3.638e-12     0.2000 |    3.558e-29     0.1111 |
+ghost impulses, x1, (0, 15), truth (0, 15), cut    |    3.638e-12     0.2003 |    3.638e-12     0.1112 |
+own-ground ghost diff, x1, (0, 15), truth (0, 15), cut |    3.638e-12     0.2000 |    7.276e-12     0.1112 |
+own-ground ghost impulses, (0, 15), truth (0, 15), cut |    3.638e-12     0.2003 |    3.638e-12     0.1112 |
+(the world twice as fine as converged)             |                  0.2000 |                  0.1111
+=================================================================== ghosts bystander
+
+does something happening elsewhere change a mechanism that has nothing to do with it? A rover coasts at 5 m/s (group 0) and a chain whips in no gravity far away... no: the rover, and 10 m to its side another ship comes down at 2 m/s and lands at 2 s (group 1), under its thrust (the pushes cancel its weight until 0.05 s before the landing). The rover's greatest difference in place (mm) and speed (mm/s) between the run without the other ship and with it, from 2 s on.
+design                                                   place mm speed mm/s     cuts
+today: one world, 3 steps                                  0.0000     0.0000        0
+one world, 3 steps, (0, 15)                                0.0000     0.0000        0
+one world, 3 steps, (0, 15), cut                           0.0727     1.3360        1
+ghost diff, (0, 15), cut                                   0.0223     0.3766        1
+ghost impulses, (0, 15), cut                              18.0958     6.2085        1
+own-ground ghost diff, (0, 15), cut                        0.0000     0.0000        1
+own-ground ghost impulses, (0, 15), cut                    0.0000     0.0000        1

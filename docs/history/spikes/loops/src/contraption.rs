@@ -257,6 +257,10 @@ pub enum Feedback {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Scheme {
     Hi,
+    /// Twice as fine as `Hi` (steps, substeps, passes): what the check of `Hi`'s own convergence compares it with.
+    HiFiner,
+    /// Twice as fine again: the check of `HiFiner`.
+    HiFinest,
     Game,
     /// `feedback`: each car's net joint force of the last step (from its change of velocity) is put on its proxy as an outside force, so that the contact pass sees the load a joint carries.
     Proxy { partition: Partition, handback: Handback, rounds: usize, feedback: Feedback },
@@ -273,6 +277,8 @@ impl Scheme {
     pub fn name(self) -> String {
         match self {
             Scheme::Hi => "one world, converged".to_string(),
+            Scheme::HiFiner => "one world, finer than converged".to_string(),
+            Scheme::HiFinest => "one world, finest".to_string(),
             Scheme::Game => "one world, game (today)".to_string(),
             Scheme::Ghost => "ghost world, impulses".to_string(),
             Scheme::GhostDifference => "ghost worlds, difference".to_string(),
@@ -313,6 +319,16 @@ pub fn hi_settings() -> Settings {
     Settings { steps_per_tick: 12, substeps: 16, pgs_iterations: 32, ..Settings::default() }
 }
 
+/// Twice as fine as `hi_settings` in every count (the convergence check of the reference).
+pub fn finer_settings() -> Settings {
+    Settings { steps_per_tick: 24, substeps: 32, pgs_iterations: 64, ..Settings::default() }
+}
+
+/// Twice as fine again.
+pub fn finest_settings() -> Settings {
+    Settings { steps_per_tick: 48, substeps: 64, pgs_iterations: 128, ..Settings::default() }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct CarState {
     pub pose: Pose,
@@ -327,6 +343,11 @@ fn car_filter(group: usize) -> InteractionGroups {
 
 fn ground_filter() -> InteractionGroups {
     InteractionGroups::new(Group::GROUP_32, Group::ALL, InteractionTestMode::And)
+}
+
+/// A car that meets the ground and no other car (not even one of another group).
+fn car_isolated_filter(group: usize) -> InteractionGroups {
+    InteractionGroups::new(Group::from_bits_truncate(1 << group), Group::GROUP_32, InteractionTestMode::And)
 }
 
 fn axis_of(kind: JointKind) -> JointAxis {
@@ -532,6 +553,11 @@ pub fn build_welded(scene: &Scene, settings: Settings, colliders: bool, ground: 
 }
 
 pub fn build(scene: &Scene, settings: Settings, only_group: Option<usize>, colliders: bool, ground: bool, coulomb: bool) -> Built {
+    build_with(scene, settings, only_group, colliders, ground, coulomb, false)
+}
+
+/// `isolated`: the cars collide with the ground and with nothing else (a world with the ground and without the contacts between groups).
+pub fn build_with(scene: &Scene, settings: Settings, only_group: Option<usize>, colliders: bool, ground: bool, coulomb: bool, isolated: bool) -> Built {
     let mut world = World::new(settings, scene.gravity);
     if coulomb {
         world.parameters.friction_model = FrictionModel::Coulomb;
@@ -554,11 +580,8 @@ pub fn build(scene: &Scene, settings: Settings, only_group: Option<usize>, colli
         );
         bodies.push(Some(body));
         if colliders {
-            let collider = world.colliders.insert_with_parent(
-                car.shape.builder().density(0.0).friction(car.friction).restitution(0.0).collision_groups(car_filter(car.group)),
-                body,
-                &mut world.bodies,
-            );
+            let filter = if isolated { car_isolated_filter(car.group) } else { car_filter(car.group) };
+            let collider = world.colliders.insert_with_parent(car.shape.builder().density(0.0).friction(car.friction).restitution(0.0).collision_groups(filter), body, &mut world.bodies);
             collider_handles.push(Some(collider));
         } else {
             collider_handles.push(None);
@@ -690,6 +713,20 @@ pub struct Sim {
     pub priority_rule: bool,
     /// Calls of the ghost worlds' step per step of the joint worlds (a ghost lives in another frame, with its own number of steps).
     pub ghost_calls: usize,
+    /// The ghosts come into being at this time (seconds); before it the groups' joint worlds step alone.
+    pub ghost_born_at: f64,
+    born: bool,
+    /// The groups' joint worlds keep the ground and their cars' colliders; the ghost's other world has the ground and not the contacts between groups.
+    pub own_ground: bool,
+    pub adaptive: Option<Adaptive>,
+    pub calls_rule: Option<f64>,
+    /// How many ghost pairs were solved in all (the difference form solves one pair for each level it used in a step).
+    pub ghost_pair_solves: usize,
+    /// Cut a step where the first touch is (`Options::toi`), the shapes of the cars and the ground for the question, and how many pieces were cut.
+    pub toi: bool,
+    shapes: Vec<SharedShape>,
+    ground_shapes: Vec<SharedShape>,
+    pub cuts: std::cell::Cell<usize>,
     /// The cars' states at the start of the last step, and the outside force and torque on each over it (the pushes and what was handed back), for the load feedback.
     previous: Option<Vec<CarState>>,
     last_outside: Vec<(Vector, Vector)>,
@@ -751,7 +788,12 @@ fn partition_of(scene: &Scene, partition: Partition) -> Vec<Vec<usize>> {
 
 impl Sim {
     pub fn new(scene: &Scene, scheme: Scheme, settings: Settings) -> Self {
-        let settings = if scheme == Scheme::Hi { hi_settings() } else { settings };
+        let settings = match scheme {
+            Scheme::Hi => hi_settings(),
+            Scheme::HiFiner => finer_settings(),
+            Scheme::HiFinest => finest_settings(),
+            _ => settings,
+        };
         let mut sim = Sim {
             scene: scene.clone(),
             scheme,
@@ -772,6 +814,16 @@ impl Sim {
             touched_last_step: false,
             priority_rule: false,
             ghost_calls: 1,
+            ghost_born_at: 0.0,
+            born: true,
+            own_ground: false,
+            adaptive: None,
+            calls_rule: None,
+            ghost_pair_solves: 0,
+            toi: false,
+            shapes: scene.cars.iter().map(|c| parry_shape(c.shape)).collect(),
+            ground_shapes: scene.ground.iter().map(|g| parry_shape(g.shape)).collect(),
+            cuts: std::cell::Cell::new(0),
             previous: None,
             last_outside: Vec::new(),
             load_history: Vec::new(),
@@ -782,7 +834,7 @@ impl Sim {
             steps_with_hits: 0,
         };
         match scheme {
-            Scheme::Hi | Scheme::Game => sim.one = Some(build(scene, settings, None, true, true, true)),
+            Scheme::Hi | Scheme::HiFiner | Scheme::HiFinest | Scheme::Game => sim.one = Some(build(scene, settings, None, true, true, true)),
             Scheme::GhostWelded | Scheme::GhostWeldedDifference => {
                 sim.groups = (0..scene.groups()).map(|g| build(scene, settings, Some(g), false, false, true)).collect();
                 sim.ghost = Some(build_welded(scene, settings, true, true));
@@ -926,14 +978,23 @@ impl Sim {
 
     pub fn step(&mut self) {
         let started = Instant::now();
+        if !self.born && self.time + 1e-9 >= self.ghost_born_at {
+            self.rebuild_ghosts();
+        }
         self.apply_changes();
         let forces = self.forces_at(self.time);
         match self.scheme {
-            Scheme::Hi | Scheme::Game => {
-                let built = self.one.as_mut().expect("one world");
+            Scheme::Hi | Scheme::HiFiner | Scheme::HiFinest | Scheme::Game => {
+                let mut built = self.one.take().expect("one world");
                 let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
                 Self::apply_forces(&mut built.world, &built.bodies, &forces, &none);
-                built.world.step();
+                if self.toi {
+                    let start = built.states(&self.scene);
+                    self.advance(&mut built, &start, &mut Vec::new(), true, &mut |_, _| {});
+                } else {
+                    built.world.step();
+                }
+                self.one = Some(built);
             }
             Scheme::Ghost => self.ghost_step(&forces),
             Scheme::GhostDifference | Scheme::GhostWeldedDifference => self.difference_step(&forces),
@@ -1011,25 +1072,164 @@ impl Sim {
             .collect()
     }
 
+    /// The worlds of a ghost (and, for the difference form, the one without the contacts between groups) in the layout of this scheme.
+    fn make_ghosts(&self) -> (Built, Option<Built>) {
+        let (scene, settings) = (&self.scene, self.settings);
+        let difference = matches!(self.scheme, Scheme::GhostDifference | Scheme::GhostWeldedDifference);
+        match self.scheme {
+            Scheme::GhostWelded | Scheme::GhostWeldedDifference => (build_welded(scene, settings, true, true), difference.then(|| build_welded(scene, settings, false, false))),
+            _ => (
+                build(scene, settings, None, true, true, true),
+                difference.then(|| if self.own_ground { build_with(scene, settings, None, true, true, true, true) } else { build(scene, settings, None, false, false, true) }),
+            ),
+        }
+    }
+
+    /// Fresh ghost worlds (nothing warm in them): the ghost is born now, from the truth's state at the next sync.
+    fn rebuild_ghosts(&mut self) {
+        assert!(self.scene.changes.iter().all(|c| c.at > self.time), "a ghost born late cannot be told of motor changes that came before");
+        let (ghost, free) = self.make_ghosts();
+        self.ghost = Some(ghost);
+        self.free_ghost = free;
+        self.owner.clear();
+        self.born = true;
+        self.touched_last_step = false;
+    }
+
+    /// The groups' joint worlds keep the ground and their own colliders, and the ghost gives back only what the other groups did (`Options::own_ground`).
+    pub fn set_own_ground(&mut self) {
+        assert!(matches!(self.scheme, Scheme::Ghost | Scheme::GhostDifference), "the own-ground layout is for the unwelded ghosts");
+        self.own_ground = true;
+        self.groups = (0..self.scene.groups()).map(|g| build(&self.scene, self.settings, Some(g), true, true, true)).collect();
+        let (ghost, free) = self.make_ghosts();
+        self.ghost = Some(ghost);
+        self.free_ghost = free;
+        self.owner.clear();
+    }
+
+    /// Extra solver work for the worlds that hold the mechanisms (the one world, or the groups' own).
+    pub fn set_world_effort(&mut self, effort: (usize, usize)) {
+        for built in self.one.iter_mut().chain(self.groups.iter_mut()).chain(self.scratch.iter_mut()) {
+            built.set_effort(effort);
+        }
+    }
+
+    /// The ghosts come into being at `seconds` (0: from the start).
+    pub fn set_birth(&mut self, seconds: f64) {
+        self.ghost_born_at = seconds;
+        self.born = seconds <= 0.0;
+    }
+
+    /// Changes the length of a step, in every world (a frame whose number of steps a tick follows its fastest body).
+    pub fn set_step_length(&mut self, dt: f64) {
+        self.dt = dt;
+        for built in self.one.iter_mut().chain(self.groups.iter_mut()).chain(self.scratch.iter_mut()).chain(self.ghost.iter_mut()).chain(self.free_ghost.iter_mut()) {
+            built.world.parameters.dt = dt;
+        }
+        if let Some(contact) = self.contact.as_mut() {
+            contact.parameters.dt = dt;
+        }
+    }
+
+    /// Calls of a ghost world's step in this step: as set, or as many as the fastest car needs to move no more than `calls_rule` in each (at most 8, a tick of 24 steps).
+    fn calls_now(&self, truth: &[CarState]) -> usize {
+        match self.calls_rule {
+            None => self.ghost_calls,
+            Some(most) => {
+                let fastest = truth.iter().map(|s| s.linvel.length()).fold(0.0, f64::max);
+                ((fastest * self.dt / most).ceil() as usize).max(self.ghost_calls).clamp(1, 8)
+            }
+        }
+    }
+
+    /// When, within `within` seconds, the first pair that is apart and closing (cars of different groups, or a car and the ground) would touch, each going at its velocity.
+    fn first_touch(&self, states: &[CarState], within: f64) -> Option<f64> {
+        let options = rapier3d::parry::query::ShapeCastOptions { max_time_of_impact: within, target_distance: 0.0, stop_at_penetration: true, compute_impact_geometry_on_penetration: false };
+        let mut earliest: Option<f64> = None;
+        let mut consider = |hit: Option<rapier3d::parry::query::ShapeCastHit>| {
+            // A pair that touches now (a time of impact of 0) is no event: only a touch still to come is.
+            if let Some(hit) = hit {
+                if hit.time_of_impact > 1e-9 && earliest.is_none_or(|t| hit.time_of_impact < t) {
+                    earliest = Some(hit.time_of_impact);
+                }
+            }
+        };
+        let n = states.len();
+        for a in 0..n {
+            for b in a + 1..n {
+                if self.scene.cars[a].group != self.scene.cars[b].group {
+                    consider(rapier3d::parry::query::cast_shapes(&states[a].pose, states[a].linvel, &*self.shapes[a], &states[b].pose, states[b].linvel, &*self.shapes[b], options).ok().flatten());
+                }
+            }
+            for (ground, shape) in self.scene.ground.iter().zip(&self.ground_shapes) {
+                consider(rapier3d::parry::query::cast_shapes(&states[a].pose, states[a].linvel, &*self.shapes[a], &ground.pose, Vector::ZERO, &**shape, options).ok().flatten());
+            }
+        }
+        earliest
+    }
+
+    /// Steps a world (a ghost, or the one world) over this step: in `calls_now` pieces, each cut in two where the first touch is if `toi` is set. With `decide` the pieces are chosen on
+    /// the way and put in `plan`; without it the pieces of `plan` are replayed (the world without the contacts goes the same way as the world with them). `after` is told of each piece.
+    fn advance(&self, built: &mut Built, truth: &[CarState], plan: &mut Vec<f64>, decide: bool, after: &mut dyn FnMut(&World, usize)) {
+        let saved = built.world.parameters.dt;
+        if decide {
+            plan.clear();
+            let calls = self.calls_now(truth);
+            let nominal = self.dt / calls as f64;
+            for _ in 0..calls {
+                let mut pieces = vec![nominal];
+                if self.toi {
+                    let states = built.states(&self.scene);
+                    let touch = self.first_touch(&states, nominal);
+                    if std::env::var("CUT_DEBUG").is_ok() && touch.is_some() {
+                        println!("time {:.4}: first touch in {:?} of a piece of {:.5}", self.time, touch, nominal);
+                    }
+                    if let Some(t) = touch {
+                        if t > 0.02 * nominal && t < 0.98 * nominal {
+                            pieces = vec![t, nominal - t];
+                            self.cuts.set(self.cuts.get() + 1);
+                        }
+                    }
+                }
+                for piece in pieces {
+                    built.world.parameters.dt = piece;
+                    built.world.step();
+                    after(&built.world, plan.len());
+                    plan.push(piece);
+                }
+            }
+        } else {
+            for (call, &piece) in plan.iter().enumerate() {
+                built.world.parameters.dt = piece;
+                built.world.step();
+                after(&built.world, call);
+            }
+        }
+        built.world.parameters.dt = saved;
+    }
+
     fn effort_now(&self) -> (usize, usize) {
         if self.effort_when_touched && !self.touched_last_step { (0, 0) } else { self.ghost_effort }
     }
 
     fn ghost_step(&mut self, forces: &[Vector]) {
         let truth = self.truth_states();
+        if !self.born {
+            let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
+            self.step_joint_worlds(forces, &none);
+            return;
+        }
         let mut ghost = self.ghost.take().expect("ghost");
         ghost.sync(&self.scene, &truth);
         ghost.set_pushes(&self.scene, &truth, forces);
         ghost.set_effort(self.effort_now());
         self.owner_from(&ghost);
         let mut hits = Vec::new();
-        let saved = ghost.world.parameters.dt;
-        ghost.world.parameters.dt = self.dt / self.ghost_calls as f64;
-        for call in 0..self.ghost_calls {
-            ghost.world.step();
-            self.read_hits(&ghost.world, call, &mut hits);
+        self.advance(&mut ghost, &truth, &mut Vec::new(), true, &mut |world, call| self.read_hits(world, call, &mut hits));
+        if self.own_ground {
+            // The groups' own worlds have the ground: only what the other groups did is given to them.
+            hits.retain(|hit| hit.other.is_some());
         }
-        ghost.world.parameters.dt = saved;
         self.ghost = Some(ghost);
         self.touched_last_step = !hits.is_empty();
         if !hits.is_empty() {
@@ -1041,44 +1241,65 @@ impl Sim {
     }
 
     /// Steps a ghost world from the truth's state (in `ghost_calls` pieces); returns the cars' states after.
-    fn ghost_states(&self, built: &mut Built, truth: &[CarState], forces: &[Vector]) -> Vec<CarState> {
+    fn ghost_states(&self, built: &mut Built, truth: &[CarState], forces: &[Vector], effort: (usize, usize), plan: &mut Vec<f64>, decide: bool) -> Vec<CarState> {
         built.sync(&self.scene, truth);
         built.set_pushes(&self.scene, truth, forces);
-        built.set_effort(self.effort_now());
-        let saved = built.world.parameters.dt;
-        built.world.parameters.dt = self.dt / self.ghost_calls as f64;
-        for _ in 0..self.ghost_calls {
-            built.world.step();
-        }
-        built.world.parameters.dt = saved;
+        built.set_effort(effort);
+        self.advance(built, truth, plan, decide, &mut |_, _| {});
         built.states(&self.scene)
     }
 
     fn difference_step(&mut self, forces: &[Vector]) {
         let truth = self.truth_states();
+        let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
+        if !self.born {
+            self.step_joint_worlds(forces, &none);
+            return;
+        }
         let mut with = self.ghost.take().expect("ghost");
         let mut without = self.free_ghost.take().expect("free ghost");
-        let a = self.ghost_states(&mut with, &truth, forces);
-        let b = self.ghost_states(&mut without, &truth, forces);
+        let levels: Vec<(usize, usize)> = match self.adaptive {
+            Some(adaptive) => adaptive.levels.to_vec(),
+            None => vec![self.effort_now()],
+        };
+        let mut previous: Option<Vec<Delta>> = None;
+        let mut deltas: Vec<Delta> = Vec::new();
+        for &level in &levels {
+            let mut plan = Vec::new();
+            let a = self.ghost_states(&mut with, &truth, forces, level, &mut plan, true);
+            let b = self.ghost_states(&mut without, &truth, forces, level, &mut plan, false);
+            self.ghost_pair_solves += 1;
+            deltas = a.iter().zip(&b).map(|(a, b)| Delta::between(a, b)).collect();
+            let nothing = deltas.iter().all(|d| !d.moved());
+            let settled = match (&previous, self.adaptive) {
+                (Some(before), Some(adaptive)) => before.iter().zip(&deltas).all(|(x, y)| {
+                    let (places, velocities) = x.apart(y);
+                    let (size_places, size_velocities) = (x.dx.length().max(y.dx.length()), x.dv.length().max(y.dv.length()));
+                    places <= adaptive.position.max(adaptive.relative * size_places) && velocities <= adaptive.velocity.max(adaptive.relative * size_velocities)
+                }),
+                _ => false,
+            };
+            if nothing || settled {
+                break;
+            }
+            previous = Some(deltas.clone());
+        }
         self.ghost = Some(with);
         self.free_ghost = Some(without);
-        let none = vec![(Vector::ZERO, Vector::ZERO); forces.len()];
         self.step_joint_worlds(forces, &none);
         let after = self.truth_states();
         let mut changed = false;
         for i in 0..after.len() {
-            let (dx, dv, dw) = (a[i].pose.translation - b[i].pose.translation, a[i].linvel - b[i].linvel, a[i].angvel - b[i].angvel);
-            let dq = a[i].pose.rotation * b[i].pose.rotation.inverse();
-            let moved = dx.length_squared() > 0.0 || dv.length_squared() > 0.0 || dw.length_squared() > 0.0 || dq != Rotation::IDENTITY;
-            if !moved {
+            let delta = deltas[i];
+            if !delta.moved() {
                 continue;
             }
             changed = true;
             let group = &mut self.groups[self.scene.cars[i].group];
             let body = &mut group.world.bodies[group.bodies[i].expect("body")];
-            body.set_position(Pose::from_parts(after[i].pose.translation + dx, (dq * after[i].pose.rotation).normalize()), false);
-            body.set_linvel(after[i].linvel + dv, false);
-            body.set_angvel(after[i].angvel + dw, false);
+            body.set_position(Pose::from_parts(after[i].pose.translation + delta.dx, (delta.dq * after[i].pose.rotation).normalize()), false);
+            body.set_linvel(after[i].linvel + delta.dv, false);
+            body.set_angvel(after[i].angvel + delta.dw, false);
         }
         self.touched_last_step = changed;
         if changed {
@@ -1312,6 +1533,9 @@ pub struct Trace {
     pub worst_balance: f64,
     pub micros_per_tick: f64,
     pub steps_with_hits: usize,
+    /// Pieces a step was cut into at a first touch (`Options::toi`), and ghost pairs solved (the difference form, one for each level used).
+    pub cuts: usize,
+    pub ghost_pair_solves: usize,
 }
 
 pub fn run(scene: &Scene, scheme: Scheme, settings: Settings) -> Trace {
@@ -1334,11 +1558,61 @@ pub struct Options {
     pub effort_when_touched: bool,
     /// The car of the higher priority is not given the impulse of a contact with a car of a lower one.
     pub priority_rule: bool,
+    /// The ghosts come into being at this time (seconds); before it the groups' joint worlds step alone. A ghost born in a contact is a cold one.
+    pub ghost_born_at: f64,
+    /// Extra solver work for a ghost pair in levels, tried in order until the effect of the contacts stops changing (the difference form only).
+    pub adaptive: Option<Adaptive>,
+    /// The most (metres) that the fastest car moves in one call of a ghost world's step: the ghost's calls follow the fastest car, as `BodyWorld` cuts a tick by its fastest body.
+    pub calls_rule: Option<f64>,
+    /// The groups' joint worlds keep the ground (and their cars' colliders), and the ghost has the contacts between groups and the ground: the stranger's effect is all that is given back.
+    pub own_ground: bool,
+    /// Extra solver work (substeps, passes) for the world that holds the mechanisms: the one world of `Hi` and `Game`, or the groups' own joint worlds (the truth). Nothing: today's.
+    pub world_effort: (usize, usize),
+    /// Cut a step of the world that does the contacts (the one world, or a ghost) where two cars of different groups, or a car and the ground, would first touch, so that every
+    /// hit begins at the start of a piece of a step whatever moment of the tick it falls at.
+    pub toi: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { contact_calls: 1, ghost_calls: 1, ghost_effort: (0, 0), effort_when_touched: false, priority_rule: false }
+        Self { contact_calls: 1, ghost_calls: 1, ghost_effort: (0, 0), effort_when_touched: false, priority_rule: false, ghost_born_at: 0.0, adaptive: None, calls_rule: None, own_ground: false, world_effort: (0, 0), toi: false }
+    }
+}
+
+/// Extra solver work for a ghost pair, in levels (substeps, passes), tried in order until what the contacts did is the same at two levels in a row (to these tolerances in every car).
+#[derive(Clone, Copy, Debug)]
+pub struct Adaptive {
+    pub levels: &'static [(usize, usize)],
+    /// Places, metres: the least a difference between two levels must be to count.
+    pub position: f64,
+    /// Velocities, metres a second: the same.
+    pub velocity: f64,
+    /// And what part of the effect itself (the larger of the two levels' places and velocities) a difference may be: 0 is the absolute tolerances alone.
+    pub relative: f64,
+}
+
+/// What the contacts did to one car in one step: the difference of the two ghosts' results.
+#[derive(Clone, Copy, Debug)]
+struct Delta {
+    dx: Vector,
+    dv: Vector,
+    dw: Vector,
+    dq: Rotation,
+}
+
+impl Delta {
+    fn between(a: &CarState, b: &CarState) -> Self {
+        Self { dx: a.pose.translation - b.pose.translation, dv: a.linvel - b.linvel, dw: a.angvel - b.angvel, dq: a.pose.rotation * b.pose.rotation.inverse() }
+    }
+
+    fn moved(&self) -> bool {
+        self.dx.length_squared() > 0.0 || self.dv.length_squared() > 0.0 || self.dw.length_squared() > 0.0 || self.dq != Rotation::IDENTITY
+    }
+
+    /// How far two effects of a step are from each other: places (m, a turn counted at one metre), velocities (m/s).
+    fn apart(&self, other: &Delta) -> (f64, f64) {
+        let turn = (self.dq * other.dq.inverse()).to_axis_angle().1.abs();
+        ((self.dx - other.dx).length().max(turn), (self.dv - other.dv).length().max((self.dw - other.dw).length()))
     }
 }
 
@@ -1349,6 +1623,16 @@ pub fn run_options(scene: &Scene, scheme: Scheme, settings: Settings, options: O
     sim.ghost_effort = options.ghost_effort;
     sim.effort_when_touched = options.effort_when_touched;
     sim.priority_rule = options.priority_rule;
+    sim.adaptive = options.adaptive;
+    sim.calls_rule = options.calls_rule;
+    sim.toi = options.toi;
+    if options.own_ground {
+        sim.set_own_ground();
+    }
+    sim.set_birth(options.ghost_born_at);
+    if options.world_effort != (0, 0) {
+        sim.set_world_effort(options.world_effort);
+    }
     let mut frames = vec![sim.states()];
     let ticks = (scene.seconds / sim.settings.tick_length).round() as usize;
     for _ in 0..ticks {
@@ -1357,7 +1641,7 @@ pub fn run_options(scene: &Scene, scheme: Scheme, settings: Settings, options: O
             frames.push(sim.states());
         }
     }
-    Trace { dt: sim.dt, frames, worst_balance: sim.worst_balance, micros_per_tick: sim.spent.as_secs_f64() * 1e6 / ticks as f64, steps_with_hits: sim.steps_with_hits }
+    Trace { dt: sim.dt, frames, worst_balance: sim.worst_balance, micros_per_tick: sim.spent.as_secs_f64() * 1e6 / ticks as f64, steps_with_hits: sim.steps_with_hits, cuts: sim.cuts.get(), ghost_pair_solves: sim.ghost_pair_solves }
 }
 
 impl Trace {
@@ -1436,4 +1720,67 @@ pub fn kinetic_energy(scene: &Scene, frame: &[CarState]) -> f64 {
         .zip(&scene.cars)
         .map(|(s, c)| 0.5 * c.mass * s.linvel.length_squared() + 0.5 * s.angvel.dot(world_inertia(c, &s.pose) * s.angvel))
         .sum()
+}
+
+/// A run whose steps a tick follow `steps_for_tick(index)` (a frame cuts its tick by its fastest body), the states recorded at the end of every tick (the first entry is the start).
+pub fn run_scheduled(scene: &Scene, scheme: Scheme, settings: Settings, options: Options, steps_for_tick: &dyn Fn(usize) -> usize) -> Vec<Vec<CarState>> {
+    run_scheduled_with(scene, scheme, settings, options, steps_for_tick, &|_| options.world_effort)
+}
+
+/// `run_scheduled`, with the extra solver work of the mechanisms' world following `effort_for_tick(index)` as well.
+pub fn run_scheduled_with(scene: &Scene, scheme: Scheme, settings: Settings, options: Options, steps_for_tick: &dyn Fn(usize) -> usize, effort_for_tick: &dyn Fn(usize) -> (usize, usize)) -> Vec<Vec<CarState>> {
+    let mut sim = Sim::new(scene, scheme, settings);
+    sim.ghost_calls = options.ghost_calls;
+    sim.ghost_effort = options.ghost_effort;
+    sim.adaptive = options.adaptive;
+    sim.calls_rule = options.calls_rule;
+    sim.toi = options.toi;
+    if options.own_ground {
+        sim.set_own_ground();
+    }
+    sim.set_birth(options.ghost_born_at);
+    let mut frames = vec![sim.states()];
+    let ticks = (scene.seconds / sim.settings.tick_length).round() as usize;
+    for tick in 0..ticks {
+        let steps = steps_for_tick(tick).max(1);
+        sim.set_step_length(sim.settings.tick_length / steps as f64);
+        sim.set_world_effort(effort_for_tick(tick));
+        for _ in 0..steps {
+            sim.step();
+        }
+        frames.push(sim.states());
+    }
+    frames
+}
+
+fn parry_shape(shape: Shape) -> SharedShape {
+    match shape {
+        Shape::Ball(radius) => SharedShape::ball(radius),
+        Shape::Cuboid(half) => SharedShape::cuboid(half.x, half.y, half.z),
+    }
+}
+
+/// How deep (metres, 0 if apart) two cars of a frame overlap.
+pub fn overlap(scene: &Scene, frame: &[CarState], a: usize, b: usize) -> f64 {
+    let (shape_a, shape_b) = (parry_shape(scene.cars[a].shape), parry_shape(scene.cars[b].shape));
+    match rapier3d::parry::query::contact(&frame[a].pose, &*shape_a, &frame[b].pose, &*shape_b, 0.0) {
+        Ok(Some(contact)) => (-contact.dist).max(0.0),
+        _ => 0.0,
+    }
+}
+
+/// How deep (metres, 0 if clear) a car of a frame is in the ground.
+pub fn overlap_ground(scene: &Scene, frame: &[CarState], car: usize) -> f64 {
+    let shape_car = parry_shape(scene.cars[car].shape);
+    scene
+        .ground
+        .iter()
+        .map(|ground| {
+            let shape_ground = parry_shape(ground.shape);
+            match rapier3d::parry::query::contact(&frame[car].pose, &*shape_car, &ground.pose, &*shape_ground, 0.0) {
+                Ok(Some(contact)) => (-contact.dist).max(0.0),
+                _ => 0.0,
+            }
+        })
+        .fold(0.0, f64::max)
 }
