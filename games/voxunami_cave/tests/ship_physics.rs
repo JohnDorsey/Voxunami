@@ -528,7 +528,10 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // (And on 2026-11-14: 16_099_571_271_623_696_968 before. Every body is given 15 extra solver passes and a step is cut where two bodies first touch: step 4c-5-A of
     // `docs/decisions/joints-and-cars.md`. Control: with a temporary switch in the game's plugin that turned both off, this test and the next passed with the old values, bit for bit
     // (ran, then the switch was removed); the physics crate keeps the same control for its own pins.)
-    assert_eq!(hash_of_poses(&busy_scene()), 833_817_479_913_002_864);
+    // (And again on 2026-11-14: 833_817_479_913_002_864 before. The solver makes 16 settling passes after each part of a step, where Rapier makes one, and the piece after a cut is
+    // what is left of the step, not a twelfth of a tick at most: `docs/history/loop-probe.md`, section 20. Control: with the one pass and the piece of a twelfth of a tick put
+    // back, this test and the next passed with the values before, bit for bit (ran, then they were removed).)
+    assert_eq!(hash_of_poses(&busy_scene()), 3_334_067_579_008_514_955);
 }
 
 #[test]
@@ -543,7 +546,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (And on 2026-11-01: 15_605_515_214_656_621_284 before; see the test of the poses.)
     // (And on 2026-11-02: 17_869_319_792_822_264_929 before; see the test of the poses.)
     // (And on 2026-11-14: 13_859_437_887_424_448_532 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 3_693_345_421_220_211_019);
+    // (And again on 2026-11-14: 3_693_345_421_220_211_019 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 9_337_883_707_654_218_207);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where

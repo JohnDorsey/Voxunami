@@ -842,6 +842,7 @@ fn with_the_passes_and_the_cut_off_a_run_with_a_coupling_is_what_it_was_before_t
     let settings = BodySettings {
         gravity: [0.0, -5.0, 0.0],
         solver: SolverDials::default(),
+        settling_passes: 1,
         cut_at_first_touch: false,
         ..BodySettings::default()
     };
@@ -849,8 +850,10 @@ fn with_the_passes_and_the_cut_off_a_run_with_a_coupling_is_what_it_was_before_t
 }
 
 /// Taken on Windows on 2026-11-14 and checked under Linux (WSL) the same day. (Moved on purpose from `15_871_630_393_772_392_020`: every body has 15 extra solver passes and a step is cut
-/// where two bodies first touch, step 4c-5-A; the test of the run with both off keeps the old value.)
-const PINNED_HASH: u64 = 16_786_669_780_439_343_234;
+/// where two bodies first touch, step 4c-5-A; the test of the run with both off keeps the old value. Moved on purpose again the same day, from `16_786_669_780_439_343_234`: the solver makes 16 settling
+/// passes after each part of a step, where Rapier makes one, and the piece after a cut is what is left of the step, not a twelfth of a tick at most (`docs/history/loop-probe.md`, section 20);
+/// control: with the one pass and the piece of a twelfth of a tick put back the old value came back bit for bit, and the test of the run with the passes, the settling passes and the cut off keeps `15_871_630_393_772_392_020`.)
+const PINNED_HASH: u64 = 11_742_564_971_771_631_892;
 
 /// Two unit cars, the second turned a quarter about y from the first, whose three pivots (not on a line) are at the same three places in the world: the first car's are on its
 /// +x face, the second's are where its own axes put them (`(0,0,0)`, `(0,1,0)` and `(-1,0,0)`, because its x goes to -z and its z to x).

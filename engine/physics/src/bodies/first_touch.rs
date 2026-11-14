@@ -1,10 +1,13 @@
 //! Cutting a step where two bodies first touch.
 //!
-//! What a hit does depends on the moment of the step at which the shapes touch, because the solver meets a touch as it finds it, at the start of a step, with the speeds the bodies
-//! have then: a stranger on a rigid chain of four kept 0.04 to 0.14 of its speed over twelve moments of a step, where momentum says 0.2 (`docs/history/loop-probe.md`, section 18).
-//! So a step is cut where the first two shapes that are apart and closing touch, each going as its body goes: the first piece ends with the shapes just touching, and the piece after
-//! it is the one that meets the touch, whatever the moment of the step the touch was at. Three things make that come out true, each found by a measurement
-//! (`docs/history/spikes/loops`, `engine_probe landing|levers|startphases|chainmoments`):
+//! The contact of two voxel shapes is found only once they overlap, so without a cut a body goes a whole step's way into another before the solver sees the touch: 0.7 voxels into
+//! terrain at 60 voxels a second, 0.6 into another body (`docs/history/loop-probe.md`, section 20). What a hit does also depended on the moment of the step at which the shapes
+//! touch, because the solver meets a touch as it finds it, at the start of a step, with the speeds the bodies have then: a stranger on a rigid chain of four kept 0.04 to 0.14 of
+//! its speed over twelve moments of a step, where momentum says 0.2 (section 18). With the settling passes ([`super::BodySettings::settling_passes`], section 20) it no longer
+//! does, even with no cut (0.1990 to 0.2000 at 5 to 150 voxels a second), and the cut is for the depth. So a step is cut where the first two shapes that are apart and closing
+//! touch, each going as its body goes: the first piece ends with the shapes just touching, and the piece after it is the one that meets the touch, whatever the moment of the step
+//! the touch was at. Three things make that come out true, each found by a measurement (`docs/history/spikes/loops`, `engine_probe landing|levers|startphases|chainmoments`; the
+//! numbers of the first two were taken with one settling pass, and without the first one the settling passes do not make it right: a touch at the start of a step kept 0.1966):
 //!
 //! - **The first piece is solved with no prediction distance.** A pair that is within the solver's margin (0.02 voxel) when a piece begins has a contact that acts in it, before
 //!   the shapes touch, and in a piece that is cut short it acts in a step of a hundred-thousandth of a second: the cars of a chain were turned at 0.5 to 1.4 radians a second by
@@ -12,9 +15,10 @@
 //! - **The first piece goes a hundred-thousandth of a voxel past the touch.** The contact of two voxel shapes is found only once they overlap (by about 1e-14 voxel: a cube that is
 //!   1e-15 above terrain, or at 0, or at any gap within the margin, is not caught in the step, and one that is 1e-14 into it is); ending at the touch would leave the solver blind
 //!   to it. (More is worse: the contact then begins with an overlap that has to be pushed out, and with six centimetres the stranger kept 0.163.)
-//! - **The piece that meets the touch is one length**, a twelfth of a tick (what is left of the step if that is less, or only a little more). What a hit comes out as depends a
-//!   little on how long the step is in which it is first solved (the soft contact gives way by that much): 0.1977 to 0.1989 over the moments of a step when it was whatever was left
-//!   of the step, and 0.1989 at all of them with this.
+//! - **The piece that meets the touch is what is left of the step, whatever its length.** It was made one length once (a twelfth of a tick, 4.2 milliseconds): a hit that was solved
+//!   in a shorter piece bounced and turned more, up to 3.3 voxels a second and 4.8 radians a second for a cube that landed at 150 voxels a second. The length was not the cause. The soft
+//!   contact lets more through in a shorter piece, and the one pass that Rapier makes to take that away again left part of it, unevenly over the points of a contact: with
+//!   [`super::BodySettings::settling_passes`] of them (16) the length of the piece makes no difference that is seen (`docs/history/loop-probe.md`, section 20).
 //!
 //! The question is asked of the broad phase first and the shapes only for what is near: a voxel shape cast against another costs a third of a millisecond when they are about to
 //! touch and a tenth of a microsecond when they are not (`engine_probe castcost`), and a pair that has a contact already is not asked. A step in which nothing is about to touch is
@@ -36,8 +40,6 @@ use super::{BodyWorld, MOST_A_STEP_MOVES};
 const MOST_CUTS_A_STEP: usize = 3;
 /// How far the shapes are let go into each other at the end of the first piece, in prediction distances: a hundred-thousandth of a voxel (1e-5) at the solver's margin of 0.02.
 const OVERSHOOT_IN_PREDICTIONS: Real = 0.0005;
-/// How long the piece that meets a touch is, as a part of the tick: a twelfth, which is a step of 4.2 milliseconds at the game's tick.
-const IMPACT_PIECE_IN_TICKS: Real = 1.0 / 12.0;
 
 /// When two shapes first touch, and the most they can be closing at (the relative speed of the bodies and what their turning adds, which a grazing approach does not reach).
 #[derive(Clone, Copy)]
@@ -51,23 +53,15 @@ impl BodyWorld {
     /// for that ([`super::BodySettings::cut_at_first_touch`]).
     pub(super) fn solve_in_pieces(&mut self, time: Real) {
         let overshoot = OVERSHOOT_IN_PREDICTIONS * self.parameters.prediction_distance();
-        let impact_piece = IMPACT_PIECE_IN_TICKS * self.settings.time_step;
         let mut left = time;
         let mut cuts = 0;
-        let mut after_a_cut = false;
         while left > 0.0 {
-            // The piece that meets a touch is of one length: what is left of the step, up to the impact piece (a last part that is short is joined to it).
-            let window = if after_a_cut && left - impact_piece > 0.25 * impact_piece {
-                impact_piece
-            } else {
-                left
-            };
-            let mut piece = window;
+            let mut piece = left;
             // (A touch at the very start is cut at too, by a first piece that is only the overshoot. One at the very end is left to the next step, which begins with it.)
             if self.settings.cut_at_first_touch
                 && cuts < MOST_CUTS_A_STEP
-                && let Some(touch) = self.first_touch(window)
-                && touch.time + overshoot / touch.closing_speed < window
+                && let Some(touch) = self.first_touch(left)
+                && touch.time + overshoot / touch.closing_speed < left
             {
                 piece = touch.time + overshoot / touch.closing_speed;
                 cuts += 1;
@@ -80,7 +74,6 @@ impl BodyWorld {
             } else {
                 self.solve(piece);
             }
-            after_a_cut = piece < window;
             left = if piece == left { 0.0 } else { left - piece };
         }
     }

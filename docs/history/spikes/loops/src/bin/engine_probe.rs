@@ -6,6 +6,9 @@
 //! `chainmoments` and `startphases` (the kept speed by moment of a step, and by how near the start of a step the touch is), `pairspin` (two lone cubes; `CUT_OFF=1`, `NO_PASSES=1`
 //! switch the levers off), `landing`, `landingphases` and `landingspin` (a cube onto terrain: how deep, how fast it goes up, how fast it turns; `SIDE=n`, `OFFSET=dx,dz`, `PASSES=n` change the cube and the world), `castcost`, `margin` (when a voxel contact is found), `nonlinear` and `distances` (what parry can
 //! cast and measure for voxel shapes), `spinhit` (a bar that turns into a cube), and the single runs `chainone`, `chaintrace`, `startone`, `landingone`, `landingtrace`, `spinone`.
+//! Of the second part (section 20; the world now makes 16 settling passes, `BodySettings::settling_passes`, and its piece after a cut is what is left of the step): `landinggear` (a
+//! ship on four legs landing, by settling passes: `SETTLING_LIST=a,b,c`), `pairdepth` (two cubes that meet: how far into each other, with the cut and without), and `SETTLING=n` in the environment, which sets the settling passes of every world the other commands make
+//! (1 is Rapier's own single pass, which is what the world had before).
 
 use physics::{BodyId, BodyKind, BodyMass, BodySettings, BodyState, BodyWorld, Collision, CollisionSource, CouplingId, CouplingOptions, MassMoments, PivotPair, SolverDials};
 use voxel_space::{BrickCoordinate, Orientation, VoxelCoordinate, WorldPosition};
@@ -13,6 +16,16 @@ use voxel_space::{BrickCoordinate, Orientation, VoxelCoordinate, WorldPosition};
 const TICK: f64 = 1.0 / 20.0;
 /// The mass of a voxel (the toy's cars are 1000 kg, so a one-voxel cube is 1000).
 const DENSITY: f64 = 1000.0;
+
+/// A world under `settings`, with the settling passes of `SETTLING=n` in the environment if it is set (step 4c-5-A's second part: `BodySettings::settling_passes`; 1 is Rapier's own pass,
+/// 16 the default), for finding what they do to each table of this probe.
+fn new_world(settings: BodySettings) -> BodyWorld {
+    let mut settings = settings;
+    if let Some(passes) = std::env::var("SETTLING").ok().and_then(|text| text.parse().ok()) {
+        settings.settling_passes = passes;
+    }
+    BodyWorld::new(BrickCoordinate::ORIGIN, settings)
+}
 
 struct Terrain<F: Fn(i128, i128, i128) -> bool>(F);
 
@@ -83,7 +96,7 @@ fn strike(cars: usize, pivots: &[PivotPair], speed: f64, dials: Option<SolverDia
 
 /// `gap`: the voxels between the stranger and the chain's end to begin with (the time the stranger arrives at, and so the moment of the tick it hits in).
 fn strike_from(cars: usize, pivots: &[PivotPair], speed: f64, dials: Option<SolverDials>, substeps: u32, gap: f64) -> (f64, f64) {
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings { substeps, ..free_space() });
+    let mut world = new_world(BodySettings { substeps, ..free_space() });
     for k in 0..cars {
         add_cube(&mut world, k as u64 + 1, [k as f64, 10.0, 10.0], [0.0; 3]);
     }
@@ -194,7 +207,7 @@ fn add_big_cube(world: &mut BodyWorld, id: u64, side: i128, origin: [f64; 3], ve
 /// Microseconds a tick costs while two cubes of `side` voxels meet at `speed` (for 1 s after they touch), or while one rests on the ground, under `settings`.
 fn tick_cost(side: i128, speed: f64, settings: BodySettings, resting: bool) -> f64 {
     let gravity = if resting { [0.0, -5.0, 0.0] } else { [0.0; 3] };
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings { gravity, ..settings });
+    let mut world = new_world(BodySettings { gravity, ..settings });
     let ticks;
     if resting {
         for x in -1..=1 {
@@ -226,16 +239,18 @@ the real BodyWorld: what a tick costs, microseconds, for two cubes of 24 voxels 
     let none = SolverDials::default();
     let passes = SolverDials { extra_substeps: 0, extra_passes: 15 };
     let heavy = SolverDials { extra_substeps: 4, extra_passes: 15 };
-    for (label, solver, cut, base) in [
-        ("before 4c-5-A: 3 steps, nothing extra", none, false, 3u32),
-        ("passes 15 only", passes, false, 3),
-        ("the cut only", none, true, 3),
-        ("now: passes 15 and the cut", passes, true, 3),
-        ("passes 15, the cut, 6 steps", passes, true, 6),
-        ("passes 15, the cut, 12 steps", passes, true, 12),
-        ("substeps 4, passes 15, the cut, 3 steps", heavy, true, 3),
+    for (label, solver, cut, base, settling) in [
+        ("before 4c-5-A: 3 steps, nothing extra, 1 settling pass", none, false, 3u32, 1usize),
+        ("passes 15 only", passes, false, 3, 1),
+        ("the cut only", none, true, 3, 1),
+        ("settling passes 16 only", none, false, 3, 16),
+        ("a605b4f: passes 15 and the cut", passes, true, 3, 1),
+        ("now: passes 15, the cut, 16 settling passes", passes, true, 3, 16),
+        ("now, 6 steps", passes, true, 6, 16),
+        ("now, 12 steps", passes, true, 12, 16),
+        ("now, substeps 4", heavy, true, 3, 16),
     ] {
-        let settings = BodySettings { substeps: base, solver, cut_at_first_touch: cut, ..BodySettings::default() };
+        let settings = BodySettings { substeps: base, solver, cut_at_first_touch: cut, settling_passes: settling, ..BodySettings::default() };
         let meeting = tick_cost(24, 10.0, settings, false);
         let resting = tick_cost(24, 10.0, settings, true);
         println!("{label:<44} {meeting:>10.0} {resting:>10.0}");
@@ -308,7 +323,7 @@ fn ball_face() -> Vec<PivotPair> {
 
 /// The kept speed (of the stranger, in parts of the closing speed; true 0.2) after a hit on a chain of 4 under `settings`, for a stranger that arrives `gap` voxels from the chain.
 fn kept_under(pivots: &[PivotPair], contacts: bool, speed: f64, settings: BodySettings, gap: f64) -> f64 {
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    let mut world = new_world(settings);
     for k in 0..4 {
         add_cube(&mut world, k as u64 + 1, [k as f64, 10.0, 10.0], [0.0; 3]);
     }
@@ -327,7 +342,8 @@ fn kept_under(pivots: &[PivotPair], contacts: bool, speed: f64, settings: BodySe
 fn levers() {
     println!("\nthe real BodyWorld, a stranger on a chain of four (true: it keeps 0.2): the lowest and highest kept speed over 12 moments of a step at 3 steps a tick, by what the world is given");
     let none = SolverDials::default();
-    let passes = SolverDials { extra_substeps: 0, extra_passes: 15 };
+    // `PASSES=n` changes the passes of the two columns that have them (the names stay "passes 15").
+    let passes = SolverDials { extra_substeps: 0, extra_passes: std::env::var("PASSES").ok().and_then(|text| text.parse().ok()).unwrap_or(15) };
     let configurations = [("nothing (today's solver)", none, false), ("passes 15", passes, false), ("the cut", none, true), ("passes 15 and the cut", passes, true)];
     let couplings: [(&str, Vec<PivotPair>, bool); 4] = [
         ("rigid, cars pass through each other", rigid_face(), false),
@@ -379,7 +395,7 @@ fn land(speed: f64, phase: f64, cut: bool) -> (f64, f64, f64, u64) {
 
 /// The landing of `land` under any settings.
 fn land_under(speed: f64, phase: f64, settings: BodySettings) -> Landing {
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    let mut world = new_world(settings);
     for x in -1..=1 {
         for z in -1..=1 {
             world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
@@ -448,13 +464,103 @@ fn landing_spin() {
     }
 }
 
+/// A ship that is a platform of 8 by 1 by 8 voxels on four legs of 1 by 2 by 1 at its corners (16 points of contact on the ground, in four clusters), its origin at the lower corner.
+struct Gear;
+
+impl CollisionSource for Gear {
+    fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+        let (x, y, z) = (voxel.x(), voxel.y(), voxel.z());
+        let on_a_corner = (x == 0 || x == 7) && (z == 0 || z == 7);
+        let platform = y == 2 && (0..8).contains(&x) && (0..8).contains(&z);
+        if platform || ((0..2).contains(&y) && on_a_corner) { Collision::Full } else { Collision::Empty }
+    }
+}
+
+/// A ship on four legs lands squarely at `speed` from `gap` voxels, with `settling` settling passes (and the world's other defaults): (how fast it goes up at most, how fast it turns at the end, how deep it was at most).
+fn land_gear(speed: f64, gap: f64, settling: usize) -> (f64, f64, f64) {
+    let settings = BodySettings { substeps: 3, gravity: [0.0; 3], settling_passes: settling, ..BodySettings::default() };
+    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    for x in -1..=1 {
+        for z in -1..=1 {
+            world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
+        }
+    }
+    let state = BodyState { position: WorldPosition::from_voxels([10.0, gap, 10.0]), orientation: Orientation::IDENTITY, linear_velocity: [0.0, -speed, 0.0], angular_velocity: [0.0; 3] };
+    world.add_body(BodyId(1), state, BodyKind::Dynamic).unwrap();
+    world.set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut Gear).unwrap();
+    let voxels = (0..8).flat_map(|x| (0..3).flat_map(move |y| (0..8).map(move |z| (x, y, z)))).filter(|&(x, y, z)| Gear.collision_at(VoxelCoordinate::new(x, y, z)) == Collision::Full);
+    world.set_mass(BodyId(1), MassMoments::sum(voxels.map(|(x, y, z)| MassMoments::of_voxel([x, y, z], DENSITY))).properties().unwrap()).unwrap();
+    let (mut up, mut deepest) = (0.0f64, 0.0f64);
+    for _ in 0..((gap / speed + 1.0) / TICK).ceil() as usize {
+        world.step();
+        let state = world.state(BodyId(1)).unwrap();
+        up = up.max(state.linear_velocity[1]);
+        deepest = deepest.max(-state.position.relative_to(WorldPosition::from_voxels([0.0; 3]))[1]);
+    }
+    let spin = world.state(BodyId(1)).unwrap().angular_velocity;
+    (up, (spin[0] * spin[0] + spin[1] * spin[1] + spin[2] * spin[2]).sqrt(), deepest)
+}
+
+/// `landinggear`: a ship on four legs landing squarely, by the number of settling passes: the worst of 24 moments of a tick (SETTLING=a,b,c changes the numbers tried).
+fn landing_gear() {
+    println!("\na platform of 8x1x8 on four legs lands squarely on flat terrain (no pull), the worst of 24 moments of a tick: how fast it goes up (voxels/s) and how fast it turns (radians/s), by settling passes");
+    let tried: Vec<usize> = std::env::var("SETTLING_LIST").ok().map(|text| text.split(',').filter_map(|part| part.parse().ok()).collect()).unwrap_or_else(|| vec![1, 8, 12, 16, 24, 32]);
+    print!("{:>6} |", "v");
+    for passes in &tried {
+        print!(" {:>24} |", format!("{passes} settling passes"));
+    }
+    println!();
+    for speed in [5.0f64, 20.0, 60.0, 150.0] {
+        print!("{speed:>6.0} |");
+        for &passes in &tried {
+            let (mut up, mut turn, mut deepest) = (0.0f64, 0.0f64, 0.0f64);
+            for moment in 0..24 {
+                let gap = speed * TICK * (3.0 + moment as f64 / 24.0);
+                let (u, t, d) = land_gear(speed, gap, passes);
+                up = up.max(u);
+                turn = turn.max(t);
+                deepest = deepest.max(d);
+            }
+            print!(" up {up:>7.3} turn {turn:>6.3} |");
+        }
+        println!();
+    }
+}
+
+/// How far into each other two cubes of one voxel went at the most (at the end of a tick) when one came at the other, which was at rest, at `speed` along x, arriving `phase` of the way through a step.
+fn pair_depth(speed: f64, phase: f64, cut: bool) -> f64 {
+    let settings = BodySettings { substeps: 3, gravity: [0.0; 3], cut_at_first_touch: cut, ..BodySettings::default() };
+    let mut world = new_world(settings);
+    let gap = speed * (TICK / steps_for(speed) as f64) * (6.0 + phase);
+    add_cube(&mut world, 1, [0.0, 10.0, 10.0], [0.0; 3]);
+    add_cube(&mut world, 2, [1.0 + gap, 10.0, 10.0], [-speed, 0.0, 0.0]);
+    let along_x = |world: &BodyWorld, id: u64| world.state(BodyId(id)).unwrap().position.relative_to(WorldPosition::from_voxels([0.0; 3]))[0];
+    let mut deepest = 0.0f64;
+    for _ in 0..((gap / speed + 1.0) / TICK).ceil() as usize {
+        world.step();
+        deepest = deepest.max(1.0 - (along_x(&world, 2) - along_x(&world, 1)));
+    }
+    deepest
+}
+
+/// `pairdepth`: the deepest two cubes go into each other over the 12 moments of a step, with the cut and without it.
+fn pair_depths() {
+    println!("
+two cubes of one voxel meet at v voxels a second (nothing coupled, no pull), 3 steps a tick: the deepest they were in each other at the end of a tick, highest of 12 moments of a step (voxels)");
+    println!("{:>6} | {:>10} | {:>10}", "v", "no cut", "cut");
+    for speed in [5.0f64, 20.0, 60.0, 150.0] {
+        let worst = |cut: bool| (0..12).map(|k| pair_depth(speed, k as f64 / 12.0, cut)).fold(0.0f64, f64::max);
+        println!("{speed:>6.0} | {:>10.4} | {:>10.4}", worst(false), worst(true));
+    }
+}
+
 /// The same landing as `land`, tick by tick: where the cube's origin (its lower corner, which moves as the cube turns) is, how fast it goes up, and how fast it turns (to see what the
 /// numbers of `land` are made of). `CUT_OFF=1` and `NO_PASSES=1` as for `pairspin`.
 fn land_trace(speed: f64, phase: f64) {
     let cut = std::env::var("CUT_OFF").is_err();
     let solver = if std::env::var("NO_PASSES").is_ok() { SolverDials::default() } else { BodySettings::default().solver };
     let settings = BodySettings { substeps: 3, gravity: [0.0; 3], cut_at_first_touch: cut, solver, ..BodySettings::default() };
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    let mut world = new_world(settings);
     for x in -1..=1 {
         for z in -1..=1 {
             world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
@@ -478,7 +584,7 @@ fn margin() {
     println!("\na unit cube 'gap' above terrain going down at 20 voxels/s, one tick of 1 step (no cut): where it is after, and its speed (does the contact catch it?)");
     for gap in [-1e-4, -1e-6, -1e-7, -1e-8, -1e-9, -1e-10, -1e-11, -1e-12, -1e-13, -1e-14, -1e-15, 0.0, 1e-15, 1e-6, 1e-3, 1.9e-3, 2.1e-3, 1e-2] {
         let settings = BodySettings { substeps: 1, gravity: [0.0; 3], cut_at_first_touch: false, time_step: 1.0 / 60.0, ..BodySettings::default() };
-        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+        let mut world = new_world(settings);
         for x in -1..=1 {
             for z in -1..=1 {
                 world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
@@ -640,7 +746,7 @@ fn spin_hit(spin: f64, moment: f64, cut: bool) -> (f64, f64, u64) {
     // The bar is at angle -spin * arrives at the start and at angle 0 when its tip's upper corner touches the cube's lower face (y = 0.5 above the bar's middle line).
     let angle = -spin * arrives;
     let (sine, cosine) = small_sin_cos(angle / 2.0);
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    let mut world = new_world(settings);
     // The bar's middle (its centre of mass, 6, 0.5, 0.5 in its own coordinates) is at (20, 20, 20); its origin is where that puts it at this angle.
     let (full_sine, full_cosine) = small_sin_cos(angle);
     let centre = [20.0, 20.0, 20.5];
@@ -788,7 +894,7 @@ fn main() {
         let settings = BodySettings { substeps: 3, gravity: [0.0; 3], ..BodySettings::default() };
         let step = TICK / steps_for(speed) as f64;
         let gap = speed * step * (6.0 + moment / 12.0);
-        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+        let mut world = new_world(settings);
         for k in 0..4 {
             add_cube(&mut world, k as u64 + 1, [k as f64, 10.0, 10.0], [0.0; 3]);
         }
@@ -816,7 +922,7 @@ fn main() {
             let mut line = String::new();
             for k in 0..12 {
                 let gap = speed * step * (6.0 + k as f64 / 12.0);
-                let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings { substeps: 3, gravity: [0.0; 3], cut_at_first_touch: std::env::var("CUT_OFF").is_err(), solver: if std::env::var("NO_PASSES").is_ok() { SolverDials::default() } else { BodySettings::default().solver }, ..BodySettings::default() });
+                let mut world = new_world(BodySettings { substeps: 3, gravity: [0.0; 3], cut_at_first_touch: std::env::var("CUT_OFF").is_err(), solver: if std::env::var("NO_PASSES").is_ok() { SolverDials::default() } else { BodySettings::default().solver }, ..BodySettings::default() });
                 add_cube(&mut world, 1, [0.0, 10.0, 10.0], [0.0; 3]);
                 add_cube(&mut world, 2, [1.0 + gap, 10.0, 10.0], [-speed, 0.0, 0.0]);
                 if let Ok(count) = std::env::var("PASSES") {
@@ -899,6 +1005,12 @@ fn main() {
     }
     if which == "landingspin" {
         landing_spin();
+    }
+    if which == "landinggear" {
+        landing_gear();
+    }
+    if which == "pairdepth" {
+        pair_depths();
     }
     if which == "landingone" {
         let speed: f64 = std::env::args().nth(2).unwrap().parse().unwrap();

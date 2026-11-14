@@ -93,23 +93,28 @@ fn a_block_let_fall_on_a_floor_lands_as_it_always_did_when_both_go_to_another_fr
     // (Moved on purpose on 2026-11-14, to the numbers below: every body is given 15 extra solver passes and a step is cut where two bodies first touch, step 4c-5-A of
     // `docs/decisions/joints-and-cars.md`. Control: with a temporary switch in the game's plugin that turned both off, the recorded numbers of 2026-11-10 came back bit for bit
     // (ran, then the switch was removed): `0x402b52a2b40fd5d6, 0x3ff0000832c96302, 0x4000d909980d043e` for the place, and so on. The block still rests on the floor within 0.05 of a voxel.)
+    // (Moved on purpose again the same day, from `0x402fd8548c0d78c1, 0x3ff040ede7b27fde, 0x400d9c4118ceebb2, ...`: the solver makes 16 settling passes after each part of a step,
+    // where Rapier makes one, and the piece after a cut is what is left of the step (`docs/history/loop-probe.md`, section 20). Control: with the one pass and the piece of a twelfth
+    // of a tick put back the numbers before this came back bit for bit (ran, then they were removed). The block lands as a block should: after 6 seconds it faces 6.5 degrees
+    // from the way it began, is 0.0000002 over a voxel up and goes at 0.2 voxels a second and turns at 0.05 radians a second, where the numbers before had it turned 88 degrees,
+    // 0.016 over, going at 0.8 and turning at 0.3.)
     let expected_block: [u64; 16] = [
         0x57e,
         0x3d09,
         0x0,
-        0x402fd8548c0d78c1,
-        0x3ff040ede7b27fde,
-        0x400d9c4118ceebb2,
-        0xbfdd8e8f2fc69cd5,
-        0x3fda685e99087df6,
-        0x3fd47a445373a069,
-        0x3fe6f1a454fbbb8f,
-        0x3fd2804269ed49ac,
-        0xbfd4102080fd1843,
-        0xbfe5314f2e17b546,
-        0xbfc817dd4b8ff5bc,
-        0x3fc600ae95081099,
-        0x3fc15a046093630a,
+        0x402a5e04605a286f,
+        0x3ff000003e19bfe1,
+        0x4002463040e13676,
+        0xbfaae9043d373334,
+        0x3f960a4f1387e1b3,
+        0x3f52908ae2e04210,
+        0x3feff2c5818bca02,
+        0x3fabcb1ea1dc107c,
+        0xbfb072fed3052d1f,
+        0xbfc94d839085d688,
+        0x3fa8a33ea1aee188,
+        0xbced8888aa8823c4,
+        0xbf610137a5e5b7cc,
     ];
     assert_eq!(bits_of(&scene, block), expected_block);
     // The floor was held and did not move.

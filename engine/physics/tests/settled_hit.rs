@@ -19,20 +19,21 @@ const DENSITY: f64 = 1000.0;
 /// The cars of the chain, and the one that hits them.
 const CARS: usize = 4;
 const STRANGER: u64 = CARS as u64 + 1;
-/// The most a kept speed may be from the true one, in parts of the closing speed: a fortieth of the true answer of a fifth. The study measured today's world (none of the
-/// levers) 0.04 to 0.14 for a rigid chain, a difference of up to 80 percent of the answer; with them the chain keeps 0.1963 to 0.1998 over 12 moments of a step at 1 to 150
-/// voxels a second, 1.9 percent short at the worst (0.1963 is the rigid and the hinged chain at 150 voxels a second, where a step is 5 ms; the game's coupling, a ball, keeps
-/// 0.1976 to 0.1990). What is left is the solver's own softness: a contact that gives way a little, and a small turn that the four points of a contact give the cars.
-const TOLERANCE: f64 = 0.005;
+/// The most a kept speed may be from the true one, in parts of the closing speed: an eightieth of the true answer of a fifth. The study measured today's world (none of the
+/// levers) 0.04 to 0.14 for a rigid chain, a difference of up to 80 percent of the answer; with the passes and the cut (step 4c-5-A) the chain kept 0.1963 to 0.1998 over 12 moments of
+/// a step at 1 to 150 voxels a second, 1.9 percent short at the worst; with the settling passes as well it keeps 0.1985 to 0.2000, 0.75 percent short at the worst (the game's
+/// coupling, a ball, at 1 voxel a second; at 5 to 150 it keeps 0.1988 to 0.1999). What is left is the solver's own softness: a contact that gives way a little.
+const TOLERANCE: f64 = 0.0025;
 /// What the stranger keeps of its speed when it hits the chain: momentum says one car's mass in five.
 const KEPT_ON_THE_CHAIN: f64 = 1.0 / (CARS as f64 + 1.0);
 
-/// A source whose one whole cube is the voxel at the origin of its body.
-struct UnitCube;
+/// A source whose one whole cube has `side` voxels along each edge, at the origin of its body (a cube of 1 is the voxel at the origin).
+struct Block(i128);
 
-impl CollisionSource for UnitCube {
+impl CollisionSource for Block {
     fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
-        if (voxel.x(), voxel.y(), voxel.z()) == (0, 0, 0) {
+        let edge = 0..self.0;
+        if edge.contains(&voxel.x()) && edge.contains(&voxel.y()) && edge.contains(&voxel.z()) {
             Collision::Full
         } else {
             Collision::Empty
@@ -61,14 +62,18 @@ impl CollisionSource for Floor {
     }
 }
 
-fn unit_cube_mass() -> BodyMass {
-    MassMoments::sum([MassMoments::of_voxel([0, 0, 0], DENSITY)])
+fn block_mass(side: i128) -> BodyMass {
+    let voxels = (0..side).flat_map(|x| {
+        (0..side)
+            .flat_map(move |y| (0..side).map(move |z| MassMoments::of_voxel([x, y, z], DENSITY)))
+    });
+    MassMoments::sum(voxels)
         .properties()
         .expect("a cube has a mass")
 }
 
-/// A cube of one voxel with its origin at `origin`, going at `velocity`.
-fn add_cube(world: &mut BodyWorld, id: u64, origin: [f64; 3], velocity: [f64; 3]) {
+/// A cube of `side` voxels along each edge (up to 32: one brick) with its origin, its lower corner, at `origin`, going at `velocity`.
+fn add_block(world: &mut BodyWorld, id: u64, side: i128, origin: [f64; 3], velocity: [f64; 3]) {
     let state = BodyState {
         position: WorldPosition::from_voxels(origin),
         orientation: Orientation::IDENTITY,
@@ -79,9 +84,14 @@ fn add_cube(world: &mut BodyWorld, id: u64, origin: [f64; 3], velocity: [f64; 3]
         .add_body(BodyId(id), state, BodyKind::Dynamic)
         .unwrap();
     world
-        .set_brick(BodyId(id), BrickCoordinate::ORIGIN, &mut UnitCube)
+        .set_brick(BodyId(id), BrickCoordinate::ORIGIN, &mut Block(side))
         .unwrap();
-    world.set_mass(BodyId(id), unit_cube_mass()).unwrap();
+    world.set_mass(BodyId(id), block_mass(side)).unwrap();
+}
+
+/// A cube of one voxel with its origin at `origin`, going at `velocity`.
+fn add_cube(world: &mut BodyWorld, id: u64, origin: [f64; 3], velocity: [f64; 3]) {
+    add_block(world, id, 1, origin, velocity);
 }
 
 fn velocity(world: &BodyWorld, id: u64) -> [f64; 3] {
@@ -289,29 +299,27 @@ fn a_touch_at_the_very_start_of_a_step_comes_out_as_one_in_the_middle_of_it() {
 }
 
 #[test]
-fn a_hit_on_the_games_coupling_keeps_the_same_speed_at_every_moment_of_a_step() {
-    // The hit is solved in a piece of one length (a twelfth of a tick, or what is left of the step if that is less), and comes out alike at all the moments of a step: within
-    // 0.0008 of the speed (0.1986 to 0.1990), where the piece that was left of the step, anything up to a whole step, gave 0.1975 to 0.1989.
+fn a_hit_on_the_games_coupling_comes_out_within_a_hundredth_of_the_answer_at_every_moment_of_a_step()
+ {
+    // The answer is a fifth of the speed, and the game's coupling (a ball) keeps 0.1988 to 0.2000 of it over the 12 moments of a step at 5 to 150 voxels a second, where it kept
+    // 0.1986 to 0.1990 with one settling pass: nearer the answer, and no more alike (a spread of 0.0014 against 0.0004), because the settling passes take away what the soft
+    // contact lets through and what they leave is the less the longer the piece that meets the touch.
     let coupling = &couplings()[2];
     let mut wrong = Vec::new();
     for speed in [5.0, 20.0, 60.0, 150.0] {
         let kept = kept_over_a_step(coupling, speed, settings_with(3));
         let (low, high) = lowest_and_highest(&kept);
-        if high - low > 0.0008 {
+        if (low - KEPT_ON_THE_CHAIN)
+            .abs()
+            .max((high - KEPT_ON_THE_CHAIN).abs())
+            > TOLERANCE
+        {
             wrong.push(format!(
                 "at {speed} voxels a second the stranger keeps {low:.4} to {high:.4} over 12 moments of a step"
             ));
         }
     }
-    assert!(
-        wrong.is_empty(),
-        "
-{}",
-        wrong.join(
-            "
-"
-        )
-    );
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }
 
 #[test]
@@ -344,7 +352,8 @@ fn a_hit_comes_out_the_same_whatever_number_of_steps_a_tick_is_cut_into() {
 #[test]
 fn a_hit_on_a_car_alone_keeps_half_the_speed_and_hardly_turns_it_wherever_in_a_step_it_falls() {
     // Two cubes of one mass, one at rest: they go on together at half the speed, and a hit that is square turns neither. (Nothing is coupled here: the passes make a hit between
-    // two bodies with no joint square too, and today's world turned the cubes at 0.2 radians a second at 60 voxels a second, and at 0.6 with no cut either.)
+    // two bodies with no joint square too. With one settling pass the cubes turned at up to 0.01 radians a second at 60 voxels a second, with none of the extra passes either
+    // 0.2, and at 0.6 with no cut as well; with the world's settling passes under 5e-15.)
     let mut wrong = Vec::new();
     for speed in [2.0, 5.0, 20.0, 60.0] {
         for moment in 0..12 {
@@ -357,7 +366,7 @@ fn a_hit_on_a_car_alone_keeps_half_the_speed_and_hardly_turns_it_wherever_in_a_s
             }
             let kept = -velocity(&world, 2)[0] / speed;
             let turn = spin(&world, 1).max(spin(&world, 2));
-            if (kept - 0.5).abs() > TOLERANCE || turn > 0.002 * speed {
+            if (kept - 0.5).abs() > TOLERANCE || turn > 1e-6 * speed {
                 wrong.push(format!(
                     "{speed} voxels a second, moment {moment} of 12: the stranger keeps {kept:.4}, not a half, and a cube turns at {turn:.4} radians a second"
                 ));
@@ -390,30 +399,108 @@ fn a_hit_keeps_the_momentum_of_everything_in_it() {
     }
 }
 
+/// How far into each other two cubes of one voxel went at the most, at the end of a tick, when one that was `gap` voxels away came at the other (at rest) at `speed` along x.
+fn overlap_of_two_cubes(speed: f64, gap: f64, settings: BodySettings) -> f64 {
+    let along_x = |world: &BodyWorld, id: u64| {
+        world
+            .state(BodyId(id))
+            .unwrap()
+            .position
+            .relative_to(WorldPosition::from_voxels([0.0; 3]))[0]
+    };
+    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    add_cube(&mut world, 1, [0.0, 10.0, 10.0], [0.0; 3]);
+    add_cube(&mut world, 2, [1.0 + gap, 10.0, 10.0], [-speed, 0.0, 0.0]);
+    let mut deepest: f64 = 0.0;
+    for _ in 0..((gap / speed + 1.0) / TICK).ceil() as usize {
+        world.step();
+        deepest = deepest.max(1.0 - (along_x(&world, 2) - along_x(&world, 1)));
+    }
+    deepest
+}
+
 #[test]
-fn without_the_cut_a_hit_depends_on_where_in_a_step_it_falls() {
-    // The control of the cut: with the passes and no cut, the stranger keeps anything from 0.15 to 0.20 over the moments of a step (the study: today's world 0.04 to 0.14).
+fn two_cubes_that_meet_go_hardly_into_each_other_wherever_in_a_step_they_meet() {
+    // With the cut: at most 0.0008, 0.0032, 0.011 and 0.028 voxels at 5, 20, 60 and 150 voxels a second, about twice what a cube goes into terrain at the same speeds (below),
+    // because the contact between two bodies is half as stiff as one with terrain (Rapier's 30 and 60 hertz).
+    let mut wrong = Vec::new();
+    for speed in [5.0, 20.0, 60.0, 150.0] {
+        let deepest = (0..12)
+            .map(|moment| {
+                overlap_of_two_cubes(
+                    speed,
+                    gap_at_phase(speed, 3, f64::from(moment) / 12.0),
+                    settings_with(3),
+                )
+            })
+            .fold(0.0, f64::max);
+        if deepest > 0.04 {
+            wrong.push(format!(
+                "{speed} voxels a second: the cubes were {deepest:.4} voxels into each other at the most"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+#[test]
+fn without_the_cut_two_cubes_that_meet_go_deep_into_each_other() {
+    // The control of the cut for bodies: a step lets two bodies go the whole of its way into each other (0.6 voxels at 60 voxels a second, with the settling passes; the cut is
+    // not what makes the speed a hit leaves come out right, now that the settling passes are).
     let settings = BodySettings {
         cut_at_first_touch: false,
         ..settings_with(3)
     };
-    for coupling in couplings() {
-        let (low, high) = lowest_and_highest(&kept_over_a_step(&coupling, 20.0, settings));
+    let deepest = (0..12)
+        .map(|moment| {
+            overlap_of_two_cubes(
+                60.0,
+                gap_at_phase(60.0, 3, f64::from(moment) / 12.0),
+                settings,
+            )
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        deepest > 0.3,
+        "with no cut two cubes meeting at 60 voxels a second were only {deepest} voxels into each other"
+    );
+}
+
+#[test]
+fn with_one_settling_pass_a_head_on_hit_turns_the_cars() {
+    // The control of the settling passes: with the extra passes and one settling pass a stranger that meets a car squarely turns it at 0.2 to 2.5 ten-thousandths of the
+    // closing speed in radians a second (0.01 at 60 voxels a second).
+    let settings = BodySettings {
+        settling_passes: 1,
+        ..settings_with(3)
+    };
+    for speed in [5.0, 20.0, 60.0] {
+        let mut worst: f64 = 0.0;
+        for moment in 1..12 {
+            let gap = gap_at_phase(speed, 3, f64::from(moment) / 12.0);
+            let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+            add_cube(&mut world, 1, [0.0, 10.0, 10.0], [0.0; 3]);
+            add_cube(&mut world, 2, [1.0 + gap, 10.0, 10.0], [-speed, 0.0, 0.0]);
+            for _ in 0..((gap / speed + 1.0) / TICK).ceil() as usize {
+                world.step();
+            }
+            worst = worst.max(spin(&world, 1)).max(spin(&world, 2));
+        }
         assert!(
-            high - low > 0.03,
-            "{}: with no cut the stranger kept {low:.4} to {high:.4}, a spread that the cut was found to be what takes away",
-            coupling.name
+            worst > 5e-5 * speed,
+            "with one settling pass the cubes turned at {worst} radians a second at most at {speed} voxels a second"
         );
     }
 }
 
 #[test]
 fn without_the_passes_a_hit_on_a_chain_comes_out_short_and_a_head_on_hit_turns_the_cars() {
-    // The control of the passes: with the cut and none, the stranger on a chain keeps less than 0.195 at 20 voxels a second (the highest of the moments of a step, 0.1906; with
-    // them 0.1961 at the lowest), and a stranger that meets a car squarely turns it at over two thousandths of the closing speed in radians a second (0.2 at 60 voxels a second;
-    // with them under two ten-thousandths).
+    // The control of the passes: with the cut and none (nor any settling pass beyond one), the stranger on a chain keeps less than 0.195 at 20 voxels a second (the highest of
+    // the moments of a step, 0.1787; with the world's, 0.1998 at the highest and 0.1982 at the lowest), and a stranger that meets a car squarely turns it at over two thousandths of
+    // the closing speed in radians a second (0.2 at 60 voxels a second).
     let settings = BodySettings {
         solver: SolverDials::default(),
+        settling_passes: 1,
         ..settings_with(3)
     };
     for coupling in couplings() {
@@ -516,17 +603,23 @@ fn a_step_is_cut_where_two_bodies_first_touch_and_never_where_nothing_touches() 
     );
 }
 
-/// A unit cube that falls onto terrain (no pull, so the speed is the impact's alone) from a gap that makes it land `phase` of the way through a step: the deepest it was in the ground
-/// at the end of a tick, in voxels, the fastest it went up afterwards, and how fast it turns at the end, in radians a second (a cube that lands squarely has no reason to turn).
-fn land(speed: f64, phase: f64, settings: BodySettings) -> (f64, f64, f64) {
+/// What a landing came to: the deepest the cube was in the ground at the end of a tick, in voxels, the fastest it went up afterwards, and how fast it turns at the end, in radians
+/// a second (a cube that lands squarely has no reason to go up or to turn).
+struct Landing {
+    deepest: f64,
+    up: f64,
+    turn: f64,
+}
+
+/// A cube of `side` voxels along each edge that falls onto terrain (no pull, so the speed is the impact's alone) from `gap` voxels above it.
+fn land_block(side: i128, speed: f64, gap: f64, settings: BodySettings) -> Landing {
     let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
     for x in -1..=1 {
         for z in -1..=1 {
             world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Floor);
         }
     }
-    let gap = gap_at_phase(speed, settings.substeps, phase);
-    add_cube(&mut world, 1, [10.0, gap, 10.0], [0.0, -speed, 0.0]);
+    add_block(&mut world, 1, side, [10.0, gap, 10.0], [0.0, -speed, 0.0]);
     let (mut deepest, mut up): (f64, f64) = (0.0, 0.0);
     for _ in 0..((gap / speed + 1.0) / TICK).ceil() as usize {
         world.step();
@@ -538,11 +631,36 @@ fn land(speed: f64, phase: f64, settings: BodySettings) -> (f64, f64, f64) {
         up = up.max(state.linear_velocity[1]);
     }
     let spin = world.state(BodyId(1)).unwrap().angular_velocity;
-    (
+    Landing {
         deepest,
         up,
-        (spin[0] * spin[0] + spin[1] * spin[1] + spin[2] * spin[2]).sqrt(),
-    )
+        turn: (spin[0] * spin[0] + spin[1] * spin[1] + spin[2] * spin[2]).sqrt(),
+    }
+}
+
+/// A cube of one voxel that lands `phase` of the way through a step: (deepest, up, turn) of [`land_block`].
+fn land(speed: f64, phase: f64, settings: BodySettings) -> (f64, f64, f64) {
+    let gap = gap_at_phase(speed, settings.substeps, phase);
+    let landing = land_block(1, speed, gap, settings);
+    (landing.deepest, landing.up, landing.turn)
+}
+
+/// The worst landing of a cube of `side` voxels at `speed` over the 24 moments of a tick (the steps a tick is cut into do not matter: the gap is in ticks): the highest of each
+/// of the three.
+fn worst_landing_over_a_tick(side: i128, speed: f64, settings: BodySettings) -> Landing {
+    let mut worst = Landing {
+        deepest: 0.0,
+        up: 0.0,
+        turn: 0.0,
+    };
+    for moment in 0..24 {
+        let gap = gap_at_tick(speed, 3.0 + f64::from(moment) / 24.0);
+        let landing = land_block(side, speed, gap, settings);
+        worst.deepest = worst.deepest.max(landing.deepest);
+        worst.up = worst.up.max(landing.up);
+        worst.turn = worst.turn.max(landing.turn);
+    }
+    worst
 }
 
 #[test]
@@ -567,42 +685,45 @@ fn a_cube_that_lands_on_terrain_goes_hardly_into_it_and_hardly_bounces_wherever_
 }
 
 #[test]
-fn a_cube_that_lands_squarely_at_5_and_20_voxels_a_second_turns_by_under_two_hundredths_of_its_speed_wherever_in_a_step_it_lands()
- {
-    // The turn a landing leaves, in radians a second, at the highest of the 12 moments of a step: 0.082 and 0.326 with the cut (0.016 of the speed at both); 0.25 and 0.70 in
-    // today's world (0.049 and 0.035 of the speed), where a hit that falls late in a step turns the cube much more than one that falls early.
-    // This is not claimed at 60 and 150 voxels a second, and it does not hold there: where the piece that meets the touch is cut short by the end of a step the highest turn is
-    // 1.18 and 4.76 (`docs/history/loop-probe.md`, section 19, "What the landing table hid").
+fn a_cube_that_lands_squarely_neither_goes_up_nor_turns_wherever_in_a_tick_it_lands() {
+    // A cube that lands squarely on flat ground has no reason to go up or to turn: both are what the solver leaves. With one settling pass a cube of one voxel left 0.055, 0.22,
+    // 0.81 and 3.3 voxels a second up and 0.082, 0.33, 1.2 and 4.8 radians a second (1.1 to 2.2 and 1.6 to 3.2 hundredths of its speed) at 5, 20, 60 and 150 voxels a second, by
+    // the moment: more where the piece that meets the touch was shorter. With the world's passes, under a thousandth of the speed for cubes of 1, 4, 16 and 32 voxels (the
+    // highest is the cube of 32 at 150 voxels a second, going up at 0.056: the body's own mass, which more passes do not change).
     let mut wrong = Vec::new();
-    for speed in [5.0, 20.0] {
-        let turn = (0..12)
-            .map(|moment| land(speed, f64::from(moment) / 12.0, settings_with(3)).2)
-            .fold(0.0, f64::max);
-        if turn > 0.02 * speed {
-            wrong.push(format!(
-                "{speed} voxels a second: the cube turned at {turn:.3} radians a second at the most"
-            ));
+    for side in [1, 4, 16, 32] {
+        for speed in [5.0, 20.0, 60.0, 150.0] {
+            let worst = worst_landing_over_a_tick(side, speed, settings_with(3));
+            if worst.up > 0.001 * speed || worst.turn > 0.001 * speed {
+                wrong.push(format!(
+                    "a cube of {side} at {speed} voxels a second: up at {:.4} voxels a second and turning at {:.4} radians a second at the most over 24 moments of a tick",
+                    worst.up, worst.turn
+                ));
+            }
         }
     }
     assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }
 
 #[test]
-fn without_the_cut_a_cube_that_lands_squarely_turns_by_more_than_two_hundredths_of_its_speed() {
-    // The control of the one above: with no cut (and the passes) a landing at 5 or 20 voxels a second turns the cube at 0.046 and 0.031 of its speed at the worst moment.
+fn with_one_settling_pass_a_cube_that_lands_squarely_goes_up_and_turns() {
+    // The control of the one above: the solver's own single pass (Rapier's default, and the world's before step 4c-5-A) leaves a cube of one voxel going up at over 0.5 and
+    // turning at over 1 hundredth of its speed at the worst of the moments, at each of the four speeds (0.011 to 0.022 and 0.016 to 0.032).
     let settings = BodySettings {
-        cut_at_first_touch: false,
+        settling_passes: 1,
         ..settings_with(3)
     };
-    let worst = [5.0, 20.0].map(|speed| {
-        (0..12)
-            .map(|moment| land(speed, f64::from(moment) / 12.0, settings).2 / speed)
-            .fold(0.0, f64::max)
-    });
-    assert!(
-        worst.iter().all(|turn| *turn > 0.02),
-        "with no cut the highest turn of a landing was {worst:?} of the speed at 5 and 20 voxels a second"
-    );
+    let mut wrong = Vec::new();
+    for speed in [5.0, 20.0, 60.0, 150.0] {
+        let worst = worst_landing_over_a_tick(1, speed, settings);
+        if worst.up < 0.005 * speed || worst.turn < 0.01 * speed {
+            wrong.push(format!(
+                "{speed} voxels a second: with one settling pass the cube went up at {:.4} and turned at {:.4} at the most",
+                worst.up, worst.turn
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }
 
 #[test]

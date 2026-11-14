@@ -1,7 +1,8 @@
 //! What it costs to simulate ships: stepping, and making the colliders of a brick again after an edit, for ships of 10,000 and 100,000 blocks,
 //! and for a hundred ships. Run with `cargo run --release -p physics --example ship_cost`; the numbers are for the machine they are run on.
-//! Every row is given four times, in one run, so that they are measured under the same load: for the world as it was before step 4c-5-A (no extra solver passes, no cut of a step at
-//! the first touch), with the passes alone, with the cut alone, and as it is now (`BodySettings::default()`, both).
+//! Every row is given five times, in one run, so that they are measured under the same load: for the world as it was before step 4c-5-A (no extra solver passes, no cut of a step at
+//! the first touch, Rapier's one settling pass), with the passes alone, with the cut alone, with the settling passes alone, and as it is now (`BodySettings::default()`, all three).
+//! `SETTLING=n` in the environment changes the settling passes of the last two rows (the default is 16).
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -199,33 +200,48 @@ fn many_ships(settings: BodySettings) {
 }
 
 fn main() {
-    let now = BodySettings::default();
-    // The solver's own passes only is what a world was before step 4c-5-A.
-    let no_passes = SolverDials::default();
+    // `SETTLING=n` in the environment sets the settling passes of the "now" rows (and of the "settling passes alone" row).
+    let now = BodySettings {
+        settling_passes: std::env::var("SETTLING")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(BodySettings::default().settling_passes),
+        ..BodySettings::default()
+    };
+    // The solver's own work only (no extra passes, no cut, Rapier's one settling pass) is what a world was before step 4c-5-A.
+    let before = BodySettings {
+        solver: SolverDials::default(),
+        cut_at_first_touch: false,
+        settling_passes: 1,
+        ..now
+    };
     for (name, settings) in [
         (
-            "before step 4c-5-A (no passes, no cut)",
-            BodySettings {
-                solver: no_passes,
-                cut_at_first_touch: false,
-                ..now
-            },
+            "before step 4c-5-A (no passes, no cut, one settling pass)",
+            before,
         ),
         (
             "the passes alone",
             BodySettings {
-                cut_at_first_touch: false,
-                ..now
+                solver: now.solver,
+                ..before
             },
         ),
         (
             "the cut alone",
             BodySettings {
-                solver: no_passes,
-                ..now
+                cut_at_first_touch: true,
+                ..before
             },
         ),
-        ("now (the passes and the cut)", now),
+        (
+            "the settling passes alone",
+            BodySettings {
+                settling_passes: now.settling_passes,
+                ..before
+            },
+        ),
+        ("now (the passes, the cut and the settling passes)", now),
     ] {
         println!("== {name}");
         one_ship("a ship of about 10,000 blocks", 22, 22, 21, settings);

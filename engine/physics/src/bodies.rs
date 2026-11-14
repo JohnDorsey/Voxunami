@@ -51,13 +51,24 @@ const MOST_A_STEP_MOVES: Real = 0.8;
 /// (at 20 ticks a second); faster, a step is longer than that.
 const MOST_STEPS: u32 = 24;
 
-/// The passes over its constraints that the solver makes for every body, beyond its own: what makes a hit come out as momentum says and not as a chain of joints gives way, and
-/// what takes the spin out of a head-on hit (two cubes that meet squarely turned at 0.2 radians a second at 60 voxels a second with none, and at 0.01 with these). A stranger on a
-/// rigid chain of four keeps 0.04 to 0.14 of its speed with none, where 0.2 is true; the 15 that this is were found by the study of `docs/history/loop-probe.md`, section 18 (the
-/// rest noise of landing gear on a carrier, 113 mm/s, goes to nothing with them). Rapier runs the largest request of a connected set of bodies (the contacts and the joints between
-/// them) on all of it, so what touches a chain is solved with it, and a body that touches nothing has no constraint to make passes over. What they cost is paid by a body that is
-/// awake and touching (a ship at rest on the ground, awake, went from 15 to 35 microseconds a tick with them, measured): a body that is asleep costs nothing.
+/// The passes over its constraints that the solver makes for every body, beyond its own: what makes a hit come out as momentum says and not as a chain of joints gives way. A
+/// stranger on a rigid chain of four keeps 0.04 to 0.14 of its speed with none, where 0.2 is true; the 15 that this is were found by the study of `docs/history/loop-probe.md`,
+/// section 18 (the rest noise of landing gear on a carrier, 113 mm/s, goes to nothing with them). The settling passes ([`SETTLING_PASSES`], section 20) do most of the same work
+/// since: with them alone the chain keeps 0.1985 to 0.1994 and with these as well 0.1988 to 0.2000, and the turn of a head-on hit is theirs (two cubes that meet squarely turned at
+/// 0.01 radians a second at 60 voxels a second with these and one settling pass, and under 5e-15 with the settling passes and none of these). Rapier runs the largest request of a
+/// connected set of bodies (the contacts and the joints between them) on all of it, so what touches a chain is solved with it, and a body that touches nothing has no constraint to
+/// make passes over. What they cost is paid by a body that is awake and touching (a ship at rest on the ground, awake, went from 15 to 35 microseconds a tick with them,
+/// measured): a body that is asleep costs nothing.
 const HIT_PASSES: usize = 15;
+
+/// How many settling passes the solver makes ([`BodySettings::settling_passes`]). Rapier solves each part of a step with a bias that pushes bodies out of each other, moves them,
+/// and then takes that speed away again with a second solve, whose passes these are; its own is one. A contact is soft, so in a short piece of a step it lets a large part of the
+/// speed through (0.09 of it in a piece of 5 milliseconds against terrain, 0.56 in one of 0.4), and one pass over the four points of a cube that lands leaves 0.04 of that as speed
+/// up and as a turn: a cube that landed squarely at 150 voxels a second went up at up to 3.3 voxels a second and turned at up to 4.8 radians a second, by the moment of the step.
+/// Each further pass leaves about 0.6 of what the one before left. With 16 the same landing leaves under 0.001 of each, two cubes that meet squarely turn by under 5e-15 radians a second,
+/// and a ship on four legs does not bounce or turn at any speed from 5 to 150 voxels a second (`docs/history/loop-probe.md`, section 20; `engine_probe landing|landinggear|pairspin`
+/// with `SETTLING=n`). A pass costs about two and a half times what one of the extra passes above does, for it solves friction as well.
+const SETTLING_PASSES: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
@@ -69,15 +80,21 @@ pub struct BodySettings {
     pub gravity: [f64; 3],
     /// How hard the solver works on every body at the least: a body that is given more with [`BodyWorld::set_solver_dials`] gets that. Nothing extra is the solver's own work.
     pub solver: SolverDials,
+    /// How many passes the solver makes over all the constraints, after each part of a step, to take away the speed it gave bodies to push them out of each other (Rapier's "solve
+    /// without bias" and its `num_internal_stabilization_iterations`; at least 1, which is Rapier's own). A body that lands meets the ground at several points at once, and one pass
+    /// leaves part of what the soft contact let through as a bounce and a turn, more in a shorter piece of a step; each further pass leaves about 0.6 of what the one before left
+    /// (the default is 16: the comment of `SETTLING_PASSES` in `bodies.rs` says what that does).
+    pub settling_passes: usize,
     /// Whether a step of the solver is cut where two bodies, or a body and the terrain, first touch, so that a hit begins at the start of a piece whatever moment of the step it
-    /// falls at (what it does then does not depend on that moment: `docs/history/loop-probe.md`, section 18). It costs a question to the broad phase for each body that
-    /// moves, and a step in which nothing is about to touch is the same bit for bit.
+    /// falls at, and no body goes a whole step's way into another before the solver sees the touch (0.7 voxels into terrain at 60 voxels a second without the cut, 0.013 with
+    /// it: `docs/history/loop-probe.md`, sections 18 to 20). It costs a question to the broad phase for each body that moves, and a step in which nothing is about to touch is
+    /// the same bit for bit.
     pub cut_at_first_touch: bool,
 }
 
 impl Default for BodySettings {
-    /// A tick of a twentieth of a second solved at 60 steps a second, the gravity characters fall in, the passes that make a hit come out right (15 for every body), and the cut of a
-    /// step where two bodies first touch.
+    /// A tick of a twentieth of a second solved at 60 steps a second, the gravity characters fall in, the passes that make a hit come out right (15 for every body, and 16 settling
+    /// passes), and the cut of a step where two bodies first touch.
     fn default() -> Self {
         Self {
             time_step: 1.0 / 20.0,
@@ -87,6 +104,7 @@ impl Default for BodySettings {
                 extra_substeps: 0,
                 extra_passes: HIT_PASSES,
             },
+            settling_passes: SETTLING_PASSES,
             cut_at_first_touch: true,
         }
     }
@@ -208,6 +226,7 @@ impl BodyWorld {
             // No speed limit (the default is 400 metres a second). Past what `MOST_STEPS` can cut a tick for, a body may go through thin ground, and the
             // result is not promised to be the same on every machine; below it, it is.
             normalized_max_linear_velocity: Real::MAX,
+            num_internal_stabilization_iterations: settings.settling_passes.max(1),
             ..IntegrationParameters::default()
         };
         Self {
@@ -2246,17 +2265,22 @@ mod tests {
         // (Moved on purpose, 2026-11-14: 4_420_298_351_144_519_277 before. Every body is given 15 extra solver passes, and a step is cut where two bodies first touch (the ships
         // here land on the ground): step 4c-5-A of `docs/decisions/joints-and-cars.md`. Control: with `solver` set to nothing and the cut off the old value comes
         // back bit for bit, in the test next to this one; so those two are the only things that moved it.)
+        // (Moved on purpose, 2026-11-14, the second time: 13_453_006_163_523_410_624 before. The solver makes 16 settling passes after each part of a step where Rapier makes one, and the
+        // piece after a cut is what is left of the step, no longer a twelfth of a tick at most: `docs/history/loop-probe.md`, section 20. Control: with the one pass and the piece
+        // of a twelfth of a tick put back, and nothing else changed, the old value came back bit for bit; so those two are the only things that moved it. The test next to this one
+        // is the control of both: with `settling_passes` 1, no passes and no cut it is still what it was before step 4c-5-A.)
         assert!(
             first.cuts_made() > 0,
             "no step was cut in the busy scene: the pin below is not about the cut"
         );
-        assert_eq!(first.state_hash(), 13_453_006_163_523_410_624);
+        assert_eq!(first.state_hash(), 3_459_255_983_539_198_170);
     }
 
     #[test]
     fn with_the_passes_and_the_cut_off_the_busy_scene_is_what_it_was_before_them_bit_for_bit() {
         let settings = BodySettings {
             solver: SolverDials::default(),
+            settling_passes: 1,
             cut_at_first_touch: false,
             ..heavy_planet()
         };
