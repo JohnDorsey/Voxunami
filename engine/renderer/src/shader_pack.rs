@@ -31,6 +31,44 @@ pub fn default_lighting() -> &'static str {
     DEFAULT_LIGHTING
 }
 
+/// How the relief of a block's picture is drawn: the height in the alpha of its normal picture (LabPBR `_n`). Each is a different shader, so that one that is not wanted is not in
+/// the shader at all and costs nothing (`relief_off.wgsl`, `relief_prisms.wgsl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Relief {
+    /// The face is flat: the picture is read where the eye's ray meets the face. (The relief still shades the sun's light on the picture, which needs no other shader.)
+    Flat,
+    /// Each pixel of the picture is a square column as deep as its height says, and the eye's ray is walked through the columns: a flat top is the picture's colours, a side wall
+    /// is lit as the sun says and darker the deeper it is (`docs/specs/block-textures-spec.md`, "Prisms" under "As built").
+    Prisms,
+}
+
+/// The relief a pack that does not say is drawn with, and the default pack. Prisms are on while they are tested (owner, 2026-11-14); whether they stay the default is open.
+pub const DEFAULT_RELIEF: Relief = Relief::Prisms;
+
+impl Relief {
+    /// The word of `pack.json` for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Relief::Flat => "flat",
+            Relief::Prisms => "prisms",
+        }
+    }
+
+    /// The relief a `pack.json` word names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Relief::Flat, Relief::Prisms]
+            .into_iter()
+            .find(|relief| relief.name() == name)
+    }
+}
+
+/// What the voxel shaders are made of besides the engine's own text: the pack's lighting (`pack_shade`) and how the relief of pictures is drawn.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Shading<'a> {
+    pub lighting: &'a str,
+    pub relief: Relief,
+}
+
 /// A place in a pack's file that is wrong, and what is wrong with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderPackProblem {
@@ -78,23 +116,37 @@ impl ShaderPackError {
     }
 }
 
-/// A pack: its id and name, and the text of its `pack_shade`, checked.
+/// A pack: its id and name, the text of its `pack_shade`, checked, and how it draws the relief of pictures, if it says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderPack {
     id: String,
     name: String,
     lighting: String,
+    relief: Option<Relief>,
 }
 
 impl ShaderPack {
-    /// A pack with this id and name and the text of its lighting file; an error says everything that is wrong with the text.
+    /// A pack with this id and name and the text of its lighting file; an error says everything that is wrong with the text. It draws the relief as the engine does
+    /// ([`DEFAULT_RELIEF`]) until [`ShaderPack::with_relief`] says otherwise.
     pub fn new(id: &str, name: &str, lighting: &str) -> Result<Self, ShaderPackError> {
         check_lighting(lighting)?;
         Ok(Self {
             id: id.to_owned(),
             name: name.to_owned(),
             lighting: lighting.to_owned(),
+            relief: None,
         })
+    }
+
+    /// The same pack drawing the relief of pictures this way (`"relief"` in `pack.json`).
+    pub fn with_relief(mut self, relief: Relief) -> Self {
+        self.relief = Some(relief);
+        self
+    }
+
+    /// How the pack asked for the relief of pictures to be drawn; `None` for the engine's own choice ([`DEFAULT_RELIEF`]).
+    pub fn relief(&self) -> Option<Relief> {
+        self.relief
     }
 
     pub fn id(&self) -> &str {
@@ -244,8 +296,13 @@ fn lexical_problems(text: &str) -> Vec<ShaderPackProblem> {
 }
 
 /// What the shader language says of the engine's shader of one kind with this text of the pack after it, as problems with the lines of the pack's text.
-fn language_problem(with_pictures: bool, walk: SunWalk, text: &str) -> Option<ShaderPackProblem> {
-    let before = voxel_source(with_pictures, walk, "");
+fn language_problem(
+    with_pictures: bool,
+    relief: Relief,
+    walk: SunWalk,
+    text: &str,
+) -> Option<ShaderPackProblem> {
+    let before = voxel_source(with_pictures, relief, walk, "");
     let source = format!("{before}{text}");
     let first_line_of_the_pack = before.matches('\n').count() as u32 + 1;
     let module = match naga::front::wgsl::parse_str(&source) {
@@ -306,8 +363,9 @@ fn problem_at(
     }
 }
 
-/// Checks the text of a pack's lighting: the words it may not use, and that the engine's shader of the plainest kind and of the heaviest, with the text after it, is accepted by
-/// the shader language. (The pack's text sees only the `Surface` and the frame's uniform, which every kind has, so the kinds between are as these.)
+/// Checks the text of a pack's lighting: the words it may not use, and that the engine's shader of the plainest kind and of the heaviest (with each relief), with the text after it,
+/// is accepted by the shader language. (The pack's text sees only the `Surface` and the frame's uniform, which every kind has, so the kinds between are as these; the names the
+/// pack may not define are those of the heaviest, and of each relief, which has names of its own.)
 pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
     let problems = lexical_problems(text);
     if !problems.is_empty() {
@@ -318,8 +376,12 @@ pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
         other_windows: true,
         entities: true,
     };
-    for (with_pictures, walk) in [(false, SunWalk::None), (true, heaviest)] {
-        if let Some(problem) = language_problem(with_pictures, walk, text) {
+    for (with_pictures, relief, walk) in [
+        (false, Relief::Flat, SunWalk::None),
+        (true, Relief::Flat, heaviest),
+        (true, Relief::Prisms, heaviest),
+    ] {
+        if let Some(problem) = language_problem(with_pictures, relief, walk, text) {
             return Err(ShaderPackError {
                 problems: vec![problem],
             });

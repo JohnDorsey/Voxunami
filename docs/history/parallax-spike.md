@@ -2,7 +2,7 @@
 
 The owner asked for parallax in which **the pixels of a picture look like square prisms extruded by varying amounts, with their sides shaded**, and not lumpy with flat shading; and for a spike to see what that costs and looks like against simpler parallax.
 
-**The code is a spike and is on the branch `spike-parallax`** (not merged: it is a runtime switch for looking and measuring, not a design). The pictures are in `docs/history/parallax-spike/`. Everything below is marked as **run** (seen or measured here) or **believed** (read from the code or reasoned).
+**The code of the spike is commit `7d8f955`** (a runtime switch of three modes, for looking and measuring: its tests `parallax_spike_*` are in that commit, and the branch `spike-parallax` is there too). **Prisms were then built as a shader pack's option: see "Afterwards" at the end.** The pictures are in `docs/history/parallax-spike/`. Everything below is marked as **run** (seen or measured here) or **believed** (read from the code or reasoned).
 
 ## What was built
 
@@ -52,14 +52,14 @@ Release build, integrated AMD GPU and RTX 3090, 1280x720, **a floor of 32 by 32 
 
 ## What would be needed to make prisms real (believed)
 
-1. **Depth.** Nothing moves the face in depth: a prism does not stand out of its quad, so there is **no silhouette** (a column on the edge of a block is cut off at the quad's edge), a prism cannot be hidden by the one in front of it from another block, and the shadow maps see the flat face. Writing `frag_depth` would fix the hiding and costs early depth tests on every face that has a picture; the silhouette would want the block's side faces to draw the relief too.
+1. **Depth.** Nothing moves the face in depth. **(Corrected afterwards: this item overstated the problem. The relief is below the face: a height of 255 is the face's own plane and the rest is deeper, so no column stands out of the quad. The quad is the silhouette and there is nothing to hide behind, and the shadow maps' flat face is right to a tenth of a voxel. Writing `frag_depth` would buy next to nothing and would cost the early depth test on every face of the shader. It was not built.)** What is left of it is the rim: see 2.
 2. **The edge of a block.** A ray that leaves the block's picture wraps to the other side of the same picture (it repeats) and does not meet the neighbour's picture; a wall at the edge is the wall of the picture's own repeat.
 3. **Distance.** The depth is already faded out with the picture over the picture distance; the number of cells walked should also fall with the distance, and a minified picture (the mips) turns the prisms to noise before that. Both were left alone.
 4. **Specialise it** (no runtime switch), cap the cells by the view angle, and decide whether the tilts of the art should light the tops (the spike's tops are flat, as asked).
 5. **Settings.** Depth is a number of the spike (`frame.pictures.w` fraction); the owner would want it a setting of a shader pack, as the relief's depth is for the shade (`RELIEF_DEPTH`, a first guess).
 6. **Art.** A wall takes its column's colour, so the stripes on a wall of a plateau of dirt noise are the plateau's own pixels; art for prisms might want its own wall colour.
 
-## Opinion (confidence: medium)
+## Opinion (confidence: medium; the first part is what was believed before the build, see "Afterwards" for what held)
 
 For this engine's pixel-art look **prisms are the better parallax**: it is the look asked for, it keeps the pixel grid, and its cost is about that of smooth parallax occlusion, which looks lumpy. As a **default** it is too dear for the integrated GPU everywhere there is a relief (a ceiling of +1 to +1.5 ms on a full-screen floor of dirt, on top of a frame already at the edge of 60 fps), so I would ship it only as an **option of a shader pack**, compiled out when off, with depth writing and the edge cases above done first. Offset limiting is the cheap fallback if a hint of depth is enough. What decides it is how much of a real view has a relief: with Cave's grass and stone (no relief) it costs nothing, and the dirt is where it shows.
 
@@ -73,3 +73,16 @@ VOX_SPIKE_ELEVATION=25 cargo test -p renderer --test gpu_rendering --release par
 ```
 
 The mode is `VoxelRenderer::set_parallax_spike(mode, depth)`; the shader reads it from `frame.pictures.w` (mode its whole part, depth in voxels its fraction).
+
+## Afterwards: prisms as a shader pack's option (2026-11-14)
+
+The owner asked for prisms to be taken further as a shader pack's option, **on while they are tested**. What was built (the design is in `block-textures-spec.md`, "As built", "Prisms"; the setting is in `shader-pack-format.md`):
+
+- **A setting, compiled out when off.** `Relief::Flat` or `Relief::Prisms` (`"relief"` in a pack's `pack.json`; `ShaderPack::with_relief`); a pack that does not say gets `DEFAULT_RELIEF`, which is `Prisms` for now. The shader is made of `pictures_on.wgsl` and either `relief_flat.wgsl` (constants: nothing to run) or `relief_prisms.wgsl`, so a pack with `"flat"` has no prisms in its shader. The spike's modes 1 and 2 and the `frame.pictures.w` number were taken out; they are in `7d8f955`. The example pack `flat` shows the setting.
+- **The grass costs next to nothing** (a picture word's bit 18, set by the renderer on a picture whose normal companion has a pixel under 255, `HAS_RELIEF`): a face without it returns before any fetch. Without the bit the grass floor paid +0.33 (Vulkan) and +0.42 ms (DX12) on the integrated GPU for the early-out's gather alone; with it +0.13 and +0.32.
+- **Prisms fade out with the screen, not only the picture distance**: where a picture pixel is smaller than half a screen pixel they fade, and past one they are not walked at all (so the cost is the near faces'), and the picture's own tilts fade back in as the prisms go (**a bug the test found: with the tilts dropped under prisms, the far dirt lost its bumps at once**: 29,192 of 64,000 pixels differed from the flat setting where prisms were skipped; found by the test written first, fixed, 0 differ).
+- **Depth writing and silhouettes: not built, and not needed** (the correction above). **The block's edge is not fixed** and cannot be from the shader's side: a ray that leaves the block's face reads the picture's other side, which is right where the neighbour has the same picture and a sliver (a tenth of a voxel over the tangent of the eye's elevation: 0.2 voxel at 25 degrees) of wrong colour where it has not, or has air.
+
+**Cost** (release, `prisms_cost`, the floor of dirt filling a 1280x720 frame, the eye 55 degrees over it; the "flat" shader is the one with the prisms compiled out): integrated GPU **+1.23 ms (Vulkan, 3.17 ms) and +1.54 ms (DX12, 3.36 ms)** on dirt, **+0.13 and +0.32 ms** on a picture with no relief; the RTX 3090 +0.01 to +0.06 ms either way. The same worst-case floor as the table above (+1.1 to +1.5 for the spike's prisms): nothing was won on dirt, the grass was.
+
+**Seen in the game** (`cave --screenshot`, the RTX 3090, dev profile; not the integrated GPU): the default view is nearly all grass and 0.3 percent of its pixels differ from the flat setting (2,995 of 921,600, all on a patch of dirt at a cliff's foot); there the dirt reads as fine speckle with lit edges against the flat setting's blobs. A view of dirt filling the frame was not taken (Cave has little exposed dirt).

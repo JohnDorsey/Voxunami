@@ -32,7 +32,8 @@ pub use graphics_context::{
 pub use occupancy_volume::VolumeStatistics;
 pub use overlay::OverlayRect;
 pub use shader_pack::{
-    SHADER_PACK_INTERFACE, ShaderPack, ShaderPackError, ShaderPackProblem, default_lighting,
+    DEFAULT_RELIEF, Relief, SHADER_PACK_INTERFACE, ShaderPack, ShaderPackError, ShaderPackProblem,
+    default_lighting,
 };
 pub use shadow::{
     BLEND_FROM, CASCADE_RESOLUTION, Cascade, DEPTH_BIAS_TEXELS, EDGE_TEXELS, FACING_FULL_FROM,

@@ -31,6 +31,41 @@ fn the_default_lighting_is_a_pack_the_checks_accept_and_so_is_one_that_reads_the
 }
 
 #[test]
+fn a_pack_says_how_the_relief_is_drawn_or_leaves_it_to_the_engine() {
+    let pack = ShaderPack::new("test:pack", "Test", DEFAULT_LIGHTING).expect("a valid pack");
+    assert_eq!(pack.relief(), None);
+    assert_eq!(
+        pack.clone().with_relief(Relief::Flat).relief(),
+        Some(Relief::Flat)
+    );
+    assert_eq!(
+        pack.with_relief(Relief::Prisms).relief(),
+        Some(Relief::Prisms)
+    );
+    for relief in [Relief::Flat, Relief::Prisms] {
+        assert_eq!(Relief::from_name(relief.name()), Some(relief));
+    }
+    assert_eq!(Relief::from_name("bumpy"), None);
+    assert_eq!(
+        Relief::from_name("Prisms"),
+        None,
+        "the words are lower case"
+    );
+}
+
+#[test]
+fn a_pack_may_not_define_a_name_of_either_relief_and_each_relief_has_names_of_its_own() {
+    // Names both reliefs have (as constants in one and variables in the other) and names that only the prisms have: the pack is checked against both.
+    for name in ["parallax_shift", "picture_prepare", "column_height"] {
+        let text = format!(
+            "fn {name}() -> f32 {{ return 1.0; }}\nfn pack_shade(s: Surface) -> vec3<f32> {{ return s.albedo; }}"
+        );
+        let problems = problems_of(&text);
+        assert_eq!(problems.len(), 1, "{name}: {problems:?}");
+    }
+}
+
+#[test]
 fn a_pack_that_does_not_define_pack_shade_is_refused_whole() {
     let problems = problems_of("fn something_else(s: Surface) -> vec3<f32> { return s.albedo; }");
     assert_eq!(problems.len(), 1);

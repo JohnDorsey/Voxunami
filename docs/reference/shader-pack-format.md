@@ -25,7 +25,9 @@ shaderpacks/
 - `id` (required): a namespaced id, `author:name`. Two packs with one id are one: the first is used.
 - `name` (required): what a person reads. You choose a pack by its id, the part of the id after the colon, its name (any case) or the beginning of any of them.
 - `interface`: the version of the pack interface the pack is written for. The engine's is **1**; a pack for another is refused, so that a change of the interface is never a quiet break. May be left out.
-- `format`: 1 (may be left out). `description`: free text. Any other key is an error.
+- `format`: 1 (may be left out). `description`: free text.
+- `relief`: how the relief of block pictures is drawn, `"flat"` or `"prisms"`. **Prisms** make each pixel of a picture whose normal companion (LabPBR `_n`) has a height in its alpha a square column that deep, 0.1 voxel at most, with its sides lit by the sun; **flat** draws the face flat (the picture's bumps and the shade of its own relief stay). Left out, the engine's own choice: prisms, while they are tested. A pack that says `"flat"` has no prisms in its shaders at all, which costs about 1.2 to 1.5 ms of a 3 ms frame of nothing but dirt on an integrated GPU (nothing on a picture with no relief); it needs no new interface number, since a pack still reads only `Surface`. See `engine/renderer/example_shader_packs/flat`.
+- Any other key is an error.
 
 ## `lighting.wgsl`
 
@@ -89,7 +91,7 @@ While playing, `.shader` says which pack is in use and what there is, `.shader N
 
 ## Examples
 
-`engine/renderer/example_shader_packs` has two (they are checked by tests, and drawn on every graphics card the tests run on):
+`engine/renderer/example_shader_packs` has three (they are checked by tests, and drawn on every graphics card the tests run on):
 
 - `cel`: the sun's light in three steps instead of a smooth fall-off:
 
@@ -104,6 +106,7 @@ While playing, `.shader` says which pack is in use and what there is, `.shader N
   }
   ```
 
+- `flat`: the default's lighting (a copy, checked against it by a test) with `"relief": "flat"`: the one example that changes only a setting.
 - `shadowless`: a sun that no terrain hides (only the horizon of the planet does): it does not look at `sun_visible`, `sky_visible` or `uncovered`.
 
 ## Not yet

@@ -15,7 +15,7 @@ use voxel_space::{
 };
 use wgpu::util::DeviceExt;
 
-use crate::block_textures::{BlockTextures, PictureSize};
+use crate::block_textures::{BlockTextures, PictureSize, words_with_relief};
 use crate::camera::{Camera, Frustum};
 use crate::contact_volume::{ContactGpu, WindowUniform, WindowsUniform};
 use crate::crosshair::Crosshair;
@@ -24,7 +24,9 @@ use crate::occupancy_volume::{
     MAXIMUM_WINDOWS, SLOT_BYTES, Volume, VolumeKey, VolumeStatistics, WINDOW_BRICKS, WINDOW_ENTRIES,
 };
 use crate::overlay::{Overlay, OverlayRect};
-use crate::shader_pack::{DEFAULT_LIGHTING, ShaderPack, ShaderPackError};
+use crate::shader_pack::{
+    DEFAULT_LIGHTING, DEFAULT_RELIEF, Relief, ShaderPack, ShaderPackError, Shading,
+};
 use crate::shadow::{
     Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
     sky_half_widths,
@@ -917,9 +919,6 @@ pub struct VoxelRenderer {
     picture_distance: f32,
     /// Whether the shadow of a face is looked up at the middle of the picture's pixel each pixel of the screen is in ([`VoxelRenderer::set_pixelated_shadows`]).
     pixelated_shadows: bool,
-    /// SPIKE (`docs/history/parallax-spike.md`): the parallax mode and the relief's depth, in the one number the shader reads from `frame.pictures.w` (the mode is its whole part, the
-    /// depth in voxels its fraction; 0 is no parallax and the default depth).
-    parallax_spike: f32,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -948,6 +947,8 @@ pub struct VoxelRenderer {
     entities_in_the_sun_walk: bool,
     /// The text of the shader pack's `pack_shade` the voxel shaders are made with ([`DEFAULT_LIGHTING`] or a pack's: [`VoxelRenderer::set_shader_pack`]).
     lighting: String,
+    /// How the shaders that draw pictures draw their relief ([`DEFAULT_RELIEF`] or the pack's: [`VoxelRenderer::set_shader_pack`]).
+    relief: Relief,
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
@@ -1120,7 +1121,13 @@ impl VoxelRenderer {
                 immediate_size: 0,
             });
 
-        let shader = voxel_shader(&device, false, SunWalk::None, DEFAULT_LIGHTING);
+        let shader = voxel_shader(
+            &device,
+            false,
+            DEFAULT_RELIEF,
+            SunWalk::None,
+            DEFAULT_LIGHTING,
+        );
         let (pipeline, detailed_pipeline) =
             voxel_pipelines(&device, &pipeline_layout, &shader, color_format);
 
@@ -1257,7 +1264,6 @@ impl VoxelRenderer {
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
             pixelated_shadows: false,
-            parallax_spike: 0.0,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1278,6 +1284,7 @@ impl VoxelRenderer {
             skip_faces_looking_away: true,
             entities_in_the_sun_walk: true,
             lighting: DEFAULT_LIGHTING.to_owned(),
+            relief: DEFAULT_RELIEF,
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
             bricks: HashMap::new(),
@@ -1504,7 +1511,9 @@ impl VoxelRenderer {
             colors.len() <= MAXIMUM_GAME_MATERIALS,
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
-        self.palette_buffer = Self::palette_buffer(&self.device, colors, words);
+        // (The shader's words say which pictures have a relief to look past: the one bit the renderer adds, `HAS_RELIEF`.)
+        self.palette_buffer =
+            Self::palette_buffer(&self.device, colors, &words_with_relief(words, sizes));
         self.block_textures = BlockTextures::new(&self.device, &self.queue, sizes);
         self.pictures_in_use = words.iter().any(|&word| word != 0);
         // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
@@ -1513,6 +1522,7 @@ impl VoxelRenderer {
             self.picture_shader = Some(voxel_shader(
                 &self.device,
                 true,
+                self.relief,
                 SunWalk::None,
                 &self.lighting,
             ));
@@ -1567,12 +1577,6 @@ impl VoxelRenderer {
     /// default size of the maps) and steps in the map's texels beyond; faces with no picture (beyond the picture distance, coarse nodes, avatars, boxes) are as they were.
     pub fn set_pixelated_shadows(&mut self, on: bool) {
         self.pixelated_shadows = on;
-    }
-
-    /// SPIKE: the parallax of pictures. `mode` 0 is none, 1 a single shift of the picture by its height (offset limiting), 2 a march through the heights as a smooth surface
-    /// (parallax occlusion), 3 a march through them as square prisms with their sides shaded; `depth` is how deep the relief is in voxels (0 for the default, 0.1; under 1).
-    pub fn set_parallax_spike(&mut self, mode: u32, depth: f32) {
-        self.parallax_spike = mode.min(9) as f32 + depth.clamp(0.0, 0.99);
     }
 
     fn remake_frame_bind_group(&mut self) {
@@ -1896,11 +1900,12 @@ impl VoxelRenderer {
     /// refuses any of them (the checks of [`ShaderPack::new`] are the shader language's, not the card's) this is an error and the renderer draws as it did.
     pub fn set_shader_pack(&mut self, pack: Option<&ShaderPack>) -> Result<(), ShaderPackError> {
         let lighting = pack.map_or(DEFAULT_LIGHTING, ShaderPack::lighting);
-        if lighting == self.lighting {
+        let relief = pack.and_then(ShaderPack::relief).unwrap_or(DEFAULT_RELIEF);
+        if lighting == self.lighting && relief == self.relief {
             return Ok(());
         }
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = voxel_shader(&self.device, false, SunWalk::None, lighting);
+        let shader = voxel_shader(&self.device, false, relief, SunWalk::None, lighting);
         let pipelines = voxel_pipelines(
             &self.device,
             &self.pipeline_layout,
@@ -1908,7 +1913,7 @@ impl VoxelRenderer {
             self.color_format,
         );
         let pictures = self.pictures_in_use.then(|| {
-            let shader = voxel_shader(&self.device, true, SunWalk::None, lighting);
+            let shader = voxel_shader(&self.device, true, relief, SunWalk::None, lighting);
             let pipelines = voxel_pipelines(
                 &self.device,
                 &self.picture_pipeline_layout,
@@ -1919,7 +1924,7 @@ impl VoxelRenderer {
         });
         let mut contact = self.contact.take();
         if let Some(contact) = &mut contact {
-            contact.set_lighting(lighting);
+            contact.set_shading(Shading { lighting, relief });
             // (The heaviest kind: if the card takes this one it takes the others, which have less of the engine's code round the same pack.)
             contact.ensure_pipelines(
                 &self.device,
@@ -1935,7 +1940,10 @@ impl VoxelRenderer {
         if let Some(error) = pollster::block_on(scope.pop()) {
             // (The old pack's shaders are made again lazily, from the old text.)
             if let Some(contact) = &mut contact {
-                contact.set_lighting(&self.lighting);
+                contact.set_shading(Shading {
+                    lighting: &self.lighting,
+                    relief: self.relief,
+                });
             }
             self.contact = contact;
             return Err(ShaderPackError::refused_by_the_graphics_card(
@@ -1944,6 +1952,7 @@ impl VoxelRenderer {
         }
         self.contact = contact;
         self.lighting = lighting.to_owned();
+        self.relief = relief;
         (self.pipeline, self.detailed_pipeline) = pipelines;
         match pictures {
             Some((shader, pipelines)) => {
@@ -2028,7 +2037,10 @@ impl VoxelRenderer {
                 return;
             }
             self.contact = Some(ContactGpu::new(
-                &self.lighting,
+                Shading {
+                    lighting: &self.lighting,
+                    relief: self.relief,
+                },
                 &self.device,
                 &self.frame_layout,
                 &self.placement_layout,
@@ -3259,7 +3271,7 @@ impl VoxelRenderer {
                     self.picture_distance,
                     self.picture_distance * (1.0 + PICTURE_FADE_SHARE),
                     f32::from(self.pixelated_shadows),
-                    self.parallax_spike,
+                    0.0,
                 ]
             } else {
                 [0.0; 4]
@@ -3314,9 +3326,26 @@ pub(crate) enum SunWalk {
 
 /// The text of the voxel shader of this kind, with `lighting` (the shader pack's `pack_shade`: [`crate::shader_pack::DEFAULT_LIGHTING`] or a pack's) after all the rest, so that
 /// the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (`voxel_source(.., "")`).
-pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, lighting: &str) -> String {
+pub(crate) fn voxel_source(
+    with_pictures: bool,
+    relief: Relief,
+    walk: SunWalk,
+    lighting: &str,
+) -> String {
     let pictures = if with_pictures {
-        include_str!("pictures_on.wgsl")
+        // (Both read the picture where `parallax_shift` says; the one with no prisms says nowhere else than where the face is.)
+        match relief {
+            Relief::Flat => concat!(
+                include_str!("pictures_on.wgsl"),
+                "\n",
+                include_str!("relief_flat.wgsl")
+            ),
+            Relief::Prisms => concat!(
+                include_str!("pictures_on.wgsl"),
+                "\n",
+                include_str!("relief_prisms.wgsl")
+            ),
+        }
     } else {
         include_str!("pictures_off.wgsl")
     };
@@ -3360,12 +3389,17 @@ pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, lighting: &str) -
 pub(crate) fn voxel_shader(
     device: &wgpu::Device,
     with_pictures: bool,
+    relief: Relief,
     walk: SunWalk,
     lighting: &str,
 ) -> wgpu::ShaderModule {
     let label = format!(
         "voxel shader{}{}{}{}{}",
-        if with_pictures { " with pictures" } else { "" },
+        match (with_pictures, relief) {
+            (false, _) => "",
+            (true, Relief::Flat) => " with pictures",
+            (true, Relief::Prisms) => " with pictures and prisms",
+        },
         match walk {
             SunWalk::None => "",
             SunWalk::Voxels { .. } => " and the sun's ray",
@@ -3388,7 +3422,9 @@ pub(crate) fn voxel_shader(
     );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&label),
-        source: wgpu::ShaderSource::Wgsl(voxel_source(with_pictures, walk, lighting).into()),
+        source: wgpu::ShaderSource::Wgsl(
+            voxel_source(with_pictures, relief, walk, lighting).into(),
+        ),
     })
 }
 

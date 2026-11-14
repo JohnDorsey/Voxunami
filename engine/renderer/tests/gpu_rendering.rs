@@ -44,10 +44,10 @@ mod facing_cull;
 mod glints;
 #[path = "gpu_rendering/occlusion.rs"]
 mod occlusion;
-#[path = "gpu_rendering/parallax_spike.rs"]
-mod parallax_spike;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
 mod pixelated_shadows;
+#[path = "gpu_rendering/prisms.rs"]
+mod prisms;
 #[path = "gpu_rendering/relief.rs"]
 mod relief;
 #[path = "gpu_rendering/scatter.rs"]

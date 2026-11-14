@@ -7,17 +7,18 @@
 //! ```
 //!
 //! `id` (a namespaced id) and `name` are required; `interface` is the version of the pack interface the pack is written for (the renderer's
-//! [`renderer::SHADER_PACK_INTERFACE`]), and a pack for another is refused; `format` may be 1; `description` is free text. `lighting.wgsl` defines `pack_shade`: the renderer's
+//! [`renderer::SHADER_PACK_INTERFACE`]), and a pack for another is refused; `format` may be 1; `description` is free text; `relief` is how the relief of block pictures is drawn
+//! (`"flat"` or `"prisms"`, [`renderer::Relief`]; left out, the engine's own choice, [`renderer::DEFAULT_RELIEF`]). `lighting.wgsl` defines `pack_shade`: the renderer's
 //! [`renderer::ShaderPack::new`] checks it. Packs are the client's own: a folder of them lives in the game data folder (`shaderpacks`), and `--shader-packs` names another.
 
 use std::path::{Path, PathBuf};
 
 use identity::Identity;
 use namespaced_id::NamespacedId;
-use renderer::{SHADER_PACK_INTERFACE, ShaderPack};
+use renderer::{Relief, SHADER_PACK_INTERFACE, ShaderPack};
 
 /// The keys a `pack.json` may have.
-const KEYS: [&str; 5] = ["id", "name", "format", "interface", "description"];
+const KEYS: [&str; 6] = ["id", "name", "format", "interface", "description", "relief"];
 
 /// A pack the player can choose: its id and its name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,6 +159,24 @@ pub fn read_pack(folder: &Path) -> Result<ShaderPack, Vec<String>> {
     {
         problems.push(in_file("`description` is a text".to_owned()));
     }
+    let relief = match object.get("relief") {
+        None => None,
+        Some(serde_json::Value::String(word)) => match Relief::from_name(word) {
+            Some(relief) => Some(relief),
+            None => {
+                problems.push(in_file(format!(
+                    "`relief` is {word:?}: it is \"flat\" or \"prisms\""
+                )));
+                None
+            }
+        },
+        Some(_) => {
+            problems.push(in_file(
+                "`relief` is a text: \"flat\" or \"prisms\"".to_owned(),
+            ));
+            None
+        }
+    };
     let lighting = match read("lighting.wgsl") {
         Ok(lighting) => Some(lighting),
         Err(problem) => {
@@ -171,20 +190,25 @@ pub fn read_pack(folder: &Path) -> Result<ShaderPack, Vec<String>> {
     let (Some(id), Some(name), Some(lighting)) = (id, name, lighting) else {
         return Err(problems);
     };
-    ShaderPack::new(&id, &name, &lighting).map_err(|error| {
-        error
-            .problems
-            .iter()
-            .map(|problem| {
-                format!(
-                    "{shown}{}lighting.wgsl{}{}",
-                    std::path::MAIN_SEPARATOR,
-                    if problem.line.is_some() { ", " } else { ": " },
-                    problem
-                )
-            })
-            .collect()
-    })
+    ShaderPack::new(&id, &name, &lighting)
+        .map(|pack| match relief {
+            Some(relief) => pack.with_relief(relief),
+            None => pack,
+        })
+        .map_err(|error| {
+            error
+                .problems
+                .iter()
+                .map(|problem| {
+                    format!(
+                        "{shown}{}lighting.wgsl{}{}",
+                        std::path::MAIN_SEPARATOR,
+                        if problem.line.is_some() { ", " } else { ": " },
+                        problem
+                    )
+                })
+                .collect()
+        })
 }
 
 /// The packs in the folders of this folder (a file in it is not a pack and is not looked at). The packs that are good are kept whatever the others are; two with one id are one

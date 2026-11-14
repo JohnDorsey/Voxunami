@@ -69,6 +69,34 @@ fn a_folder_with_a_pack_json_and_a_lighting_file_is_a_pack() {
 }
 
 #[test]
+fn a_pack_may_say_how_the_relief_of_pictures_is_drawn_and_a_word_that_is_none_of_them_is_a_problem()
+{
+    let folder = Folder::new("relief");
+    folder.write("lighting.wgsl", LIGHTING);
+    let relief_of = |text: &str| {
+        folder.write(
+            "pack.json",
+            &format!(r#"{{ "id": "tester:relief", "name": "Relief"{text} }}"#),
+        );
+        read_pack(folder.path()).map(|pack| pack.relief())
+    };
+    assert_eq!(relief_of(""), Ok(None));
+    assert_eq!(
+        relief_of(r#", "relief": "flat""#),
+        Ok(Some(renderer::Relief::Flat))
+    );
+    assert_eq!(
+        relief_of(r#", "relief": "prisms""#),
+        Ok(Some(renderer::Relief::Prisms))
+    );
+    for bad in [r#", "relief": "bumpy""#, r#", "relief": 3"#] {
+        let problems = relief_of(bad).expect_err(bad);
+        assert_eq!(problems.len(), 1, "{bad}: {problems:?}");
+        assert!(problems[0].contains("`relief`"), "{bad}: {problems:?}");
+    }
+}
+
+#[test]
 fn a_folder_that_is_not_a_pack_is_told_what_is_missing_or_wrong_in_which_file() {
     let folder = Folder::new("missing");
     let problems = problems_of(&folder);
@@ -274,7 +302,21 @@ fn the_example_packs_are_good_packs() {
     let shelf = read_directory(&examples()).expect("the examples folder");
     assert_eq!(shelf.problems, Vec::<String>::new());
     let ids: Vec<&str> = shelf.packs.iter().map(ShaderPack::id).collect();
-    assert_eq!(ids, ["voxunami:cel", "voxunami:shadowless"]);
+    assert_eq!(
+        ids,
+        ["voxunami:cel", "voxunami:flat", "voxunami:shadowless"]
+    );
+}
+
+#[test]
+fn the_flat_example_is_the_default_lighting_with_the_relief_flat() {
+    let pack = read_pack(&examples().join("flat")).expect("the flat example");
+    // (A copy of the default's file, so that the pack differs from the default in the relief alone: this is what says the copy has not fallen behind.)
+    assert_eq!(
+        pack.lighting().replace("\r\n", "\n"),
+        renderer::default_lighting().replace("\r\n", "\n")
+    );
+    assert_eq!(pack.relief(), Some(renderer::Relief::Flat));
 }
 
 #[test]

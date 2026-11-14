@@ -20,7 +20,7 @@ pub struct PictureSize<'a> {
     /// not sRGB): the alpha is the emission, where 255 means none and 0 to 254 is the amount of the pixel's own light.
     pub specular: Vec<Option<&'a [u8]>>,
     /// The normal companion (LabPBR `_n`) of each picture, as `specular`: its pixels are data (8-bit, not sRGB), the red and green the tilt of the face there (128 is none,
-    /// 0 and 255 a tilt of 1 either way) and the rest not read yet.
+    /// 0 and 255 a tilt of 1 either way), the blue the ambient occlusion (255 is none) and the alpha the height of the relief (255 is the top).
     pub normal: Vec<Option<&'a [u8]>>,
 }
 
@@ -231,6 +231,30 @@ const NO_SPECULAR: [u8; 4] = [0, 0, 0, 0];
 /// height of LabPBR at their highest, which are not read.
 const NO_NORMAL: [u8; 4] = [128, 128, 255, 255];
 
+/// The bit of a picture word (`FacePicture::word`, whose own bits are 0 to 17) that the renderer sets, and no one else, on a picture whose normal companion has a pixel below the
+/// top of its relief (a height under 255 in its alpha): the shader that walks prisms (`relief_prisms.wgsl`) leaves a face without it alone, with no fetch at all.
+pub(crate) const HAS_RELIEF: u32 = 1 << 18;
+
+/// The picture words with [`HAS_RELIEF`] set on those whose normal picture has relief. A word is as `FacePicture::word` says: bit 0 a picture, bits 1 and 2 the class of its size
+/// (the number in `sizes`) and bits 3 to 10 its layer (its number among the pictures of that size); a word of 0, a flat colour, is left as it is.
+pub(crate) fn words_with_relief(words: &[u32], sizes: &[PictureSize<'_>]) -> Vec<u32> {
+    words
+        .iter()
+        .map(|&word| {
+            let has_relief = word & 1 != 0
+                && sizes
+                    .get(((word >> 1) & 3) as usize)
+                    .and_then(|size| size.normal.get(((word >> 3) & 255) as usize))
+                    .copied()
+                    .flatten()
+                    .is_some_and(|normal| {
+                        normal.as_chunks::<4>().0.iter().any(|pixel| pixel[3] < 255)
+                    });
+            word | if has_relief { HAS_RELIEF } else { 0 }
+        })
+        .collect()
+}
+
 /// A texture array of `(side, layers)`, with the chain of smaller levels under each layer already in `data` (layer after layer).
 fn layered(
     device: &wgpu::Device,
@@ -372,6 +396,50 @@ mod tests {
 
     fn plain(size: u32, rgba: [u8; 4]) -> Vec<u8> {
         (0..size * size).flat_map(|_| rgba).collect()
+    }
+
+    #[test]
+    fn a_picture_word_is_marked_as_having_relief_only_if_a_pixel_of_its_normal_picture_is_below_the_top()
+     {
+        let flat = plain(2, [128, 128, 255, 255]);
+        let mut ridged = flat.clone();
+        ridged[3] = 254;
+        let with_normals = PictureSize {
+            size: 2,
+            tiles: vec![&flat[..]; 3],
+            specular: Vec::new(),
+            normal: vec![Some(&flat[..]), Some(&ridged[..]), None],
+        };
+        let without_normals = PictureSize {
+            size: 2,
+            tiles: vec![&flat[..]],
+            specular: Vec::new(),
+            normal: Vec::new(),
+        };
+        // A word is: bit 0 a picture, bits 1 and 2 its size class, bits 3 to 10 its layer; the sizes are smallest first.
+        let word = |class: u32, layer: u32| 1 | class << 1 | layer << 3;
+        let sizes = [with_normals, without_normals];
+        let words = [
+            0,
+            word(0, 0),
+            word(0, 1),
+            word(0, 2),
+            word(1, 0),
+            word(0, 1) | 1 << 17,
+        ];
+        assert_eq!(
+            words_with_relief(&words, &sizes),
+            [
+                0,
+                word(0, 0),
+                word(0, 1) | HAS_RELIEF,
+                word(0, 2),
+                word(1, 0),
+                word(0, 1) | 1 << 17 | HAS_RELIEF
+            ],
+            "only the layer with a pixel under 255 in its alpha has relief; a flat picture, none, a size with no normal pictures and a flat colour (0) have none"
+        );
+        assert_eq!(words_with_relief(&[], &sizes), Vec::<u32>::new());
     }
 
     #[test]

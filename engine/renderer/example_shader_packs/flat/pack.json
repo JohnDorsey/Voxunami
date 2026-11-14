@@ -1,0 +1,7 @@
+{
+  "id": "voxunami:flat",
+  "name": "Flat relief",
+  "interface": 1,
+  "relief": "flat",
+  "description": "The default's lighting with the relief of block pictures drawn flat: no prisms, which cost the most of what the default draws. The picture's bumps and the shade of its own relief stay."
+}
