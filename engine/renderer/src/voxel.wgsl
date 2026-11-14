@@ -612,10 +612,22 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
         surface.sky_visible = sky_visible;
         surface.uncovered = uncovered;
     }
-    // The pack makes the colour of it; the fog is the engine's.
+    // The pack makes the colour of it; the fog and the lift of the whole scene (`lifted`) are the engine's.
     let color = pack_shade(surface);
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
-    return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
+    return vec4<f32>(lifted(mix(color, frame.fog_color.rgb, fog)), 1.0);
+}
+
+// The whole scene a little brighter than the light says, black still black and full brightness still full: the colour raised to the power of one over `SCENE_LIFT`, which lifts the
+// darks most (0.1 becomes 0.145, 0.5 becomes 0.56) and leaves 0 and 1 where they are. The terrain, the entities and the sky go through it after the fog, so that they still agree
+// where the fog meets the sky.
+const SCENE_LIFT: f32 = 1.2;
+
+fn lifted(colour: vec3<f32>) -> vec3<f32> {
+    let positive = max(colour, vec3<f32>(0.0));
+    // (pow of 0 is 0 and of 1 is 1 on every adapter, but not by the standard's word: the two ends are kept by hand.)
+    let raised = pow(positive, vec3<f32>(1.0 / SCENE_LIFT));
+    return select(raised, positive, positive <= vec3<f32>(0.0));
 }
 
 // The sky: one triangle that covers the picture, drawn before the terrain, from the direction each pixel looks in.
@@ -715,5 +727,5 @@ fn sky_fragment(in: SkyVertex) -> @location(0) vec4<f32> {
     let has_sun = step(0.0, max(frame.sun_disc.r, max(frame.sun_disc.g, frame.sun_disc.b)) - 1.0e-6);
     let disc = has_sun * (1.0 - smoothstep(radius - pixel_angle, radius + pixel_angle, angle));
     colour = mix(colour, frame.sun_disc.rgb, disc);
-    return vec4<f32>(colour, 1.0);
+    return vec4<f32>(lifted(colour), 1.0);
 }

@@ -114,6 +114,9 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   **not tried:** 100 or more runs of `main` and the branch alternately, the thing that would say it.
   **Again the same day, with bumps (normal pictures, four more arrays in the same group 3):** the gate's whole-workspace run failed `a_block_and_a_roof_shade_the_floor_...` once (AMD integrated, DX12, roof level 20, the same probe, 21.173); rerun, the whole
   renderer binary passed (162 of 162) and the two tests alone passed **12 of 12**. One failure in two whole-binary runs and 4/36 + 0/12 alone is in line with the rate above: the bumps changed nothing that can be seen in it.
+  **Again on 2026-11-14** (branch `worktree-materials`, while the lift of the whole scene was added: a power function at the end of two shaders, no binding): the whole-binary run failed `a_block_and_a_roof_shade_the_floor_...` once (AMD integrated, DX12, roof **level 1**, lit probe
+  `[16, 1, 12]` at pixel (52, 41), 20.783 times its light: the same dark pixel in the picture with the shadows off, a new level but the same failure); alone, 3 of 3 runs passed. The other four failures of that run were the lift's (the tests decode bytes to light, and a
+  pack's colour comes out lifted) and were fixed in the tests. Not measured: the rate with and without the lift; believed to be the family above.
 
 - `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` (`games/voxunami_cave/tests/pictures.rs`): the first frames of a fresh renderer on the integrated AMD GPU leave pixels out;
   pictures are taken once a frame repeats them (2026-10-21, Phase 30). `docs/plan.md` (the section on flaky tests) and `docs/specs/ui-spec.md`.

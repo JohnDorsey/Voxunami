@@ -23,8 +23,10 @@ fn paints(red: f32, green: f32, blue: f32) -> ShaderPack {
 
 const MAGENTA: [u8; 3] = [255, 0, 255];
 
-/// The byte of an 8-bit sRGB picture that a linear value comes out as.
+/// The byte of an 8-bit sRGB picture that a linear value a pack gives comes out as: lifted by the engine like the rest of the scene (`lifted` in `voxel.wgsl`: the light to the
+/// power of one over 1.2), and encoded.
 fn srgb_byte(linear: f64) -> u8 {
+    let linear = libm::pow(linear, 1.0 / 1.2);
     let encoded = if linear <= 0.003_130_8 {
         linear * 12.92
     } else {
@@ -110,9 +112,13 @@ fn a_pack_is_given_the_colour_and_the_normal_of_the_face() {
             )))
             .unwrap();
         let [red, green, blue, _] = pixel(&render(&mut renderer, &camera), x, y);
-        // The palette's green, (0.1, 0.8, 0.1) in sRGB as the palette is given, comes out as the same bytes, within two.
+        // The palette's green, (0.1, 0.8, 0.1) in sRGB as the palette is given, comes out as the bytes the lift of the scene makes of it, within two.
         assert!(
-            close_to([red, green, blue, 255], [26, 204, 26], 2),
+            close_to(
+                [red, green, blue, 255],
+                [0.1, 0.8, 0.1].map(super::lift::lifted_byte),
+                2
+            ),
             "{name}: the albedo is ({red}, {green}, {blue})"
         );
         renderer
@@ -121,9 +127,13 @@ fn a_pack_is_given_the_colour_and_the_normal_of_the_face() {
             )))
             .unwrap();
         let [red, green, blue, _] = pixel(&render(&mut renderer, &camera), x, y);
-        // (0.5, 1, 0.5) in linear light is (188, 255, 188) as bytes.
+        // (0.5, 1, 0.5) in linear light is (188, 255, 188) as bytes, and (197, 255, 197) once the scene is lifted.
         assert!(
-            close_to([red, green, blue, 255], [188, 255, 188], 2),
+            close_to(
+                [red, green, blue, 255],
+                [srgb_byte(0.5), srgb_byte(1.0), srgb_byte(0.5)],
+                2
+            ),
             "{name}: the normal is ({red}, {green}, {blue})"
         );
     }

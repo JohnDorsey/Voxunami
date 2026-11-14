@@ -1007,6 +1007,23 @@ fn srgb_to_linear_color(color: [f32; 3]) -> [f32; 3] {
     color.map(srgb_to_linear)
 }
 
+/// The lift of the whole scene (`lifted` and `SCENE_LIFT` in `voxel.wgsl`, which must say the same): linear light raised to the power of one over this, so that the darks are
+/// brighter and black and full brightness stay where they are. The shader lifts what it draws; the colour the picture is cleared to (the sky where the shader does not draw it)
+/// is lifted here.
+const SCENE_LIFT: f32 = 1.2;
+
+// A power function; this is client-side cosmetics, not simulation.
+#[allow(clippy::disallowed_methods)]
+fn lifted_color(color: [f32; 3]) -> [f32; 3] {
+    color.map(|part| {
+        if part <= 0.0 {
+            0.0
+        } else {
+            part.powf(1.0 / SCENE_LIFT)
+        }
+    })
+}
+
 impl VoxelRenderer {
     /// `color_format` must be an sRGB format (the shader outputs linear colour).
     pub fn new(context: &GraphicsContext, color_format: wgpu::TextureFormat) -> Self {
@@ -2737,7 +2754,7 @@ impl VoxelRenderer {
             .as_ref()
             .expect("depth target was just created")
             .view;
-        let [red, green, blue] = srgb_to_linear_color(self.atmosphere.sky_color);
+        let [red, green, blue] = lifted_color(srgb_to_linear_color(self.atmosphere.sky_color));
         let placement_offset =
             |index: usize| (u64::from(slots.get(index)) * self.placement_stride) as u32;
         let mut encoder = self

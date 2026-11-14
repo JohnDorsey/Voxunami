@@ -82,6 +82,7 @@ What the checks cannot know is what the graphics card says: `VoxelRenderer::set_
 4. **The engine owns the fog** so that a pack cannot forget it; a hook for it is easy to add.
 5. **The interface is numbered** (`SHADER_PACK_INTERFACE`), a pack names it, and a change of the fields of `Surface` is a new number, not a quiet break. (*Read so, 2026-11-12, to be confirmed by the owner:* the number is for a change that can break a pack, a field taken away or its meaning changed; `emission` and `shading_normal` were **added** without one, since a pack only reads `Surface`; a pack that does not look at `shading_normal` has no bumps.)
 6. **Words, not the language, are checked for the engine's names** (a local variable called `pool` is refused): simple and safe; the author renames.
+7. **The engine lifts the whole scene (2026-11-14, the owner: "a bit brighter, pure black still pure black").** After the pack's colour and the fog, and in the sky, every channel goes to the power of one over `SCENE_LIFT` (1.2). It is the engine's and not the default pack's, so that the sky and the terrain agree where the fog meets the sky, whatever the pack; the price is that a pack cannot turn it off (the hook of section 6 for the final colour would be where it moves to). It is written twice, in `voxel.wgsl` and in `lifted_color` (the colour the picture is cleared to is the sky where there are no heavens), and `lift.rs` tests that the two agree and that black and white stay.
 
 ## 6. Not built
 

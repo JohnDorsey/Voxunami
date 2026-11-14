@@ -37,7 +37,7 @@ One file of WGSL ([the language](https://www.w3.org/TR/WGSL/)) that defines
 fn pack_shade(s: Surface) -> vec3<f32>
 ```
 
-and may define constants and functions of its own. It returns the **linear** colour of the face at this pixel; the engine puts the fog over it. Faces of blocks, ships, avatars and far levels of detail are all drawn with it. `Surface`:
+and may define constants and functions of its own. It returns the **linear** colour of the face at this pixel; the engine puts the fog over it, and then **lifts the whole scene** (the sky too): each channel to the power of one over 1.2, which makes the darks brighter (0.1 comes out 0.147, 0.5 comes out 0.561) and leaves black black and full brightness full. A pack cannot change the lift (`SCENE_LIFT` in `voxel.wgsl`, and `lifted_color` in `voxel_renderer.rs` for the sky where the picture is cleared to it); what a pack returns as a data channel is lifted too. Faces of blocks, ships, avatars and far levels of detail are all drawn with it. `Surface`:
 
 | field | what it is |
 |---|---|

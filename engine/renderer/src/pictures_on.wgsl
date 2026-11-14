@@ -269,7 +269,7 @@ const RELIEF_DEPTH: f32 = 0.1;
 const RELIEF_REACH: f32 = 0.25;
 const RELIEF_SOFTNESS: f32 = 0.01;
 const RELIEF_STEPS: i32 = 4;
-const WALL_DARKNESS: f32 = 0.55;
+const WALL_DARKNESS: f32 = 0.2;
 
 // The share of the sun's light that gets past the relief of the picture to a pixel `height` high (0 to 1, 1 for the top), on a face whose normal is `normal` and in which the picture's
 // right and top are the directions `right` and `up`: the ray from the pixel toward the sun climbs as it goes along the face, and if the picture's height at a place under the ray

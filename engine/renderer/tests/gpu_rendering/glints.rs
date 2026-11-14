@@ -69,8 +69,10 @@ fn a_smooth_pixel_throws_the_sun_back_by_its_smoothness_and_its_reflectance_wher
                 scene(Some(&picture), ALONG_THE_NORMAL),
             );
             let wanted = expected_glint(smoothness, f64::from(reflectance_byte) / 255.0);
+            // 7 percent, and the rounding of two pictures to bytes: a byte of a face this bright is 0.006 of light in each of the three channels, so 0.018 of the sum
+            // (measured: the face with no glint is 180 of 255 and the one with a glint of 0.117 is 187, where 186.5 is exact).
             assert!(
-                (found / wanted - 1.0).abs() < 0.07,
+                (found - wanted).abs() < 0.07 * wanted + 0.018,
                 "{name}: smoothness {smoothness}, reflectance {reflectance_byte}: the glint adds {found:.3}, wanted {wanted:.3}"
             );
         }

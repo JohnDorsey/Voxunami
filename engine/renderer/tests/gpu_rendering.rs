@@ -42,6 +42,8 @@ mod emission;
 mod facing_cull;
 #[path = "gpu_rendering/glints.rs"]
 mod glints;
+#[path = "gpu_rendering/lift.rs"]
+mod lift;
 #[path = "gpu_rendering/occlusion.rs"]
 mod occlusion;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
@@ -57,7 +59,8 @@ mod shader_packs;
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];
-const SKY_BYTES: [u8; 3] = [51, 102, 204];
+/// What `SKY` is in the picture: decoded to light, raised to the power of 1 / 1.2 (the lift of the whole scene, `lifted` in `voxel.wgsl`) and encoded again (`lift.rs` has the rule).
+const SKY_BYTES: [u8; 3] = [68, 119, 212];
 const RED: u32 = 1;
 const GREEN: u32 = 2;
 const UNKNOWN_MATERIAL: u32 = 77;
@@ -1090,18 +1093,20 @@ fn the_sun_direction_is_normalized_so_its_length_does_not_change_the_shading() {
     }
 }
 
-/// How much light a pixel stands for: its colour channels decoded from sRGB and added.
+/// How much light a pixel stands for: its colour channels decoded from sRGB, taken back down by the lift of the whole scene (`lifted` in `voxel.wgsl`: the light to the power of
+/// one over 1.2, so to the power of 1.2 here), and added. What the tests say of the light is what the light says, not what the lift has made of it (`lift.rs` tests the lift).
 #[allow(clippy::disallowed_methods)] // a test of cosmetics, not simulation
 fn linear_brightness(pixel: [u8; 4]) -> f64 {
     pixel[..3]
         .iter()
         .map(|&byte| {
             let value = f64::from(byte) / 255.0;
-            if value <= 0.04045 {
+            let lifted_light = if value <= 0.04045 {
                 value / 12.92
             } else {
                 ((value + 0.055) / 1.055).powf(2.4)
-            }
+            };
+            lifted_light.powf(1.2)
         })
         .sum()
 }
