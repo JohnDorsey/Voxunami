@@ -172,7 +172,7 @@ Minecraft Java resource packs are the large texture pool: 38,281 projects on Mod
 
 **Wasmtime and the October 2026 advisories.** Wasmtime's determinism page recommends only deterministic host imports (virtualise clocks and files), NaN canonicalisation, deterministic or disabled relaxed SIMD, deterministic memory and table growth (a limiter, up-front allocation or validation), and fuel rather than epoch interruption ([determinism](https://docs.wasmtime.dev/examples-deterministic-wasm-execution.html)) [re-read]. The defaults do none of it: fuel is off, NaN canonicalisation is off, relaxed SIMD is on ([Config](https://docs.wasmtime.dev/api/wasmtime/struct.Config.html)) [read]. Two Critical advisories (severity score 9.9 of 10) were published on 2026-10-19 [re-read]. GHSA-897f-g5gm-fmxm: Cranelift packs value indices in a way that can overflow silently, so a very large or crafted function can miscompile and escape the sandbox on any platform; it affects releases below 36.0.19 and from 37.0.0 up to below 43.0.0; the only patched release it names is 36.0.19, 43 and later no longer have the bug, there is no workaround, and the page names no fix for 37 to 42 ([advisory](https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-897f-g5gm-fmxm)) [re-read]. GHSA-mghf-wjfp-p5xm: on aarch64 only, a `br_table` with more than about 256,000 targets jumps to a wrong place; patched in 36.0.19, 48.0.7 and 49.0.4; no workaround ([advisory](https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-mghf-wjfp-p5xm)) [re-read]. The list's first page shows ten advisories, all from 2026 ([list](https://github.com/bytecodealliance/wasmtime/security/advisories)) [re-read], including a High-severity escape from the WebAssembly System Interface (WASI) filesystem sandbox (title only) [read]. Release policy: every release numbered a multiple of 12 is supported for 24 months, others for 2, and security fixes are backported to every supported release [re-read]; patch releases for 36.x, 48.x, 49.x and 50.x all shipped on 2026-10-29 ([releases](https://github.com/bytecodealliance/wasmtime/releases)) [read]. From this [inference]: pin a line that receives backports, meaning a long-term line (36.x or 48.x now), since an arbitrary major from 37 to 42 would have been the worst choice; import no WASI at all, which removes that advisory class; cap module and function size before compiling (untested as a mitigation, since the advisory lists no workaround); record the engine version in replays, because fuel accounting can shift across compiler versions; and run the same mod ticks on Wasmi 2.0, an interpreter released on 2026-09-01 with built-in fuel and a `deterministic` feature, as a differential-test oracle and as a fallback without a just-in-time compiler ([Wasmi](https://github.com/wasmi-labs/wasmi/releases)) [read].
 
-**Scripting for in-game ship computers.** Do not embed stock Lua or Luau natively. Stock Lua seeds its string hash from the time and a stack address ([lauxlib.c](https://raw.githubusercontent.com/lua/lua/master/lauxlib.c)) [read], so iteration order can differ per process [inference], and maths go through the host library, whose transcendental precision Rust's documentation says varies by platform ([f32 docs](https://doc.rust-lang.org/std/primitive.f32.html)) [read]. Factorio patched ordering, maths and bytecode loading ([Factorio](https://lua-api.factorio.com/latest/auxiliary/libraries.html)) [read], and Luanti builds using LuaJIT fell to a sandbox escape scored 9.3 of 10 published on 2026-04-16 ([CVE-2026-40959](https://cve.circl.lu/vuln/cve-2026-40959)) [read]. The cheapest deterministic route is the official Lua 5.4 compiled to WebAssembly and run in the same host, as wasmoon does ([wasmoon](https://github.com/ceifa/wasmoon)) [read]; the determinism argument is mine and a spike must confirm it [inference]. Starlark is deterministic by design (Apache-2.0) but I found no documented step limit ([starlark-rust](https://github.com/facebook/starlark-rust)) [read].
+**Scripting for in-game ship computers.** Do not embed stock Lua or Luau natively. Stock Lua seeds its string hash from the time and a stack address ([lauxlib.c](https://raw.githubusercontent.com/lua/lua/master/lauxlib.c)) [read], so iteration order can differ per process [inference], and maths go through the host library, whose transcendental precision Rust's documentation says varies by platform ([f32 docs](https://doc.rust-lang.org/std/primitive.f32.html)) [read]. Factorio patched ordering, maths and bytecode loading ([Factorio](https://lua-api.factorio.com/latest/auxiliary/libraries.html)) [read], and Luanti builds using LuaJIT fell to a sandbox escape scored 9.3 of 10 published on 2026-04-16 ([CVE-2026-40959](https://cve.circl.lu/vuln/cve-2026-40959)) [read]. The cheapest deterministic route is the official Lua 5.4 compiled to WebAssembly and run in the same host, as wasmoon does ([wasmoon](https://github.com/ceifa/wasmoon)) [read]; the determinism argument is mine and a spike must confirm it [inference]. Starlark is deterministic by design (Apache-2.0); its step and heap limits exist but are documented as best-effort (see the scripting section) ([starlark-rust](https://github.com/facebook/starlark-rust)) [re-read].
 
 **Distribution.** No free, open, generic channel exists for a third-party game [inference].
 
@@ -190,6 +190,87 @@ Copy the `.mrpack` design: an index with both hashes, per-side environment, an a
 **Mob AI as data.** Define your own small vocabulary: priority-ordered goals as in Bedrock, optional utility scores, behaviour tree or state chart, as JSON with a generated schema [inference]. Bedrock proves that a goal list with priorities carries a whole bestiary ([panic example](https://learn.microsoft.com/en-us/minecraft/creator/reference/content/entityreference/examples/entitygoals/minecraftbehavior_panic)), though its samples are under Mojang's EULA, not an open licence [read]; Hytale's roles, instructions and sensors are the nearest modern analogue ([NPC docs](https://hytalemodding.dev/en/docs/official-documentation/npc/5-sleep-behavior)) [read]. The Rust AI crates are Bevy-coupled or stale, so use them as test oracles [read]. For determinism use integer or fixed-point scores and tie-breaks by id [inference]. BehaviorTree.CPP's XML is a possible exchange format so the Groot2 editor works on Voxunami trees; its free tier suffices for editing ([XML](https://www.behaviortree.dev/docs/learn-the-basics/xml_format/), [Groot](https://www.behaviortree.dev/groot/)) [read]. Effort M for the core, L for breadth.
 
 **Learned "brains" as data.** Ship a fixed-operation network file (tensor blob, operation list, sensor-and-action manifest) run by an in-house scalar evaluator [inference]. Use ONNX and NNEF only as offline import formats: tract uses hand-rolled SIMD kernels and makes no determinism claim ([tract](https://github.com/sonos/tract)) [read]. For bit-identical inference use scalar loops, fixed accumulation order, no transcendental library calls (`libm` or tables) and no auto-vectorised reductions, or integer-quantised weights [inference]. The strongest verified precedent for a brain as a shareable file is Creatures, whose genomes and exported creatures players bred and moved between worlds ([explainer](https://www.alanzucconi.com/2020/07/27/the-ai-of-creatures/)) [secondary]; I found no verified precedent for a mod-distributed neural policy that is bit-identical across platforms, which is the novel part [inference]. Effort M for the evaluator, L to XL for training.
+
+## Scripting languages: commands, mods and pipeline setup in a real language
+
+*Added 2026-11-14, answering the owner's question of the same day: replace or combine the command system with an existing language such as Python; which languages other games script with; whether Python is fast enough to set up a shader pipeline, and whether that code runs in a hot loop. Three researchers read the sources and I re-read the claims the advice rests on on the page or raw file: those are tagged [re-read]; the researchers' own reads, mostly through a summarising tool, are [read]; [measured] is my own run (CPython 3.11.9 on this Windows machine, 2026-11-14, no Rust boundary in the loop; the program is `docs/history/spikes/scripting/python_setup_cost.py`, run as `python -I` on that file); everything else is [recalled] or [inference]. Sizes as above.*
+
+**The short answer.** Performance is not the problem; trust is. The setup code runs once, not in a hot loop [read; measured below]. What decides the language is whether strangers' code runs on someone's machine, and whether its results feed the simulation. My advice (medium-low confidence): keep the typed command registry and let scripts call it; put a narrow script-host seam in the engine; try Pydantic's Monty behind it for console scripts and pipeline setup; keep WebAssembly for mods that touch the simulation; keep stock CPython out of the shipped game. If you pick for robustness alone, Luau is the safer engine and Monty the closer to Python.
+
+**What the commands are today** [read in code]. A command is a `CommandSpec` with typed arguments (word, number, integer, identifier, rest) and a Rust handler registered by a plugin; the host parses, answers a bad call with the usage line, and generates `/help` (`engine/plugin_host/src/command.rs`, `messages-and-commands-spec.md`). A handler runs synchronously on the server world inside the tick, and the events it sends are drained before the tick goes on (`command_received` in `engine/plugin_host/src/host.rs`). Two consequences: a script command needs a CPU budget or it can stall the server, and it is the first command that needs the permission level the spec left out until something needed one.
+
+**Combine, do not replace** [inference]. Every game with both keeps both: Minecraft's `/function` runs files of commands, Factorio's `/c` runs a Lua line, Garry's Mod has `lua_run`, Unreal has a `py` console, and Roblox Studio has a Luau command bar [read]; Blender has a Python console [recalled]. The typed layer carries the checking, the usage text and the permissions for players who will never write code; scripts call the same registered commands as functions (`tp(1, 2, 3)`), so one permission model covers both. Gates seen elsewhere: an admin-only one-liner; a script file with a step budget (Minecraft 65,536 commands, Space Engineers 50,000 "junctions", Screeps a CPU allowance per tick); and a packaged mod that declares what it may touch [read]. Factorio marks a save that used `/c` by turning achievements off, which is a cheap, honest trust signal worth copying [read].
+
+**What other games script with** [read unless marked; many rows are from search summaries]:
+
+| Language | Where it runs | Notes |
+|---|---|---|
+| Lua and its dialects | Factorio, Garry's Mod, Luanti, Roblox (Luau), Civilization V, Tabletop Simulator, DFHack; World of Warcraft addons, ComputerCraft, Teardown, Defold [recalled] | The usual choice where strangers write the code. Roblox built Luau for sandboxing and rejected LuaJIT as unportable. Factorio trims Lua for determinism (no `coroutine`, `io`, `os`; `pairs` and `math.random` made deterministic) |
+| JavaScript | Minecraft Bedrock's Script API, KubeJS (Rhino), Screeps | Bedrock declares modules in a manifest and gates network access to dedicated servers |
+| Python | EVE Online (server, Stackless, moving to Python 3 per a post of 2026-08-25), Sims 4, Battlefield 2, World of Tanks client mods, Ren'Py, Blender [recalled], Falcor | Where the studio or a trusted user writes the code. Unreal's Python is editor-only: "you cannot use it as a gameplay scripting language". Civilization V moved from Python to Lua; no reason found |
+| C# | Unity; Space Engineers' programmable block (whitelisted, capped) | |
+| Squirrel, GDScript, AngelScript, QuakeC, Papyrus, ZScript | Source games, Godot and others | Own or niche languages [mostly recalled] |
+| WebAssembly | Veloren | Sandboxed, "safe to run client-side automatically", no stability guarantees |
+| Java | Bukkit and Spigot, Hytale server plugins | No sandbox: Fractureiser (2023) spread through hijacked author accounts |
+
+Correction to a search summary I was first given: Godot did not drop Python. It never shipped it; a third-party binding broke with Godot 4, and the engine's FAQ says experiments with Python "proved difficult to embed" [read]. Nothing found shows a shipped game running strangers' Python in a competitive multiplayer setting; the researchers found none, which is weak evidence of absence [read; weak].
+
+**What goes wrong with scripts from strangers** [read; community reports where marked]. Luanti had a sandbox escape fixed in 5.15.2 (April 2026): one account says only builds using LuaJIT were exploitable, another does not say so, and I could not reconcile them. Roblox free models and plugins hid backdoors that fetched more code [community posts]. Garry's Mod has a list of console commands scripts may not call, and workshop addons have shipped malicious code [community posts]. Ren'Py's own page says a game "can perform arbitrarily harmful actions" and that its pickle saves can run code. Fractureiser shows the distribution channel is attacked as well as the sandbox.
+
+**Is Python fast enough for pipeline setup? Yes, and it is not hot.**
+
+*When the setup code runs* [read, raw files]. Aperture's example pack declares the pipeline in `configurePipeline`, which runs at load, on a screen resize and on a setting flagged as needing a reload; its per-frame code is a separate `beginFrame` hook, and in the example it is an empty placeholder. NVIDIA's Falcor builds its render graph in a Python script once, C++ recompiles it only when it changes, and C++ runs it every frame. Frostbite, Unity's render graph and Unreal's RDG do rebuild the graph every frame, but in C++ or C#, with the cost accepted at pass granularity. Godot's compositor calls a script every frame on the render thread. Bevy 0.20.1 (2026-10-28) fixes its render structure at startup and runs it once a frame. In none of these does interpreted setup code run per draw call.
+
+*What it costs* [measured]. A stand-in builder API, the same shape as the Aperture illustration in the shader survey, in plain CPython 3.11.9; two runs agreed within 5% on the rows shown:
+
+| Work | Median time |
+|---|---|
+| Declare 20 textures, 40 passes, 200 settings | 38 µs |
+| Declare 60 textures, 120 passes, 500 settings | 100 µs |
+| Declare 200 textures, 400 passes, 2,000 settings | 440 µs (one sample took 1.1 to 1.7 ms) |
+| The 60/120/500 pipeline rebuilt every frame | 100 µs: 0.6% of a 16.7 ms frame, 0.9% of 11.1 ms |
+| A per-frame hook computing 64 uniforms with sine and cosine | 11 µs |
+| One trivial function call (the floor) | about 0.3 µs |
+| A fresh interpreter process starting | 15.4 ms (11.8 ms with `-S`) |
+
+What this does not show: the Rust-to-Python boundary (I could not build a PyO3 test; the only figure found is for the other direction, 19 against 25 ns [read]), Monty's speed (unmeasured by anyone I found), or CPython inside WebAssembly. A 2024 benchmark has CPython 3.11 12 to 44 times slower than LuaJIT on three of four tasks [read], so interpreter choice matters for heavy loops and not for this.
+
+*Where it would be hot* [inference from the measured floor]. A callback per voxel while meshing: a brick is 32,768 voxels, so 0.3 µs a call is about 10 ms a brick before the boundary. Ask once per block type, cache the answer in a table, and let the mesher read the table, as Aperture's `setBlockId` is asked once per block state [read].
+
+*So the real costs are not speed.* The renderer today has no named passes to declare: a shader pack is one lighting function given a `Surface` with no resources of its own (`shader-pack-spec.md`) [read in code]. A pipeline language is therefore mostly a renderer project (L) and the language is the small part. The owner's answer of 2026-11-11 left the language open.
+
+**The three jobs need different things** [inference].
+
+| Job | Runs | Untrusted? | Needs identical results on Windows and Linux? |
+|---|---|---|---|
+| Console scripts and script commands | Server, writes the world | Admin or player-supplied | If results feed the simulation, yes; the time budget has to be a count of steps, not a clock |
+| Mods that run every tick | Server | Yes | Yes |
+| Pipeline setup and cosmetic hooks | Client | Yes, on the player's machine | No; wall-clock limits are acceptable |
+
+**The options, as of 2026-11-14.**
+
+| Option | Version (date) and licence | Limits a host can set | Floats | Verdict |
+|---|---|---|---|---|
+| **Monty** (Pydantic; a Python interpreter in Rust) | 1.6.0 (2026-11-11), MIT; six releases from 1.1.0 (2026-10-05) to 1.6.0; 8,924 stars [re-read] | Thread CPU time with an elapsed-time fallback, recursion depth and the garbage-collection schedule [re-read]; a memory limit needs Monty's allocator installed as the program's [read]; I found no step count. It runs in your process, so a stack overflow or allocator failure inside it takes the whole process down [read] | `sin`, `cos`, `exp`, `pow` call Rust's `f64` methods, so the platform's maths [re-read]; the file already uses `libm` for `nextafter`, so swapping is small [re-read; the swap is inference] | **Best Python-shaped candidate; young.** A subset: no class inheritance, no generators, no `del`, no user exception classes, thin standard library, no third-party packages; `match` and `async` work [re-read] |
+| **Starlark** (`starlark` crate, Meta) | 0.14.2 (2026-06-05), Apache-2.0; repository pushed 2026-11-13 [re-read] | Step limit and heap limit, both documented as "best-effort and should absolutely not be treated as a way to guarantee bounded runtime" [re-read] | Deterministic and hermetic by design [read]; the extension list has no `math` library [re-read; the core library list was not read] | Python syntax, built for configuration: the nearest to "declare a pipeline". Narrow (no classes) and weak limits |
+| **Lua through `mlua`** | `mlua` 0.12.2 (2026-10-03), MIT; Lua 5.5.1 [read] | Instruction hook, memory cap [read] | `math.sin` calls the C library (`l_mathop(sin)`) [re-read]; string-hash seed mixes time and an address [read] | The mature, familiar choice. Swap `math` for `libm`, fix the seed |
+| **Luau through `mlua`** | Luau 0.747 (2026-11-13), MIT [read] | Interrupt callback to stop runaway scripts; "no memory limits are imposed" by default [re-read], so set one | Platform libm [read] | Best built-in sandbox of the Lua family; typed; made for strangers' code |
+| **CPython through PyO3** | PyO3 0.30.1 (2026-10-14); CPython 3.15.2; PSF [read] | None in-process | `math` is "thin wrappers around the platform C math library" [read]; string hashes randomised by default [read] | **Not a sandbox**: "CPython does not support sandboxing untrusted Python code as a security boundary" [re-read]. About 12 MB to ship the 3.14 Windows embeddable zip [read]; version and DLL packaging trouble [read] |
+| **CPython inside WebAssembly** (the Eryx crate) | 11 months old, 85 stars; a 47 MB module [read] | Fuel (deterministic), memory limiter [read] | Its own maths library is in the module, so identical bits are plausible [inference] | Full Python with Wasmtime's isolation; heavy and young; speed penalty unmeasured |
+| **Wasmtime guests** (any language) | 36.0.20 and 48.0.8 (long-term), 49.0.5, 50.0.1, all 2026-10-29 [read] | Fuel, memory, epochs [read] | Identical with the settings listed above [read] | The plan of record for mods; Critical advisories of 2026-10-19 cover 37 to 42 with no fix named [re-read] |
+| RustPython, pocketpy, MicroPython | RustPython 0.6.0 "not totally production-ready"; pocketpy 2.2.0 (2026-09-04) [read] | None found | Platform maths [read] | Not credible for hostile code |
+| RestrictedPython, audit hooks, the PyPy sandbox | | | | Not credible: six advisories for RestrictedPython, two high in mid-2026; the PyPy sandbox page calls itself unmaintained [read] |
+
+**How I would put it together** (medium-low confidence; the weak links are Monty's youth and the unmeasured boundary):
+1. **A seam first.** A small trait in the engine: load source, expose named host functions, run with a budget, return a value or an error. Scripts see only functions the host hands them (Monty works this way: no filesystem, environment or network except through host calls [read]). Swapping the engine behind it then costs little.
+2. **Console and script commands.** Register each script command as a `CommandSpec`, so `/help` and argument checks stay. Add the permission level the spec left out, and mark a world that ran a console script, as Factorio does. Give each run a time budget and abort it when it overruns. The first spike should show that a long-running command can pause: Monty suspends at each host call, which gives "wait ten ticks, then" without generators [read].
+3. **Do not save Monty's snapshots as game data.** Its README says the caller "must establish that the bytes are unmodified output from a trusted, compatible Monty producer" and that it does not authenticate them, and the format follows Monty's release [re-read]. Store the source and a step count, and treat a snapshot as a cache; that matches the rule that saved files hold ids and plain data.
+4. **Mods that run every tick stay WebAssembly,** with the deterministic settings, a pinned long-term line and fuel, as planned. A Python mod would be CPython-in-WebAssembly, later and only if wanted.
+5. **Pipeline setup** waits for a declarative renderer. Starlark is worth a second look there because it was made for declaring things; Monty or Luau would also serve. The per-frame hook stays a data-only callback with a small budget.
+6. **Stock CPython** only as an owner-run, off-by-default local console for tools, flagged like Factorio's `/c`. Never for packs or mods from others.
+7. **One week to spend before building.** (a) Monty against a 200-line pipeline script and a command script, cold and warm; (b) the Rust-to-Python call cost; (c) a search for inputs where `sin`, `exp` and `pow` differ between Windows and Linux in Monty, in CPython and in WebAssembly-hosted CPython. Item (c) decides whether script results may enter the simulation.
+
+**Not verified.** Monty's behaviour under Windows with its worker-process pool, and whether its dictionary and set order is seeded; its throughput against anything; Aperture's Java API and what engine runs its TypeScript, so whether pack code is sandboxed there is unknown; why Firaxis and CCP chose what they chose; and, for most Lua, C# and own-language rows, anything beyond memory.
 
 ## Licensing and terms: what may come in, and what to decide while you are the only copyright holder
 
@@ -271,6 +352,7 @@ Copy the `.mrpack` design: an index with both hashes, per-side environment, an a
 7. **Generative AI.** Allowed in bundled content with a flag, or refused as Veloren does? Who owns the understanding of AI-assisted Blockbench plugin code?
 8. **Virtual reality.** Wanted at all? Seated PC VR is about L and hand or body tracking about M each on top (section "VRM avatars and virtual reality"); the stereo spike would turn the guess into a number.
 9. **Token-gated content.** Refuse it outright (my recommendation)?
+10. **Scripting.** Combine scripts with the typed commands rather than replace them? Python-shaped (Monty behind a seam) or Luau for robustness? Who may run a console script, and does a world that ran one get marked? An owner-run, off-by-default CPython console for tools? (Section "Scripting languages".)
 
 ## Suggested order of first steps
 
@@ -494,6 +576,40 @@ Every URL cited above, listed once under the section where it first appears.
 - https://www.behaviortree.dev/groot/
 - https://github.com/sonos/tract
 - https://www.alanzucconi.com/2020/07/27/the-ai-of-creatures/
+
+### Scripting languages
+
+- https://devguide.python.org/security/policy/
+- https://docs.python.org/3/library/math.html
+- https://peps.python.org/pep-0779/
+- https://mail.python.org/pipermail/python-dev/2013-November/130132.html
+- https://github.com/pydantic/monty
+- https://api.github.com/repos/pydantic/monty/releases
+- https://raw.githubusercontent.com/pydantic/monty/main/crates/monty/README.md
+- https://raw.githubusercontent.com/pydantic/monty/main/crates/monty/src/modules/math.rs
+- https://raw.githubusercontent.com/pydantic/monty/main/crates/monty-types/src/resource/execution_clock.rs
+- https://pydantic.dev/docs/monty/limitations/
+- https://crates.io/api/v1/crates/starlark
+- https://api.github.com/repos/facebook/starlark-rust
+- https://docs.rs/starlark/latest/starlark/eval/struct.Evaluator.html
+- https://raw.githubusercontent.com/bazelbuild/starlark/master/spec.md
+- https://raw.githubusercontent.com/mlua-rs/mlua/main/README.md
+- https://raw.githubusercontent.com/lua/lua/master/lmathlib.c
+- https://luau.org/sandbox
+- https://luau.org/why
+- https://lua-api.factorio.com/latest/auxiliary/libraries.html
+- https://wiki.factorio.com/Console
+- https://wiki.facepunch.com/gmod/Blocked_ConCommands
+- https://minecraft.wiki/w/Function_(Java_Edition)
+- https://dev.epicgames.com/documentation/en-us/unreal-engine/scripting-the-unreal-editor-using-python
+- https://eveonline.com/news/view/the-move-to-python-3-begins
+- https://raw.githubusercontent.com/godotengine/godot-docs/master/about/faq.rst
+- https://docs.screeps.com/cpu-limit.html
+- https://www.renpy.org/doc/html/security.html
+- https://github.com/IrisShaders/Aperture-Example-Pack
+- https://github.com/NVIDIAGameWorks/Falcor
+- https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-897f-g5gm-fmxm
+- https://www.gamingonlinux.com/2026/04/luanti-formerly-minetest-v5-15-2-brings-critical-security-updates/
 
 ### Licensing and terms
 
