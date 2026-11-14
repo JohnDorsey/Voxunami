@@ -88,6 +88,23 @@ fn a_brick_is_shown_by_asking_and_hidden_by_asking_and_air_has_nothing_to_show()
 }
 
 #[test]
+fn a_brick_that_was_shown_and_hidden_and_is_wanted_again_becomes_ready_again() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 8);
+    let mut mesher = held_back_mesher(&scene, 3);
+    mesher.settle(scene.world.main(), brick(0, 0, 0));
+    let ground = brick(0, 0, 0);
+    assert!(mesher.show(ground).is_some());
+    assert!(mesher.hide(ground).is_some());
+    // Nothing about the world changed and the viewer did not move: the brick is wanted as it was, and its picture was handed out, so it has to be made again.
+    mesher.settle(scene.world.main(), brick(0, 0, 0));
+    assert!(
+        mesher.is_ready(ground),
+        "hidden, and wanted again, but never made again"
+    );
+}
+
+#[test]
 fn a_brick_that_is_not_ready_cannot_be_shown() {
     let mut scene = scene();
     scene.assign_around(brick(0, 0, 0), 8);

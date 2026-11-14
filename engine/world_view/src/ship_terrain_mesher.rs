@@ -252,6 +252,15 @@ impl ShipTerrainMesher {
         self.of_the_ship_all(updates)
     }
 
+    /// What to say, once, when the planet's detailed view has come to rest without drawing what it wants ([`LodView::take_stall_report`]); always `None` for a mesher of
+    /// the bricks alone.
+    pub fn take_stall_report(&mut self) -> Option<String> {
+        match &mut self.drawn {
+            Drawn::Bricks(_) => None,
+            Drawn::Detailed { view, .. } => view.take_stall_report(),
+        }
+    }
+
     /// Updates until no work is pending or schedulable, returning every change. For tests and headless rendering.
     pub fn settle(
         &mut self,

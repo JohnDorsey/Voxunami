@@ -840,6 +840,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     self.camera.position,
                     &settings,
                 ));
+                if let Some(report) = coarse.view.take_stall_report() {
+                    eprintln!("warning: {report}");
+                }
             }
             (terrain, _) => updates.extend(terrain.mesher_mut().update(data, center)),
         }
@@ -946,6 +949,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 .and_then(|entry| entry.content().cloned());
             let source = ShipTerrainSource::new(&ship.voxels, generator, terrain.extent);
             updates.extend(planet.update(&source, local));
+            if let Some(report) = planet.take_stall_report() {
+                eprintln!("warning: the planet {id:?}: {report}");
+            }
         }
         // (The stored bricks of a planet are meshed with the rest of it, by its own mesher.)
         updates.extend(self.grid_mesher.update(

@@ -17,7 +17,7 @@ mod sun_boxes;
 mod sun_ray;
 
 pub use grid_mesher::GridMesher;
-pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
+pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
 pub use mesher::{
     BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
 };
