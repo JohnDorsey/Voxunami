@@ -3268,10 +3268,12 @@ fn beyond_the_reach_of_the_cascades_the_picture_is_the_one_without_shadows_and_n
             upload_shadow_scene(&mut renderer, ShadowScene::Block, level);
             let (camera, cells, _) = shadow_scene_setup(ShadowScene::Block, level);
             let _ = cells;
+            // (Both are taken once two frames agree: the integrated AMD GPU leaves pixels out of a fresh renderer's first frames, which this test met from the commit that gave
+            // the default shader one more field, 4 runs in 16 on DX12: `docs/test-flakes.md`.)
             renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, false));
-            let off = render(&mut renderer, &camera);
+            let off = settled(&mut renderer, &camera);
             renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, true));
-            let on = render(&mut renderer, &camera);
+            let on = settled(&mut renderer, &camera);
             assert!(
                 pixels_where(&off, |pixel| !is_sky(pixel)) > 1500,
                 "{name} level {level}: the scene is not in the picture"
