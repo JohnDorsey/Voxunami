@@ -6,6 +6,7 @@
 
 pub mod contraption;
 pub mod harness;
+pub mod scenes;
 
 use std::time::{Duration, Instant};
 
