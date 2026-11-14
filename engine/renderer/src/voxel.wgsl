@@ -508,6 +508,9 @@ fn tilted_normal(normal: vec3<f32>, bump: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // SPIKE: where the eye's ray meets the relief of the picture, which the functions that read the picture then read at (`picture_prepare`, in the same two files; it takes
+    // derivatives, so it is first).
+    picture_prepare(in);
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
     // renderer's pipeline is made with).
     let picture = picture_albedo(in);

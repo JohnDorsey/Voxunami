@@ -2,6 +2,10 @@
 // (This is a separate shader, and not a branch that is never taken, because a shader that merely uses the pictures' bindings made the first pictures of a fresh renderer
 // on the integrated AMD GPU go wrong in tests that never draw a picture; see `docs/test-flakes.md`.)
 
+// SPIKE: finds where the eye's ray meets the relief of the picture (`pictures_on.wgsl`): nothing, there are no pictures.
+fn picture_prepare(in: VertexOutput) {
+}
+
 fn picture_albedo(in: VertexOutput) -> vec4<f32> {
     return vec4<f32>(in.albedo, 1.0);
 }

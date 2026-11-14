@@ -157,7 +157,7 @@ fn picture_albedo(in: VertexOutput) -> vec4<f32> {
         // The picture is all there is up to the distance, fades into the flat colour of the face over the band that follows, and is not read beyond it.
         let share = picture_share(in.relative);
         if (share > 0.0) {
-            let texel = sample_picture(in.picture, in.uv, picture_dx, picture_dy);
+            let texel = sample_picture(in.picture, in.uv + parallax_shift, picture_dx, picture_dy);
             albedo = mix(albedo, texel.rgb, share);
             if (((in.picture >> 17u) & 1u) == 1u) {
                 coverage = mix(1.0, texel.a, share);
@@ -182,7 +182,7 @@ fn picture_material(in: VertexOutput) -> PictureMaterial {
     if (share <= 0.0) {
         return PictureMaterial(0.0, 0.0, 0.0, 0.0, 0.0);
     }
-    let texel = sample_specular(in.picture, in.uv, picture_dx, picture_dy);
+    let texel = sample_specular(in.picture, in.uv + parallax_shift, picture_dx, picture_dy);
     let metal = select(0.0, 1.0, texel.g * 255.0 >= 229.5);
     let emission = min(texel.a * (255.0 / 254.0), 1.0);
     let subsurface = clamp((texel.b * 255.0 - 64.0) / 191.0, 0.0, 1.0);
@@ -209,14 +209,19 @@ fn picture_bump(in: VertexOutput) -> PictureBump {
     if (share <= 0.0) {
         return PictureBump(vec3<f32>(0.0), 1.0, 1.0);
     }
-    let texel = sample_normal(in.picture, in.uv, uv_across, uv_down);
-    // The blue byte is the share of the ambient light that gets to the pixel, faded in with the picture like the tilt.
-    let open = mix(1.0, texel.b, share);
-    var tilt = (texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0);
+    // (SPIKE: where the eye's ray meets the relief, which is where the picture is read when there is parallax: `picture_prepare`. A prism's side is a wall, and prisms are flat on top.)
+    let uv = in.uv + parallax_shift;
+    let prisms = parallax_mode() == 3u;
+    let wall = dot(parallax_wall, parallax_wall) > 0.5;
+    let texel = sample_normal(in.picture, uv, uv_across, uv_down);
+    let height = select(texel.a, parallax_height, prisms);
+    // The blue byte is the share of the ambient light that gets to the pixel, faded in with the picture like the tilt (a prism's wall is darker the deeper it is).
+    let open = mix(1.0, select(texel.b, mix(1.0, 0.45, 1.0 - height), wall), share);
+    var tilt = select((texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0), vec2<f32>(0.0), prisms);
     // A pixel that does not tilt the face and is at the top of the relief (the stand-in of a picture with no normal companion, which is most of what is drawn: 128, 128 and a
     // height of 255; and a flat pixel at the top of one that has) leaves the face as it is: the frame below would only find the face's own normal again, and nothing is higher
     // than the top to shade it.
-    let at_the_top = texel.a > 0.999;
+    let at_the_top = height > 0.999 && !wall;
     if (all(tilt == vec2<f32>(0.0)) && at_the_top) {
         return PictureBump(vec3<f32>(0.0), open, 1.0);
     }
@@ -230,21 +235,219 @@ fn picture_bump(in: VertexOutput) -> PictureBump {
     // so the change of the place with u (to the right in the picture) and with v (down it: rows count from the top) is the solution of two equations. (Solved, and not the
     // usual cotangent frame, whose signs follow which way the screen's rows count and so turn the picture's directions both around on this one.) Where the face is nearly edge
     // on the equations have no good solution, and the face is left as it is.
-    let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
-    if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
-        return PictureBump(vec3<f32>(0.0), open, 1.0);
+    var right = parallax_right;
+    var up = parallax_up;
+    if (!parallax_framed) {
+        let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
+        if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
+            return PictureBump(vec3<f32>(0.0), open, 1.0);
+        }
+        let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
+        let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
+        // (Taken along the face, and of length 1.)
+        right = normalize(along_right - normal * dot(along_right, normal));
+        up = -normalize(along_down - normal * dot(along_down, normal));
     }
-    let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
-    let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
-    // (Taken along the face, and of length 1.)
-    let right = normalize(along_right - normal * dot(along_right, normal));
-    let up = -normalize(along_down - normal * dot(along_down, normal));
-    let tilted = normalize(right * tilt.x + up * tilt.y + normal * out_of_the_face);
+    var tilted = normalize(right * tilt.x + up * tilt.y + normal * out_of_the_face);
+    if (wall) {
+        tilted = parallax_wall;
+    }
     var sun = 1.0;
     if (!at_the_top && frame.sun_light.x > 0.0) {
-        sun = 1.0 - share * (1.0 - relief_sun(in.picture, in.uv, uv_across, uv_down, texel.a, normal, right, up));
+        sun = 1.0 - share * (1.0 - relief_sun(in.picture, uv, uv_across, uv_down, height, normal, right, up));
     }
     return PictureBump((tilted - normal) * share, open, sun);
+}
+
+// ---- SPIKE: parallax (`docs/history/parallax-spike.md`). ----
+// The eye's ray into the relief of a normal picture, found for a pixel before anything reads the picture, so that the picture is read where the ray meets the relief and not where
+// it meets the flat face. The mode and the depth of the relief come in the one number `frame.pictures.w`: its whole part is the mode (0 none, 1 one shift by the height at the
+// pixel, 2 a march through the heights as a smooth surface, 3 a march through them as square prisms, each pixel of the picture a column of its own height and the sides shaded),
+// its fraction the depth in voxels (0 is the default). The coordinates the picture is read at are `in.uv + parallax_shift`; the derivatives that choose the mip and solve the frame
+// are those of `in.uv` (the shift jumps from prism to prism, and its derivative is no use). Nothing here moves the face in depth, so no silhouette is made, nothing is hidden
+// by the neighbour of a block, and the shadow maps are the flat face's.
+var<private> parallax_shift: vec2<f32> = vec2<f32>(0.0);
+// The side of a prism the eye's ray ended on, as a normal in the world's axes (0 where it ended on a top, or there is no prism); the height of the end of the ray (1 is the top);
+// and the face's right and top directions, which `picture_bump` takes from here when they were found.
+var<private> parallax_wall: vec3<f32> = vec3<f32>(0.0);
+var<private> parallax_height: f32 = 1.0;
+var<private> parallax_right: vec3<f32> = vec3<f32>(0.0);
+var<private> parallax_up: vec3<f32> = vec3<f32>(0.0);
+var<private> parallax_framed: bool = false;
+
+const PARALLAX_STEPS: i32 = 12;
+const PARALLAX_CELLS: i32 = 12;
+
+fn parallax_mode() -> u32 {
+    return u32(floor(frame.pictures.w));
+}
+
+fn relief_depth() -> f32 {
+    let fraction = fract(frame.pictures.w);
+    return select(RELIEF_DEPTH, fraction, fraction > 0.0);
+}
+
+// The height (0 to 1) of the pixel of a picture at an integer place (it repeats, so any place is one): a prism's height.
+fn column_height(picture: u32, cell: vec2<i32>, pixels: f32) -> f32 {
+    return sample_normal(picture, (vec2<f32>(cell) + vec2<f32>(0.5)) / pixels, vec2<f32>(0.0), vec2<f32>(0.0)).a;
+}
+
+// The heights of the four pixels round a place (the alpha of the normal picture, gathered in one go), in the order of `textureGather`: (left, below), (right, below), (right, above)
+// and (left, above), where below is the next row.
+fn gather_heights(picture: u32, coordinates: vec2<f32>) -> vec4<f32> {
+    let layer = i32((picture >> 3u) & 255u);
+    let wrapped = fract(coordinates);
+    var heights = vec4<f32>(1.0);
+    switch ((picture >> 1u) & 3u) {
+        case 0u: {
+            heights = textureGather(3, normals_0, picture_sampler, wrapped, layer);
+        }
+        case 1u: {
+            heights = textureGather(3, normals_1, picture_sampler, wrapped, layer);
+        }
+        case 2u: {
+            heights = textureGather(3, normals_2, picture_sampler, wrapped, layer);
+        }
+        default: {
+            heights = textureGather(3, normals_3, picture_sampler, wrapped, layer);
+        }
+    }
+    return heights;
+}
+
+// The height of the picture at a place as a smooth surface: the four pixels round it mixed as a bilinear filter would (the sampler of the pictures is nearest when magnifying).
+fn smooth_height(picture: u32, coordinates: vec2<f32>, pixels: f32) -> f32 {
+    let heights = gather_heights(picture, coordinates);
+    let within = fract(fract(coordinates) * pixels - vec2<f32>(0.5));
+    return mix(mix(heights.w, heights.z, within.x), mix(heights.x, heights.y, within.x), within.y);
+}
+
+fn picture_prepare(in: VertexOutput) {
+    // (These are taken before anything branches, as in `picture_albedo`.)
+    let uv_across = dpdx(in.uv);
+    let uv_down = dpdy(in.uv);
+    let place_across = dpdx(in.relative);
+    let place_down = dpdy(in.relative);
+    let mode = parallax_mode();
+    if (mode == 0u || in.picture == 0u || frame.pictures.y <= 0.0) {
+        return;
+    }
+    let share = picture_share(in.relative);
+    if (share <= 0.0) {
+        return;
+    }
+    let pixels = picture_pixels_per_voxel(in.picture);
+    // A place where the four pixels round it are all at the top (a picture with no normal companion is all top) has nothing to look past.
+    let around = gather_heights(in.picture, in.uv);
+    if (min(min(around.x, around.y), min(around.z, around.w)) > 0.999) {
+        return;
+    }
+    let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
+    if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
+        return;
+    }
+    let normal = normalize(in.normal);
+    let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
+    let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
+    let right = normalize(along_right - normal * dot(along_right, normal));
+    let up = -normalize(along_down - normal * dot(along_down, normal));
+    // The eye's ray goes from the camera to the point; into the face it goes by `into` of its length. In the picture's coordinates (voxels, to the right and down the rows) it
+    // moves `sideways` for each voxel of its length and `travel` for each voxel of depth. A face seen nearly edge on is left flat.
+    let eye = normalize(in.relative);
+    let into = -dot(eye, normal);
+    if (into <= 0.05) {
+        return;
+    }
+    parallax_right = right;
+    parallax_up = up;
+    parallax_framed = true;
+    let depth = relief_depth() * share;
+    let sideways = vec2<f32>(dot(eye, right), -dot(eye, up));
+    let travel = sideways / into;
+    if (mode == 1u) {
+        // Offset limiting: the picture is read where the ray would be at the depth the height at this pixel says, with no division by the cosine, so that the shift stays small.
+        parallax_shift = sideways * (depth * (1.0 - smooth_height(in.picture, in.uv, pixels)));
+        return;
+    }
+    if (mode == 2u) {
+        // A march in equal steps down the ray, for the first where the ray is under the smooth surface, and the place between that step and the one before it where the two meet.
+        var previous_gap = 1.0 - smooth_height(in.picture, in.uv, pixels);
+        var hit = 1.0;
+        for (var index = 1; index <= PARALLAX_STEPS; index = index + 1) {
+            let fraction = f32(index) / f32(PARALLAX_STEPS);
+            let gap = (1.0 - fraction) - smooth_height(in.picture, in.uv + travel * (depth * fraction), pixels);
+            if (gap <= 0.0) {
+                hit = fraction - (1.0 - previous_gap / max(previous_gap - gap, 1.0e-6)) / f32(PARALLAX_STEPS);
+                break;
+            }
+            previous_gap = gap;
+        }
+        parallax_shift = travel * (depth * hit);
+        return;
+    }
+    // Prisms: the ray walked through the grid of the picture's pixels, one column of each, from cell to cell as a line is drawn on a grid. `fraction` is how far down the relief the
+    // ray is, 0 at the top and 1 at the lowest; a column's top is at `1 - height`, and the ray is in the column once it is past that.
+    let start = fract(in.uv) * pixels;
+    let moving = travel * (depth * pixels);
+    let going_right = moving.x > 0.0;
+    let going_down = moving.y > 0.0;
+    var cell = vec2<i32>(floor(start));
+    let never = 1.0e30;
+    var next = vec2<f32>(never);
+    var spacing = vec2<f32>(never);
+    if (abs(moving.x) > 1.0e-6) {
+        next.x = (select(f32(cell.x), f32(cell.x + 1), going_right) - start.x) / moving.x;
+        spacing.x = 1.0 / abs(moving.x);
+    }
+    if (abs(moving.y) > 1.0e-6) {
+        next.y = (select(f32(cell.y), f32(cell.y + 1), going_down) - start.y) / moving.y;
+        spacing.y = 1.0 / abs(moving.y);
+    }
+    var entered = 0.0;
+    var hit = 1.0;
+    var wall = vec3<f32>(0.0);
+    var crossed_across = false;
+    for (var index = 0; index < PARALLAX_CELLS; index = index + 1) {
+        let top = 1.0 - column_height(in.picture, cell, pixels);
+        let leaves = min(min(next.x, next.y), 1.0);
+        if (top <= entered) {
+            // Already under the top on entering: the side of the column that the ray came in by (or, in the first cell, the top at the face itself).
+            hit = entered;
+            if (index > 0) {
+                if (crossed_across) {
+                    wall = right * select(1.0, -1.0, going_right);
+                } else {
+                    wall = up * select(-1.0, 1.0, going_down);
+                }
+            }
+            break;
+        }
+        if (top <= leaves) {
+            hit = top;
+            break;
+        }
+        if (leaves >= 1.0) {
+            hit = 1.0;
+            break;
+        }
+        if (next.x < next.y) {
+            cell.x = cell.x + select(-1, 1, going_right);
+            entered = next.x;
+            next.x = next.x + spacing.x;
+            crossed_across = true;
+        } else {
+            cell.y = cell.y + select(-1, 1, going_down);
+            entered = next.y;
+            next.y = next.y + spacing.y;
+            crossed_across = false;
+        }
+        hit = entered;
+    }
+    // (A wall is on the boundary of two cells: a hair farther down the ray is inside the column.)
+    let nudge = select(0.0, 0.002, dot(wall, wall) > 0.5);
+    parallax_shift = travel * (depth * (hit + nudge));
+    parallax_wall = wall;
+    parallax_height = 1.0 - hit;
 }
 
 // How deep the relief of a normal picture is, in voxels, from the top (a height of 255) to the lowest (0): the art of the dirt makes its tilts from a height field that is 1.6
@@ -267,14 +470,15 @@ fn relief_sun(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f3
     if (climb <= 0.02) {
         return 1.0;
     }
-    let start = RELIEF_DEPTH * (height - 1.0);
+    let depth = relief_depth();
+    let start = depth * (height - 1.0);
     let reach = min(-start / climb, RELIEF_REACH);
     let step_in_the_picture = vec2<f32>(dot(to_the_sun, right), -dot(to_the_sun, up));
     var blocked = 0.0;
     for (var index = 1; index <= RELIEF_STEPS; index = index + 1) {
         let along = reach * f32(index) / f32(RELIEF_STEPS);
         let ray = start + climb * along;
-        let ground = RELIEF_DEPTH * (sample_normal(picture, coordinates + step_in_the_picture * along, ddx, ddy).a - 1.0);
+        let ground = depth * (sample_normal(picture, coordinates + step_in_the_picture * along, ddx, ddy).a - 1.0);
         blocked = max(blocked, smoothstep(0.0, RELIEF_SOFTNESS, ground - ray));
     }
     return 1.0 - blocked;

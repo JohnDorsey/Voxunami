@@ -917,6 +917,9 @@ pub struct VoxelRenderer {
     picture_distance: f32,
     /// Whether the shadow of a face is looked up at the middle of the picture's pixel each pixel of the screen is in ([`VoxelRenderer::set_pixelated_shadows`]).
     pixelated_shadows: bool,
+    /// SPIKE (`docs/history/parallax-spike.md`): the parallax mode and the relief's depth, in the one number the shader reads from `frame.pictures.w` (the mode is its whole part, the
+    /// depth in voxels its fraction; 0 is no parallax and the default depth).
+    parallax_spike: f32,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -1254,6 +1257,7 @@ impl VoxelRenderer {
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
             pixelated_shadows: false,
+            parallax_spike: 0.0,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1563,6 +1567,12 @@ impl VoxelRenderer {
     /// default size of the maps) and steps in the map's texels beyond; faces with no picture (beyond the picture distance, coarse nodes, avatars, boxes) are as they were.
     pub fn set_pixelated_shadows(&mut self, on: bool) {
         self.pixelated_shadows = on;
+    }
+
+    /// SPIKE: the parallax of pictures. `mode` 0 is none, 1 a single shift of the picture by its height (offset limiting), 2 a march through the heights as a smooth surface
+    /// (parallax occlusion), 3 a march through them as square prisms with their sides shaded; `depth` is how deep the relief is in voxels (0 for the default, 0.1; under 1).
+    pub fn set_parallax_spike(&mut self, mode: u32, depth: f32) {
+        self.parallax_spike = mode.min(9) as f32 + depth.clamp(0.0, 0.99);
     }
 
     fn remake_frame_bind_group(&mut self) {
@@ -3249,7 +3259,7 @@ impl VoxelRenderer {
                     self.picture_distance,
                     self.picture_distance * (1.0 + PICTURE_FADE_SHARE),
                     f32::from(self.pixelated_shadows),
-                    0.0,
+                    self.parallax_spike,
                 ]
             } else {
                 [0.0; 4]
