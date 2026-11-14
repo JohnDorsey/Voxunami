@@ -1,5 +1,5 @@
 Step 4c-5-A in the game's BodyWorld (engine/physics), 2026-11-14, this machine, one thread, Windows. Produced by: cargo run --release --bin engine_probe -- COMMAND
-(see docs/history/loop-probe.md, section 19). The settings are BodySettings::default() unless a row says otherwise: 3 steps a tick, 15 extra passes for every body, the cut of a step at the first touch.
+(see docs/history/loop-probe.md, section 19; taken at a605b4f: one settling pass and a piece after a cut of a twelfth of a tick at most; results/engine-probe-settling-2026-11-14.txt has the world after section 20). The settings are BodySettings::default() unless a row says otherwise: 3 steps a tick, 15 extra passes for every body, the cut of a step at the first touch.
 
 === engine_probe levers
 
