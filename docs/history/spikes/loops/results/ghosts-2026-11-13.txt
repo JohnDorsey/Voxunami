@@ -320,3 +320,43 @@ ghost diff, (0, 15), cut                                   0.0223     0.3766    
 ghost impulses, (0, 15), cut                              18.0958     6.2085        1
 own-ground ghost diff, (0, 15), cut                        0.0000     0.0000        1
 own-ground ghost impulses, (0, 15), cut                    0.0000     0.0000        1
+=================================================================== ghosts sweep 40 blowup 2
+
+the sweep: 40 random hits (chains, doors, a landed ship hit from the side, a ship dropped on a carrier; random masses, speeds, and moments of the tick), each design against the world twice as fine as the converged one.
+The distance is the greatest of any car's place, turn and speed from the reference's, at the end of every tick from 0.25 s after the first hit to the end of the run. Visible: place over 10 mm, turn over 5 mrad (a ball's turn is not counted) or speed over 50 mm/s.
+design                                             |  place50  place90 placeMax |  speed50  speed90 speedMax | visible  within | overlap90 us/tick
+                                                   |       mm       mm       mm |     mm/s     mm/s     mm/s |  of all  of all |       mm  median
+converged (12 steps, 16, 32)                       |     5.22    16.52    107.1 |     13.5     53.3    213.4 |     38%    100% |     10.9    4115
+today: one world, 3 steps                          |    54.45   352.57   1285.0 |    108.0    516.6   1686.6 |    100%      0% |     66.1      67
+ghost impulses, x4, (0, 15)                        |    34.35   154.82   5193.6 |     74.4    174.9   6308.4 |     78%     30% |     18.5     718
+ghost impulses, x4, (0, 15), truth (0, 15)         |    23.52    47.27    120.3 |     36.7    132.4    174.5 |     70%     38% |     24.1     810
+ghost impulses, x4, no effort                      |    43.75   399.01   1809.6 |     72.3    574.4   2208.2 |    100%      2% |     19.9     335
+ghost impulses, x1, (0, 15)                        |    54.89   705.89   1593.6 |     98.9   1125.9   1952.9 |     75%     28% |    126.1     230
+
+visible, by family (chains, doors, a landed ship hit, a ship on a carrier):
+converged (12 steps, 16, 32)                          1/10    5/10    7/10    2/10 
+today: one world, 3 steps                            10/10   10/10   10/10   10/10 
+ghost impulses, x4, (0, 15)                           9/10   10/10   10/10    2/10 
+ghost impulses, x4, (0, 15), truth (0, 15)            9/10    8/10   10/10    1/10 
+ghost impulses, x4, no effort                        10/10   10/10   10/10   10/10 
+ghost impulses, x1, (0, 15)                           8/10   10/10   10/10    2/10 
+
+the 6 hits where today's design is farthest from the reference (place mm / speed mm/s), the reference's own uncertainty (the converged world's distance), and the best two designs there:
+  Fixed chain of 4, along by 1687 kg at 12.7 m/s                 today  1285.0 /    1687   floor    0.9   best: ghost impulses, x4, (0, 15), truth (0, 15) 17.9, ghost impulses, x1, (0, 15) 1056.0
+  Hinge chain of 2, along by 1221 kg at 18.8 m/s                 today   949.0 /    1166   floor    0.0   best: ghost impulses, x4, (0, 15) 40.4, ghost impulses, x4, (0, 15), truth (0, 15) 40.4
+  Fixed chain of 4, along by 5877 kg at 6.1 m/s                  today   821.5 /    1108   floor    6.0   best: ghost impulses, x4, (0, 15), truth (0, 15) 27.2, ghost impulses, x1, (0, 15) 834.7
+  Hinge chain of 8, along by 2166 kg at 5.3 m/s                  today   436.3 /     540   floor    1.2   best: ghost impulses, x4, (0, 15), truth (0, 15) 120.3, ghost impulses, x1, (0, 15) 1593.6
+  locked door, hit by 2509 kg at 2.6 m/s                         today   352.6 /     298   floor    0.6   best: ghost impulses, x4, (0, 15), truth (0, 15) 24.0, ghost impulses, x4, (0, 15) 154.8
+  Hinge chain of 6, along by 374 kg at 12.4 m/s                  today   316.4 /     517   floor    5.2   best: ghost impulses, x4, (0, 15) 32.7, ghost impulses, x4, (0, 15), truth (0, 15) 32.7
+
+what is left for 'ghost impulses, x4, (0, 15)': 21 hits are beyond twice the reference's uncertainty (place mm; the floor; speed mm/s):
+  Hinge chain of 8, along by 2166 kg at 5.3 m/s                   5193.6  floor    1.2  speed   6308  (today   436.3)
+  Hinge chain of 6, along by 4002 kg at 3.8 m/s                   2794.4  floor   11.1  speed   3533  (today   281.1)
+  Fixed chain of 4, along by 1687 kg at 12.7 m/s                  2390.0  floor    0.9  speed   2901  (today  1285.0)
+  Fixed chain of 4, along by 5877 kg at 6.1 m/s                   1860.7  floor    6.0  speed   2357  (today   821.5)
+  locked door, hit by 2509 kg at 2.6 m/s                           154.8  floor    0.6  speed    129  (today   352.6)
+  locked door, hit by 471 kg at 1.9 m/s                            113.3  floor    0.3  speed     85  (today   190.6)
+  Hinge chain of 8, along by 223 kg at 10.4 m/s                     87.2  floor    0.0  speed     12  (today   148.3)
+  Fixed chain of 3, across by 816 kg at 4.7 m/s                     74.6  floor    0.9  speed    129  (today    42.6)
+  Hinge chain of 6, across by 3713 kg at 7.6 m/s                    55.9  floor    0.5  speed    154  (today    26.6)
+  Hinge chain of 2, along by 1221 kg at 18.8 m/s                    40.4  floor    0.0  speed    135  (today   949.0)

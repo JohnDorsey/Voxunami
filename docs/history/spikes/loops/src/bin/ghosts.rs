@@ -321,6 +321,16 @@ fn sweep_designs(set: &str) -> Vec<Design> {
     let effort = |e: (usize, usize)| Options { world_effort: e, ..plain };
     let cut = |e: (usize, usize)| Options { world_effort: e, toi: true, ..plain };
     let ghost = |calls: usize, e: (usize, usize), truth: (usize, usize), toi: bool| Options { ghost_calls: calls, ghost_effort: e, world_effort: truth, toi, ..plain };
+    if set == "blowup" {
+        return vec![
+            design("converged (12 steps, 16, 32)", Scheme::Hi, 3, plain),
+            design("today: one world, 3 steps", Scheme::Game, 3, plain),
+            design("ghost impulses, x4, (0, 15)", Scheme::Ghost, 3, ghost(4, (0, 15), (0, 0), false)),
+            design("ghost impulses, x4, (0, 15), truth (0, 15)", Scheme::Ghost, 3, ghost(4, (0, 15), (0, 15), false)),
+            design("ghost impulses, x4, no effort", Scheme::Ghost, 3, ghost(4, (0, 0), (0, 0), false)),
+            design("ghost impulses, x1, (0, 15)", Scheme::Ghost, 3, ghost(1, (0, 15), (0, 0), false)),
+        ];
+    }
     if set == "knee" {
         let mut rows = vec![design("converged (12 steps, 16, 32)", Scheme::Hi, 3, plain), design("today: one world, 3 steps", Scheme::Game, 3, plain)];
         for passes in [3usize, 7, 15, 31] {
