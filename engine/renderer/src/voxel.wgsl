@@ -618,10 +618,9 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(lifted(mix(color, frame.fog_color.rgb, fog)), 1.0);
 }
 
-// The whole scene a little brighter than the light says, black still black and full brightness still full: the colour raised to the power of one over `SCENE_LIFT`, which lifts the
-// darks most (0.1 becomes 0.145, 0.5 becomes 0.56) and leaves 0 and 1 where they are. The terrain, the entities and the sky go through it after the fog, so that they still agree
-// where the fog meets the sky.
-const SCENE_LIFT: f32 = 1.2;
+// The whole scene a little brighter than the light says, black still black and full brightness still full: the colour raised to the power of one over `SCENE_LIFT` (the setting
+// `scene_lift`, 1.2 unless it is changed: the renderer writes it above), which lifts the darks most (0.1 becomes 0.147, 0.5 becomes 0.561) and leaves 0 and 1 where they are. The
+// terrain, the entities and the sky go through it after the fog, so that they still agree where the fog meets the sky.
 
 fn lifted(colour: vec3<f32>) -> vec3<f32> {
     let positive = max(colour, vec3<f32>(0.0));

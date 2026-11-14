@@ -67,12 +67,14 @@ pub fn apply_shader_pack(
         .shader_pack
         .as_ref()
         .and_then(|id| packs.iter().find(|pack| pack.id() == id));
-    renderer.set_shader_pack(wanted).map_err(|error| {
-        format!(
-            "the shader pack {} is refused:\n{error}",
-            wanted.map_or("", ShaderPack::name)
-        )
-    })
+    renderer
+        .set_shader_pack_with_settings(wanted, &settings.shader_settings)
+        .map_err(|error| {
+            format!(
+                "the shader pack {} with the settings chosen is refused (the game's own shader and settings are used again):\n{error}",
+                wanted.map_or("", ShaderPack::name)
+            )
+        })
 }
 
 /// The pictures of a game's blocks as the renderer takes them: a size at a time, smallest first, which is the order the table's picture words count the sizes in.

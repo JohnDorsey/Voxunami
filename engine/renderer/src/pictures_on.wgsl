@@ -264,12 +264,11 @@ fn picture_bump(in: VertexOutput) -> PictureBump {
 // pixels of its 16 deep, so a tenth of a voxel; how far along the sun's ray a pixel looks for something higher than the ray (voxels, a few pixels of a picture of 16: the shade of
 // a bump is short, and a longer look would find the next block's picture, which the repeat of this one stands for badly); and how soft the edge of a shade is (voxels of height
 // between the ray being clear of the ground and being under it). `RELIEF_DEPTH` is also how deep a prism of `relief_prisms.wgsl` is, and `WALL_DARKNESS` how much darker the
-// ambient light is at the foot of the wall of the deepest prism than at its top.
-const RELIEF_DEPTH: f32 = 0.1;
+// ambient light is at the foot of the wall of the deepest prism than at its top: those two are settings (`relief_depth`, `wall_darkness`), written above the pictures by the
+// renderer (`crate::shader_settings`).
 const RELIEF_REACH: f32 = 0.25;
 const RELIEF_SOFTNESS: f32 = 0.01;
 const RELIEF_STEPS: i32 = 4;
-const WALL_DARKNESS: f32 = 0.2;
 
 // The share of the sun's light that gets past the relief of the picture to a pixel `height` high (0 to 1, 1 for the top), on a face whose normal is `normal` and in which the picture's
 // right and top are the directions `right` and `up`: the ray from the pixel toward the sun climbs as it goes along the face, and if the picture's height at a place under the ray

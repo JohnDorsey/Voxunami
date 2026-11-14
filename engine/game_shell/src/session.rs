@@ -1146,9 +1146,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.settings.shader_pack = chosen;
     }
 
-    /// Goes back to the game's own shader, for a pack the graphics card did not take.
+    /// Goes back to the game's own shader and its settings' defaults, for a pack or a value the graphics card did not take (which of them it was is not known, and the game's own
+    /// are known to draw).
     pub fn reject_shader_pack(&mut self) {
         self.settings.shader_pack = None;
+        self.settings.shader_settings.clear();
     }
 
     /// The sun of the level the player is in and the time of day by the world's clock, if the game has a sun there.

@@ -17,6 +17,7 @@
 
 use std::fmt;
 
+use crate::shader_settings::ShaderSettings;
 use crate::voxel_renderer::{SunWalk, voxel_source};
 
 /// Which version of the interface a pack is written for: the fields of `Surface` and what `pack_shade` is given and returns. A pack's `pack.json` names it, and a version of the
@@ -62,11 +63,24 @@ impl Relief {
     }
 }
 
-/// What the voxel shaders are made of besides the engine's own text: the pack's lighting (`pack_shade`) and how the relief of pictures is drawn.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Shading<'a> {
-    pub lighting: &'a str,
+/// What the voxel shaders are made of besides the engine's own text: the pack's lighting (`pack_shade`), how the relief of pictures is drawn, and the values of the settings. Equal
+/// shadings make the same shaders.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Shading {
+    pub lighting: String,
     pub relief: Relief,
+    pub settings: ShaderSettings,
+}
+
+impl Shading {
+    /// How the engine draws with no pack: the default lighting, relief and settings.
+    pub(crate) fn engine_default() -> Self {
+        Self {
+            lighting: DEFAULT_LIGHTING.to_owned(),
+            relief: DEFAULT_RELIEF,
+            settings: ShaderSettings::defaults(),
+        }
+    }
 }
 
 /// A place in a pack's file that is wrong, and what is wrong with it.
@@ -106,6 +120,11 @@ impl ShaderPackError {
                 message: message.into(),
             }],
         }
+    }
+
+    /// The settings chosen for a pack are not its settings.
+    pub(crate) fn bad_settings(message: &str) -> Self {
+        Self::one(format!("shader settings: {message}"))
     }
 
     /// The graphics card refused a shader of the pack that the shader language accepted.
@@ -302,7 +321,15 @@ fn language_problem(
     walk: SunWalk,
     text: &str,
 ) -> Option<ShaderPackProblem> {
-    let before = voxel_source(with_pictures, relief, walk, "");
+    let before = voxel_source(
+        with_pictures,
+        walk,
+        &Shading {
+            lighting: String::new(),
+            relief,
+            settings: ShaderSettings::defaults(),
+        },
+    );
     let source = format!("{before}{text}");
     let first_line_of_the_pack = before.matches('\n').count() as u32 + 1;
     let module = match naga::front::wgsl::parse_str(&source) {

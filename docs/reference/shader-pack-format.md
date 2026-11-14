@@ -37,7 +37,7 @@ One file of WGSL ([the language](https://www.w3.org/TR/WGSL/)) that defines
 fn pack_shade(s: Surface) -> vec3<f32>
 ```
 
-and may define constants and functions of its own. It returns the **linear** colour of the face at this pixel; the engine puts the fog over it, and then **lifts the whole scene** (the sky too): each channel to the power of one over 1.2, which makes the darks brighter (0.1 comes out 0.147, 0.5 comes out 0.561) and leaves black black and full brightness full. A pack cannot change the lift (`SCENE_LIFT` in `voxel.wgsl`, and `lifted_color` in `voxel_renderer.rs` for the sky where the picture is cleared to it); what a pack returns as a data channel is lifted too. Faces of blocks, ships, avatars and far levels of detail are all drawn with it. `Surface`:
+and may define constants and functions of its own. It returns the **linear** colour of the face at this pixel; the engine puts the fog over it, and then **lifts the whole scene** (the sky too): each channel to the power of one over 1.2, which makes the darks brighter (0.1 comes out 0.147, 0.5 comes out 0.561) and leaves black black and full brightness full. A pack cannot change the lift (the lifting code is the engine's: `lifted` in `voxel.wgsl`, and `lifted_color` in `voxel_renderer.rs` for the sky where the picture is cleared to it); the player can change how much, with the setting `scene_lift` (see "Settings" below). What a pack returns as a data channel is lifted too. Faces of blocks, ships, avatars and far levels of detail are all drawn with it. `Surface`:
 
 | field | what it is |
 |---|---|
@@ -73,6 +73,20 @@ The game checks these when it reads the pack (and `voxunami check-shader-pack` s
 - a pack must define `pack_shade` with the signature above, and must not define a name the engine has (it is told which).
 
 A pack **may** ignore what it is given: a pack with no shadows is a style (`shadowless` below).
+
+## Settings
+
+The engine has numbers of taste that a player changes by eye. Each has a name, a range and a default, and is written into the shaders as a constant of the same name in upper case, so that it costs nothing in a frame:
+
+| setting | default | range | what it is |
+|---|---|---|---|
+| `relief_depth` | 0.1 | 0 to 0.2 | how deep, in voxels, the relief of a block's picture is (the lowest pixel of its height field below the top); past about 0.15 the shader's limit of steps shows |
+| `wall_darkness` | 0.2 | 0 to 1 | how much darker the ambient light is at the foot of the wall of the deepest prism than at its top |
+| `scene_lift` | 1.2 | 0.5 to 3 | the light of the whole scene is raised to the power of 1 over this, so 1 is no lift; black stays black and full brightness stays full |
+
+While playing, `.shadersetting` lists them, `.shadersetting NAME` says what one is for and what it takes, `.shadersetting NAME VALUE` changes it (the beginning of a name will do) and `.shadersetting NAME default` goes back. A change makes the shaders again, which is a pause of a fifth to half a second. The values are for the session; they are not saved yet. A pack reads them as it reads the engine's other constants (`RELIEF_DEPTH`, `WALL_DARKNESS`, `SCENE_LIFT`), and may not define a name of the same spelling.
+
+Settings of a pack's own, declared in `pack.json` and chosen by the player, are not built yet (`docs/specs/shader-pack-spec.md`, decision 8).
 
 ## Checking and using a pack
 

@@ -11,12 +11,17 @@ use super::*;
 /// The byte of an sRGB picture that a colour channel (itself sRGB, as the atmosphere's are) comes out as: decoded to light, lifted, encoded again. The rule written out for the
 /// test, with `libm`.
 pub(super) fn lifted_byte(channel: f64) -> u8 {
+    lifted_byte_by(channel, 1.2)
+}
+
+/// The same with the lift (the setting `scene_lift`) this.
+pub(super) fn lifted_byte_by(channel: f64, lift: f64) -> u8 {
     let light = if channel <= 0.04045 {
         channel / 12.92
     } else {
         libm::pow((channel + 0.055) / 1.055, 2.4)
     };
-    let lifted = libm::pow(light, 1.0 / 1.2);
+    let lifted = libm::pow(light, 1.0 / lift);
     let encoded = if lifted <= 0.003_130_8 {
         lifted * 12.92
     } else {
@@ -27,7 +32,26 @@ pub(super) fn lifted_byte(channel: f64) -> u8 {
 
 /// The middle pixel of the picture of a sky of this colour, with the heavens given.
 fn sky_of(context: &GraphicsContext, colour: [f32; 3], heavens: Heavens) -> [u8; 4] {
+    sky_with_lift(context, colour, heavens, None)
+}
+
+/// The same with the setting `scene_lift` chosen, if it is.
+pub(super) fn sky_with_lift(
+    context: &GraphicsContext,
+    colour: [f32; 3],
+    heavens: Heavens,
+    lift: Option<f32>,
+) -> [u8; 4] {
     let mut renderer = new_renderer(context);
+    if let Some(lift) = lift {
+        let choices = renderer::SettingChoices::from([(
+            "scene_lift".to_owned(),
+            renderer::SettingValue::Float(lift),
+        )]);
+        renderer
+            .set_shader_pack_with_settings(None, &choices)
+            .expect("a lift in its range");
+    }
     renderer.set_atmosphere(Atmosphere {
         sky_color: colour,
         fog_start: 1000.0,

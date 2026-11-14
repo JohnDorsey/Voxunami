@@ -66,6 +66,25 @@ fn a_pack_may_not_define_a_name_of_either_relief_and_each_relief_has_names_of_it
 }
 
 #[test]
+fn a_pack_may_read_the_constants_of_the_settings_and_may_not_define_one() {
+    // The engine's settings are constants of the shader a pack is put after, so a pack reads them...
+    let reading = "fn pack_shade(s: Surface) -> vec3<f32> { return s.albedo * (SCENE_LIFT - RELIEF_DEPTH - WALL_DARKNESS); }";
+    assert!(
+        ShaderPack::new("test:pack", "Test", reading).is_ok(),
+        "{:?}",
+        problems_of(reading)
+    );
+    // ...and may not make one of its own of the same name.
+    for name in ["SCENE_LIFT", "RELIEF_DEPTH", "WALL_DARKNESS"] {
+        let text = format!(
+            "const {name}: f32 = 2.0;\nfn pack_shade(s: Surface) -> vec3<f32> {{ return s.albedo; }}"
+        );
+        let problems = problems_of(&text);
+        assert_eq!(problems.len(), 1, "{name}: {problems:?}");
+    }
+}
+
+#[test]
 fn a_pack_that_does_not_define_pack_shade_is_refused_whole() {
     let problems = problems_of("fn something_else(s: Surface) -> vec3<f32> { return s.albedo; }");
     assert_eq!(problems.len(), 1);

@@ -8,18 +8,18 @@ use renderer::{Relief, ShaderPack, default_lighting};
 use super::emission::table;
 use super::*;
 
-const DIRT: &str = concat!(
+pub(super) const DIRT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../plugins/base_blocks/textures/dirt.png"
 );
-const DIRT_NORMAL: &str = concat!(
+pub(super) const DIRT_NORMAL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../plugins/base_blocks/textures/dirt_n.png"
 );
 
 const PICTURE_SIDE: usize = 16;
 
-fn decode(path: &str) -> Vec<u8> {
+pub(super) fn decode(path: &str) -> Vec<u8> {
     let file = std::fs::File::open(path).expect("picture file");
     let decoder = png::Decoder::new(std::io::BufReader::new(file));
     let mut reader = decoder.read_info().expect("png header");
@@ -64,7 +64,7 @@ fn plain() -> Vec<u8> {
 }
 
 /// A floor of 32 by 32 blocks with this picture and this normal picture, in a sun in direction `sun` with some sky and ambient light and no shadow maps.
-fn floor(
+pub(super) fn floor(
     context: &GraphicsContext,
     picture: &[u8],
     normal: &[u8],
@@ -104,7 +104,7 @@ fn set_sun(renderer: &mut VoxelRenderer, sun: [f32; 3]) {
 }
 
 /// A camera `distance` voxels from `target`, `elevation` degrees over it, round to the side by `azimuth` degrees (0 is in front of it, toward +z; 90 is from +x), and looking at it.
-fn view_of(
+pub(super) fn view_of(
     target: [f64; 3],
     elevation: f64,
     azimuth: f64,
@@ -137,11 +137,11 @@ fn with_relief(renderer: &mut VoxelRenderer, relief: Option<Relief>) {
     }
 }
 
-const WIDTH: u32 = 320;
-const HEIGHT: u32 = 200;
+pub(super) const WIDTH: u32 = 320;
+pub(super) const HEIGHT: u32 = 200;
 
 /// The picture of the camera once two frames agree (the first frames of a fresh renderer on the integrated adapter drop pixels).
-fn settled(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
+pub(super) fn settled(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
     let mut previous = renderer.render_to_rgba(camera, WIDTH, HEIGHT).0;
     for _ in 0..30 {
         let next = renderer.render_to_rgba(camera, WIDTH, HEIGHT).0;
@@ -154,7 +154,7 @@ fn settled(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
 }
 
 /// How many pixels of the two pictures differ by more than `by` in some channel.
-fn differing(first: &[u8], second: &[u8], by: u8) -> usize {
+pub(super) fn differing(first: &[u8], second: &[u8], by: u8) -> usize {
     first
         .chunks(4)
         .zip(second.chunks(4))

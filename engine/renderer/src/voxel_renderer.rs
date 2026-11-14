@@ -27,6 +27,7 @@ use crate::overlay::{Overlay, OverlayRect};
 use crate::shader_pack::{
     DEFAULT_LIGHTING, DEFAULT_RELIEF, Relief, ShaderPack, ShaderPackError, Shading,
 };
+use crate::shader_settings::{SettingChoices, ShaderSettings};
 use crate::shadow::{
     Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
     sky_half_widths,
@@ -906,8 +907,9 @@ pub struct VoxelRenderer {
     picture_pipeline_layout: wgpu::PipelineLayout,
     companion_layout: wgpu::BindGroupLayout,
     companion_group: wgpu::BindGroup,
-    /// Draws the sky (the stars and the sun) over the whole picture, before the terrain.
+    /// Draws the sky (the stars and the sun) over the whole picture, before the terrain, and its layout (to make it again when a setting changes).
     sky_pipeline: wgpu::RenderPipeline,
+    sky_pipeline_layout: wgpu::PipelineLayout,
     frame_layout: wgpu::BindGroupLayout,
     /// The frame's uniform for the picture, and after it one copy for each cascade of the maps (the sun's, then the sky's), each at a multiple of `frame_stride`.
     frame_buffer: wgpu::Buffer,
@@ -945,10 +947,11 @@ pub struct VoxelRenderer {
     skip_faces_looking_away: bool,
     /// Whether the sun's ray is tested against the boxes of the nearest entities (the default).
     entities_in_the_sun_walk: bool,
-    /// The text of the shader pack's `pack_shade` the voxel shaders are made with ([`DEFAULT_LIGHTING`] or a pack's: [`VoxelRenderer::set_shader_pack`]).
-    lighting: String,
-    /// How the shaders that draw pictures draw their relief ([`DEFAULT_RELIEF`] or the pack's: [`VoxelRenderer::set_shader_pack`]).
-    relief: Relief,
+    /// What the voxel shaders are made with besides the engine's text: the lighting of the shader pack ([`DEFAULT_LIGHTING`] or a pack's), how the relief of pictures is drawn
+    /// ([`DEFAULT_RELIEF`] or the pack's) and the values of the settings ([`VoxelRenderer::set_shader_pack_with_settings`]).
+    shading: Shading,
+    /// The choices of settings the shading was made from (what [`VoxelRenderer::set_shader_pack_with_settings`] was last given that it took).
+    shading_choices: SettingChoices,
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
@@ -1007,19 +1010,16 @@ fn srgb_to_linear_color(color: [f32; 3]) -> [f32; 3] {
     color.map(srgb_to_linear)
 }
 
-/// The lift of the whole scene (`lifted` and `SCENE_LIFT` in `voxel.wgsl`, which must say the same): linear light raised to the power of one over this, so that the darks are
-/// brighter and black and full brightness stay where they are. The shader lifts what it draws; the colour the picture is cleared to (the sky where the shader does not draw it)
-/// is lifted here.
-const SCENE_LIFT: f32 = 1.2;
-
+/// The colour raised to the power of one over `lift` (the setting `scene_lift`: the shader's `lifted` takes the same constant, `SCENE_LIFT`), so that the darks are brighter and
+/// black and full brightness stay where they are. The shader lifts what it draws; the colour the picture is cleared to (the sky where the shader does not draw it) is lifted here.
 // A power function; this is client-side cosmetics, not simulation.
 #[allow(clippy::disallowed_methods)]
-fn lifted_color(color: [f32; 3]) -> [f32; 3] {
+fn lifted_color(color: [f32; 3], lift: f32) -> [f32; 3] {
     color.map(|part| {
         if part <= 0.0 {
             0.0
         } else {
-            part.powf(1.0 / SCENE_LIFT)
+            part.powf(1.0 / lift)
         }
     })
 }
@@ -1138,13 +1138,7 @@ impl VoxelRenderer {
                 immediate_size: 0,
             });
 
-        let shader = voxel_shader(
-            &device,
-            false,
-            DEFAULT_RELIEF,
-            SunWalk::None,
-            DEFAULT_LIGHTING,
-        );
+        let shader = voxel_shader(&device, false, SunWalk::None, &Shading::engine_default());
         let (pipeline, detailed_pipeline) =
             voxel_pipelines(&device, &pipeline_layout, &shader, color_format);
 
@@ -1153,39 +1147,7 @@ impl VoxelRenderer {
             bind_group_layouts: &[Some(&frame_layout)],
             immediate_size: 0,
         });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sky pipeline"),
-            layout: Some(&sky_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("sky_vertex"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("sky_fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            // (Drawn after the terrain, where the depth is still the clear value: depth is reversed and the sky is at the far plane, 0, so the sky is at depth 0 and the terrain
-            // hides it everywhere it is. It writes no depth.)
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Equal),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let sky_pipeline = sky_pipeline(&device, &sky_layout, &shader, color_format);
 
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let frame_stride = (size_of::<FrameUniform>() as u64).next_multiple_of(alignment);
@@ -1274,6 +1236,7 @@ impl VoxelRenderer {
             companion_layout,
             companion_group,
             sky_pipeline,
+            sky_pipeline_layout: sky_layout,
             frame_layout,
             frame_buffer,
             frame_stride,
@@ -1300,8 +1263,8 @@ impl VoxelRenderer {
             contact_debug: ContactDebug::Off,
             skip_faces_looking_away: true,
             entities_in_the_sun_walk: true,
-            lighting: DEFAULT_LIGHTING.to_owned(),
-            relief: DEFAULT_RELIEF,
+            shading: Shading::engine_default(),
+            shading_choices: SettingChoices::new(),
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
             bricks: HashMap::new(),
@@ -1539,9 +1502,8 @@ impl VoxelRenderer {
             self.picture_shader = Some(voxel_shader(
                 &self.device,
                 true,
-                self.relief,
                 SunWalk::None,
-                &self.lighting,
+                &self.shading,
             ));
         }
         if let Some(shader) = &self.picture_shader {
@@ -1915,22 +1877,57 @@ impl VoxelRenderer {
     /// Draws faces with this shader pack's `pack_shade` from now on, or with the default one for `None` (see [`ShaderPack`]). The engine still works out what is lit and what
     /// is not, and the fog and the sky are still its own. The pack's shaders are made at once, for the kinds the renderer draws with and the heaviest one: if the graphics card
     /// refuses any of them (the checks of [`ShaderPack::new`] are the shader language's, not the card's) this is an error and the renderer draws as it did.
+    ///
+    /// The settings are the engine's own ([`crate::engine_settings`]) at their defaults: [`VoxelRenderer::set_shader_pack_with_settings`] takes the ones a player has chosen.
     pub fn set_shader_pack(&mut self, pack: Option<&ShaderPack>) -> Result<(), ShaderPackError> {
+        self.set_shader_pack_with_settings(pack, &SettingChoices::new())
+    }
+
+    /// As [`VoxelRenderer::set_shader_pack`], with these settings chosen (by name: the rest are their defaults): the shaders are made with their values as constants, and are made
+    /// again when any changes (a pause of a moment). A name that is not a setting, or a value that is not one of its setting, is an error that changes nothing.
+    pub fn set_shader_pack_with_settings(
+        &mut self,
+        pack: Option<&ShaderPack>,
+        choices: &SettingChoices,
+    ) -> Result<(), ShaderPackError> {
         let lighting = pack.map_or(DEFAULT_LIGHTING, ShaderPack::lighting);
         let relief = pack.and_then(ShaderPack::relief).unwrap_or(DEFAULT_RELIEF);
-        if lighting == self.lighting && relief == self.relief {
+        // (The window asks every frame: what is the same as last time is told apart without making anything.)
+        if lighting == self.shading.lighting
+            && relief == self.shading.relief
+            && *choices == self.shading_choices
+        {
+            return Ok(());
+        }
+        let settings = ShaderSettings::resolve(choices)
+            .map_err(|message| ShaderPackError::bad_settings(&message))?;
+        let shading = Shading {
+            lighting: lighting.to_owned(),
+            relief,
+            settings,
+        };
+        if shading == self.shading {
+            // (Other choices that make the same values, such as a default said in words: nothing to make.)
+            self.shading_choices = choices.clone();
             return Ok(());
         }
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = voxel_shader(&self.device, false, relief, SunWalk::None, lighting);
+        let shader = voxel_shader(&self.device, false, SunWalk::None, &shading);
         let pipelines = voxel_pipelines(
             &self.device,
             &self.pipeline_layout,
             &shader,
             self.color_format,
         );
+        // (The sky is lifted by the setting `scene_lift` too, so its pipeline is made again from the same text.)
+        let sky = sky_pipeline(
+            &self.device,
+            &self.sky_pipeline_layout,
+            &shader,
+            self.color_format,
+        );
         let pictures = self.pictures_in_use.then(|| {
-            let shader = voxel_shader(&self.device, true, relief, SunWalk::None, lighting);
+            let shader = voxel_shader(&self.device, true, SunWalk::None, &shading);
             let pipelines = voxel_pipelines(
                 &self.device,
                 &self.picture_pipeline_layout,
@@ -1941,7 +1938,7 @@ impl VoxelRenderer {
         });
         let mut contact = self.contact.take();
         if let Some(contact) = &mut contact {
-            contact.set_shading(Shading { lighting, relief });
+            contact.set_shading(&shading);
             // (The heaviest kind: if the card takes this one it takes the others, which have less of the engine's code round the same pack.)
             contact.ensure_pipelines(
                 &self.device,
@@ -1957,10 +1954,7 @@ impl VoxelRenderer {
         if let Some(error) = pollster::block_on(scope.pop()) {
             // (The old pack's shaders are made again lazily, from the old text.)
             if let Some(contact) = &mut contact {
-                contact.set_shading(Shading {
-                    lighting: &self.lighting,
-                    relief: self.relief,
-                });
+                contact.set_shading(&self.shading);
             }
             self.contact = contact;
             return Err(ShaderPackError::refused_by_the_graphics_card(
@@ -1968,8 +1962,9 @@ impl VoxelRenderer {
             ));
         }
         self.contact = contact;
-        self.lighting = lighting.to_owned();
-        self.relief = relief;
+        self.shading = shading;
+        self.shading_choices = choices.clone();
+        self.sky_pipeline = sky;
         (self.pipeline, self.detailed_pipeline) = pipelines;
         match pictures {
             Some((shader, pipelines)) => {
@@ -2054,10 +2049,7 @@ impl VoxelRenderer {
                 return;
             }
             self.contact = Some(ContactGpu::new(
-                Shading {
-                    lighting: &self.lighting,
-                    relief: self.relief,
-                },
+                &self.shading,
                 &self.device,
                 &self.frame_layout,
                 &self.placement_layout,
@@ -2754,7 +2746,10 @@ impl VoxelRenderer {
             .as_ref()
             .expect("depth target was just created")
             .view;
-        let [red, green, blue] = lifted_color(srgb_to_linear_color(self.atmosphere.sky_color));
+        let [red, green, blue] = lifted_color(
+            srgb_to_linear_color(self.atmosphere.sky_color),
+            self.shading.settings.scene_lift(),
+        );
         let placement_offset =
             |index: usize| (u64::from(slots.get(index)) * self.placement_stride) as u32;
         let mut encoder = self
@@ -3341,17 +3336,13 @@ pub(crate) enum SunWalk {
     },
 }
 
-/// The text of the voxel shader of this kind, with `lighting` (the shader pack's `pack_shade`: [`crate::shader_pack::DEFAULT_LIGHTING`] or a pack's) after all the rest, so that
-/// the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (`voxel_source(.., "")`).
-pub(crate) fn voxel_source(
-    with_pictures: bool,
-    relief: Relief,
-    walk: SunWalk,
-    lighting: &str,
-) -> String {
+/// The text of the voxel shader of this kind, with the shading's lighting (the shader pack's `pack_shade`: [`crate::shader_pack::DEFAULT_LIGHTING`] or a pack's) after all the
+/// rest, so that the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (the source with an empty lighting). The constants of the
+/// settings (`crate::shader_settings`) come right after the engine's own shader, which the rest read them in.
+pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading) -> String {
     let pictures = if with_pictures {
         // (Both read the picture where `parallax_shift` says; the one with no prisms says nowhere else than where the face is.)
-        match relief {
+        match shading.relief {
             Relief::Flat => concat!(
                 include_str!("pictures_on.wgsl"),
                 "\n",
@@ -3393,26 +3384,71 @@ pub(crate) fn voxel_source(
     };
     format!(
         "{}
+{}
 {pictures}
 {contact}
 {shapes}
 {windows}
 {entities}
-{lighting}",
-        include_str!("voxel.wgsl")
+{}",
+        include_str!("voxel.wgsl"),
+        shading.settings.prelude(),
+        shading.lighting
     )
+}
+
+/// The pipeline that draws the sky (the stars and the sun) over the whole picture, before the terrain, from the sky's entry points of `shader`. The shader says the settings the
+/// sky is lifted by, so it is made again with the rest when a setting changes.
+fn sky_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    color_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sky pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("sky_vertex"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("sky_fragment"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        // (Drawn after the terrain, where the depth is still the clear value: depth is reversed and the sky is at the far plane, 0, so the sky is at depth 0 and the terrain
+        // hides it everywhere it is. It writes no depth.)
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Equal),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 pub(crate) fn voxel_shader(
     device: &wgpu::Device,
     with_pictures: bool,
-    relief: Relief,
     walk: SunWalk,
-    lighting: &str,
+    shading: &Shading,
 ) -> wgpu::ShaderModule {
     let label = format!(
         "voxel shader{}{}{}{}{}",
-        match (with_pictures, relief) {
+        match (with_pictures, shading.relief) {
             (false, _) => "",
             (true, Relief::Flat) => " with pictures",
             (true, Relief::Prisms) => " with pictures and prisms",
@@ -3439,9 +3475,7 @@ pub(crate) fn voxel_shader(
     );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&label),
-        source: wgpu::ShaderSource::Wgsl(
-            voxel_source(with_pictures, relief, walk, lighting).into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(voxel_source(with_pictures, walk, shading).into()),
     })
 }
 

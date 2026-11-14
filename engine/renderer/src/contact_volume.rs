@@ -11,7 +11,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::occupancy_volume::{
     Changes, MAXIMUM_WINDOWS, PARTIAL_SLOT_BYTES, SLOT_BYTES, WINDOW_ENTRIES,
 };
-use crate::shader_pack::{Relief, Shading};
+use crate::shader_pack::Shading;
 use crate::sun_boxes::{MAXIMUM_SUN_BOXES, SunBoxUniform};
 use crate::voxel_renderer::{SunWalk, voxel_pipelines, voxel_shader};
 
@@ -71,10 +71,8 @@ pub(crate) struct ContactGpu {
     /// entities, and the pipelines made with each (the number of the kind is `usize::from(with_pictures) + 2 * usize::from(with_shapes) + 4 * usize::from(with_other_windows) +
     /// 8 * usize::from(with_entities)`): made when they are first wanted.
     shaders: [Option<wgpu::ShaderModule>; 16],
-    /// The text of the shader pack's `pack_shade` the shaders are made with.
-    lighting: String,
-    /// How the shaders with pictures draw their relief.
-    relief: Relief,
+    /// What the shaders are made with besides the engine's text: the pack's lighting, how the shaders with pictures draw their relief, and the values of the settings.
+    shading: Shading,
     pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 16],
 }
 
@@ -93,7 +91,7 @@ fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 
 impl ContactGpu {
     pub(crate) fn new(
-        shading: Shading<'_>,
+        shading: &Shading,
         device: &wgpu::Device,
         frame_layout: &wgpu::BindGroupLayout,
         placement_layout: &wgpu::BindGroupLayout,
@@ -173,8 +171,7 @@ impl ContactGpu {
             shapes,
             bind_group,
             shaders: std::array::from_fn(|_| None),
-            lighting: shading.lighting.to_owned(),
-            relief: shading.relief,
+            shading: shading.clone(),
             pipelines: std::array::from_fn(|_| None),
         }
     }
@@ -355,11 +352,10 @@ impl ContactGpu {
         &self.bind_group
     }
 
-    /// Makes the shaders of the variants with the walk from this text of the shader pack's `pack_shade` and with this relief from now on: the ones made before are forgotten.
-    pub(crate) fn set_shading(&mut self, shading: Shading<'_>) {
-        if shading.lighting != self.lighting || shading.relief != self.relief {
-            self.lighting = shading.lighting.to_owned();
-            self.relief = shading.relief;
+    /// Makes the shaders of the variants with the walk from this lighting, relief and settings from now on: the ones made before are forgotten.
+    pub(crate) fn set_shading(&mut self, shading: &Shading) {
+        if *shading != self.shading {
+            self.shading = shading.clone();
             self.shaders = std::array::from_fn(|_| None);
             self.pipelines = std::array::from_fn(|_| None);
         }
@@ -377,9 +373,8 @@ impl ContactGpu {
         if self.pipelines[index].is_some() {
             return;
         }
-        let shader = self.shaders[index].get_or_insert_with(|| {
-            voxel_shader(device, with_pictures, self.relief, walk, &self.lighting)
-        });
+        let shader = self.shaders[index]
+            .get_or_insert_with(|| voxel_shader(device, with_pictures, walk, &self.shading));
         let layout = if with_pictures {
             &self.pipeline_layout_with_pictures
         } else {

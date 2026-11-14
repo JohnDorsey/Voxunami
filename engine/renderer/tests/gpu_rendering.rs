@@ -54,6 +54,8 @@ mod prisms;
 mod relief;
 #[path = "gpu_rendering/scatter.rs"]
 mod scatter;
+#[path = "gpu_rendering/settings.rs"]
+mod settings;
 #[path = "gpu_rendering/shader_packs.rs"]
 mod shader_packs;
 
