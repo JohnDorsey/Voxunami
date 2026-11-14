@@ -12,8 +12,8 @@ mod common;
 
 use common::chains::{
     Setting, TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, alike_in_turn, centre_of,
-    close, how_the_chain_turns, mass_of, minus, most_apart, orientation_of, origins_of, pivot_gap,
-    put_on_its_rail, rail_point, rail_point_in, spin_of,
+    close, has_swung, how_the_chain_turns, mass_of, minus, most_apart, most_apart_up_to_the_mirror,
+    orientation_of, origins_of, pivot_gap, put_on_its_rail, rail_point, rail_point_in, spin_of,
 };
 use common::docking::stone;
 use common::{Player, Scene, circular_speed, length, ship_id, tick_and_follow};
@@ -76,11 +76,12 @@ fn what_a_mechanism_does_does_not_depend_on_where_the_group_is_or_how_fast_it_go
     // 9.8e-9 after four) and not the rail; **in the frame everything is in, with a stranger near, they differ by millions of times as much** (the pull, the number of steps a
     // tick is cut into by the speed), and the control of this test is that they do. (Before step 4c-4 the control was the chain free and alone; now that has a frame of its own too:
     // `group_off_a_rail.rs`.)
-    let on_a_rail = most_apart(
+    // (Both up to the mirror image in the plane of the swing: see `most_apart_up_to_the_mirror`.)
+    let on_a_rail = most_apart_up_to_the_mirror(
         &how_the_chain_turns(70_016.0, Setting::OnARail),
         &how_the_chain_turns(140_000.0, Setting::OnARail),
     );
-    let with_a_stranger = most_apart(
+    let with_a_stranger = most_apart_up_to_the_mirror(
         &how_the_chain_turns(70_016.0, Setting::WithAStranger),
         &how_the_chain_turns(140_000.0, Setting::WithAStranger),
     );
@@ -89,12 +90,8 @@ fn what_a_mechanism_does_does_not_depend_on_where_the_group_is_or_how_fast_it_go
         with_a_stranger > 1e-4,
         "with a stranger near they differ by {with_a_stranger}"
     );
-    // (They did swing: the chain turns at the end.)
-    assert!(
-        how_the_chain_turns(70_016.0, Setting::OnARail)
-            .iter()
-            .any(|(_, spin)| length(*spin) > 0.05)
-    );
+    // (They did swing: the chain has turned.)
+    assert!(has_swung(&how_the_chain_turns(70_016.0, Setting::OnARail)));
 }
 
 #[test]

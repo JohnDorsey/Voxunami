@@ -11,6 +11,7 @@ use crate::sweep::{SweptBricks, swept_bricks};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 mod couplings;
+mod first_touch;
 mod sleeping;
 
 use couplings::Coupling;
@@ -50,6 +51,14 @@ const MOST_A_STEP_MOVES: Real = 0.8;
 /// (at 20 ticks a second); faster, a step is longer than that.
 const MOST_STEPS: u32 = 24;
 
+/// The passes over its constraints that the solver makes for every body, beyond its own: what makes a hit come out as momentum says and not as a chain of joints gives way, and
+/// what takes the spin out of a head-on hit (two cubes that meet squarely turned at 0.2 radians a second at 60 voxels a second with none, and at 0.01 with these). A stranger on a
+/// rigid chain of four keeps 0.04 to 0.14 of its speed with none, where 0.2 is true; the 15 that this is were found by the study of `docs/history/loop-probe.md`, section 18 (the
+/// rest noise of landing gear on a carrier, 113 mm/s, goes to nothing with them). Rapier runs the largest request of a connected set of bodies (the contacts and the joints between
+/// them) on all of it, so what touches a chain is solved with it, and a body that touches nothing has no constraint to make passes over. What they cost is paid by a body that is
+/// awake and touching (a ship at rest on the ground, awake, went from 15 to 35 microseconds a tick with them, measured): a body that is asleep costs nothing.
+const HIT_PASSES: usize = 15;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
     /// How long one call to [`BodyWorld::step`] is, in seconds: a tick of the server.
@@ -58,15 +67,27 @@ pub struct BodySettings {
     pub substeps: u32,
     /// The acceleration of gravity, in voxels per second per second.
     pub gravity: [f64; 3],
+    /// How hard the solver works on every body at the least: a body that is given more with [`BodyWorld::set_solver_dials`] gets that. Nothing extra is the solver's own work.
+    pub solver: SolverDials,
+    /// Whether a step of the solver is cut where two bodies, or a body and the terrain, first touch, so that a hit begins at the start of a piece whatever moment of the step it
+    /// falls at (what it does then does not depend on that moment: `docs/history/loop-probe.md`, section 18). It costs a question to the broad phase for each body that
+    /// moves, and a step in which nothing is about to touch is the same bit for bit.
+    pub cut_at_first_touch: bool,
 }
 
 impl Default for BodySettings {
-    /// A tick of a twentieth of a second solved at 60 steps a second, and the gravity characters fall in.
+    /// A tick of a twentieth of a second solved at 60 steps a second, the gravity characters fall in, the passes that make a hit come out right (15 for every body), and the cut of a
+    /// step where two bodies first touch.
     fn default() -> Self {
         Self {
             time_step: 1.0 / 20.0,
             substeps: 3,
             gravity: [0.0, -5.0, 0.0],
+            solver: SolverDials {
+                extra_substeps: 0,
+                extra_passes: HIT_PASSES,
+            },
+            cut_at_first_touch: true,
         }
     }
 }
@@ -110,6 +131,8 @@ struct Body {
     kept_awake: bool,
     /// Whether Rapier is let put it to sleep now (see `sleeping.rs`): it is while the body touches something and is not kept awake.
     may_sleep: bool,
+    /// How hard the solver was asked to work on it ([`BodyWorld::set_solver_dials`]); the solver is told the larger of this and the world's.
+    dials: SolverDials,
 }
 
 /// The colliders of a body, taken out of its world with [`BodyWorld::take_colliders`] to be given to the same body in another with [`BodyWorld::give_colliders`]: what a ship
@@ -162,6 +185,8 @@ pub struct BodyWorld {
     terrain: HashMap<BrickCoordinate, ColliderHandle>,
     /// The bodies held together at pivots, in order of number (see `couplings.rs`).
     couplings: BTreeMap<CouplingId, Coupling>,
+    /// How many steps were cut where two bodies first touched (see `first_touch.rs`).
+    cuts: u64,
 }
 
 impl std::fmt::Debug for BodyWorld {
@@ -202,6 +227,7 @@ impl BodyWorld {
             by_id: BTreeMap::new(),
             terrain: HashMap::new(),
             couplings: BTreeMap::new(),
+            cuts: 0,
         }
     }
 
@@ -274,8 +300,10 @@ impl BodyWorld {
                 partial: HashMap::new(),
                 kept_awake: false,
                 may_sleep: true,
+                dials: SolverDials::default(),
             },
         );
+        self.apply_solver_dials(id);
         Ok(())
     }
 
@@ -814,31 +842,42 @@ impl BodyWorld {
     /// Moves everything one tick: gravity and the forces applied since the last call, then collisions, in
     /// [`BodySettings::substeps`] steps. The forces are then forgotten.
     pub fn step(&mut self) {
-        let gravity = vector(self.settings.gravity);
         self.apply_sleep_rule();
         let steps = self.steps_for_this_tick();
-        self.parameters.dt = self.settings.time_step / Real::from(steps);
+        let length = self.settings.time_step / Real::from(steps);
         for _ in 0..steps {
-            self.pipeline.step(
-                gravity,
-                &self.parameters,
-                &mut self.islands,
-                &mut self.broad_phase,
-                &mut self.narrow_phase,
-                &mut self.bodies,
-                &mut self.colliders,
-                &mut self.impulse_joints,
-                &mut self.multibody_joints,
-                &mut self.soft_bodies,
-                &mut self.ccd,
-                &(),
-                &(),
-            );
+            // (A step is cut in pieces where two bodies first touch: `first_touch.rs`.)
+            self.solve_in_pieces(length);
         }
         for (_, body) in self.bodies.iter_mut() {
             body.reset_forces(false);
             body.reset_torques(false);
         }
+    }
+
+    /// One step of the solver, `time` seconds long.
+    fn solve(&mut self, time: Real) {
+        self.parameters.dt = time;
+        self.pipeline.step(
+            vector(self.settings.gravity),
+            &self.parameters,
+            &mut self.islands,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.bodies,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            &mut self.soft_bodies,
+            &mut self.ccd,
+            &(),
+            &(),
+        );
+    }
+
+    /// How many times a step has been cut where two bodies first touched, since this world was made.
+    pub fn cuts_made(&self) -> u64 {
+        self.cuts
     }
 
     /// How many solver steps this tick is cut into: the settings' number, or more when a body is fast enough to cross [`MOST_A_STEP_MOVES`] voxels in
@@ -854,17 +893,7 @@ impl BodyWorld {
             let mut speed = body.linvel().length();
             let turn = body.angvel().length();
             if turn > 0.0 {
-                // The farthest point of the body from its middle, by the boxes of its colliders.
-                let middle = body.translation();
-                let reach = body
-                    .colliders()
-                    .iter()
-                    .map(|&handle| {
-                        let aabb = self.colliders[handle].compute_aabb();
-                        (aabb.center() - middle).length() + aabb.half_extents().length()
-                    })
-                    .fold(0.0, Real::max);
-                speed += turn * reach;
+                speed += turn * self.reach_of(body);
             }
             fastest = fastest.max(speed);
         }
@@ -2148,7 +2177,11 @@ mod tests {
 
     /// A scene that uses most of what there is: ground, ships of different shapes (one turned), a fixed one, forces, an edit.
     fn busy_scene() -> BodyWorld {
-        let mut world = world_with_ground();
+        busy_scene_under(heavy_planet())
+    }
+
+    fn busy_scene_under(settings: BodySettings) -> BodyWorld {
+        let mut world = world_with_ground_and(settings);
         let mut ell = Hull::cube(3);
         ell.0.remove(&VoxelCoordinate::new(2, 2, 2));
         ell.0.remove(&VoxelCoordinate::new(2, 2, 1));
@@ -2210,6 +2243,26 @@ mod tests {
         // (Moved on purpose, 2026-11-07: 5_759_799_545_177_561_133 before. `set_mass` brings the centre of mass in the world up to date at once, and a force at a point is turned about it; the
         // scene pushes a ship at a point in the tick its mass is set, which Rapier then turned about the ship's origin. Control: the same scene with the first force one tick later, so that no
         // force is in the tick the mass is set, hashes to 1_492_678_265_670_795_158 with and without the change.)
-        assert_eq!(first.state_hash(), 4_420_298_351_144_519_277);
+        // (Moved on purpose, 2026-11-14: 4_420_298_351_144_519_277 before. Every body is given 15 extra solver passes, and a step is cut where two bodies first touch (the ships
+        // here land on the ground): step 4c-5-A of `docs/decisions/joints-and-cars.md`. Control: with `solver` set to nothing and the cut off the old value comes
+        // back bit for bit, in the test next to this one; so those two are the only things that moved it.)
+        assert!(
+            first.cuts_made() > 0,
+            "no step was cut in the busy scene: the pin below is not about the cut"
+        );
+        assert_eq!(first.state_hash(), 13_453_006_163_523_410_624);
+    }
+
+    #[test]
+    fn with_the_passes_and_the_cut_off_the_busy_scene_is_what_it_was_before_them_bit_for_bit() {
+        let settings = BodySettings {
+            solver: SolverDials::default(),
+            cut_at_first_touch: false,
+            ..heavy_planet()
+        };
+        assert_eq!(
+            busy_scene_under(settings).state_hash(),
+            4_420_298_351_144_519_277
+        );
     }
 }

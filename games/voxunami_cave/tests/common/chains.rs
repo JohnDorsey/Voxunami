@@ -322,6 +322,44 @@ pub fn how_the_chain_turns_after(
         .collect()
 }
 
+/// Whether a chain, as `how_the_chain_turns` leaves it, has swung: some car faces more than a fifth of a radian from where it began (the cars begin facing one way; the w of a
+/// facing is the cosine of half the turn from that). The control of the tests that two chains agree: two chains that did not move would agree for nothing. (It was that some car
+/// was still turning at over 0.05 radians a second at the end, until step 4c-5-A: the solver's passes make the impact at the 130th tick, where the swing turns back, lose more of the
+/// swing, which then ends at 0.04 radians a second, and the car that turned most faces 0.76 radians from where it began.)
+pub fn has_swung(chain: &[(Orientation, Vec3)]) -> bool {
+    chain
+        .iter()
+        .any(|(facing, _)| facing.components()[3] < 0.995)
+}
+
+/// A chain as its mirror image in the plane it swings in (z to -z): the facing's x and y and the turn's x and y change sign.
+fn mirrored(chain: &[(Orientation, Vec3)]) -> Vec<(Orientation, Vec3)> {
+    chain
+        .iter()
+        .map(|(facing, spin)| {
+            let [x, y, z, w] = facing.components();
+            (
+                Orientation::from_components([-x, -y, z, w])
+                    .expect("the mirror image of a facing is one"),
+                [-spin[0], -spin[1], spin[2]],
+            )
+        })
+        .collect()
+}
+
+/// The most the facings and the turns of two chains differ by, taking the second as it is or as its mirror image in the plane the chain swings in, whichever is nearer. A chain that
+/// swings in a plane has a mirror symmetry, and a symmetric impact in it (two faces that meet squarely, as at the 130th tick of this swing) leaves it tilted a hair to one side or
+/// to the other, **which of the two is decided by the rounding of the numbers and not by where the chain is**: since the solver makes 15 extra passes (step 4c-5-A, 2026-11-14) the
+/// chains at 70 and at 140 kilometres are exact mirror images of each other after that impact, 0.0034 apart as they are (the tilt, 0.0019 in the facing's x, is the same to nine
+/// digits and of the other sign) and 4e-9 apart mirrored, which is what they were apart as they were before (2e-9). The size of the tilt, and everything in the plane, is still
+/// compared.
+pub fn most_apart_up_to_the_mirror(
+    first: &[(Orientation, Vec3)],
+    second: &[(Orientation, Vec3)],
+) -> f64 {
+    most_apart(first, second).min(most_apart(first, &mirrored(second)))
+}
+
 /// The most the facings and the turns of two chains differ by.
 pub fn most_apart(first: &[(Orientation, Vec3)], second: &[(Orientation, Vec3)]) -> f64 {
     let mut worst: f64 = 0.0;

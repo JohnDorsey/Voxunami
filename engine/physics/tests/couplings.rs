@@ -19,13 +19,14 @@ const DENSITY: f64 = 5.0;
 const TICK: f64 = 1.0 / 20.0;
 
 fn world_with_gravity(gravity: [f64; 3]) -> BodyWorld {
-    BodyWorld::new(
-        BrickCoordinate::ORIGIN,
-        BodySettings {
-            gravity,
-            ..BodySettings::default()
-        },
-    )
+    world_with_settings(BodySettings {
+        gravity,
+        ..BodySettings::default()
+    })
+}
+
+fn world_with_settings(settings: BodySettings) -> BodyWorld {
+    BodyWorld::new(BrickCoordinate::ORIGIN, settings)
 }
 
 fn free_space() -> BodyWorld {
@@ -789,9 +790,9 @@ fn cars_in_free_space_stay_awake_at_rest_whether_they_may_sleep_or_not() {
     );
 }
 
-#[test]
-fn the_state_of_a_run_with_a_coupling_is_the_same_to_the_bit_on_every_machine() {
-    let mut world = world_with_gravity([0.0, -5.0, 0.0]);
+/// Two cars on a ball swinging, and a third on a ball from the second, for 100 ticks under `settings`: the hash of where they are.
+fn hash_of_the_pinned_run(settings: BodySettings) -> u64 {
+    let mut world = world_with_settings(settings);
     two_cars_on_a_ball(
         &mut world,
         4,
@@ -823,11 +824,134 @@ fn the_state_of_a_run_with_a_coupling_is_the_same_to_the_bit_on_every_machine() 
     for _ in 0..100 {
         world.step();
     }
-    assert_eq!(world.state_hash(), PINNED_HASH);
+    world.state_hash()
 }
 
-/// Taken on Windows on 2026-11-09 and checked under Linux (WSL) the same day.
-const PINNED_HASH: u64 = 15_871_630_393_772_392_020;
+#[test]
+fn the_state_of_a_run_with_a_coupling_is_the_same_to_the_bit_on_every_machine() {
+    let settings = BodySettings {
+        gravity: [0.0, -5.0, 0.0],
+        ..BodySettings::default()
+    };
+    assert_eq!(hash_of_the_pinned_run(settings), PINNED_HASH);
+}
+
+#[test]
+fn with_the_passes_and_the_cut_off_a_run_with_a_coupling_is_what_it_was_before_them_bit_for_bit() {
+    // The old pin, `15_871_630_393_772_392_020` (Windows, 2026-11-09, and Linux the same day): the control of the move of `PINNED_HASH` on 2026-11-14.
+    let settings = BodySettings {
+        gravity: [0.0, -5.0, 0.0],
+        solver: SolverDials::default(),
+        cut_at_first_touch: false,
+        ..BodySettings::default()
+    };
+    assert_eq!(hash_of_the_pinned_run(settings), 15_871_630_393_772_392_020);
+}
+
+/// Taken on Windows on 2026-11-14 and checked under Linux (WSL) the same day. (Moved on purpose from `15_871_630_393_772_392_020`: every body has 15 extra solver passes and a step is cut
+/// where two bodies first touch, step 4c-5-A; the test of the run with both off keeps the old value.)
+const PINNED_HASH: u64 = 16_786_669_780_439_343_234;
+
+/// Two unit cars, the second turned a quarter about y from the first, whose three pivots (not on a line) are at the same three places in the world: the first car's are on its
+/// +x face, the second's are where its own axes put them (`(0,0,0)`, `(0,1,0)` and `(-1,0,0)`, because its x goes to -z and its z to x).
+fn two_cars_turned_to_each_other(world: &mut BodyWorld) {
+    let root = 0.5f64.sqrt();
+    add_car(
+        world,
+        FIRST,
+        BodyKind::Dynamic,
+        1,
+        [100.0; 3],
+        [0.0; 3],
+        [0.0; 3],
+    );
+    let state = BodyState {
+        position: WorldPosition::from_voxels([101.0, 100.0, 100.0]),
+        orientation: Orientation::from_components([0.0, root, 0.0, root]).unwrap(),
+        linear_velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+    };
+    world.add_body(SECOND, state, BodyKind::Dynamic).unwrap();
+    world.set_mass(SECOND, cube_mass(1)).unwrap();
+    let pivots = [
+        PivotPair {
+            first: [1.0, 0.0, 0.0],
+            second: [0.0, 0.0, 0.0],
+        },
+        PivotPair {
+            first: [1.0, 1.0, 0.0],
+            second: [0.0, 1.0, 0.0],
+        },
+        PivotPair {
+            first: [1.0, 0.0, 1.0],
+            second: [-1.0, 0.0, 0.0],
+        },
+    ];
+    world
+        .couple(
+            JOINT,
+            FIRST,
+            SECOND,
+            &pivots,
+            CouplingOptions {
+                contacts_between_bodies: false,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn three_pivots_not_on_a_line_hold_two_cars_turned_to_each_other_as_one_body() {
+    // The coupling is one fixed joint whose frames are worked out from the pivots (it holds a rigid pair far better than three balls do: `settled_hit.rs`). Wrong frames would be a
+    // joint that is not at rest where the cars are, and pull them to a place they are not at.
+    let mut world = free_space();
+    two_cars_turned_to_each_other(&mut world);
+    let before = [FIRST, SECOND].map(|id| world.state(id).unwrap());
+    for _ in 0..100 {
+        world.step();
+    }
+    for (id, was) in [FIRST, SECOND].into_iter().zip(before) {
+        let now = world.state(id).unwrap();
+        assert!(
+            difference(now.position.relative_to(was.position), [0.0; 3]) < 1e-9,
+            "{id:?} was moved by a joint that has nothing to correct"
+        );
+        assert!(length(now.linear_velocity) < 1e-9 && length(now.angular_velocity) < 1e-9);
+    }
+    assert!(world.pivot_gap(JOINT).unwrap() < 1e-9);
+    // Pushed at the far end of the second car, the pair turns as one: both cars at the same spin, and the turn between them stays what it was.
+    for _ in 0..40 {
+        world
+            .apply_force(SECOND, [0.0, 0.0, 400.0], Some([0.5, 0.5, 1.0]))
+            .unwrap();
+        world.step();
+    }
+    let (first, second) = (world.state(FIRST).unwrap(), world.state(SECOND).unwrap());
+    assert!(
+        length(second.linear_velocity) > 0.1 && length(second.angular_velocity) > 0.01,
+        "the push did not move the pair: {:?} {:?}",
+        second.linear_velocity,
+        second.angular_velocity
+    );
+    assert!(
+        difference(first.angular_velocity, second.angular_velocity)
+            < 1e-3 * length(second.angular_velocity),
+        "the cars turn at {:?} and {:?}",
+        first.angular_velocity,
+        second.angular_velocity
+    );
+    // (Their orientations: the second's turned from the first's by the quarter it began with, to within a thousandth.)
+    let (a, b) = (
+        first.orientation.components(),
+        second.orientation.components(),
+    );
+    let dot: f64 = (0..4).map(|axis| a[axis] * b[axis]).sum();
+    assert!(
+        (dot.abs() - 0.5f64.sqrt()).abs() < 1e-3,
+        "the second car is no longer a quarter turn from the first (the dot of their orientations is {dot})"
+    );
+    assert!(world.pivot_gap(JOINT).unwrap() < GAP_AT_GAME_SETTINGS);
+}
 
 #[test]
 fn the_tick_is_what_the_pins_assume() {

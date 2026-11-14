@@ -90,23 +90,26 @@ fn a_block_let_fall_on_a_floor_lands_as_it_always_did_when_both_go_to_another_fr
     );
     // The numbers of the block, recorded on 2026-11-10 with the colliders of both ships made again from their voxels in the new frame (the brick, the offset in it, the way it faces,
     // its speed and its turn), and held since the colliders are carried: the brick is 1,406 along x and 15,625 up (500,000 voxels), and the block lies on the floor, a hair over a voxel up.
+    // (Moved on purpose on 2026-11-14, to the numbers below: every body is given 15 extra solver passes and a step is cut where two bodies first touch, step 4c-5-A of
+    // `docs/decisions/joints-and-cars.md`. Control: with a temporary switch in the game's plugin that turned both off, the recorded numbers of 2026-11-10 came back bit for bit
+    // (ran, then the switch was removed): `0x402b52a2b40fd5d6, 0x3ff0000832c96302, 0x4000d909980d043e` for the place, and so on. The block still rests on the floor within 0.05 of a voxel.)
     let expected_block: [u64; 16] = [
         0x57e,
         0x3d09,
         0x0,
-        0x402b52a2b40fd5d6,
-        0x3ff0000832c96302,
-        0x4000d909980d043e,
-        0xbfe08c273f1f3619,
-        0x3fb9851fc290956c,
-        0x3fb25ceaeb61fa3b,
-        0x3feb1b2411de9de4,
-        0x3fbd62088e729b80,
-        0xbfd15a2372cebd57,
-        0xbfea725f92198106,
-        0xbfce41c3d38cc7ce,
-        0x3fa7a01db3e06551,
-        0xbf9e8cef3cbc011c,
+        0x402fd8548c0d78c1,
+        0x3ff040ede7b27fde,
+        0x400d9c4118ceebb2,
+        0xbfdd8e8f2fc69cd5,
+        0x3fda685e99087df6,
+        0x3fd47a445373a069,
+        0x3fe6f1a454fbbb8f,
+        0x3fd2804269ed49ac,
+        0xbfd4102080fd1843,
+        0xbfe5314f2e17b546,
+        0xbfc817dd4b8ff5bc,
+        0x3fc600ae95081099,
+        0x3fc15a046093630a,
     ];
     assert_eq!(bits_of(&scene, block), expected_block);
     // The floor was held and did not move.

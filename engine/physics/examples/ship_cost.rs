@@ -1,12 +1,14 @@
 //! What it costs to simulate ships: stepping, and making the colliders of a brick again after an edit, for ships of 10,000 and 100,000 blocks,
 //! and for a hundred ships. Run with `cargo run --release -p physics --example ship_cost`; the numbers are for the machine they are run on.
+//! Every row is given four times, in one run, so that they are measured under the same load: for the world as it was before step 4c-5-A (no extra solver passes, no cut of a step at
+//! the first touch), with the passes alone, with the cut alone, and as it is now (`BodySettings::default()`, both).
 
 use std::collections::HashSet;
 use std::time::Instant;
 
 use physics::{
     BodyId, BodyKind, BodySettings, BodyState, BodyWorld, BrickHint, Collision, CollisionSource,
-    MassMoments,
+    MassMoments, SolverDials,
 };
 use voxel_space::{BrickCoordinate, Orientation, VoxelCoordinate, WorldPosition};
 
@@ -83,8 +85,8 @@ fn start(x: f64, y: f64, z: f64) -> BodyState {
     }
 }
 
-fn world_with_ground(radius: i128) -> BodyWorld {
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+fn world_with_ground(radius: i128, settings: BodySettings) -> BodyWorld {
+    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
     for x in -radius..=radius {
         for z in -radius..=radius {
             world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Ground);
@@ -97,8 +99,8 @@ fn milliseconds(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-fn one_ship(label: &str, x: i128, y: i128, z: i128) {
-    let mut world = world_with_ground(4);
+fn one_ship(label: &str, x: i128, y: i128, z: i128, settings: BodySettings) {
+    let mut world = world_with_ground(4, settings);
     let hull = cube(x, y, z);
     let blocks = hull.0.len();
     world
@@ -154,8 +156,8 @@ fn one_ship(label: &str, x: i128, y: i128, z: i128) {
     );
 }
 
-fn many_ships() {
-    let mut world = world_with_ground(8);
+fn many_ships(settings: BodySettings) {
+    let mut world = world_with_ground(8, settings);
     let hull = cube(12, 12, 16);
     let mass = mass_of(&hull);
     let brick = BrickCoordinate::ORIGIN;
@@ -197,7 +199,37 @@ fn many_ships() {
 }
 
 fn main() {
-    one_ship("a ship of about 10,000 blocks", 22, 22, 21);
-    one_ship("a ship of about 100,000 blocks", 47, 47, 46);
-    many_ships();
+    let now = BodySettings::default();
+    // The solver's own passes only is what a world was before step 4c-5-A.
+    let no_passes = SolverDials::default();
+    for (name, settings) in [
+        (
+            "before step 4c-5-A (no passes, no cut)",
+            BodySettings {
+                solver: no_passes,
+                cut_at_first_touch: false,
+                ..now
+            },
+        ),
+        (
+            "the passes alone",
+            BodySettings {
+                cut_at_first_touch: false,
+                ..now
+            },
+        ),
+        (
+            "the cut alone",
+            BodySettings {
+                solver: no_passes,
+                ..now
+            },
+        ),
+        ("now (the passes and the cut)", now),
+    ] {
+        println!("== {name}");
+        one_ship("a ship of about 10,000 blocks", 22, 22, 21, settings);
+        one_ship("a ship of about 100,000 blocks", 47, 47, 46, settings);
+        many_ships(settings);
+    }
 }

@@ -7,9 +7,9 @@
 mod common;
 
 use common::chains::{
-    Setting, TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, centre_of,
-    how_the_chain_turns, how_the_chain_turns_after, mass_of, minus, most_apart, origins_of,
-    pivot_gap, set_going,
+    Setting, TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, centre_of, has_swung,
+    how_the_chain_turns, how_the_chain_turns_after, mass_of, minus, most_apart,
+    most_apart_up_to_the_mirror, origins_of, pivot_gap, set_going,
 };
 use common::docking::{make_all_going, stones};
 use common::{Scene, circular_speed, length, pose_at, ship_id, ship_voxels};
@@ -19,12 +19,13 @@ fn what_a_mechanism_does_does_not_depend_on_where_an_alone_group_is_or_how_fast_
  {
     // The same chain, swung the same, at 70 and at 140 kilometres, free: alone, it is in a frame of its own with nothing but it in it, so the facing and the turn of each car are
     // those of the chain on a rail, to the ticks before it was alone. (In the frame everything is in they differ by millions of times as much: `group_on_a_rail.rs`.)
+    // (Up to the mirror image in the plane of the swing: see `most_apart_up_to_the_mirror`.)
     let near = how_the_chain_turns(70_016.0, Setting::Alone);
     let far = how_the_chain_turns(140_000.0, Setting::Alone);
-    let apart = most_apart(&near, &far);
+    let apart = most_apart_up_to_the_mirror(&near, &far);
     assert!(apart < 1e-7, "alone, the two differ by {apart}");
     // (They did swing.)
-    assert!(near.iter().any(|(_, spin)| length(*spin) > 0.05));
+    assert!(has_swung(&near));
 }
 
 #[test]

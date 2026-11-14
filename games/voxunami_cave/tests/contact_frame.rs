@@ -23,6 +23,12 @@ const THE_SAME: f64 = 1e-7;
 
 const DISTANCE: f64 = 70_016.0;
 
+/// Where the hit of a stranger on the chain is made: a million voxels from the planet's middle, where its pull on the pair is a few thousandths of what it is at `DISTANCE`. (At 70
+/// kilometres the planet's pull along the chain, a few hundredths of a voxel a second a second, gave the pair a momentum of -3806 over the run, the same in every combination of the
+/// passes and the cut of step 4c-5-A, and so the planet's and not the hit's: 0.91 percent of what the chain gained before them and 1.1 percent after, with the threshold at 1. Here
+/// the momentum the hit does not keep is 2 parts in a million, with or without them.)
+const FAR_FROM_THE_PLANET: f64 = 1_000_000.0;
+
 #[test]
 #[ignore = "the contact frame is not built (docs/decisions/joints-and-cars.md, step 4c-5)"]
 fn a_stranger_that_is_near_and_does_not_touch_changes_nothing_of_what_a_chain_does() {
@@ -75,8 +81,8 @@ struct Hit {
 
 fn a_stranger_closing_on_the_chain(closing: f64, ticks: usize) -> Hit {
     let (mut scene, report) = Scene::reporting_in_a_new_world();
-    let speed = circular_speed(&scene, 0, DISTANCE);
-    let ships = a_chain_in_orbit(&mut scene, a_chain(), DISTANCE, speed);
+    let speed = circular_speed(&scene, 0, FAR_FROM_THE_PLANET);
+    let ships = a_chain_in_orbit(&mut scene, a_chain(), FAR_FROM_THE_PLANET, speed);
     set_going(&mut scene, &ships, speed, a_swing());
     scene.ticks(5);
     let end = {

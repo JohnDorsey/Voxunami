@@ -1,0 +1,308 @@
+Step 4c-5-A in the game's BodyWorld (engine/physics), 2026-11-14, this machine, one thread, Windows. Produced by: cargo run --release --bin engine_probe -- COMMAND
+(see docs/history/loop-probe.md, section 19). The settings are BodySettings::default() unless a row says otherwise: 3 steps a tick, 15 extra passes for every body, the cut of a step at the first touch.
+
+=== engine_probe levers
+
+the real BodyWorld, a stranger on a chain of four (true: it keeps 0.2): the lowest and highest kept speed over 12 moments of a step at 3 steps a tick, by what the world is given
+coupling                                    v |   nothing (today's solver) |                  passes 15 |                    the cut |      passes 15 and the cut |
+rigid, cars pass through each other         1 |   [ 0.0969,  0.1803]       |   [ 0.1980,  0.1998]       |   [ 0.0969,  0.1803]       |   [ 0.1980,  0.1998]       |
+rigid, cars pass through each other         5 |   [ 0.0671,  0.1562]       |   [ 0.1624,  0.1994]       |   [ 0.1289,  0.1689]       |   [ 0.1980,  0.1988]       |
+rigid, cars pass through each other        20 |   [ 0.0592,  0.0985]       |   [ 0.1540,  0.1994]       |   [ 0.1289,  0.1689]       |   [ 0.1980,  0.1988]       |
+rigid, cars pass through each other        60 |   [ 0.0912,  0.1059]       |   [ 0.1829,  0.1989]       |   [ 0.1228,  0.1787]       |   [ 0.1977,  0.1988]       |
+rigid, cars pass through each other       150 |   [ 0.1188,  0.1238]       |   [ 0.1932,  0.1988]       |   [ 0.1238,  0.1965]       |   [ 0.1963,  0.1988]       |
+rigid, cars meet                            1 |   [ 0.0815,  0.1994]       |   [ 0.1972,  0.1985]       |   [ 0.0815,  0.1994]       |   [ 0.1972,  0.1985]       |
+rigid, cars meet                            5 |   [ 0.0500,  0.1597]       |   [ 0.1607,  0.1985]       |   [ 0.1265,  0.1834]       |   [ 0.1980,  0.1988]       |
+rigid, cars meet                           20 |   [ 0.0416,  0.0836]       |   [ 0.1523,  0.1976]       |   [ 0.1265,  0.1834]       |   [ 0.1980,  0.1988]       |
+rigid, cars meet                           60 |   [ 0.0768,  0.0930]       |   [ 0.1809,  0.1982]       |   [ 0.1168,  0.1933]       |   [ 0.1977,  0.1988]       |
+rigid, cars meet                          150 |   [ 0.1127,  0.1183]       |   [ 0.1932,  0.1988]       |   [ 0.1183,  0.1991]       |   [ 0.1963,  0.1988]       |
+a ball, cars meet (the game's)              1 |   [ 0.0848,  0.1998]       |   [ 0.1976,  0.1985]       |   [ 0.0848,  0.1998]       |   [ 0.1976,  0.1985]       |
+a ball, cars meet (the game's)              5 |   [ 0.0530,  0.1567]       |   [ 0.1607,  0.1985]       |   [ 0.1313,  0.1883]       |   [ 0.1986,  0.1989]       |
+a ball, cars meet (the game's)             20 |   [ 0.0446,  0.0870]       |   [ 0.1524,  0.1976]       |   [ 0.1314,  0.1883]       |   [ 0.1986,  0.1990]       |
+a ball, cars meet (the game's)             60 |   [ 0.0800,  0.0975]       |   [ 0.1805,  0.1979]       |   [ 0.1225,  0.1937]       |   [ 0.1986,  0.1990]       |
+a ball, cars meet (the game's)            150 |   [ 0.1184,  0.1246]       |   [ 0.1932,  0.1990]       |   [ 0.1246,  0.1993]       |   [ 0.1986,  0.1990]       |
+a hinge                                     1 |   [ 0.1080,  0.1745]       |   [ 0.1979,  0.1992]       |   [ 0.1080,  0.1745]       |   [ 0.1979,  0.1992]       |
+a hinge                                     5 |   [ 0.0786,  0.1644]       |   [ 0.1613,  0.1991]       |   [ 0.1389,  0.1710]       |   [ 0.1980,  0.1988]       |
+a hinge                                    20 |   [ 0.0701,  0.1083]       |   [ 0.1530,  0.1981]       |   [ 0.1387,  0.1709]       |   [ 0.1980,  0.1988]       |
+a hinge                                    60 |   [ 0.0998,  0.1143]       |   [ 0.1810,  0.1989]       |   [ 0.1320,  0.1803]       |   [ 0.1977,  0.1988]       |
+a hinge                                   150 |   [ 0.1269,  0.1318]       |   [ 0.1932,  0.1988]       |   [ 0.1318,  0.1939]       |   [ 0.1963,  0.1988]       |
+
+=== engine_probe chainmoments
+
+the game's coupling (a ball, cars meet), kept speed by moment of the step (12), 3 steps a tick, with the cut and the default passes
+v 0.5: 0.1976 0.1985 0.1978 0.1979 0.1984 0.1979 0.1979 0.1984 0.1979 0.1979 0.1984 0.1979
+v   1: 0.1976 0.1985 0.1978 0.1979 0.1984 0.1979 0.1979 0.1984 0.1979 0.1979 0.1984 0.1979
+v   2: 0.1977 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1988 0.1986
+v   5: 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1989 0.1986
+v  20: 0.1989 0.1989 0.1990 0.1989 0.1990 0.1990 0.1989 0.1989 0.1989 0.1989 0.1989 0.1986
+v  60: 0.1990 0.1990 0.1990 0.1990 0.1990 0.1990 0.1989 0.1989 0.1990 0.1989 0.1988 0.1986
+v 150: 0.1990 0.1990 0.1990 0.1990 0.1990 0.1989 0.1989 0.1988 0.1987 0.1986 0.1986 0.1987
+
+=== engine_probe startphases
+the rigid pass-through chain, kept speed by how far into a step (fraction of a step) the touch falls, at 3 steps a tick
+v  20: 0: 0.1987 0.0001: 0.1987 0.0003: 0.1987 0.001: 0.1987 0.003: 0.1987 0.01: 0.1987 0.03: 0.1987 0.1: 0.1987 0.5: 0.1988
+v  60: 0: 0.1987 0.0001: 0.1987 0.0003: 0.1987 0.001: 0.1987 0.003: 0.1987 0.01: 0.1987 0.03: 0.1987 0.1: 0.1987 0.5: 0.1988
+v 150: 0: 0.1988 0.0001: 0.1988 0.0003: 0.1988 0.001: 0.1988 0.003: 0.1988 0.01: 0.1988 0.03: 0.1988 0.1: 0.1988 0.5: 0.1986
+
+=== engine_probe pairspin
+a lone cube (1000) hits a lone cube at rest, v voxels a second, by moment of the step: the stranger's kept speed (true 0.5) and the largest spin of either after
+v   2: 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/4e-4 0.4999/3e-4 
+v   5: 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/1e-3 0.4999/8e-4 
+v  20: 0.4999/5e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/4e-3 0.4999/3e-3 
+v  60: 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/1e-2 0.4999/8e-3 
+
+=== engine_probe landing
+
+a unit cube lands on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: the deepest it was in the ground at the end of a tick (voxels), the fastest it went up after (voxels/s), and where its origin (its lower corner: it moves as the cube turns) is a second after it landed (ground top at 0)
+     v | no cut: deepest / up / origin after 1 s | cut: deepest / up / origin after 1 s / cuts
+     5 |  0.0465 /   0.215 / [ 0.0245,  0.2852] / 0 |  0.0003 /   0.055 / [ 0.0050,  0.0160] / 12
+    20 |  0.2381 /   0.452 / [ 0.0989,  0.7066] / 0 |  0.0012 /   0.220 / [ 0.0237,  0.0879] / 12
+    60 |  0.7210 /   0.451 / [ 0.2169,  0.7002] / 0 |  0.0054 /   0.805 / [ 0.0771,  0.6629] / 12
+   150 |  0.7264 /   0.767 / [ 0.3392,  0.5516] / 0 |  0.0129 /   3.330 / [ 0.3532,  4.3059] / 12
+
+=== engine_probe landingphases
+
+by moment of the step (12), at v = 20 and 60: deepest / up / origin after 1 s / cuts, without and with the cut
+v  20 moment  0: no cut  0.2381 /  0.425 / origin  0.6240   cut  0.0010 /  0.089 / origin  0.0237 / cuts 1
+v  20 moment  1: no cut  0.2103 /  0.431 / origin  0.6743   cut  0.0010 /  0.089 / origin  0.0252 / cuts 1
+v  20 moment  2: no cut  0.1826 /  0.436 / origin  0.6825   cut  0.0010 /  0.089 / origin  0.0252 / cuts 1
+v  20 moment  3: no cut  0.1551 /  0.441 / origin  0.6907   cut  0.0011 /  0.089 / origin  0.0252 / cuts 1
+v  20 moment  4: no cut  0.1311 /  0.447 / origin  0.6987   cut  0.0011 /  0.089 / origin  0.0251 / cuts 1
+v  20 moment  5: no cut  0.1108 /  0.452 / origin  0.7066   cut  0.0011 /  0.089 / origin  0.0251 / cuts 1
+v  20 moment  6: no cut  0.0938 /  0.405 / origin  0.6143   cut  0.0011 /  0.089 / origin  0.0250 / cuts 1
+v  20 moment  7: no cut  0.0784 /  0.338 / origin  0.5059   cut  0.0012 /  0.089 / origin  0.0250 / cuts 1
+v  20 moment  8: no cut  0.0630 /  0.274 / origin  0.4049   cut  0.0012 /  0.089 / origin  0.0249 / cuts 1
+v  20 moment  9: no cut  0.0476 /  0.207 / origin  0.3049   cut  0.0012 /  0.089 / origin  0.0249 / cuts 1
+v  20 moment 10: no cut  0.0322 /  0.139 / origin  0.2061   cut  0.0011 /  0.127 / origin  0.0404 / cuts 1
+v  20 moment 11: no cut  0.0168 /  0.078 / origin  0.0989   cut  0.0003 /  0.220 / origin  0.0879 / cuts 1
+v  60 moment  0: no cut  0.7210 /  0.362 / origin  0.5181   cut  0.0046 /  0.267 / origin  0.1071 / cuts 1
+v  60 moment  1: no cut  0.6585 /  0.369 / origin  0.5412   cut  0.0047 /  0.267 / origin  0.1069 / cuts 1
+v  60 moment  2: no cut  0.5960 /  0.378 / origin  0.5642   cut  0.0048 /  0.267 / origin  0.1067 / cuts 1
+v  60 moment  3: no cut  0.5335 /  0.388 / origin  0.5865   cut  0.0049 /  0.267 / origin  0.1065 / cuts 1
+v  60 moment  4: no cut  0.4710 /  0.398 / origin  0.6078   cut  0.0050 /  0.267 / origin  0.1064 / cuts 1
+v  60 moment  5: no cut  0.4085 /  0.409 / origin  0.6289   cut  0.0051 /  0.267 / origin  0.1062 / cuts 1
+v  60 moment  6: no cut  0.3460 /  0.420 / origin  0.6490   cut  0.0052 /  0.267 / origin  0.1060 / cuts 1
+v  60 moment  7: no cut  0.2835 /  0.430 / origin  0.6676   cut  0.0054 /  0.218 / origin  0.0771 / cuts 1
+v  60 moment  8: no cut  0.2210 /  0.441 / origin  0.6848   cut  0.0054 /  0.267 / origin  0.1057 / cuts 1
+v  60 moment  9: no cut  0.1586 /  0.451 / origin  0.7002   cut  0.0053 /  0.344 / origin  0.1585 / cuts 1
+v  60 moment 10: no cut  0.1064 /  0.342 / origin  0.4717   cut  0.0049 /  0.483 / origin  0.2772 / cuts 1
+v  60 moment 11: no cut  0.0563 /  0.210 / origin  0.2169   cut  0.0035 /  0.805 / origin  0.6629 / cuts 1
+
+=== engine_probe landingspin
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.038-0.216    turn 0.006-0.246   | up 0.020-0.215    turn 0.016-0.228   | up 0.029-0.059    turn 0.053-0.093   | up 0.022-0.055    turn 0.034-0.082   |
+    20 | up 0.152-0.461    turn 0.025-0.702   | up 0.078-0.452    turn 0.065-0.611   | up 0.115-0.235    turn 0.211-0.373   | up 0.089-0.220    turn 0.136-0.326   |
+    60 | up 0.409-0.618    turn 0.053-1.037   | up 0.210-0.451    turn 0.079-0.697   | up 0.309-0.842    turn 0.562-1.300   | up 0.218-0.805    turn 0.335-1.183   |
+   150 | up 0.844-1.058    turn 0.068-1.296   | up 0.449-0.767    turn 0.034-0.755   | up 0.786-3.369    turn 1.435-4.879   | up 0.564-3.330    turn 0.868-4.760   |
+
+=== engine_probe castcost
+
+the exact cast of one voxel shape against another within one step (1/60 s) at 20 voxels a second: microseconds, by shape and by the gap between the boxes
+  solid hull 24^3 (13,824 voxels) against the same, gap 0.1             307.5 us  hits at 0.00500 s
+  solid hull 24^3 (13,824 voxels) against the same, gap 0.3             308.5 us  hits at 0.01500 s
+  solid hull 24^3 (13,824 voxels) against the same, gap 5                 0.1 us  no touch
+  solid hull 24^3 (13,824 voxels) against the same, gap 50                0.1 us  no touch
+  hollow hull 24^3 (2,402 voxels) against the same, gap 0.1             307.1 us  hits at 0.00500 s
+  hollow hull 24^3 (2,402 voxels) against the same, gap 0.3             288.8 us  hits at 0.01500 s
+  hollow hull 24^3 (2,402 voxels) against the same, gap 5                 0.1 us  no touch
+  hollow hull 24^3 (2,402 voxels) against the same, gap 50                0.1 us  no touch
+  solid hull 24^3 down onto a terrain brick, gap 0.1                    295.3 us  hits at 0.00500 s
+  solid hull 24^3 down onto a terrain brick, gap 0.3                    289.3 us  hits at 0.01500 s
+  solid hull 24^3 down onto a terrain brick, gap 5                        0.1 us  no touch
+  solid hull 24^3 down onto a terrain brick, gap 50                       0.1 us  no touch
+  solid hull 24^3 inside a hollow brick (2 voxels from the walls)         8.9 us  no touch
+  small hull 4^3 inside the hollow brick                                  0.1 us  no touch
+  a cuboid (the hull's bound) inside the hollow brick                     8.8 us  no touch
+
+=== engine_probe cost
+
+the real BodyWorld: what a tick costs, microseconds, for two cubes of 24 voxels (13,824 voxels each, one voxel collider each) that meet at 10 voxels/s (averaged over the 1 s after they touch, and the whole run), and for one that rests on the ground; this machine, one thread
+settings                                        meeting    resting
+before 4c-5-A: 3 steps, nothing extra                33          1
+passes 15 only                                       31          1
+the cut only                                         23          1
+now: passes 15 and the cut                           32          1
+passes 15, the cut, 6 steps                          64          2
+passes 15, the cut, 12 steps                        127          3
+substeps 4, passes 15, the cut, 3 steps              57          1
+
+=== engine_probe margin
+
+a unit cube 'gap' above terrain going down at 20 voxels/s, one tick of 1 step (no cut): where it is after, and its speed (does the contact catch it?)
+  gap   -1.0e-4: after one step y    -2.000e-3  vy    0.022
+  gap   -1.0e-6: after one step y    -1.926e-3  vy    0.022
+  gap   -1.0e-7: after one step y    -1.926e-3  vy    0.022
+  gap   -1.0e-8: after one step y    -1.925e-3  vy    0.022
+  gap   -1.0e-9: after one step y    -1.925e-3  vy    0.022
+  gap  -1.0e-10: after one step y    -1.925e-3  vy    0.022
+  gap  -1.0e-11: after one step y    -1.925e-3  vy    0.022
+  gap  -1.0e-12: after one step y    -1.925e-3  vy    0.022
+  gap  -1.0e-13: after one step y    -1.925e-3  vy    0.022
+  gap  -1.0e-14: after one step y    -1.925e-3  vy    0.022
+  gap  -1.0e-15: after one step y    -3.333e-1  vy  -20.000
+  gap     0.0e0: after one step y    -3.333e-1  vy  -20.000
+  gap   1.0e-15: after one step y    -3.333e-1  vy  -20.000
+  gap    1.0e-6: after one step y    -3.333e-1  vy  -20.000
+  gap    1.0e-3: after one step y    -3.323e-1  vy  -20.000
+  gap    1.9e-3: after one step y    -3.314e-1  vy  -20.000
+  gap    2.1e-3: after one step y    -3.312e-1  vy  -20.000
+  gap    1.0e-2: after one step y    -3.233e-1  vy  -20.000
+
+=== engine_probe nonlinear
+
+the cast that follows a turn (parry cast_shapes_nonlinear) on voxel shapes: a bar of 12 turning about z at 1 rad/s above a cube it touches after about 0.1 s
+  (voxel bar vs cuboid cube: no touch; cuboid bar vs voxel cube: hit at 0.00000; SWAPPED voxel cube first vs voxel bar: no touch; voxel cube first vs cuboid bar: hit at 0.00000; cuboid cube first vs voxel bar: no touch)
+  (cuboids: hit at 0.00000 (PenetratingOrWithinTargetDist))
+  bar level at start (touching)         0.3 us  no touch
+  (voxel bar vs cuboid cube: no touch; cuboid bar vs voxel cube: hit at 0.05000; SWAPPED voxel cube first vs voxel bar: no touch; voxel cube first vs cuboid bar: hit at 0.05000; cuboid cube first vs voxel bar: no touch)
+  (cuboids: hit at 0.05000 (Failed))
+  bar 0.05 rad below                    0.3 us  no touch
+  (voxel bar vs cuboid cube: no touch; cuboid bar vs voxel cube: hit at 0.10000; SWAPPED voxel cube first vs voxel bar: no touch; voxel cube first vs cuboid bar: hit at 0.10000; cuboid cube first vs voxel bar: no touch)
+  (cuboids: hit at 0.10000 (Converged))
+  bar 0.1 rad below                     0.4 us  no touch
+  (voxel bar vs cuboid cube: no touch; cuboid bar vs voxel cube: hit at 0.30000; SWAPPED voxel cube first vs voxel bar: no touch; voxel cube first vs cuboid bar: hit at 0.30000; cuboid cube first vs voxel bar: no touch)
+  (cuboids: hit at 0.30000 (Converged))
+  bar 0.3 rad below                     0.4 us  no touch
+
+=== engine_probe distances
+
+the distance between voxel shapes (parry query::distance): value and microseconds, by shape and true gap
+  solid 24^3 / solid 24^3            gap  0.05: UNSUPPORTED in       0.0 us
+  solid 24^3 / solid 24^3            gap   0.5: UNSUPPORTED in       0.0 us
+  solid 24^3 / solid 24^3            gap     5: UNSUPPORTED in       0.0 us
+  solid 24^3 / solid 24^3            gap    50: UNSUPPORTED in       0.0 us
+  hollow 24^3 / hollow 24^3          gap  0.05: UNSUPPORTED in       0.0 us
+  hollow 24^3 / hollow 24^3          gap   0.5: UNSUPPORTED in       0.0 us
+  hollow 24^3 / hollow 24^3          gap     5: UNSUPPORTED in       0.0 us
+  hollow 24^3 / hollow 24^3          gap    50: UNSUPPORTED in       0.0 us
+  solid 24^3 / small 4^3             gap  0.05: UNSUPPORTED in       0.0 us
+  solid 24^3 / small 4^3             gap   0.5: UNSUPPORTED in       0.0 us
+  solid 24^3 / small 4^3             gap     5: UNSUPPORTED in       0.0 us
+  solid 24^3 / small 4^3             gap    50: UNSUPPORTED in       0.0 us
+  tunnel 32^3 / solid 24^3 inside    gap  0.05: UNSUPPORTED in       0.0 us
+  tunnel 32^3 / solid 24^3 inside    gap   0.5: UNSUPPORTED in       0.0 us
+  tunnel 32^3 / solid 24^3 inside    gap     5: UNSUPPORTED in       0.0 us
+  tunnel 32^3 / solid 24^3 inside    gap    50: UNSUPPORTED in       0.0 us
+
+=== engine_probe spinhit
+
+a bar of 12 voxels (12,000) turning at w about z touches a cube (1,000) at the same angle whatever moment of the step: the cube's upward speed and its spin after, by moment (12), without the cut / with it
+w 0.5 no cut: speed [  2.2528,   2.2568]  (tip 3.0)  cuts 0   2.253 2.253 2.253 2.253 2.253 2.253 2.254 2.254 2.255 2.255 2.256 2.257
+w 0.5 cut   : speed [  2.2528,   2.2832]  (tip 3.0)  cuts 18   2.283 2.253 2.257 2.253 2.253 2.265 2.254 2.254 2.254 2.255 2.256 2.259
+w   1 no cut: speed [  4.5053,   4.5130]  (tip 6.0)  cuts 0   4.505 4.505 4.505 4.505 4.505 4.506 4.507 4.508 4.509 4.510 4.511 4.513
+w   1 cut   : speed [  4.5057,   4.5162]  (tip 6.0)  cuts 35   4.516 4.506 4.506 4.506 4.506 4.507 4.507 4.506 4.509 4.506 4.511 4.513
+w   2 no cut: speed [  9.0095,   9.0263]  (tip 12.0)  cuts 0   9.009 9.010 9.010 9.010 9.010 9.011 9.013 9.016 9.018 9.021 9.023 9.026
+w   2 cut   : speed [  9.0096,   9.1308]  (tip 12.0)  cuts 36   9.131 9.011 9.010 9.010 9.010 9.012 9.011 9.018 9.021 9.022 9.023 9.026
+
+=== engine_probe pairspin with the passes off (NO_PASSES=1), the cut on
+a lone cube (1000) hits a lone cube at rest, v voxels a second, by moment of the step: the stranger's kept speed (true 0.5) and the largest spin of either after
+v   2: 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4984/6e-3 0.4988/5e-3 0.4997/1e-3 
+v   5: 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4984/2e-2 0.4988/1e-2 0.4997/3e-3 
+v  20: 0.4977/9e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4984/6e-2 0.4988/5e-2 0.4997/1e-2 
+v  60: 0.4984/2e-1 0.4984/2e-1 0.4984/2e-1 0.4984/2e-1 0.4984/2e-1 0.4984/2e-1 0.4984/2e-1 0.4983/2e-1 0.4984/2e-1 0.4987/2e-1 0.4992/1e-1 0.4999/8e-3 
+
+=== engine_probe pairspin with the cut off (CUT_OFF=1), the passes on
+a lone cube (1000) hits a lone cube at rest, v voxels a second, by moment of the step: the stranger's kept speed (true 0.5) and the largest spin of either after
+v   2: 0.5000/4e-20 0.5000/1e-5 0.5000/2e-5 0.5000/4e-17 0.5000/1e-5 0.5000/2e-5 0.5000/1e-16 0.5000/1e-5 0.4971/1e-2 0.4978/9e-3 0.4985/6e-3 0.4992/3e-3 
+v   5: 0.5000/1e-15 0.5000/3e-5 0.5000/5e-5 0.4937/6e-2 0.4944/6e-2 0.4951/5e-2 0.4958/4e-2 0.4964/4e-2 0.4971/3e-2 0.4978/2e-2 0.4985/1e-2 0.4992/8e-3 
+v  20: 0.4999/5e-3 0.4923/3e-1 0.4930/3e-1 0.4937/3e-1 0.4944/2e-1 0.4951/2e-1 0.4958/2e-1 0.4964/1e-1 0.4971/1e-1 0.4978/9e-2 0.4985/6e-2 0.4992/3e-2 
+v  60: 0.4999/1e-2 0.4972/3e-1 0.4972/3e-1 0.4972/3e-1 0.4972/3e-1 0.4972/3e-1 0.4972/3e-1 0.4973/3e-1 0.4978/3e-1 0.4984/2e-1 0.4989/1e-1 0.4994/7e-2 
+
+=== engine_probe pairspin with both off (NO_PASSES=1 CUT_OFF=1): the lone pair of today
+a lone cube (1000) hits a lone cube at rest, v voxels a second, by moment of the step: the stranger's kept speed (true 0.5) and the largest spin of either after
+v   2: 0.4976/9e-3 0.5000/4e-7 0.5000/6e-7 0.5000/1e-6 0.5000/8e-7 0.5000/8e-7 0.5000/1e-6 0.5000/8e-7 0.4950/2e-2 0.4957/2e-2 0.4963/1e-2 0.4970/1e-2 
+v   5: 0.4976/2e-2 0.5000/2e-6 0.5000/2e-6 0.4917/8e-2 0.4923/8e-2 0.4930/7e-2 0.4937/6e-2 0.4943/6e-2 0.4950/5e-2 0.4957/4e-2 0.4963/4e-2 0.4970/3e-2 
+v  20: 0.4977/9e-2 0.4903/4e-1 0.4910/4e-1 0.4916/3e-1 0.4903/2e-1 0.4930/3e-1 0.4937/3e-1 0.4943/2e-1 0.4950/2e-1 0.4957/2e-1 0.4963/1e-1 0.4970/1e-1 
+v  60: 0.4978/3e-1 0.4952/6e-1 0.4938/3e-1 0.4952/6e-1 0.4952/6e-1 0.4937/3e-1 0.4952/6e-1 0.4953/6e-1 0.4958/5e-1 0.4963/4e-1 0.4968/4e-1 0.4973/3e-1 
+
+=== engine_probe landingspin with a cube of 4 voxels along each edge (SIDE=4)
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.025-0.200    turn 0.001-0.054   | up 0.006-0.200    turn 0.000-0.049   | up 0.029-0.197    turn 0.013-0.066   | up 0.022-0.197    turn 0.000-0.066   |
+    20 | up 0.101-0.493    turn 0.006-0.153   | up 0.023-0.480    turn 0.009-0.133   | up 0.115-0.789    turn 0.053-0.264   | up 0.089-0.789    turn 0.034-0.264   |
+    60 | up 0.410-0.643    turn 0.016-0.107   | up 0.212-0.472    turn 0.018-0.148   | up 0.309-0.842    turn 0.140-0.325   | up 0.218-0.805    turn 0.084-0.296   |
+   150 | up 0.828-1.058    turn 0.191-0.332   | up 0.601-0.781    turn 0.074-0.191   | up 0.786-3.369    turn 0.359-1.220   | up 0.565-3.337    turn 0.217-1.190   |
+
+=== engine_probe landingspin with a cube of 16 voxels along each edge (SIDE=16)
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.025-0.201    turn 0.000-0.013   | up 0.006-0.200    turn 0.000-0.012   | up 0.025-0.059    turn 0.000-0.006   | up 0.006-0.055    turn 0.000-0.005   |
+    20 | up 0.101-0.500    turn 0.001-0.037   | up 0.023-0.487    turn 0.002-0.032   | up 0.101-0.235    turn 0.004-0.023   | up 0.023-0.220    turn 0.002-0.020   |
+    60 | up 0.410-0.648    turn 0.004-0.023   | up 0.213-0.476    turn 0.004-0.034   | up 0.309-0.842    turn 0.035-0.081   | up 0.218-0.805    turn 0.021-0.074   |
+   150 | up 0.824-1.039    turn 0.058-0.083   | up 0.602-0.785    turn 0.025-0.048   | up 0.786-3.369    turn 0.090-0.305   | up 0.565-3.337    turn 0.054-0.297   |
+
+=== engine_probe landingspin with a cube of 32 voxels along each edge (SIDE=32)
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.059-0.179    turn 0.002-0.006   | up 0.009-0.061    turn 0.000-0.002   | up 0.132-0.174    turn 0.005-0.006   | up 0.002-0.011    turn 0.000-0.000   |
+    20 | up 0.235-0.577    turn 0.009-0.025   | up 0.036-0.133    turn 0.002-0.006   | up 0.507-0.692    turn 0.017-0.023   | up 0.010-0.044    turn 0.000-0.002   |
+    60 | up 0.570-1.183    turn 0.022-0.062   | up 0.060-0.187    turn 0.001-0.004   | up 1.134-2.188    turn 0.043-0.072   | up 0.025-0.384    turn 0.000-0.016   |
+   150 | up 0.372-1.018    turn 0.018-0.039   | up 0.017-0.131    turn 0.000-0.005   | up 0.360-4.849    turn 0.019-0.207   | up 0.057-4.235    turn 0.002-0.194   |
+
+=== engine_probe landingspin landing off the voxel grid (OFFSET=0.37,0.61)
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.038-0.216    turn 0.006-0.246   | up 0.020-0.215    turn 0.016-0.228   | up 0.029-0.059    turn 0.053-0.093   | up 0.022-0.055    turn 0.034-0.082   |
+    20 | up 0.152-0.461    turn 0.025-0.702   | up 0.078-0.452    turn 0.065-0.611   | up 0.115-0.235    turn 0.211-0.373   | up 0.089-0.220    turn 0.136-0.326   |
+    60 | up 0.409-0.618    turn 0.053-1.037   | up 0.210-0.451    turn 0.079-0.697   | up 0.309-0.842    turn 0.562-1.300   | up 0.218-0.805    turn 0.335-1.183   |
+   150 | up 0.844-1.058    turn 0.068-1.296   | up 0.449-0.767    turn 0.034-0.755   | up 0.786-3.369    turn 1.435-4.879   | up 0.564-3.330    turn 0.868-4.760   |
+
+=== engine_probe landingspin with 3 extra passes (PASSES=3): the two columns that have passes
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.038-0.216    turn 0.006-0.246   | up 0.020-0.215    turn 0.016-0.228   | up 0.029-0.059    turn 0.053-0.093   | up 0.022-0.055    turn 0.034-0.082   |
+    20 | up 0.152-0.461    turn 0.025-0.702   | up 0.078-0.452    turn 0.065-0.611   | up 0.115-0.235    turn 0.211-0.373   | up 0.089-0.220    turn 0.136-0.326   |
+    60 | up 0.409-0.618    turn 0.053-1.037   | up 0.210-0.451    turn 0.079-0.697   | up 0.309-0.842    turn 0.562-1.300   | up 0.218-0.805    turn 0.335-1.183   |
+   150 | up 0.844-1.058    turn 0.068-1.296   | up 0.449-0.767    turn 0.034-0.755   | up 0.786-3.369    turn 1.435-4.879   | up 0.564-3.330    turn 0.868-4.760   |
+
+=== engine_probe landingspin with 60 extra passes (PASSES=60): the two columns that have passes
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.038-0.216    turn 0.006-0.246   | up 0.020-0.215    turn 0.016-0.228   | up 0.029-0.059    turn 0.053-0.093   | up 0.022-0.055    turn 0.034-0.082   |
+    20 | up 0.152-0.461    turn 0.025-0.702   | up 0.078-0.452    turn 0.065-0.611   | up 0.115-0.235    turn 0.211-0.373   | up 0.089-0.220    turn 0.136-0.326   |
+    60 | up 0.409-0.618    turn 0.053-1.037   | up 0.210-0.451    turn 0.079-0.697   | up 0.309-0.842    turn 0.562-1.300   | up 0.218-0.805    turn 0.335-1.183   |
+   150 | up 0.844-1.058    turn 0.068-1.296   | up 0.449-0.767    turn 0.034-0.755   | up 0.786-3.369    turn 1.435-4.879   | up 0.564-3.330    turn 0.868-4.760   |
+
+=== engine_probe landingspin with 200 extra passes (PASSES=200): the two columns that have passes
+
+a unit cube lands squarely on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: how fast it goes up after (voxels/s) and how fast it turns (radians/s), lowest to highest over the moments
+     v | before (no passes, no cut)              | the passes alone                        | the cut alone                           | now (passes and cut)                    
+     5 | up 0.038-0.216    turn 0.006-0.246   | up 0.020-0.215    turn 0.016-0.228   | up 0.029-0.059    turn 0.053-0.093   | up 0.022-0.055    turn 0.034-0.082   |
+    20 | up 0.152-0.461    turn 0.025-0.702   | up 0.078-0.452    turn 0.065-0.611   | up 0.115-0.235    turn 0.211-0.373   | up 0.089-0.220    turn 0.136-0.326   |
+    60 | up 0.409-0.618    turn 0.053-1.037   | up 0.210-0.451    turn 0.079-0.697   | up 0.309-0.842    turn 0.562-1.300   | up 0.218-0.805    turn 0.335-1.183   |
+   150 | up 0.844-1.058    turn 0.068-1.296   | up 0.449-0.767    turn 0.034-0.755   | up 0.786-3.369    turn 1.435-4.879   | up 0.564-3.330    turn 0.868-4.760   |
+
+=== engine_probe landingone by moment of the step at 60 voxels/s: (deepest, fastest up, origin height after 1 s, cuts) with the cut and the passes
+ 0 (0.004614945118881053, 0.26696708195653, 0.10705955927344257, 1)
+ 1 (0.004704441332020082, 0.26696708195653035, 0.10688558781142388, 1)
+ 2 (0.004795945978070648, 0.26696708195653096, 0.10671178392135494, 1)
+ 3 (0.004889478551167059, 0.2669670819565302, 0.10653695792791329, 1)
+ 4 (0.0049850212521675985, 0.26696708195653046, 0.1063611184698543, 1)
+ 5 (0.005082461226120216, 0.2669670819565304, 0.10618432471314332, 1)
+ 6 (0.005181388773042528, 0.2669670819565303, 0.10601042005860051, 1)
+ 7 (0.005377117143925858, 0.21765228852362994, 0.07705736422262599, 1)
+ 8 (0.00537253048948827, 0.2669767211853298, 0.10572887771432216, 1)
+ 9 (0.005300086904306056, 0.34435710439282474, 0.15854792242556814, 1)
+10 (0.004937795272741852, 0.48322288497879745, 0.277151109187177, 1)
+11 (0.0035374011930926486, 0.805096165680711, 0.6629247098466547, 1)
+
+=== engine_probe landingone by moment of the step at 150 voxels/s: (deepest, fastest up, origin height after 1 s, cuts) with the cut and the passes
+ 0 (0.012870505250969444, 0.5636257910950445, 0.3531636539747076, 1)
+ 1 (0.0128627763525202, 0.6104957379605771, 0.40709079437976925, 1)
+ 2 (0.012834450009222564, 0.6656707211555305, 0.47515577991994185, 1)
+ 3 (0.012778950714825044, 0.731571682364327, 0.5627447245430873, 1)
+ 4 (0.012686733575396403, 0.8116617903515564, 0.6780159305568391, 1)
+ 5 (0.012543401527139508, 0.9110749504377469, 0.8336384557301352, 1)
+ 6 (0.012201662066328112, 1.037761529845797, 1.0498806191154486, 1)
+ 7 (0.011343718998151786, 1.2047268205591686, 1.3598847040896476, 1)
+ 8 (0.009943333721817993, 1.4348080277136976, 1.817804318144993, 1)
+ 9 (0.007745555497614021, 1.7721315157097517, 2.502969689696602, 1)
+10 (0.003846577029307241, 2.3144635861708323, 3.46236603438262, 1)
+11 (0.0, 3.330339996254332, 4.305884803334322, 1)

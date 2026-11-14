@@ -525,7 +525,10 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // Control: the old build and this one printed the position and both speeds of each of the three ships of this scene in voxels, with the same inputs: the largest difference in any coordinate is
     // 1.3e-5 for the ship that falls clear and 2.2e-3 and 9.0e-3 for the two that slide and spin on the ground, which is as far as that kind of scene moves with a change of this size (the note of
     // Phase 32h above found 0.003 and 0.004 from a change of which terrain the solver sees).)
-    assert_eq!(hash_of_poses(&busy_scene()), 16_099_571_271_623_696_968);
+    // (And on 2026-11-14: 16_099_571_271_623_696_968 before. Every body is given 15 extra solver passes and a step is cut where two bodies first touch: step 4c-5-A of
+    // `docs/decisions/joints-and-cars.md`. Control: with a temporary switch in the game's plugin that turned both off, this test and the next passed with the old values, bit for bit
+    // (ran, then the switch was removed); the physics crate keeps the same control for its own pins.)
+    assert_eq!(hash_of_poses(&busy_scene()), 833_817_479_913_002_864);
 }
 
 #[test]
@@ -539,7 +542,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (And in Phase 38a: 8_817_648_817_650_209_632 before; see the test of the poses.)
     // (And on 2026-11-01: 15_605_515_214_656_621_284 before; see the test of the poses.)
     // (And on 2026-11-02: 17_869_319_792_822_264_929 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 13_859_437_887_424_448_532);
+    // (And on 2026-11-14: 13_859_437_887_424_448_532 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 3_693_345_421_220_211_019);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where
