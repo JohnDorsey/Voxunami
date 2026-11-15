@@ -132,7 +132,8 @@ fn rigid_frames(pivots: &[PivotPair]) -> Option<(Pose, Pose)> {
 pub(super) struct Coupling {
     pub(super) first: BodyId,
     pub(super) second: BodyId,
-    pivots: Vec<PivotPair>,
+    pub(super) pivots: Vec<PivotPair>,
+    pub(super) options: CouplingOptions,
     joints: Vec<ImpulseJointHandle>,
 }
 
@@ -206,6 +207,7 @@ impl BodyWorld {
                 first,
                 second,
                 pivots: pivots.to_vec(),
+                options,
                 joints,
             },
         );
@@ -255,10 +257,9 @@ impl BodyWorld {
     /// How hard the solver works on a body, and so on every coupling it is in (see [`SolverDials`]): at least what the world gives every body, so asking for none puts a body back
     /// to that.
     pub fn set_solver_dials(&mut self, id: BodyId, dials: SolverDials) -> Result<(), BodyError> {
-        self.by_id
-            .get_mut(&id)
-            .ok_or(BodyError::UnknownBody(id))?
-            .dials = dials;
+        let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
+        body.dials = dials;
+        body.version += 1;
         self.apply_solver_dials(id);
         Ok(())
     }

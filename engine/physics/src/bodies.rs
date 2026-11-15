@@ -12,10 +12,13 @@ use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 mod couplings;
 mod first_touch;
+mod ghost_support;
 mod sleeping;
 
 use couplings::Coupling;
 pub use couplings::{CouplingError, CouplingId, CouplingOptions, PivotPair, SolverDials};
+use ghost_support::Piece;
+pub use ghost_support::{Correction, StepPlan};
 
 const EDGE: usize = BRICK_EDGE_LENGTH;
 
@@ -190,6 +193,12 @@ struct Body {
     may_sleep: bool,
     /// How hard the solver was asked to work on it ([`BodyWorld::set_solver_dials`]); the solver is told the larger of this and the world's.
     dials: SolverDials,
+    /// What the body was last given as a mass, if it was given one.
+    mass: Option<BodyMass>,
+    /// A number that goes up each time something about the body that a copy of it must follow changes (its colliders, its mass, its kind, its dials): see `ghost_support.rs`.
+    version: u64,
+    /// Which side of a contact ghost the body is on, if it is in one (see `ghost.rs`).
+    side: Option<u32>,
 }
 
 /// The colliders of a body, taken out of its world with [`BodyWorld::take_colliders`] to be given to the same body in another with [`BodyWorld::give_colliders`]: what a ship
@@ -250,6 +259,12 @@ pub struct BodyWorld {
     dials_of_a_hit: bool,
     /// How many pieces of a step were solved as a hit.
     hit_pieces: u64,
+    /// The pieces that the step now being made is solved in, if it is being recorded (see [`BodyWorld::step_recording`]).
+    recorder: Option<Vec<Piece>>,
+    /// Whether any piece of the step being recorded had a contact between bodies on different sides.
+    crossed: bool,
+    /// Whether the piece being solved is a hit, when a step is being replayed: what the recorded step's piece was.
+    forced_hit: Option<bool>,
 }
 
 impl std::fmt::Debug for BodyWorld {
@@ -295,6 +310,9 @@ impl BodyWorld {
             hit_time_left: 0.0,
             dials_of_a_hit: false,
             hit_pieces: 0,
+            recorder: None,
+            crossed: false,
+            forced_hit: None,
         }
     }
 
@@ -368,6 +386,9 @@ impl BodyWorld {
                 kept_awake: false,
                 may_sleep: true,
                 dials: SolverDials::default(),
+                mass: None,
+                version: 0,
+                side: None,
             },
         );
         self.apply_solver_dials(id);
@@ -400,6 +421,7 @@ impl BodyWorld {
             return Ok(());
         }
         body.kind = kind;
+        body.version += 1;
         let rapier = &mut self.bodies[body.handle];
         match kind {
             BodyKind::Fixed => rapier.set_body_type(RigidBodyType::Fixed, true),
@@ -437,6 +459,10 @@ impl BodyWorld {
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
         let tensor = matrix(&mass.inertia);
+        if let Some(found) = self.by_id.get_mut(&id) {
+            found.mass = Some(mass);
+            found.version += 1;
+        }
         let body = &mut self.bodies[handle];
         body.set_additional_mass_properties(
             MassProperties::with_inertia_matrix(vector(mass.centre_of_mass), mass.mass, tensor),
@@ -595,6 +621,7 @@ impl BodyWorld {
                 }
             }
         }
+        body.version += 1;
         if wanted.iter().any(|row| *row != 0) {
             body.filled.insert(brick, wanted);
         }
@@ -635,6 +662,7 @@ impl BodyWorld {
     /// [`BodyWorld::give_colliders`]. The body stays, with none.
     pub fn take_colliders(&mut self, id: BodyId) -> Result<BodyColliders, BodyError> {
         let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
+        body.version += 1;
         let (voxels, partial) = (body.voxels.take(), std::mem::take(&mut body.partial));
         let mut taken = BodyColliders {
             filled: std::mem::take(&mut body.filled),
@@ -916,10 +944,7 @@ impl BodyWorld {
             // (A step is cut in pieces where two bodies first touch: `first_touch.rs`.)
             self.solve_in_pieces(length);
         }
-        for (_, body) in self.bodies.iter_mut() {
-            body.reset_forces(false);
-            body.reset_torques(false);
-        }
+        self.forget_forces();
     }
 
     /// One step of the solver, `time` seconds long.
@@ -927,9 +952,11 @@ impl BodyWorld {
         self.parameters.dt = time;
         // Without the cut the world is not told when a touch is met, so any piece may be a hit; and a mechanism, whose hits are chaotic, is solved as a hit all the time (the
         // comment of `BodySettings::settling_passes_between_hits` says why).
-        let as_a_hit = self.hit_time_left > 0.0
-            || !self.settings.cut_at_first_touch
-            || !self.couplings.is_empty();
+        let as_a_hit = self.forced_hit.unwrap_or(
+            self.hit_time_left > 0.0
+                || !self.settings.cut_at_first_touch
+                || !self.couplings.is_empty(),
+        );
         if as_a_hit != self.dials_of_a_hit {
             self.dials_of_a_hit = as_a_hit;
             self.apply_all_solver_dials();
@@ -941,6 +968,13 @@ impl BodyWorld {
             self.settings.settling_passes_between_hits
         };
         self.parameters.num_internal_stabilization_iterations = passes.max(1);
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.push(Piece {
+                length: time,
+                without_margin: self.parameters.normalized_prediction_distance == 0.0,
+                as_a_hit,
+            });
+        }
         self.pipeline.step(
             vector(self.settings.gravity),
             &self.parameters,
@@ -957,6 +991,9 @@ impl BodyWorld {
             &(),
         );
         self.hit_time_left = (self.hit_time_left - time).max(0.0);
+        if self.recorder.is_some() && self.contact_across_sides() {
+            self.crossed = true;
+        }
     }
 
     /// How many times a step has been cut where two bodies first touched, since this world was made.
