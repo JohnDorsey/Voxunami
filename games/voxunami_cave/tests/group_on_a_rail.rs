@@ -73,9 +73,9 @@ fn what_a_mechanism_does_does_not_depend_on_where_the_group_is_or_how_fast_it_go
     // The same chain, swung the same, at 70 and at 140 kilometres (distances that are a whole number of bricks, so that nothing differs in the rounding of a place): on a rail
     // the facing and the turn of each car are those of bodies in a frame that has nothing but them in it. The two differ by a few parts in 10^9, which is the ticks before the
     // rail in which the ships were free (the pull of the planet on them differs from one distance to the other: measured, 1.8e-9 after one such tick, 3.7e-9 after two and
-    // 9.8e-9 after four) and not the rail; **in the frame everything is in, with a stranger near, they differ by millions of times as much** (the pull, the number of steps a
-    // tick is cut into by the speed), and the control of this test is that they do. (Before step 4c-4 the control was the chain free and alone; now that has a frame of its own too:
-    // `group_off_a_rail.rs`.)
+    // 9.8e-9 after four) and not the rail. **With a stranger near it is the same** (step 4c-5-2: the stranger is the ghost's, and the chain keeps the frame of its own). Before it,
+    // the chain with a stranger near was in the frame everything is in, and the two differed by millions of times as much (the pull, the number of steps a tick is cut into by
+    // the speed): that was this test's control, and the control of `contact_frame.rs` is now the hit.
     let on_a_rail = most_apart(
         &how_the_chain_turns(70_016.0, Setting::OnARail),
         &how_the_chain_turns(140_000.0, Setting::OnARail),
@@ -86,7 +86,7 @@ fn what_a_mechanism_does_does_not_depend_on_where_the_group_is_or_how_fast_it_go
     );
     assert!(on_a_rail < 1e-7, "on a rail the two differ by {on_a_rail}");
     assert!(
-        with_a_stranger > 1e-4,
+        with_a_stranger < 1e-7,
         "with a stranger near they differ by {with_a_stranger}"
     );
     // (They did swing: the chain has turned.)

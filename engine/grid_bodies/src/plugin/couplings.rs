@@ -36,9 +36,9 @@ pub(super) type CouplingKey = (GridId, GridId);
 /// A coupling the plugin made, and the ends of the two ships that it is made at.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Coupled {
-    id: CouplingId,
+    pub(super) id: CouplingId,
     /// The frame whose body world has the joint.
-    frame: FrameKey,
+    pub(super) frame: FrameKey,
     first_end: BlockFace,
     second_end: BlockFace,
 }

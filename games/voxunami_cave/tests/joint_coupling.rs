@@ -429,14 +429,22 @@ fn a_coupled_pair_that_the_edge_of_a_frame_runs_between_goes_to_another_frame_wh
     until_coupled(&mut scene, &report, 400);
     scene.ticks(20);
     assert_eq!(report().couplings, 1);
-    assert_eq!(report().frames, 1);
-    assert_eq!(report().couplings_moved, 0, "nothing has moved a group yet");
+    // (Since step 4c-5-2 the pair is alone whatever is near it, so it has the frame of its own that a group that is alone has, and the held ship the other: the pair's frame is a
+    // place too, and the edge of it runs between the cars in the same way. Before it, the held ship was near and the pair was in its frame.)
+    assert_eq!(report().frames, 2, "the held ship's, and the pair's own");
+    assert_eq!(
+        report().couplings_moved,
+        1,
+        "the pair was coupled in the frame everything is in, and went whole to the frame of its own as it was alone"
+    );
     // Put the pair so that the edge of the frame is between its two cars: the east one (the lower in x) just inside, the west one, four metres on, just outside. (A brick is 32
     // voxels, and a ship whose brick is more than 1,000 bricks from the origin of its frame is out of it.)
     let first = (ship_id(1), [4.0, 0.5, 0.5]);
     let second = (ship_id(2), [0.0, 0.5, 0.5]);
     let east_now = world_of(&scene, first.0, [0.0; 3])[0];
-    let by = 32_029.0 - east_now;
+    // (The frame of the pair is made where the pair is, and its origin is the brick of the first car: brick 3. Its edge is a thousand bricks on, a brick later than the held
+    // ship's was, which had the origin 0.)
+    let by = 32_125.0 - east_now;
     move_cars(&mut scene, [first.0, second.0], by);
     scene.ticks(3);
     assert_eq!(report().couplings, 1, "still coupled");
@@ -445,7 +453,7 @@ fn a_coupled_pair_that_the_edge_of_a_frame_runs_between_goes_to_another_frame_wh
         1,
         "the joint was made again, not the coupling"
     );
-    assert_eq!(report().couplings_moved, 1);
+    assert_eq!(report().couplings_moved, 2);
     assert_eq!(report().frames, 2, "the held ship's, and one for the pair");
     scene.ticks(60);
     assert_eq!(report().couplings, 1);
@@ -479,15 +487,20 @@ fn a_group_goes_to_the_frame_its_cars_are_both_put_in_even_when_one_of_them_is_n
     make(&mut scene, pose(107.0, 1000.0, 20.0), false, west_car(3));
     until_coupled(&mut scene, &report, 400);
     scene.ticks(20);
-    assert_eq!((report().couplings, report().frames), (1, 2));
+    assert_eq!(
+        (report().couplings, report().frames),
+        (1, 3),
+        "each held ship's, and the pair's own (alone whatever is near, since step 4c-5-2)"
+    );
     let first = (ship_id(2), [4.0, 0.5, 0.5]);
     let second = (ship_id(3), [0.0, 0.5, 0.5]);
-    let by = 32_029.0 - world_of(&scene, first.0, [0.0; 3])[0];
+    // (The pair's own frame has the origin of its first car, brick 3: see above.)
+    let by = 32_125.0 - world_of(&scene, first.0, [0.0; 3])[0];
     move_cars(&mut scene, [first.0, second.0], by);
     scene.ticks(3);
     assert_eq!(report().couplings, 1, "still coupled");
     assert_eq!(report().couplings_made, 1);
-    assert_eq!(report().couplings_moved, 1);
+    assert_eq!(report().couplings_moved, 2);
     assert_eq!(report().frames, 3, "each held ship's, and one for the pair");
     scene.ticks(40);
     assert!(pivot_gap(&scene, first, second) < 0.005);

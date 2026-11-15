@@ -2,10 +2,11 @@
 //! centred on its centre of mass and in free fall, in which nothing but the group is, so the question the world answers is whether anything could touch the group. These are the
 //! rules (`ServerWorld::group_is_alone`); what the bodies do with a group that is alone is tested with them (`games/voxunami_cave/tests/group_off_a_rail.rs`).
 //!
-//! A group is alone when it is in a level with no pull of its own, every ship of it is free (not held, not frozen, not on a rail of its own) and weighed; no planet on a rail carries it (it is then in the frame of the planet), no
-//! other ship is in the way of it by the room the rails use (the gap less the reach of each is less than a margin and the way they would close in a second); and the ground of
-//! no planet is within the lookahead of the terrain (a margin and a quarter of a second of the speed it closes at). **It takes the room of `factor` 2 to be alone and 1 to stay
-//! so**, so that a group does not go in and out of its frame at the edge.
+//! A group is alone when it is in a level with no pull of its own, every ship of it is free (not held, not frozen, not on a rail of its own) and weighed; no planet on a rail carries it (it is then in the frame of the planet);
+//! and the ground of no planet is within the lookahead of the terrain (a margin and a quarter of a second of the speed it closes at). **It takes the room of `factor` 2 to be alone
+//! and 1 to stay so**, so that a group does not go in and out of its frame at the edge. **Other ships are not part of the rule** (step 4c-5-2): what is near a group is the
+//! contact ghost's, and the group keeps its frame and its bits whatever is near. (The world does not know the joint ends and the docking ports that would make a group leave it for
+//! a coupling or a docking: the bodies add that rule, `grid_bodies`.)
 
 use super::coasting_ships::{PULL, TICKS, ship_at, space};
 use super::*;
@@ -75,40 +76,32 @@ fn the_ground_of_a_planet_in_the_terrain_lookahead_is_in_the_way_and_the_room_to
 }
 
 #[test]
-fn a_ship_that_is_not_of_the_group_and_is_in_the_way_of_it_takes_it_out_of_being_alone_by_the_room_the_rails_use()
- {
-    // A stranger going the same way, a hundred voxels from the nearest ship of the group, at no speed against it: the room to go is 2 * 64 = 128, the room to stay 64.
-    let (mut world, ships) = a_group(DISTANCE);
+fn a_ship_that_is_near_the_group_is_nothing_to_whether_it_is_alone_whatever_it_is_and_wherever() {
+    // (Step 4c-5-2: a stranger near is the ghost's, and the group keeps its frame. Before, a ship in the way by the room the rails use, 64 voxels and a second of the speed they close
+    // at, took the group out of it: these strangers did.)
     let speed = circular_speed(DISTANCE);
-    ship_at(&mut world, [DISTANCE, 0.0, 140.0], [0.0, 0.0, speed]);
-    assert!(
-        !world.group_is_alone(ships[0], 2.0),
-        "in the way of the room to go"
-    );
-    assert!(
-        world.group_is_alone(ships[0], 1.0),
-        "and not of the room to stay"
-    );
-    // Closer than that, it is in the way of both; and on the other side of the group, as well.
-    let (mut world, ships) = a_group(DISTANCE);
-    ship_at(&mut world, [DISTANCE, 0.0, 100.0], [0.0, 0.0, speed]);
-    assert!(!world.group_is_alone(ships[0], 1.0));
-    let (mut world, ships) = a_group(DISTANCE);
-    ship_at(&mut world, [DISTANCE, 0.0, -40.0], [0.0, 0.0, speed]);
-    assert!(!world.group_is_alone(ships[0], 1.0));
-    // A stranger far away, or one that is not in the level, is nothing.
-    let (mut world, ships) = a_group(DISTANCE);
-    ship_at(&mut world, [DISTANCE, 5_000.0, 0.0], [0.0, 0.0, speed]);
-    assert!(world.group_is_alone(ships[0], 2.0));
-}
-
-#[test]
-fn a_stranger_that_closes_fast_is_in_the_way_from_as_far_as_it_will_go_in_a_second() {
-    // 3,000 voxels away and coming at 5,000 a second: in a second it is on the group.
-    let (mut world, ships) = a_group(DISTANCE);
-    let speed = circular_speed(DISTANCE);
-    ship_at(&mut world, [DISTANCE, 3_000.0, 0.0], [0.0, -5_000.0, speed]);
-    assert!(!world.group_is_alone(ships[0], 1.0));
+    for (place, velocity) in [
+        // A hundred and forty voxels along, going the same way: in the way of the room to go (128) and not of the room to stay (64) in the old rule.
+        ([DISTANCE, 0.0, 140.0], [0.0, 0.0, speed]),
+        // Closer than that, and on the other side of the group.
+        ([DISTANCE, 0.0, 100.0], [0.0, 0.0, speed]),
+        ([DISTANCE, 0.0, -40.0], [0.0, 0.0, speed]),
+        // Touching the first ship's place.
+        ([DISTANCE, 0.0, 1.0], [0.0, 0.0, speed]),
+        // Three thousand voxels away and coming at five thousand a second: on the group in a second.
+        ([DISTANCE, 3_000.0, 0.0], [0.0, -5_000.0, speed]),
+        // Far away.
+        ([DISTANCE, 5_000.0, 0.0], [0.0, 0.0, speed]),
+    ] {
+        let (mut world, ships) = a_group(DISTANCE);
+        ship_at(&mut world, place, velocity);
+        for room in [1.0, 2.0] {
+            assert!(
+                world.group_is_alone(ships[0], room),
+                "a ship at {place:?} going {velocity:?} takes the group out of being alone at room {room}"
+            );
+        }
+    }
 }
 
 #[test]

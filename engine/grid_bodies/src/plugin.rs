@@ -20,9 +20,12 @@ use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{BlockFace, BlockFaceView, Docking, approach, docked_pose, torque_of_force};
 use crate::joints::JointSettings;
 
+mod alone;
 mod couplings;
+mod ghosts;
 
 use couplings::{Coupled, CouplingKey};
+use ghosts::MechanismGhost;
 
 /// How far, in bricks, from the origin of a frame a ship may be. (Chosen when Rapier worked in `f32`, which is exact to a hundredth of a voxel at 500 bricks; it works in `f64` now, which is exact
 /// to 1e-10 of one there, and the limit is kept: raising it is open.) A ship that is not within this of the origin of any
@@ -124,6 +127,12 @@ pub struct BodiesReport {
     pub ship_bricks_made: u64,
     /// Bricks of ships that went with the ship from the frame it left to the one it entered, with no voxel looked at (see [`BodyWorld::take_colliders`]), in all.
     pub ship_bricks_carried: u64,
+    /// How many contact ghosts there are now (step 4c-5-2: one for each set of groups that are alone and near each other, with what is near them), how many were made in all, in
+    /// how many ticks one was stepped (a ghost with nothing that could touch is not), and how many times a body was given what a ghost had for it (nothing, where nothing touched).
+    pub ghosts: u64,
+    pub ghosts_made: u64,
+    pub ghost_ticks: u64,
+    pub ghost_corrections: u64,
 }
 
 impl GridBodiesPlugin {
@@ -593,6 +602,8 @@ struct Bodies {
     tick: u64,
     /// The groups, named by their anchors, that are off a rail and alone this tick (see [`Bodies::alone_groups`]).
     alone: BTreeSet<GridId>,
+    /// The contact ghosts of the groups that are alone, by the lowest anchor of the groups in each (`ghosts.rs`).
+    ghosts: BTreeMap<GridId, MechanismGhost>,
     report: Arc<Mutex<BodiesReport>>,
 }
 
@@ -652,6 +663,7 @@ impl Bodies {
             carried: BTreeMap::new(),
             tick: 0,
             alone: BTreeSet::new(),
+            ghosts: BTreeMap::new(),
             report,
         }
     }
@@ -662,6 +674,11 @@ impl Bodies {
             .iter()
             .find(|(_, frame)| frame.ships.contains_key(&id))
             .map(|(key, _)| *key)
+    }
+
+    /// What the plugin keeps of a ship that has a body.
+    fn record_of(&self, id: GridId) -> Option<&Ship> {
+        self.frames.values().find_map(|frame| frame.ships.get(&id))
     }
 
     fn changed(&mut self, grid: GridId, voxel: VoxelCoordinate) {
@@ -1032,9 +1049,12 @@ impl Bodies {
                 .apply_torque(BodyId(torque.grid.get()), torque.torque);
         }
 
+        // (The ghosts are told where everything is and what is applied to it, and stepped, before any world takes its step: and what they found is added to each after.)
+        self.ghosts_before_the_step(world);
         for frame in self.frames.values_mut() {
             frame.bodies.step();
         }
+        self.ghosts_after_the_step();
         self.hold_groups_at_their_points(world);
         let frames = self.frames.len() as u64;
         self.count(|report| report.frames = frames);
@@ -1253,28 +1273,6 @@ impl Bodies {
             .reduce(|first, second| first.union(second));
         self.weighed
             .insert(id, (record.mass, record.centre_of_mass, hull));
-    }
-
-    /// The groups of ships coupled by their joint ends that are off a rail and alone (`ServerWorld::group_is_alone`), by their anchors. A group that has a frame of its own
-    /// keeps it while it has the room of 1 and one that has not needs the room of 2 to get it, as for a rail, so that it does not go in and out of it at the edge.
-    fn alone_groups(&self, world: &ServerWorld) -> BTreeSet<GridId> {
-        let grids = world.data().grids();
-        let mut alone = BTreeSet::new();
-        for (id, _) in grids.iter() {
-            if !grids.has_partners(id) || grids.group_of(id).first() != Some(&id) {
-                continue;
-            }
-            let has_its_frame = self.frames.values().any(|frame| {
-                frame
-                    .follow
-                    .is_some_and(|follow| follow.followed == Followed::Group(id))
-            });
-            let room = if has_its_frame { 1.0 } else { 2.0 };
-            if world.group_is_alone(id, room) {
-                alone.insert(id);
-            }
-        }
-        alone
     }
 
     /// Where each frame that goes with a point is, and how fast it goes: the point's displacement since the frame was made, and its velocity.

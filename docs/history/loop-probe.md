@@ -835,3 +835,6 @@ The owner's word, after the hull (4c-5-1) was built: "Go on with 4C-5-2. The bit
 7. *Linux (WSL)*: the physics crate, 261 tests, passes, and the random scenes of the gate count the same (103 touched, the gate shut in 542).
 
 8. *Step (a) built (2026-11-15):* `ServerWorld::ships_near_group` gives every ship near a group by hull; `decisions/joints-and-cars.md`, 4c-5-2 (a). Items 1 to 6 above are still to be settled by (b) to (e).
+
+9. *Wired (2026-11-15):* the plugin has a ghost for each set of groups that are alone and near each other, with what is near them, and a group is alone whatever ships are near it except for ends that pull on its own (`decisions/joints-and-cars.md`, 4c-5-2 (b) to (e)). Items 1 (the rule of being alone), 2 (joints: the ends rule), 4 (sides: one for what is not a mechanism, at most 31 groups) and 6 (frames differ by a shift and a speed: the same frame is used as it is, others carried through the world) are settled; items 3 (the ground) and 5 (rails: the rail's kick) are not.
+

@@ -1,8 +1,9 @@
 //! A group of ships coupled by their joint ends that is **off a rail and alone** has a frame of its own (step 4c-4 of `docs/decisions/joints-and-cars.md`): the bodies make a frame
 //! centred on its centre of mass and in free fall, with nothing in it but the group. What the joints do is the bodies' in it, as on a rail, and promise (a) of the joint plan holds
 //! off a rail: **a mechanism does not change because of where the group is or how fast it goes**. The group is alone when nothing could touch it (`ServerWorld::group_is_alone`:
-//! a level with no pull of its own, free ships, no other ship in the way, no planet's ground in the lookahead of the terrain), and goes back to the frame everything is in when
-//! something comes near. (A shared frame for the contact itself, and the terrain of a level, are not in a frame of its own: the same limit as a frame that goes with a planet.)
+//! a level with no pull of its own, free ships, no planet's ground in the lookahead of the terrain, no other ship with joint ends or docking ports that pulls on its own), and **a
+//! stranger near does not take it out of its frame** (step 4c-5-2: the contact is the ghost's, `contact_frame.rs`). (The terrain of a level is not in a frame of its own: the same
+//! limit as a frame that goes with a planet.)
 
 mod common;
 
@@ -64,8 +65,8 @@ fn an_alone_chain_goes_round_the_planet_on_its_orbit_in_its_frame_of_its_own() {
 }
 
 #[test]
-fn a_stranger_that_comes_near_puts_the_chain_in_the_frame_everything_is_in_and_it_stays_coupled_and_goes_back_when_it_goes()
- {
+fn a_stranger_that_comes_near_does_not_take_the_chain_out_of_its_frame_and_it_stays_coupled() {
+    // (Step 4c-5-2: a stranger near is the ghost's, and the chain keeps its frame and its bits: `contact_frame.rs`.)
     let (mut scene, report) = Scene::reporting_in_a_new_world();
     let distance = 70_016.0;
     let speed = circular_speed(&scene, 0, distance);
@@ -90,8 +91,7 @@ fn a_stranger_that_comes_near_puts_the_chain_in_the_frame_everything_is_in_and_i
         "a stranger far away is in a frame of its own"
     );
     assert_eq!(report().couplings, 2);
-    // It comes near, forty voxels from the end of the chain (inside the room that a group needs to stay alone, 64; a hundred is inside the room to become alone, 128, and not that
-    // one): the two are in the frame everything is in.
+    // It comes near, forty voxels from the end of the chain: the chain keeps its frame and the stranger has its own.
     let stranger = ship_id(4);
     // (Where the end of the chain is now: it goes at 761 a second, and the stranger is put by it.)
     let end = {
@@ -111,12 +111,12 @@ fn a_stranger_that_comes_near_puts_the_chain_in_the_frame_everything_is_in_and_i
     }
     assert_eq!(
         report().frames,
-        1,
-        "with a stranger near they are in one frame"
+        2,
+        "with a stranger near the chain keeps its frame, and the stranger has the other"
     );
     assert_eq!(report().couplings, 2, "and the chain is coupled still");
     assert!(worst_gap < 0.05, "and its joints held: {worst_gap} m");
-    // It goes away again: the chain has its own frame again, coupled, its joints holding.
+    // It goes away again: nothing changed for the chain.
     let away = {
         let origin = origins_of(&scene, &ships)[2];
         pose_at(origin[0], origin[1] + 5_000.0, origin[2])
@@ -131,11 +131,7 @@ fn a_stranger_that_comes_near_puts_the_chain_in_the_frame_everything_is_in_and_i
             .max(pivot_gap(&scene, (ships[0], 7.0), ships[1]))
             .max(pivot_gap(&scene, (ships[1], 6.0), ships[2]));
     }
-    assert_eq!(
-        report().frames,
-        2,
-        "a stranger that has gone is in a frame of its own again"
-    );
+    assert_eq!(report().frames, 2);
     assert_eq!(report().couplings, 2);
     assert!(worst_gap < 0.05, "the joints held: {worst_gap} m");
 }
@@ -181,78 +177,4 @@ fn a_force_on_a_car_of_an_alone_chain_gives_the_group_the_push_over_its_mass_wha
             "the centre of mass gained {gained:?} and the push says {expected:?}"
         );
     }
-}
-
-#[test]
-fn a_stranger_off_by_two_hundred_voxels_does_not_take_the_frame_from_a_chain_that_has_it_and_keeps_one_from_a_chain_that_has_none()
- {
-    // The room that a group needs to stay alone is half the room it needs to become so. The reach of a ship is that of its bricks from its origin (55 voxels for one brick: the
-    // far corner of it), so a stranger whose origin is 205 voxels from that of the last car is 94 from it: in the way of the room to become alone (128) and not of the room to stay so (64).
-    let distance = 70_016.0;
-    // A chain that is alone, and a stranger that comes to 205 voxels from the origin of its last car: it keeps its frame (the stranger has another).
-    let (mut scene, report) = Scene::reporting_in_a_new_world();
-    let speed = circular_speed(&scene, 0, distance);
-    let ships = a_chain_in_orbit(&mut scene, a_chain(), distance, speed);
-    scene.ticks(3);
-    make_all_going(
-        &mut scene,
-        vec![(pose_at(0.0, distance + 5_000.0, 0.0), stones(0, 1))],
-        [0.0, 0.0, speed],
-    );
-    scene.ticks(3);
-    assert_eq!(report().frames, 2);
-    let origin = origins_of(&scene, &ships)[2];
-    let hundred = pose_at(origin[0] + 205.0, origin[1], origin[2]);
-    let stranger = ship_id(4);
-    scene.run(move |world| {
-        world.set_grid_pose(stranger, hundred).unwrap();
-    });
-    for tick in 0..10 {
-        let ships = ships.clone();
-        let frames = report().frames;
-        scene.run(move |world| {
-            let apart = common::length(common::minus(
-                world
-                    .data()
-                    .grids()
-                    .get(stranger)
-                    .unwrap()
-                    .pose
-                    .position
-                    .in_voxels(),
-                world
-                    .data()
-                    .grids()
-                    .get(ships[2])
-                    .unwrap()
-                    .pose
-                    .position
-                    .in_voxels(),
-            ));
-            eprintln!(
-                "tick {tick}: frames {frames} alone(1) {} alone(2) {} apart {apart:.1} rails {:?}",
-                world.group_is_alone(ships[0], 1.0),
-                world.group_is_alone(ships[0], 2.0),
-                ships
-                    .iter()
-                    .map(|ship| world.data().grids().get(*ship).unwrap().rail.is_some())
-                    .collect::<Vec<_>>(),
-            );
-        });
-    }
-    assert_eq!(report().frames, 2, "the chain kept its frame");
-    assert_eq!(report().couplings, 2);
-    // A chain that has no frame yet, with a stranger 205 voxels from the origin of its last car from the first: it has none.
-    let (mut scene, report) = Scene::reporting_in_a_new_world();
-    let mut at = 0.0;
-    let mut made = Vec::new();
-    for (blocks, length) in a_chain() {
-        made.push((pose_at(at, distance, 0.0), blocks));
-        at += length;
-    }
-    made.push((pose_at(at - 5.0 + 205.0, distance, 0.0), stones(0, 1)));
-    make_all_going(&mut scene, made, [0.0, 0.0, speed]);
-    scene.ticks(10);
-    assert_eq!(report().frames, 1, "and one that had none does not get it");
-    assert_eq!(report().couplings, 2);
 }

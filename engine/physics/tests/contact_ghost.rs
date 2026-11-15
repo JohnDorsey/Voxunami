@@ -384,6 +384,62 @@ fn free_chain_with_stranger(coupling: &Coupling, gap: f64) -> BodyWorld {
 }
 
 #[test]
+fn a_force_pushed_on_the_copy_alone_is_in_both_worlds_and_cancels_what_the_body_has() {
+    // The stranger is at rest a hundredth of a voxel from the end of the chain, and its own world pushes it onto the chain (a pull that the frame of the chain is falling with, and
+    // the frame of the stranger is not). The ghost is told the opposite: the stranger has no push in it, so the two stay as they are and nothing is given back. Without that the
+    // stranger is pressed on the chain and the chain is moved by it.
+    let coupling = &couplings()[2];
+    let end = CARS as f64 + 0.01;
+    let ticks_with = |cancel: bool| {
+        let mut scene = Scene::new(coupling, [end, 10.0, 10.0], [0.0; 3], settings_with(3));
+        let at_rest = scene.stranger.state(BodyId(STRANGER)).unwrap();
+        let mut moved = 0.0f64;
+        for _ in 0..5 {
+            // (The stranger is put back where it was at rest, as a world that is told its push is nothing would have it.)
+            scene.stranger.set_state(BodyId(STRANGER), at_rest).unwrap();
+            let push = [-10_000.0, 0.0, 0.0];
+            scene
+                .stranger
+                .apply_force(BodyId(STRANGER), push, None)
+                .unwrap();
+            for car in 1..=CARS as u64 {
+                let state = scene.chain.state(BodyId(car)).unwrap();
+                scene
+                    .ghost
+                    .refresh(BodyId(car), &scene.chain, state)
+                    .unwrap();
+            }
+            scene
+                .ghost
+                .refresh(BodyId(STRANGER), &scene.stranger, at_rest)
+                .unwrap();
+            if cancel {
+                scene
+                    .ghost
+                    .push(BodyId(STRANGER), push.map(|part| -part))
+                    .unwrap();
+            }
+            scene.ghost.step(scene.chain.steps_this_tick());
+            scene.chain.step();
+            scene.stranger.step();
+            for car in 1..=CARS as u64 {
+                if let Some(correction) = scene.ghost.correction(BodyId(car)) {
+                    moved = moved.max(correction.linear_velocity[0].abs());
+                }
+            }
+        }
+        moved
+    };
+    let pressed = ticks_with(false);
+    let cancelled = ticks_with(true);
+    assert!(
+        pressed > 0.05,
+        "a stranger that is pressed on the chain moves it ({pressed})"
+    );
+    assert_eq!(cancelled, 0.0, "one that has nothing pushing it does not");
+}
+
+#[test]
 fn a_hit_off_the_middle_turns_what_it_hits_as_the_one_world_does() {
     // The stranger is half a voxel higher than the chain, so it hits the end of it off its middle and everything turns: the corrections turn the bodies and not only move them.
     for coupling in couplings() {

@@ -264,8 +264,8 @@ pub fn minus(first: Vec3, second: Vec3) -> Vec3 {
 }
 
 /// Where a chain is when a test asks what its mechanism does: on the rail of its centre of mass (step 4c-3), free and alone (step 4c-4: a frame of its own, in free fall, centred on
-/// it), or free with a stranger a hundred voxels from it, which is in the way of it by the room that a group needs to be alone, so that it is in the frame everything is in (the control:
-/// there the mechanism depends on where it is and how fast it goes).
+/// it), or free with a stranger fifteen voxels from it, which has the chain a ghost (step 4c-5-2: before it, the stranger took the chain into the frame everything is in, where the
+/// mechanism depended on where it was and how fast it went).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
     OnARail,
@@ -273,8 +273,8 @@ pub enum Setting {
     WithAStranger,
 }
 
-/// A chain of three cars, set swinging as `a_swing` says at this distance from the planet going round it, and, if asked, with a stranger (a ship of one stone) a hundred voxels
-/// beyond its east end going the same way. The chain's ships (numbers 1 to 3).
+/// A chain of three cars, set swinging as `a_swing` says at this distance from the planet going round it, and, if asked, with a stranger (a ship of one stone) fifteen voxels
+/// beyond its east end going the same way: near enough to have the chain's ghost, and too far for the swing to touch it. The chain's ships (numbers 1 to 3).
 fn a_swinging_chain_at(distance: f64, speed: f64, stranger: bool) -> (Scene, Vec<GridId>) {
     let mut scene = Scene::in_a_new_world();
     let cars = a_chain();
@@ -285,7 +285,7 @@ fn a_swinging_chain_at(distance: f64, speed: f64, stranger: bool) -> (Scene, Vec
         at += length;
     }
     if stranger {
-        made.push((pose_at(at + 100.0, distance, 0.0), stones(0, 1)));
+        made.push((pose_at(at + 15.0, distance, 0.0), stones(0, 1)));
     }
     super::docking::make_all_going(&mut scene, made, [0.0, 0.0, speed]);
     scene.ticks(2);

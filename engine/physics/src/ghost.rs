@@ -200,6 +200,18 @@ impl ContactGhost {
         Ok(())
     }
 
+    /// Adds a force to a body of the ghost for the tick, in both worlds, on top of what [`ContactGhost::refresh`] copied from the world the body truly is in, and gone after the step.
+    /// For what is true of the body in the ghost's frame and not in its own: a frame that falls with the mechanism is accelerated by the pull of the world, so a body that is in
+    /// a frame that is not, and is pulled by the whole of it there, is pulled by the difference only in the ghost's.
+    pub fn push(&mut self, id: BodyId, force: [f64; 3]) -> Result<(), GhostError> {
+        if !self.members.contains_key(&id) {
+            return Err(GhostError::NotInTheGhost(id));
+        }
+        self.with.apply_force(id, force, None)?;
+        self.without.apply_force(id, force, None)?;
+        Ok(())
+    }
+
     /// Steps both worlds of the ghost one tick, cut into `steps` steps: the world in which the sides meet decides how (where a step is cut at a touch, which pieces are hits), and
     /// the other takes the same pieces. `steps` is what the world that the mechanism is in steps by (`BodyWorld::steps_this_tick`). **A tick in which no two bodies of different
     /// sides could touch is not stepped at all** (see [`ContactGhost::set_gated`]): its result is that no sides touched, and the copies that would have been stepped are put

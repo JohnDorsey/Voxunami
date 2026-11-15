@@ -418,8 +418,9 @@ impl ServerWorld {
 
     /// Whether the group of ships coupled by their joint ends that `anchor` (the ship of it with the lowest number) speaks for is **alone**, so that the bodies may give it a frame
     /// of its own, centred on its centre of mass and in free fall, in which nothing but the group is (step 4c-4 of `docs/decisions/joints-and-cars.md`). It is alone if it is
-    /// two ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed, and nothing could touch it: no
-    /// other ship is in the way of it by the room of `near_with`, and the ground of no planet is within the lookahead of the terrain (`ground_in_the_way`: a
+    /// two ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed, and no ground could touch it: **other ships are no part
+    /// of the rule** (step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame whatever is near; the bodies add that a ship with joint ends or docking
+    /// ports that pull on its own takes it out of its frame, which the world does not know), and the ground of no planet is within the lookahead of the terrain (`ground_in_the_way`: a
     /// planet is no ship to the speed rule, which counts a second of the speed two things close at, and the group of a ship that orbits low would be near the planet it orbits all the
     /// time). A planet on a rail that carries the group is in the way of it as it is of any ship (`near_with` counts the planets that carry whatever is set aside), so a group in the sphere of one has the frame of a planet and not one of its own. `factor` is the room, 2 for a group that is not alone to become so and 1 for one that is to stay so, as for a rail. Blocks built into the level itself are not looked at, as
     /// for a frame that goes with a planet.
@@ -458,7 +459,7 @@ impl ServerWorld {
             .filter(|(_, other)| other.terrain.is_some() && other.level == level)
             .map(|(id, _)| id)
             .collect();
-        // (The planets are set aside from the speed rule, with the group: their ground has its own.)
+        // (The planets are set aside from the sphere rule, with the group: their ground has its own. **Other ships are not asked about**: what is near a group is the ghost's.)
         let mut set_aside = members.clone();
         set_aside.extend(planets.iter().copied());
         for member in &members {
@@ -466,7 +467,7 @@ impl ServerWorld {
                 return false;
             };
             if self
-                .near_with_group(None, *member, ship, None, factor, &set_aside)
+                .sphere_or_carrier_in_the_way(None, ship, &set_aside, factor)
                 .is_some()
             {
                 return false;
@@ -678,6 +679,18 @@ impl ServerWorld {
         if in_the_way.is_some() {
             return in_the_way;
         }
+        self.sphere_or_carrier_in_the_way(known, ship, &chain, factor)
+    }
+
+    /// The part of [`ServerWorld::near_with_group`] that is not about other ships: a planet whose sphere of influence the ship is in (not counting `chain`), or a planet on a rail
+    /// that carries it.
+    fn sphere_or_carrier_in_the_way(
+        &self,
+        known: Option<&Neighbours>,
+        ship: &MovingGrid,
+        chain: &[GridId],
+        factor: f64,
+    ) -> Option<GridId> {
         // (A planet that is not what the ship goes round, and that the ship is within the sphere of influence of: there it pulls more than what the ship goes round.)
         let place = self.middle_of(ship)?;
         let (spheres_here, carriers_here);
