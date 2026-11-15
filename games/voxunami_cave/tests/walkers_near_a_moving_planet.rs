@@ -12,12 +12,10 @@ mod common;
 use common::moving_planet::{WANDERER, a_barely_moving_scene, a_scene};
 use common::{
     Player, PlayerExt, Scene, circular_speed, eyes_in_the_world, eyes_in_their_frame,
-    greatest_kink, length, minus, player_pose, say, ship_id, ship_over, ship_voxels,
+    greatest_kink, length, minus, player_pose, put_aboard, say, ship_id, ship_over, ship_voxels,
     tick_and_follow,
 };
 use game_shell::KeyCode;
-use player_presence::player_kind;
-use voxel_space::{EntityPose, Orientation, WorldPosition};
 use voxunami_cave::aboard::in_voxels;
 
 /// How far the middle of a deck is from the middle of the wanderer: past the reach of its ground (340 bricks, 10,880 voxels) and inside what it carries (16,320).
@@ -72,28 +70,6 @@ fn a_walker_over_the_wanderer(scene: &mut Scene, height: f64) -> Player {
         tick_and_follow(scene, &mut player, 1);
     }
     player
-}
-
-/// Puts the walker aboard a ship, at rest in it, with their eyes at this place in its coordinates.
-fn put_aboard(scene: &mut Scene, ship: u64, eyes_in_the_ship: [f64; 3]) {
-    scene.run(move |world| {
-        let entity = world
-            .entities()
-            .iter()
-            .find(|entity| entity.kind == player_kind())
-            .expect("the player has an entity")
-            .id;
-        world
-            .set_entity_pose(
-                entity,
-                EntityPose::new(
-                    ship_id(ship),
-                    WorldPosition::from_voxels(eyes_in_the_ship),
-                    Orientation::IDENTITY,
-                ),
-            )
-            .unwrap();
-    });
 }
 
 /// A deck of 6 by 1 by 6 held over the pole of the wanderer, and a walker standing on it (aboard it, two seconds after they were put there). The walker and the deck's number.
@@ -463,5 +439,65 @@ fn a_walker_who_flies_into_the_sphere_of_a_planet_that_goes_round_hovers_against
             slid < 2.0,
             "{name}: {slid} voxels from where they hovered against the planet, a second and a half after they went in"
         );
+    }
+}
+
+/// How far the eyes of a walker on a held deck near the wanderer rise in the deck's axes (the way up is +y over the pole) at the most in the twelve ticks after the jump key goes
+/// down, the deck being given a new id `renamed_at` ticks after (if it is). The deck is carried by the planet, which is the carrier of the walker's `Motion`.
+fn highest_jump_on_a_deck_near_the_wanderer(mut scene: Scene, renamed_at: Option<usize>) -> f64 {
+    let (mut player, deck) = a_walker_on_a_held_deck(&mut scene);
+    let mut deck = ship_id(deck);
+    let standing = eyes_in_their_frame(&scene, 1)[1];
+    player.hold(&[KeyCode::Space]);
+    let mut highest: f64 = 0.0;
+    for tick in 0..12 {
+        // (One jump: a walker who is held to the ground by a pull would jump again on landing, and hide a jump that was spoiled.)
+        if tick == 1 {
+            player.hold(&[]);
+        }
+        if renamed_at == Some(tick) {
+            let old = deck;
+            let found = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let slot = std::sync::Arc::clone(&found);
+            scene.run(move |world| {
+                *slot.lock().unwrap() = Some(world.renumber_ship(old));
+            });
+            deck = found
+                .lock()
+                .unwrap()
+                .take()
+                .expect("the tick ran")
+                .expect("the deck was renumbered");
+            assert_ne!(deck, old, "the premise: a new id");
+        } else {
+            scene.run(|_| {});
+        }
+        tick_and_follow(&mut scene, &mut player, 1);
+        assert_eq!(player_pose(&scene, 1).grid, deck, "aboard");
+        highest = highest.max(eyes_in_their_frame(&scene, 1)[1] - standing);
+    }
+    highest
+}
+
+#[test]
+fn a_jump_on_a_deck_near_a_planet_that_goes_round_is_the_same_when_the_deck_is_given_a_new_id_in_the_air()
+ {
+    for name in ["barely moving", "going round"] {
+        let make = || {
+            if name == "going round" {
+                a_scene(None)
+            } else {
+                a_barely_moving_scene()
+            }
+        };
+        let control = highest_jump_on_a_deck_near_the_wanderer(make(), None);
+        assert!(control > 0.1, "{name}: the premise: they jumped, {control}");
+        for renamed_at in [0, 1, 2, 4] {
+            let highest = highest_jump_on_a_deck_near_the_wanderer(make(), Some(renamed_at));
+            assert!(
+                (highest - control).abs() < 0.03,
+                "{name}: renamed {renamed_at} ticks after the key: rose {highest}, and {control} with no change"
+            );
+        }
     }
 }

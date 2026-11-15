@@ -27,6 +27,7 @@ mod seat;
 use super::movement::{SharedMovement, locked};
 use crate::aboard::{Extent, in_voxels};
 use crate::content::CaveContent;
+use crate::renaming::successor;
 use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
@@ -588,29 +589,30 @@ impl Ships {
         }
     }
 
-    /// A ship that was cut apart or made one with another is gone, and its pilot has the part (or the whole) that they are aboard.
-    fn follow_ships_that_were_replaced(
+    /// A ship that was cut apart, made one with another or given a new id is gone, and its pilot has the part (or the whole) that they are aboard (see [`crate::renaming`]);
+    /// and so does a pilot's seat in it, at the voxel the seat is now (`fly_seated` stands them up if the seat is not there).
+    pub(super) fn follow_ships_that_were_replaced(
         world: &ServerWorld,
         presence: &Presence,
         pilots: &mut BTreeMap<ClientId, GridId>,
+        seats: &mut BTreeMap<ClientId, seat::Seated>,
     ) {
+        let grids = world.data().grids();
+        // (What they are aboard is a ship that is not a planet: nobody flies a planet, and a ship that was written into one is not a ship to follow.)
+        let aboard = |client: &ClientId, old: GridId| {
+            let frame = presence.frame_of(world.data(), *client)?;
+            let (new, transform) = successor(grids, old, Some(frame))?;
+            (new == frame && grids.get(new).is_some_and(|ship| ship.terrain.is_none()))
+                .then_some((new, transform))
+        };
         for (client, ship) in pilots.iter_mut() {
-            if world.data().grids().get(*ship).is_none()
-                && let Some(frame) = presence.frame_of(world.data(), *client)
-                && world
-                    .data()
-                    .grids()
-                    .resolve(*ship)
-                    .iter()
-                    .any(|(part, _)| *part == frame)
-                // (Not a planet that the ship was written into: nobody flies a planet.)
-                && world
-                    .data()
-                    .grids()
-                    .get(frame)
-                    .is_some_and(|frame| frame.terrain.is_none())
-            {
-                *ship = frame;
+            if let Some((new, _)) = aboard(client, *ship) {
+                *ship = new;
+            }
+        }
+        for (client, seated) in seats.iter_mut() {
+            if let Some((new, transform)) = aboard(client, seated.ship()) {
+                seated.follow(new, transform);
             }
         }
     }
@@ -661,8 +663,9 @@ impl Ships {
     fn pilot(&self, world: &mut ServerWorld, client: ClientId) -> String {
         let presence = lock(&self.presence);
         let mut pilots = self.pilots();
-        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
-        if self.seats().contains_key(&client) {
+        let mut seats = self.seats();
+        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots, &mut seats);
+        if seats.contains_key(&client) {
             return "you are sitting in a command seat, not on the hover controls: /ship sit gets you up"
                 .to_owned();
         }
@@ -694,9 +697,9 @@ impl Ships {
         if pilots.is_empty() {
             return;
         }
-        let seats = self.seats();
+        let mut seats = self.seats();
         let mut movement = locked(&self.movement);
-        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
+        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots, &mut seats);
         let mut finished = Vec::new();
         for (&client, &ship) in pilots.iter() {
             // (A pilot in a command seat flies by the seat: `fly_seated`.)

@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::aboard::{Extent, has_left, in_voxels, stands_on};
 use crate::block_properties;
-use crate::frame_terms::{frame_motion, pull_in_a_frame};
+use crate::frame_terms::{cross, frame_motion, pull_in_a_frame};
 use block_models::BlockTable;
 use game_shell::PlayerPose;
 use grid_bodies::collision::{BlockCollisions, GeneratedHull, ShipHull, ShipSource, WorldTerrain};
@@ -33,6 +33,7 @@ use voxel_space::{
 };
 
 use crate::messages::MoveRequest;
+use crate::renaming::successor;
 use crate::ships::TICK_SECONDS;
 
 /// Physics steps to a tick: the tick is 50 ms and a step a sixtieth of a second.
@@ -156,6 +157,11 @@ struct Motion {
     velocity: [f64; 3],
     spin: [f64; 3],
     carrier: Option<(GridId, [f64; 3])>,
+    /// The acceleration of the ship's centre of mass that the last step measured from the one before (in the world's axes, less the planet's), which a change of the ship's id
+    /// carries over (see [`follow_renamed_ships`]): the new ship's centre of mass may be somewhere else, and so its speed another, with nothing pushing it.
+    acceleration: [f64; 3],
+    /// Where the ship's centre of mass was, in the ship's own coordinates.
+    centre: [f64; 3],
 }
 
 impl Motion {
@@ -170,6 +176,8 @@ impl Motion {
             velocity: ship.linear_velocity,
             spin: ship.angular_velocity,
             carrier,
+            acceleration: [0.0; 3],
+            centre: ship.centre_of_mass,
         }
     }
 }
@@ -462,6 +470,7 @@ impl Movement {
                 continue;
             };
             let carried = carried_by_rails(client);
+            follow_renamed_ships(player, world, &placement);
             agree_with(
                 player,
                 &placement,
@@ -515,6 +524,62 @@ fn ship_bounds(world: &ServerWorld) -> BTreeMap<GridId, ShipBounds> {
             ))
         })
         .collect()
+}
+
+/// A ship that was split, merged, docked with a planet or given a new id is not the ship the body knows by its old id: the body goes on in the ship that took its place, as it was.
+/// The record of the player has been moved to that ship by the world (with the transform, if the ship's coordinates were turned), so the body is put where the record says, and its
+/// speed in the ship is turned by the rotation of the transform, not lost: nothing was done to the player. Every id the body holds is made the new one here (see [`crate::renaming`]).
+/// A ship that is merely gone is left to [`agree_with`], which puts the body where the record says in the world, at rest.
+fn follow_renamed_ships(player: &mut PlayerBody, world: &ServerWorld, placement: &Placement) {
+    let grids = world.data().grids();
+    let frame = successor(grids, player.frame, Some(placement.frame))
+        .filter(|(new, _)| *new == placement.frame && placement.level == player.level);
+    if let Some((new, transform)) = frame {
+        let old = player.frame;
+        let velocity = transform.apply_direction(player.body.velocity());
+        player.body.reframe(
+            placement.position,
+            velocity,
+            placement.frame_rotation().components(),
+        );
+        player.frame = new;
+        if player.buckled == Some(old) {
+            player.buckled = Some(new);
+        }
+        if let Some(motion) = player.motion.as_mut().filter(|motion| motion.ship == old) {
+            motion.ship = new;
+            // The new ship's centre of mass is not the old one's (a cut puts it elsewhere, and a merge puts it among the other ship's blocks), so its speed is not the old speed
+            // and a tick of acceleration: the ship turns as it did, so a place `shift` from the old centre of mass has the speed of the old one and `spin x shift`, and goes round
+            // it, with `spin x (spin x shift)` and `spin change x shift` more. The new ship is said to have been, one tick ago, as fast as it is less the acceleration that gives:
+            // what the last step measured, and that. (The ship that has the speed the plan of a merge gives it is taken to have been going so for the tick.)
+            if let Some(ship) = grids.get(new) {
+                let before = transform.apply_point(motion.centre);
+                let shift = ship.pose.direction_to_world(
+                    [0, 1, 2].map(|axis| ship.centre_of_mass[axis] - before[axis]),
+                );
+                let spin = ship.angular_velocity;
+                let spin_change =
+                    [0, 1, 2].map(|axis| (spin[axis] - motion.spin[axis]) / TICK_SECONDS);
+                let round = cross(spin, cross(spin, shift));
+                let turning_up = cross(spin_change, shift);
+                motion.velocity = [0, 1, 2].map(|axis| {
+                    let acceleration = motion.acceleration[axis] + round[axis] + turning_up[axis];
+                    ship.linear_velocity[axis] - acceleration * TICK_SECONDS
+                });
+            }
+            if let Some((planet, speed)) = motion.carrier.as_mut() {
+                *speed = planet_speed(world, Some(*planet));
+            }
+        }
+    }
+    // The place a body left a ship is in the coordinates of that ship, and is the same place in what took its place.
+    if let Some(departure) = player.departure
+        && let Some((new, transform)) = successor(grids, departure.ship, None)
+    {
+        player.departure = transform
+            .apply_position(departure.place)
+            .map(|place| Departure { ship: new, place });
+    }
 }
 
 /// Makes the body agree with what the record of the player says, when it does not: the player was put in another level (the same place,
@@ -1007,6 +1072,9 @@ fn felt_aboard(player: &mut PlayerBody, world: &ServerWorld, id: GridId) -> Felt
         }
         None => ([0.0; 3], ship.angular_velocity),
     };
+    if let Some(stored) = player.motion.as_mut() {
+        stored.acceleration = acceleration;
+    }
     let motion = frame_motion(
         &ship.pose,
         acceleration,

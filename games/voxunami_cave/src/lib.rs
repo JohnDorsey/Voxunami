@@ -29,6 +29,7 @@ pub mod multiscale_light;
 pub mod placement;
 pub mod places;
 pub mod plugins;
+pub mod renaming;
 pub mod rivers;
 pub mod scaled_light;
 pub mod ships;

@@ -7,6 +7,7 @@ pub mod docking;
 pub mod joints;
 pub mod moving_planet;
 pub mod parity;
+pub mod rails;
 pub mod rocket;
 
 use std::collections::VecDeque;
@@ -598,6 +599,28 @@ pub fn carried_through(
     each_tick(scene, player, ticks, act);
     let reply = say(scene, player, "/ship unbuckle");
     assert!(reply.starts_with("you are let go"), "{reply}");
+}
+
+/// Puts the walker aboard a ship, at rest in it, with their eyes at this place in its coordinates.
+pub fn put_aboard(scene: &mut Scene, ship: u64, eyes_in_the_ship: [f64; 3]) {
+    scene.run(move |world| {
+        let entity = world
+            .entities()
+            .iter()
+            .find(|entity| entity.kind == player_kind())
+            .expect("the player has an entity")
+            .id;
+        world
+            .set_entity_pose(
+                entity,
+                EntityPose::new(
+                    ship_id(ship),
+                    WorldPosition::from_voxels(eyes_in_the_ship),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+    });
 }
 
 /// The block in a voxel of the main level, as the server has it (this takes a tick).

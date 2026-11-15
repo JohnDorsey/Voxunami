@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use coarse_cells::{CoarseCell, CoarseNode, DetailSettings, ViewSelection, select_around_brick};
+use proptest::prelude::*;
 use region_octree::BrickCube;
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, GridLayout};
@@ -262,6 +263,192 @@ fn walking_never_leaves_a_hole_where_something_was_and_is_wanted_and_never_draws
         assert_eq!(view.wanted(), &wanted, "step {step}");
     }
     assert!(checked > 8, "{checked} states were looked at");
+}
+
+/// The first few of some cubes, in an order that does not change, for a message.
+fn first_of(cubes: impl Iterator<Item = BrickCube>) -> Vec<(u8, [i128; 3])> {
+    let mut found: Vec<(u8, [i128; 3])> = cubes
+        .map(|cube| {
+            let origin = cube.origin();
+            (cube.level(), [origin.x(), origin.y(), origin.z()])
+        })
+        .collect();
+    found.sort();
+    found.truncate(6);
+    found
+}
+
+/// What is drawn is what is wanted, or says what differs (as detail level and brick coordinates, the first few of each).
+fn assert_converged(view: &LodView, context: &str) {
+    let missing = view.wanted().difference(view.shown()).count();
+    let extra = view.shown().difference(view.wanted()).count();
+    assert!(
+        missing == 0 && extra == 0,
+        "{context}: {missing} cubes are wanted and not drawn, {extra} are drawn and not wanted; first of each: {:?} and {:?}",
+        first_of(view.wanted().difference(view.shown()).copied()),
+        first_of(view.shown().difference(view.wanted()).copied()),
+    );
+}
+
+/// Updates until the view has nothing more to do, as `LodView::settle` does, but with a deadline and the mesher's bookkeeping checked at every update (a view
+/// that waits for ever is a failure, not a test that never ends).
+fn settle_checked(
+    view: &mut LodView,
+    screen: &mut Screen,
+    scene: &Scene,
+    viewer: WorldPosition,
+    settings: &LodSettings,
+    context: &str,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, settings));
+        if let Err(problem) = view.mesher().check_consistency() {
+            panic!("{context}: the mesher's sets disagree: {problem}");
+        }
+        if view.is_settled() {
+            return;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "{context}: does not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+}
+
+#[test]
+fn walking_away_and_back_draws_what_is_wanted_again_and_does_not_stay_a_node_among_bricks() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    // Out and back over bricks that were drawn as bricks, a few bricks at a time (within what the mesher keeps loaded), several times.
+    for (round, at) in [0, 3, 0, 2, 0, 4, 1, 0].into_iter().enumerate() {
+        let context = format!("round {round}, at {at}");
+        settle_checked(
+            &mut view,
+            &mut screen,
+            &scene,
+            viewer_in(brick(at, 0, 0)),
+            &nearer(),
+            &context,
+        );
+        assert_converged(&view, &context);
+        assert_nothing_overlaps(view.shown());
+        assert_screen_matches(&screen, &view);
+    }
+}
+
+/// One thing a player does.
+#[derive(Clone, Debug)]
+enum Move {
+    /// A step or a few along one axis: what walking does.
+    Step { axis: usize, bricks: i128 },
+    /// Back to a place already been to (which one, counted from the first, round the places there are).
+    Return { which: usize },
+    /// Somewhere else on the ground.
+    Jump { x: i128, z: i128 },
+    /// A voxel dug in the ground under the viewer, which the mesher is told of.
+    Dig,
+    /// The server says a node that is drawn is another (one of stone, or of nothing).
+    Override { which: usize, stone: bool },
+    /// The server takes back something it said.
+    TakeBack { which: usize },
+    /// The player asks for a finer or a coarser picture (the cubes are worked out again though the viewer is where it was).
+    Detail { cell_pixels: u8 },
+    /// The viewer goes to another level and comes back: everything is taken down and built again.
+    Reset,
+}
+
+fn moves() -> impl Strategy<Value = Vec<Move>> {
+    prop::collection::vec(
+        prop_oneof![
+            4 => (0usize..3, -3i128..=3).prop_map(|(axis, bricks)| Move::Step { axis, bricks }),
+            3 => (0usize..100).prop_map(|which| Move::Return { which }),
+            1 => (-20i128..=20, -20i128..=20).prop_map(|(x, z)| Move::Jump { x, z }),
+            1 => Just(Move::Dig),
+            1 => (0usize..1000, any::<bool>()).prop_map(|(which, stone)| Move::Override { which, stone }),
+            1 => (0usize..100).prop_map(|which| Move::TakeBack { which }),
+            1 => (2u8..=6).prop_map(|cell_pixels| Move::Detail { cell_pixels }),
+            1 => Just(Move::Reset),
+        ],
+        2..10,
+    )
+}
+
+/// Drawn out to fewer voxels than `nearer`: the paths are many, and what they check does not depend on how far the nodes reach.
+fn steady() -> LodSettings {
+    LodSettings {
+        maximum_distance: 350.0,
+        ..settings()
+    }
+}
+
+proptest! {
+    // Eight paths by default, which is a few seconds; `PROPTEST_CASES=500` searches further.
+    #![proptest_config(ProptestConfig {
+        cases: std::env::var("PROPTEST_CASES").ok().and_then(|cases| cases.parse().ok()).unwrap_or(8),
+        ..ProptestConfig::default()
+    })]
+
+    /// The view is drawing what is wanted whenever it has nothing more to do, wherever the viewer has been and however it got there: back to what it has left, to somewhere
+    /// else, with the ground dug under it. (A cube that is wanted and is not drawn, with nothing being made that would bring it, is a view that waits for ever.)
+    #[test]
+    fn whatever_path_the_viewer_takes_the_view_ends_up_drawing_what_is_wanted(path in moves()) {
+        let mut scene = scene();
+        scene.assign_around(brick(0, 0, 0), 60);
+        let mut view = view_of(&scene, 3);
+        let mut screen = Screen::default();
+        let mut places = vec![[0i128, 0, 0]];
+        let mut detail = steady();
+        // What the server has said, to take back.
+        let mut said: Vec<BrickCube> = Vec::new();
+        let stone = scene.game.raw_block("base_blocks:stone");
+        settle_checked(&mut view, &mut screen, &scene, viewer_in(brick(0, 0, 0)), &detail, "the start");
+        assert_converged(&view, "the start");
+        for (index, step) in path.iter().enumerate() {
+            let mut at = *places.last().expect("it starts somewhere");
+            match step {
+                Move::Step { axis, bricks } => at[*axis] += bricks,
+                Move::Return { which } => at = places[which % places.len()],
+                Move::Jump { x, z } => at = [*x, 0, *z],
+                Move::Dig => {
+                    let edited = scene.edit([at[0] * 32 + 5, 9, at[2] * 32 + 5], "base_blocks:air");
+                    view.mesher_mut().brick_changed(edited);
+                }
+                Move::Override { which, stone: is_stone } => {
+                    let mut nodes: Vec<BrickCube> = view.shown().iter().copied().filter(|cube| cube.level() > 0).collect();
+                    nodes.sort_by_key(|cube| (cube.level(), cube.origin().x(), cube.origin().y(), cube.origin().z()));
+                    if !nodes.is_empty() {
+                        let cube = nodes[which % nodes.len()];
+                        let node = if *is_stone { node_of(stone) } else { CoarseNode::uniform(CoarseCell::empty(scene.air, 0)) };
+                        view.set_override(GridId::MAIN, cube, Some(node));
+                        said.push(cube);
+                    }
+                }
+                Move::TakeBack { which } => {
+                    if !said.is_empty() {
+                        let cube = said.remove(which % said.len());
+                        view.set_override(GridId::MAIN, cube, None);
+                    }
+                }
+                Move::Detail { cell_pixels } => detail.detail.cell_pixels = f64::from(*cell_pixels),
+                Move::Reset => screen.apply(view.reset()),
+            }
+            // Within the ground that has generators, and not far above or below it.
+            at = [at[0].clamp(-30, 30), at[1].clamp(-2, 2), at[2].clamp(-30, 30)];
+            places.push(at);
+            let context = format!("move {index} {step:?}, at {at:?}, after {places:?}");
+            settle_checked(&mut view, &mut screen, &scene, viewer_in(brick(at[0], at[1], at[2])), &detail, &context);
+            assert_converged(&view, &context);
+            assert_nothing_overlaps(view.shown());
+            // (The ground is flat and the pictures are what the generators make of it, until the server has said otherwise.)
+            if said.is_empty() {
+                assert_screen_matches(&screen, &view);
+            }
+        }
+    }
 }
 
 /// Finds a node of the ground that is drawn.

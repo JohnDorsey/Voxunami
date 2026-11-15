@@ -1,0 +1,11 @@
+[package]
+name = "scripting-spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+koto = "0.16.1"
+rhai = "1.27.0"
+rquickjs = "0.14.0"
+rune = "0.14.2"
+starlark = "0.14.2"

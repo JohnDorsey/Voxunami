@@ -1,4 +1,4 @@
-use crate::{FaceDirection, Orientation, VoxelCoordinate};
+use crate::{BrickCoordinate, FaceDirection, Orientation, VoxelCoordinate, WorldPosition};
 
 /// One of the 24 ways to turn a grid so that its voxels still line up with another grid's voxels: a turn by
 /// a multiple of 90 degrees about each axis. All arithmetic on it is on integers, so it is exact.
@@ -228,6 +228,29 @@ impl LatticeTransform {
         })
     }
 
+    /// Where a position goes: the same map as [`LatticeTransform::apply_point`], or `None` if that is outside what a position can hold. What stands on a block of
+    /// the grid stands on the block it goes to.
+    pub fn apply_position(self, position: WorldPosition) -> Option<WorldPosition> {
+        let point = self.apply_point(position.in_voxels());
+        let whole = point.map(|part| libm::floor(part / 32.0) as i128);
+        let brick = BrickCoordinate::try_new(whole[0], whole[1], whole[2]).ok()?;
+        WorldPosition::try_new(
+            brick,
+            [0, 1, 2].map(|axis| point[axis] - whole[axis] as f64 * 32.0),
+        )
+    }
+
+    /// Where a direction (a speed, a pull, a step: anything that has no place) goes: turned by the rotation, and not moved by the offset. Exact, since the rotation is a
+    /// matrix of 0, 1 and -1.
+    pub fn apply_direction(self, direction: [f64; 3]) -> [f64; 3] {
+        let matrix = self.rotation.matrix();
+        [0, 1, 2].map(|row| {
+            (0..3)
+                .map(|column| matrix[row][column] as f64 * direction[column])
+                .sum()
+        })
+    }
+
     /// The transform that does `self` and then `next`, or `None` if an offset would overflow.
     pub fn then(self, next: Self) -> Option<Self> {
         let turned = next.rotation.apply(self.offset);
@@ -291,6 +314,44 @@ mod tests {
             for (axis, value) in [to.x(), to.y(), to.z()].into_iter().enumerate() {
                 prop_assert!(point[axis] >= value as f64 && point[axis] <= value as f64 + 1.0, "{point:?} not in {to:?}");
             }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn a_direction_is_turned_as_the_whole_number_vector_is_and_keeps_its_length(
+            rotation in rotation(),
+            whole in prop::array::uniform3(-1_000i128..1_000),
+            fraction in prop::array::uniform3(-1.0f64..1.0),
+        ) {
+            let transform = LatticeTransform { rotation, offset: [7, -3, 11] };
+            // A direction is not moved by the offset, and is turned as a vector of whole numbers is.
+            let turned = transform.apply_direction(whole.map(|part| part as f64));
+            prop_assert_eq!(turned, rotation.apply(whole).map(|part| part as f64));
+            let direction = fraction.map(|part| part * 100.0);
+            let length = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            prop_assert!((length(transform.apply_direction(direction)) - length(direction)).abs() < 1e-9);
+            // And turned back, it is what it was.
+            let back = transform.inverse().unwrap().apply_direction(transform.apply_direction(direction));
+            prop_assert_eq!(back, direction);
+        }
+
+        #[test]
+        fn a_position_goes_where_the_point_it_is_at_goes_in_any_brick(
+            transform in transform(),
+            brick in prop::array::uniform3(-1_000i128..1_000),
+            offset in prop::array::uniform3(0.0f64..32.0),
+        ) {
+            let brick = crate::BrickCoordinate::new(brick[0], brick[1], brick[2]);
+            let position = crate::WorldPosition::try_new(brick, offset).unwrap();
+            let carried = transform.apply_position(position).unwrap();
+            let expected = transform.apply_point(position.in_voxels());
+            let got = carried.in_voxels();
+            for axis in 0..3 {
+                prop_assert!((got[axis] - expected[axis]).abs() < 1e-6, "{got:?} {expected:?}");
+            }
+            // And it is in a brick, with an offset inside it.
+            prop_assert!(carried.offset().iter().all(|part| (0.0..32.0).contains(part)));
         }
     }
 
