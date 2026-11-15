@@ -20,6 +20,17 @@
 //!   contact lets more through in a shorter piece, and the one pass that Rapier makes to take that away again left part of it, unevenly over the points of a contact: with
 //!   [`super::BodySettings::settling_passes`] of them (16) the length of the piece makes no difference that is seen (`docs/history/loop-probe.md`, section 20).
 //!
+//! The same question tells the world that a hit has begun: from the moment a touch is found, cut at or not, or two shapes that touch or overlap are found going against each other,
+//! with a contact (a chain that swings into the car it is joined to, a ship that rocks onto its other legs, a cube that slides) or with none yet (a cube that is sinking into terrain
+//! slowly, to the depth at which a voxel contact engages), the pieces are solved with the settling passes of a hit ([`super::BodySettings::settling_passes`]) for
+//! [`super::BodySettings::hit_duration`] from then, and with the one pass between hits otherwise (`docs/history/loop-probe.md`, section 21). What is found as a hit is a touch, or shapes
+//! that move against each other, at a millimetre a second or more ([`HIT_SPEED_FLOOR`]), and not at what a step can take across the solver's margin, which was 1.2 voxels a second
+//! at 3 steps a tick and 9.6 at 24, and made what a slow hit comes out as depend on how fast a ship far away went (a hit at 5 voxels a second kept 0.1986 on the chain at 24 steps
+//! a tick, where 0.1999 was true); nor at what a tick can take across it (0.4 voxels a second): a cube that landed at 0.2 voxels a second went up at 0.05 and turned at 0.05, where the
+//! world with the passes of a hit made at every step leaves nothing. The step is cut only at the touches that a step can take across the margin, as it was: cut at a slower one, a
+//! chain swung at 70 and at 140 kilometres came to two different swings (0.5 apart, where they agree to 5e-10 without), for a cut is a break in the solving that a swinging chain makes
+//! much of.
+//!
 //! The question is asked of the broad phase first and the shapes only for what is near: a voxel shape cast against another costs a third of a millisecond when they are about to
 //! touch and a tenth of a microsecond when they are not (`engine_probe castcost`), and a pair that has a contact already is not asked. A step in which nothing is about to touch is
 //! not cut, and is what it was bit for bit.
@@ -35,6 +46,12 @@ use rapier3d::prelude::*;
 
 use super::{BodyWorld, MOST_A_STEP_MOVES};
 
+/// The slowest that two shapes go against each other, in voxels a second, for a touch or a contact that moves to be a hit: a millimetre a second. A voxel contact engages only when
+/// the shapes have gone about 0.02 voxels into each other (the margin), so a cube that comes down slowly sinks that far, unresisted, over 0.02 voxels divided by its speed, and the
+/// contact then pushes it out; with one settling pass that leaves a bounce and a turn of about 0.05, whatever the speed, where the passes of a hit leave under 0.0001 (ran: a cube
+/// landing at 0.002 to 1 voxels a second, `engine_probe slowlanding`; a floor of 0.002 covers a landing at 0.002 and not under it). A body at rest goes at under 1e-12 voxels a second
+/// (a stack of ten cubes wobbles at 3e-4 and turns at 4e-5, which with what the turn adds is over the floor: it is a hit all the time, as it was).
+const HIT_SPEED_FLOOR: Real = 0.001;
 /// The most pieces a step is cut into by touches, less one: a heap of bodies that all touch in one step must not make a step into dozens, and each piece is a whole step of the
 /// solver.
 const MOST_CUTS_A_STEP: usize = 3;
@@ -48,6 +65,19 @@ struct Touch {
     closing_speed: Real,
 }
 
+/// What the question of a first touch found.
+#[derive(Clone, Copy, Default)]
+struct Findings {
+    /// The first two shapes that are apart and closing to touch in the time, among those that a step can take across the solver's margin: what the step is cut at.
+    touch: Option<Touch>,
+    /// Whether a hit is on: two shapes that are apart will touch in the time, at [`HIT_SPEED_FLOOR`] or more (a step is cut at them only if a step can take them across the solver's
+    /// margin, which is 1.2 voxels a second at 3 steps a tick and 9.6 at 24), or two shapes that touch, or overlap, are going against each other by as much, which is no first touch
+    /// and has no time to cut at: with a contact (a chain that swings into the car it is joined to, a ship that lands tilted and rocks onto its other legs: the same two shapes, with
+    /// a new point of contact; a cube that slides), or with none yet (a voxel contact engages only when the shapes have gone about 0.02 voxels into each other, and a cube that
+    /// comes down slowly sinks that far in a second or more).
+    hit: bool,
+}
+
 impl BodyWorld {
     /// Moves everything `time` seconds, as one step of the solver, or as pieces of one that end where two shapes first touch (up to [`MOST_CUTS_A_STEP`] cuts), if the settings ask
     /// for that ([`super::BodySettings::cut_at_first_touch`]).
@@ -57,10 +87,18 @@ impl BodyWorld {
         let mut cuts = 0;
         while left > 0.0 {
             let mut piece = left;
+            let found = if self.settings.cut_at_first_touch && cuts < MOST_CUTS_A_STEP {
+                self.first_touch(left)
+            } else {
+                Findings::default()
+            };
+            // (A touch found is a hit that has begun, cut at or not: one at the very end of a step is met in the step after, and that is solved as a hit too. So are shapes that touch
+            // and go against each other, for as long as they do and for the time after.)
+            if found.hit {
+                self.hit_time_left = self.settings.hit_duration;
+            }
             // (A touch at the very start is cut at too, by a first piece that is only the overshoot. One at the very end is left to the next step, which begins with it.)
-            if self.settings.cut_at_first_touch
-                && cuts < MOST_CUTS_A_STEP
-                && let Some(touch) = self.first_touch(left)
+            if let Some(touch) = found.touch
                 && touch.time + overshoot / touch.closing_speed < left
             {
                 piece = touch.time + overshoot / touch.closing_speed;
@@ -78,9 +116,9 @@ impl BodyWorld {
         }
     }
 
-    /// When, within `within` seconds, the first pair of shapes that are apart and closing will touch, each going as its body goes, and the most they can be closing at; `None` if
-    /// none will.
-    fn first_touch(&self, within: Real) -> Option<Touch> {
+    /// When, within `within` seconds, the first pair of shapes that are apart and closing will touch, each going as its body goes, and the most they can be closing at, if any will,
+    /// among those that a step can take across the solver's margin; and whether a hit is on (see [`Findings::hit`]).
+    fn first_touch(&self, within: Real) -> Findings {
         let prediction = self.parameters.prediction_distance();
         let scene = self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
@@ -91,7 +129,7 @@ impl BodyWorld {
         // The broad phase last saw each collider where it was at the start of the last step (and a body that was put somewhere since is seen at the place it left): a step's
         // motion of the fastest body is what it can have moved, which is bounded by the rule that cuts a tick into steps.
         let stale = MOST_A_STEP_MOVES;
-        let mut earliest: Option<Touch> = None;
+        let mut found = Findings::default();
         for (handle, body) in self.bodies.iter() {
             if !body.is_dynamic() || body.is_sleeping() {
                 continue;
@@ -140,17 +178,20 @@ impl BodyWorld {
                         ),
                         None => (Vector::ZERO, 0.0),
                     };
-                    // Closing too slowly to cross the solver's own margin in this time: its contact holds it.
+                    // Too slow to be a hit. (A speed, and not what a step can take across the solver's margin, which is as short as the fastest body anywhere in the world makes it, so
+                    // that what a slow hit comes out as does not depend on a ship far away: with the step, a hit at 5 voxels a second was not found when a tick was cut into 24 steps, and
+                    // kept 0.1986 of its speed on a chain where 0.1999 was true.)
                     let relative = (first_velocity - second_velocity).length() + spin + second_spin;
-                    if relative * within < prediction {
+                    if relative < HIT_SPEED_FLOOR {
                         continue;
                     }
-                    // A contact that is there is not a first touch.
+                    // A contact that is there is not a first touch, and whether the shapes go against each other through it is a hit.
                     if self
                         .narrow_phase
                         .contact_pair(first_handle, second_handle)
                         .is_some_and(|pair| pair.has_any_active_contact())
                     {
+                        found.hit = true;
                         continue;
                     }
                     // The boxes as they are now (the broad phase's are a step old), swept by the relative motion.
@@ -171,19 +212,29 @@ impl BodyWorld {
                         body.velocity_at_point(meeting),
                         other_body.map_or(Vector::ZERO, |other| other.velocity_at_point(meeting)),
                     );
-                    if let Some(time) =
-                        time_of_touch(first, first_there, second, second_there, within)
-                        && earliest.is_none_or(|before| time < before.time)
-                    {
-                        earliest = Some(Touch {
-                            time,
-                            closing_speed: relative,
-                        });
+                    match time_of_touch(first, first_there, second, second_there, within) {
+                        Cast::At(time) => {
+                            found.hit = true;
+                            // A step is cut at a touch only if a step can take the shapes across the margin at the speed they close at: a slower touch was never cut at, and a cut
+                            // is a break in the solving that a swinging chain makes much of (cut at, two chains that were swung at 70 and 140 kilometres differed by 0.5 and not
+                            // by 5e-10).
+                            if relative * within >= prediction
+                                && found.touch.is_none_or(|before| time < before.time)
+                            {
+                                found.touch = Some(Touch {
+                                    time,
+                                    closing_speed: relative,
+                                });
+                            }
+                        }
+                        // Touching or overlapping already, with no contact, and going against each other: a hit that is on, and no first touch.
+                        Cast::Touching => found.hit = true,
+                        Cast::Apart => {}
                     }
                 }
             }
         }
-        earliest
+        found
     }
 
     /// The farthest a point of a body is from its middle, by the boxes of its colliders (a body that does not turn has no use for it: 0).
@@ -202,21 +253,31 @@ impl BodyWorld {
     }
 }
 
-/// When, within `within` seconds, two shapes that are apart touch, each going at the speed it is given: a straight cast.
+/// What a straight cast of two shapes found.
+enum Cast {
+    /// They do not touch in the time.
+    Apart,
+    /// They touch or overlap now.
+    Touching,
+    /// They are apart now and touch at this time.
+    At(Real),
+}
+
+/// When, within `within` seconds, two shapes touch, each going at the speed it is given: a straight cast.
 fn time_of_touch(
     first: &Collider,
     first_velocity: Vector,
     second: &Collider,
     second_velocity: Vector,
     within: Real,
-) -> Option<Real> {
+) -> Cast {
     let options = ShapeCastOptions {
         max_time_of_impact: within,
         target_distance: 0.0,
         stop_at_penetration: true,
         compute_impact_geometry_on_penetration: false,
     };
-    let hit = query::cast_shapes(
+    let Some(hit) = query::cast_shapes(
         first.position(),
         first_velocity,
         first.shape(),
@@ -226,7 +287,13 @@ fn time_of_touch(
         options,
     )
     .ok()
-    .flatten()?;
+    .flatten() else {
+        return Cast::Apart;
+    };
     // A pair that touches or overlaps at the start is not a first touch.
-    (hit.status != ShapeCastStatus::PenetratingOrWithinTargetDist).then_some(hit.time_of_impact)
+    if hit.status == ShapeCastStatus::PenetratingOrWithinTargetDist {
+        Cast::Touching
+    } else {
+        Cast::At(hit.time_of_impact)
+    }
 }

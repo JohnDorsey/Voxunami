@@ -1,0 +1,232 @@
+# The cost cut of the settling passes (section 21 of docs/history/loop-probe.md), 2026-11-14: engine_probe, the game's own BodyWorld.
+# Taken with the engine as committed with this file. HIT_DURATION=seconds, BETWEEN=n and NO_PASSES=1 are the probe's environment (see its header).
+
+## 1. How long a hit must last: two lone cubes that meet squarely (pairspin), the largest spin of either after, over 12 moments of a step, by how long the passes of a hit are made after a touch
+HIT_DURATION=0.05  s: v2: 3.0e-04 (1.5e-04 of v) | v5: 7.0e-04 (1.4e-04 of v) | v20: 3.0e-03 (1.5e-04 of v) | v60: 9.0e-03 (1.5e-04 of v) | 
+HIT_DURATION=0.1   s: v2: 2.0e-04 (1.0e-04 of v) | v5: 5.0e-04 (1.0e-04 of v) | v20: 2.0e-03 (1.0e-04 of v) | v60: 6.0e-03 (1.0e-04 of v) | 
+HIT_DURATION=0.2   s: v2: 8.0e-05 (4.0e-05 of v) | v5: 2.0e-04 (4.0e-05 of v) | v20: 8.0e-04 (4.0e-05 of v) | v60: 2.0e-03 (3.3e-05 of v) | 
+HIT_DURATION=0.3   s: v2: 3.0e-05 (1.5e-05 of v) | v5: 8.0e-05 (1.6e-05 of v) | v20: 3.0e-04 (1.5e-05 of v) | v60: 1.0e-03 (1.7e-05 of v) | 
+HIT_DURATION=0.4   s: v2: 1.0e-05 (5.0e-06 of v) | v5: 4.0e-05 (8.0e-06 of v) | v20: 1.0e-04 (5.0e-06 of v) | v60: 4.0e-04 (6.7e-06 of v) | 
+HIT_DURATION=0.5   s: v2: 6.0e-06 (3.0e-06 of v) | v5: 1.0e-05 (2.0e-06 of v) | v20: 6.0e-05 (3.0e-06 of v) | v60: 2.0e-04 (3.3e-06 of v) | 
+HIT_DURATION=0.6   s: v2: 2.0e-06 (1.0e-06 of v) | v5: 6.0e-06 (1.2e-06 of v) | v20: 3.0e-05 (1.5e-06 of v) | v60: 8.0e-05 (1.3e-06 of v) | 
+HIT_DURATION=0.8   s: v2: 4.0e-07 (2.0e-07 of v) | v5: 1.0e-06 (2.0e-07 of v) | v20: 5.0e-06 (2.5e-07 of v) | v60: 1.0e-05 (1.7e-07 of v) | 
+HIT_DURATION=1.2   s: v2: 5.0e-17 (2.5e-17 of v) | v5: 2.0e-16 (4.0e-17 of v) | v20: 8.0e-16 (4.0e-17 of v) | v60: 2.0e-15 (3.3e-17 of v) | 
+HIT_DURATION=1000  s: v2: 5.0e-17 (2.5e-17 of v) | v5: 2.0e-16 (4.0e-17 of v) | v20: 8.0e-16 (4.0e-17 of v) | v60: 2.0e-15 (3.3e-17 of v) | 
+
+## 2. A stranger on a chain of four (true 0.2), by steps a tick (3, 6, 12, 24): the world now, and the world before the cut (BETWEEN=16)
+-- now, v=2, arriving 2 ticks in
+rigid, cars pass through each other    0.199895 0.199944 0.199951 0.199436
+rigid, cars meet                       0.199912 0.199986 0.199963 0.199069
+a ball, cars meet (the game's)         0.199876 0.199946 0.199993 0.198543
+a hinge                                0.199908 0.199920 0.199930 0.199827
+-- before the cut (BETWEEN=16), v=2
+rigid, cars pass through each other    0.199895 0.199944 0.199951 0.199436
+rigid, cars meet                       0.199912 0.199986 0.199963 0.199069
+a ball, cars meet (the game's)         0.199876 0.199946 0.199993 0.198543
+a hinge                                0.199908 0.199920 0.199930 0.199827
+-- now, v=5, arriving 2 ticks in
+rigid, cars pass through each other    0.199895 0.199868 0.199822 0.199742
+rigid, cars meet                       0.199912 0.199931 0.199963 0.199611
+a ball, cars meet (the game's)         0.199876 0.199707 0.199757 0.199423
+a hinge                                0.199908 0.199917 0.199928 0.199911
+-- before the cut (BETWEEN=16), v=5
+rigid, cars pass through each other    0.199895 0.199868 0.199822 0.199742
+rigid, cars meet                       0.199912 0.199931 0.199963 0.199611
+a ball, cars meet (the game's)         0.199876 0.199707 0.199757 0.199423
+a hinge                                0.199908 0.199917 0.199928 0.199911
+-- now, v=20, arriving 2 ticks in
+rigid, cars pass through each other    0.199895 0.199868 0.199822 0.199742
+rigid, cars meet                       0.199912 0.199931 0.199964 0.199611
+a ball, cars meet (the game's)         0.199876 0.199707 0.199758 0.199423
+a hinge                                0.199908 0.199917 0.199928 0.199911
+-- before the cut (BETWEEN=16), v=20
+rigid, cars pass through each other    0.199895 0.199868 0.199822 0.199742
+rigid, cars meet                       0.199912 0.199931 0.199964 0.199611
+a ball, cars meet (the game's)         0.199876 0.199707 0.199758 0.199423
+a hinge                                0.199908 0.199917 0.199928 0.199911
+
+## 3. Rest noise (restnoise): bodies at rest on terrain with 1 and with 16 settling passes between hits
+
+bodies at rest on terrain (the game's pull), 100 ticks in and then 100 more: fastest speed (voxels/s), fastest turn (radians/s), depth of the lowest body's origin (voxels); by settling passes between hits
+body         |                             1 pass |                          16 passes
+cube:1       |   8.25e-16   1.67e-15    3.52e-5   |   6.20e-18   5.65e-18    3.52e-5
+cube:4       |   3.22e-15   1.59e-15    3.52e-5   |   3.56e-18   1.79e-18    3.52e-5
+cube:16      |   1.24e-14   1.46e-15    3.52e-5   |   5.29e-18   1.79e-19    3.52e-5
+cube:32      |   5.69e-14   4.33e-15    1.28e-5   |   2.39e-18   1.71e-19    1.28e-5
+stack:2      |   1.71e-14   4.11e-15    7.04e-5   |   7.00e-16   5.42e-16    7.04e-5
+stack:5      |   7.44e-14   7.80e-15    1.76e-4   |   7.20e-13   2.69e-13    1.76e-4
+stack:10     |    2.78e-4    4.48e-5    3.52e-4   |    2.78e-4    4.48e-5    3.52e-4
+gear         |   1.24e-14   3.12e-15    4.17e-5   |   6.63e-18   1.74e-18    4.17e-5
+
+## 4. Slow landings (slowlanding): the world now, and before the cut (BETWEEN=16)
+-- now
+
+a cube of one voxel lands squarely at slow speeds (no pull), the worst of 12 moments of a tick: up (voxels/s) / turn (radians/s), by steps a tick
+     v |         3 steps a tick |        24 steps a tick
+ 0.002 |   0.00001 /   0.00000  |   0.00003 /   0.00000  |
+ 0.005 |   0.00001 /   0.00000  |   0.00003 /   0.00000  |
+  0.01 |   0.00001 /   0.00000  |   0.00003 /   0.00000  |
+  0.02 |   0.00000 /   0.00000  |   0.00002 /   0.00000  |
+  0.05 |   0.00000 /   0.00000  |   0.00002 /   0.00000  |
+   0.1 |   0.00000 /   0.00000  |   0.00001 /   0.00000  |
+   0.2 |   0.00001 /   0.00000  |   0.00001 /   0.00000  |
+   0.5 |   0.00001 /   0.00000  |   0.00003 /   0.00000  |
+     1 |   0.00001 /   0.00000  |   0.00003 /   0.00000  |
+     2 |   0.00000 /   0.00000  |   0.00002 /   0.00000  |
+     5 |   0.00000 /   0.00000  |   0.00003 /   0.00000  |
+    10 |   0.00001 /   0.00000  |   0.00007 /   0.00000  |
+-- before the cut (BETWEEN=16)
+
+a cube of one voxel lands squarely at slow speeds (no pull), the worst of 12 moments of a tick: up (voxels/s) / turn (radians/s), by steps a tick
+     v |         3 steps a tick |        24 steps a tick
+ 0.002 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+ 0.005 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+  0.01 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+  0.02 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+  0.05 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+   0.1 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+   0.2 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+   0.5 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+     1 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+     2 |   0.00000 /   0.00000  |   0.00000 /   0.00000  |
+     5 |   0.00000 /   0.00000  |   0.00001 /   0.00000  |
+    10 |   0.00001 /   0.00000  |   0.00007 /   0.00000  |
+
+## 5. A cube landing squarely (landing), the world now and before the cut (BETWEEN=16)
+-- now
+
+a unit cube lands on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: the deepest it was in the ground at the end of a tick (voxels), the fastest it went up after (voxels/s), and where its origin (its lower corner: it moves as the cube turns) is a second after it landed (ground top at 0)
+     v | no cut: deepest / up / origin after 1 s | cut: deepest / up / origin after 1 s / cuts
+     5 |  0.0467 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0003 /   0.000 / [-0.0000, -0.0000] / 12
+    20 |  0.2386 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0012 /   0.000 / [-0.0000, -0.0000] / 12
+    60 |  0.7212 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0053 /   0.000 / [-0.0000, -0.0000] / 12
+   150 |  0.7268 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0128 /   0.001 / [-0.0000, -0.0000] / 12
+-- before the cut (BETWEEN=16)
+
+a unit cube lands on flat terrain at v voxels a second (no pull), 3 steps a tick, over 12 moments of a step: the deepest it was in the ground at the end of a tick (voxels), the fastest it went up after (voxels/s), and where its origin (its lower corner: it moves as the cube turns) is a second after it landed (ground top at 0)
+     v | no cut: deepest / up / origin after 1 s | cut: deepest / up / origin after 1 s / cuts
+     5 |  0.0467 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0003 /   0.000 / [-0.0000, -0.0000] / 12
+    20 |  0.2386 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0012 /   0.000 / [-0.0000, -0.0000] / 12
+    60 |  0.7212 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0053 /   0.000 / [-0.0000, -0.0000] / 12
+   150 |  0.7268 /   0.000 / [-0.0000, -0.0000] / 0 |  0.0128 /   0.001 / [-0.0000, -0.0000] / 12
+
+## 6. A platform on four legs landing squarely (landinggear), by settling passes in a hit, now and before the cut
+-- now
+
+a platform of 8x1x8 on four legs lands squarely on flat terrain (no pull), the worst of 24 moments of a tick: how fast it goes up (voxels/s) and how fast it turns (radians/s), by settling passes
+     v |        1 settling passes |        8 settling passes |       12 settling passes |       16 settling passes |       24 settling passes |       32 settling passes |
+     5 | up   0.064 turn  0.013 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+    20 | up   0.258 turn  0.052 | up   0.001 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+    60 | up   0.773 turn  0.156 | up   0.003 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+   150 | up   4.264 turn  0.738 | up   0.019 turn  0.004 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+-- before the cut (BETWEEN=16)
+
+a platform of 8x1x8 on four legs lands squarely on flat terrain (no pull), the worst of 24 moments of a tick: how fast it goes up (voxels/s) and how fast it turns (radians/s), by settling passes
+     v |        1 settling passes |        8 settling passes |       12 settling passes |       16 settling passes |       24 settling passes |       32 settling passes |
+     5 | up   0.064 turn  0.013 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+    20 | up   0.258 turn  0.052 | up   0.001 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+    60 | up   0.773 turn  0.156 | up   0.003 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+   150 | up   4.264 turn  0.738 | up   0.019 turn  0.004 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+
+## 7. The levers on a chain (levers), now and before the cut
+-- now
+
+the real BodyWorld, a stranger on a chain of four (true: it keeps 0.2): the lowest and highest kept speed over 12 moments of a step at 3 steps a tick, by what the world is given
+coupling                                    v |   nothing (today's solver) |                  passes 15 |                    the cut |      passes 15 and the cut |
+rigid, cars pass through each other         1 |   [ 0.1938,  0.1995]       |   [ 0.1994,  0.1999]       |   [ 0.1938,  0.1995]       |   [ 0.1994,  0.1999]       |
+rigid, cars pass through each other         5 |   [ 0.1988,  0.1995]       |   [ 0.1996,  0.1999]       |   [ 0.1987,  0.1989]       |   [ 0.1997,  0.1999]       |
+rigid, cars pass through each other        20 |   [ 0.1988,  0.1992]       |   [ 0.1998,  0.1999]       |   [ 0.1988,  0.1989]       |   [ 0.1997,  0.1999]       |
+rigid, cars pass through each other        60 |   [ 0.1988,  0.1996]       |   [ 0.1999,  0.1999]       |   [ 0.1988,  0.1990]       |   [ 0.1996,  0.1999]       |
+rigid, cars pass through each other       150 |   [ 0.1988,  0.1997]       |   [ 0.1998,  0.2000]       |   [ 0.1988,  0.1991]       |   [ 0.1996,  0.1998]       |
+rigid, cars meet                            1 |   [ 0.1941,  0.1998]       |   [ 0.1991,  0.2000]       |   [ 0.1941,  0.1998]       |   [ 0.1991,  0.2000]       |
+rigid, cars meet                            5 |   [ 0.1987,  0.1992]       |   [ 0.1994,  0.2000]       |   [ 0.1986,  0.1987]       |   [ 0.1995,  0.2000]       |
+rigid, cars meet                           20 |   [ 0.1988,  0.1993]       |   [ 0.1999,  0.2000]       |   [ 0.1986,  0.1987]       |   [ 0.1995,  0.2000]       |
+rigid, cars meet                           60 |   [ 0.1987,  0.1997]       |   [ 0.1999,  0.1999]       |   [ 0.1986,  0.1987]       |   [ 0.1994,  0.2000]       |
+rigid, cars meet                          150 |   [ 0.1987,  0.1997]       |   [ 0.1999,  0.2000]       |   [ 0.1986,  0.1988]       |   [ 0.1993,  0.2000]       |
+a ball, cars meet (the game's)              1 |   [ 0.1984,  0.1998]       |   [ 0.1985,  0.2000]       |   [ 0.1984,  0.1998]       |   [ 0.1985,  0.2000]       |
+a ball, cars meet (the game's)              5 |   [ 0.1985,  0.1988]       |   [ 0.1990,  0.2000]       |   [ 0.1985,  0.1985]       |   [ 0.1992,  0.2000]       |
+a ball, cars meet (the game's)             20 |   [ 0.1985,  0.1991]       |   [ 0.1999,  0.2000]       |   [ 0.1985,  0.1985]       |   [ 0.1992,  0.2000]       |
+a ball, cars meet (the game's)             60 |   [ 0.1985,  0.1993]       |   [ 0.1998,  0.1999]       |   [ 0.1985,  0.1985]       |   [ 0.1991,  0.2000]       |
+a ball, cars meet (the game's)            150 |   [ 0.1985,  0.1993]       |   [ 0.1998,  0.2000]       |   [ 0.1985,  0.1986]       |   [ 0.1988,  0.1998]       |
+a hinge                                     1 |   [ 0.1934,  0.1989]       |   [ 0.1998,  0.1999]       |   [ 0.1934,  0.1989]       |   [ 0.1998,  0.1999]       |
+a hinge                                     5 |   [ 0.1987,  0.1988]       |   [ 0.1997,  0.1999]       |   [ 0.1987,  0.1991]       |   [ 0.1999,  0.1999]       |
+a hinge                                    20 |   [ 0.1988,  0.1990]       |   [ 0.1997,  0.1999]       |   [ 0.1987,  0.1991]       |   [ 0.1999,  0.1999]       |
+a hinge                                    60 |   [ 0.1988,  0.1990]       |   [ 0.1999,  0.1999]       |   [ 0.1988,  0.1992]       |   [ 0.1999,  0.1999]       |
+a hinge                                   150 |   [ 0.1989,  0.1991]       |   [ 0.1999,  0.2000]       |   [ 0.1989,  0.1994]       |   [ 0.1999,  0.1999]       |
+-- before the cut (BETWEEN=16)
+
+the real BodyWorld, a stranger on a chain of four (true: it keeps 0.2): the lowest and highest kept speed over 12 moments of a step at 3 steps a tick, by what the world is given
+coupling                                    v |   nothing (today's solver) |                  passes 15 |                    the cut |      passes 15 and the cut |
+rigid, cars pass through each other         1 |   [ 0.1938,  0.1995]       |   [ 0.1994,  0.1999]       |   [ 0.1938,  0.1995]       |   [ 0.1994,  0.1999]       |
+rigid, cars pass through each other         5 |   [ 0.1988,  0.1995]       |   [ 0.1996,  0.1999]       |   [ 0.1987,  0.1989]       |   [ 0.1997,  0.1999]       |
+rigid, cars pass through each other        20 |   [ 0.1988,  0.1992]       |   [ 0.1998,  0.1999]       |   [ 0.1988,  0.1989]       |   [ 0.1997,  0.1999]       |
+rigid, cars pass through each other        60 |   [ 0.1988,  0.1996]       |   [ 0.1999,  0.1999]       |   [ 0.1988,  0.1990]       |   [ 0.1996,  0.1999]       |
+rigid, cars pass through each other       150 |   [ 0.1988,  0.1997]       |   [ 0.1998,  0.2000]       |   [ 0.1988,  0.1991]       |   [ 0.1996,  0.1998]       |
+rigid, cars meet                            1 |   [ 0.1941,  0.1998]       |   [ 0.1991,  0.2000]       |   [ 0.1941,  0.1998]       |   [ 0.1991,  0.2000]       |
+rigid, cars meet                            5 |   [ 0.1987,  0.1992]       |   [ 0.1994,  0.2000]       |   [ 0.1986,  0.1987]       |   [ 0.1995,  0.2000]       |
+rigid, cars meet                           20 |   [ 0.1988,  0.1993]       |   [ 0.1999,  0.2000]       |   [ 0.1986,  0.1987]       |   [ 0.1995,  0.2000]       |
+rigid, cars meet                           60 |   [ 0.1987,  0.1997]       |   [ 0.1999,  0.1999]       |   [ 0.1986,  0.1987]       |   [ 0.1994,  0.2000]       |
+rigid, cars meet                          150 |   [ 0.1987,  0.1997]       |   [ 0.1999,  0.2000]       |   [ 0.1986,  0.1988]       |   [ 0.1993,  0.2000]       |
+a ball, cars meet (the game's)              1 |   [ 0.1984,  0.1998]       |   [ 0.1985,  0.2000]       |   [ 0.1984,  0.1998]       |   [ 0.1985,  0.2000]       |
+a ball, cars meet (the game's)              5 |   [ 0.1985,  0.1988]       |   [ 0.1990,  0.2000]       |   [ 0.1985,  0.1985]       |   [ 0.1992,  0.2000]       |
+a ball, cars meet (the game's)             20 |   [ 0.1985,  0.1991]       |   [ 0.1999,  0.2000]       |   [ 0.1985,  0.1985]       |   [ 0.1992,  0.2000]       |
+a ball, cars meet (the game's)             60 |   [ 0.1985,  0.1993]       |   [ 0.1998,  0.1999]       |   [ 0.1985,  0.1985]       |   [ 0.1991,  0.2000]       |
+a ball, cars meet (the game's)            150 |   [ 0.1985,  0.1993]       |   [ 0.1998,  0.2000]       |   [ 0.1985,  0.1986]       |   [ 0.1988,  0.1998]       |
+a hinge                                     1 |   [ 0.1934,  0.1989]       |   [ 0.1998,  0.1999]       |   [ 0.1934,  0.1989]       |   [ 0.1998,  0.1999]       |
+a hinge                                     5 |   [ 0.1987,  0.1988]       |   [ 0.1997,  0.1999]       |   [ 0.1987,  0.1991]       |   [ 0.1999,  0.1999]       |
+a hinge                                    20 |   [ 0.1988,  0.1990]       |   [ 0.1997,  0.1999]       |   [ 0.1987,  0.1991]       |   [ 0.1999,  0.1999]       |
+a hinge                                    60 |   [ 0.1988,  0.1990]       |   [ 0.1999,  0.1999]       |   [ 0.1988,  0.1992]       |   [ 0.1999,  0.1999]       |
+a hinge                                   150 |   [ 0.1989,  0.1991]       |   [ 0.1999,  0.2000]       |   [ 0.1989,  0.1994]       |   [ 0.1999,  0.1999]       |
+
+## 8. What the 15 extra passes do now (NO_PASSES=1 takes them away): rest noise, landings, the chain, the two cubes
+-- rest noise without them
+
+bodies at rest on terrain (the game's pull), 100 ticks in and then 100 more: fastest speed (voxels/s), fastest turn (radians/s), depth of the lowest body's origin (voxels); by settling passes between hits
+body         |                             1 pass |                          16 passes
+cube:1       |   7.43e-16   1.48e-15    3.52e-5   |   5.35e-18   9.45e-18    3.52e-5
+cube:4       |   2.76e-15   1.39e-15    3.52e-5   |   5.00e-18   2.52e-18    3.52e-5
+cube:16      |   1.18e-14   1.48e-15    3.52e-5   |   7.21e-18   5.06e-19    3.52e-5
+cube:32      |   6.03e-13   3.47e-14    1.28e-5   |   1.82e-18   1.05e-19    1.28e-5
+stack:2      |   3.10e-12   3.32e-12    7.04e-5   |   4.06e-11   3.11e-11    7.04e-5
+stack:5      |    2.88e-4    9.83e-5    1.76e-4   |    2.88e-4    9.83e-5    1.76e-4
+stack:10     |    8.73e-4    1.50e-4    3.53e-4   |    8.73e-4    1.50e-4    3.53e-4
+gear         |   1.21e-14   3.00e-15    4.17e-5   |   6.39e-18   1.55e-18    4.17e-5
+-- landinggear without them
+
+a platform of 8x1x8 on four legs lands squarely on flat terrain (no pull), the worst of 24 moments of a tick: how fast it goes up (voxels/s) and how fast it turns (radians/s), by settling passes
+     v |        1 settling passes |        8 settling passes |       12 settling passes |       16 settling passes |       24 settling passes |       32 settling passes |
+     5 | up   0.150 turn  0.024 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+    20 | up   0.599 turn  0.098 | up   0.001 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+    60 | up   1.727 turn  0.294 | up   0.004 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+   150 | up   4.573 turn  0.852 | up   0.019 turn  0.004 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 | up   0.000 turn  0.000 |
+-- pairspin without them (max spin by HIT_DURATION default)
+v2: 6.0e-06 (3.0e-06 of v) | v5: 2.0e-05 (4.0e-06 of v) | v20: 6.0e-05 (3.0e-06 of v) | v60: 2.0e-04 (3.3e-06 of v) | 
+-- hangover without them, v=5
+rigid, cars pass through each other    0.198745 0.198766 0.198804 0.198871
+rigid, cars meet                       0.198727 0.198700 0.198684 0.198682
+a ball, cars meet (the game's)         0.198487 0.198508 0.198508 0.198528
+a hinge                                0.198724 0.198777 0.198865 0.199004
+-- levers without them
+
+the real BodyWorld, a stranger on a chain of four (true: it keeps 0.2): the lowest and highest kept speed over 12 moments of a step at 3 steps a tick, by what the world is given
+coupling                                    v |   nothing (today's solver) |                  passes 15 |                    the cut |      passes 15 and the cut |
+rigid, cars pass through each other         1 |   [ 0.1938,  0.1995]       |   [ 0.1938,  0.1995]       |   [ 0.1938,  0.1995]       |   [ 0.1938,  0.1995]       |
+rigid, cars pass through each other         5 |   [ 0.1988,  0.1995]       |   [ 0.1988,  0.1995]       |   [ 0.1987,  0.1989]       |   [ 0.1987,  0.1989]       |
+rigid, cars pass through each other        20 |   [ 0.1988,  0.1992]       |   [ 0.1988,  0.1992]       |   [ 0.1988,  0.1989]       |   [ 0.1988,  0.1989]       |
+rigid, cars pass through each other        60 |   [ 0.1988,  0.1996]       |   [ 0.1988,  0.1996]       |   [ 0.1988,  0.1990]       |   [ 0.1988,  0.1990]       |
+rigid, cars pass through each other       150 |   [ 0.1988,  0.1997]       |   [ 0.1988,  0.1997]       |   [ 0.1988,  0.1991]       |   [ 0.1988,  0.1991]       |
+rigid, cars meet                            1 |   [ 0.1941,  0.1998]       |   [ 0.1941,  0.1998]       |   [ 0.1941,  0.1998]       |   [ 0.1941,  0.1998]       |
+rigid, cars meet                            5 |   [ 0.1987,  0.1992]       |   [ 0.1987,  0.1992]       |   [ 0.1986,  0.1987]       |   [ 0.1986,  0.1987]       |
+rigid, cars meet                           20 |   [ 0.1988,  0.1993]       |   [ 0.1988,  0.1993]       |   [ 0.1986,  0.1987]       |   [ 0.1986,  0.1987]       |
+rigid, cars meet                           60 |   [ 0.1987,  0.1997]       |   [ 0.1987,  0.1997]       |   [ 0.1986,  0.1987]       |   [ 0.1986,  0.1987]       |
+rigid, cars meet                          150 |   [ 0.1987,  0.1997]       |   [ 0.1987,  0.1997]       |   [ 0.1986,  0.1988]       |   [ 0.1986,  0.1988]       |
+a ball, cars meet (the game's)              1 |   [ 0.1984,  0.1998]       |   [ 0.1984,  0.1998]       |   [ 0.1984,  0.1998]       |   [ 0.1984,  0.1998]       |
+a ball, cars meet (the game's)              5 |   [ 0.1985,  0.1988]       |   [ 0.1985,  0.1988]       |   [ 0.1985,  0.1985]       |   [ 0.1985,  0.1985]       |
+a ball, cars meet (the game's)             20 |   [ 0.1985,  0.1991]       |   [ 0.1985,  0.1991]       |   [ 0.1985,  0.1985]       |   [ 0.1985,  0.1985]       |
+a ball, cars meet (the game's)             60 |   [ 0.1985,  0.1993]       |   [ 0.1985,  0.1993]       |   [ 0.1985,  0.1985]       |   [ 0.1985,  0.1985]       |
+a ball, cars meet (the game's)            150 |   [ 0.1985,  0.1993]       |   [ 0.1985,  0.1993]       |   [ 0.1985,  0.1986]       |   [ 0.1985,  0.1986]       |
+a hinge                                     1 |   [ 0.1934,  0.1989]       |   [ 0.1934,  0.1989]       |   [ 0.1934,  0.1989]       |   [ 0.1934,  0.1989]       |
+a hinge                                     5 |   [ 0.1987,  0.1988]       |   [ 0.1987,  0.1988]       |   [ 0.1987,  0.1991]       |   [ 0.1987,  0.1991]       |
+a hinge                                    20 |   [ 0.1988,  0.1990]       |   [ 0.1988,  0.1990]       |   [ 0.1987,  0.1991]       |   [ 0.1987,  0.1991]       |
+a hinge                                    60 |   [ 0.1988,  0.1990]       |   [ 0.1988,  0.1990]       |   [ 0.1988,  0.1992]       |   [ 0.1988,  0.1992]       |
+a hinge                                   150 |   [ 0.1989,  0.1991]       |   [ 0.1989,  0.1991]       |   [ 0.1989,  0.1994]       |   [ 0.1989,  0.1994]       |

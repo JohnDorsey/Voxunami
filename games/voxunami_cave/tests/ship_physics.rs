@@ -531,7 +531,10 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // (And again on 2026-11-14: 833_817_479_913_002_864 before. The solver makes 16 settling passes after each part of a step, where Rapier makes one, and the piece after a cut is
     // what is left of the step, not a twelfth of a tick at most: `docs/history/loop-probe.md`, section 20. Control: with the one pass and the piece of a twelfth of a tick put
     // back, this test and the next passed with the values before, bit for bit (ran, then they were removed).)
-    assert_eq!(hash_of_poses(&busy_scene()), 3_334_067_579_008_514_955);
+    // (And a third time on 2026-11-14: 3_334_067_579_008_514_955 before. The 16 settling passes are made while a touch is found, or shapes that touch go against each other, and
+    // for half a second after, and the world makes Rapier's one pass in between, unless it has a coupling in it: `docs/history/loop-probe.md`, section 21. Control: with a temporary
+    // switch in the game's plugin that made the 16 between hits as well, this test and the next passed with the values before, bit for bit (ran, then the switch was removed).)
+    assert_eq!(hash_of_poses(&busy_scene()), 14_452_881_593_180_846_775);
 }
 
 #[test]
@@ -547,7 +550,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (And on 2026-11-02: 17_869_319_792_822_264_929 before; see the test of the poses.)
     // (And on 2026-11-14: 13_859_437_887_424_448_532 before; see the test of the poses.)
     // (And again on 2026-11-14: 3_693_345_421_220_211_019 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 9_337_883_707_654_218_207);
+    // (And a third time on 2026-11-14: 9_337_883_707_654_218_207 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 546_511_535_485_162_239);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where

@@ -24,6 +24,17 @@ fn new_world(settings: BodySettings) -> BodyWorld {
     if let Some(passes) = std::env::var("SETTLING").ok().and_then(|text| text.parse().ok()) {
         settings.settling_passes = passes;
     }
+    // `BETWEEN=n` sets the settling passes between hits (the cost cut, section 21; 16 is the world of before it, in which every piece was solved with the passes of a hit),
+    // `HIT_DURATION=seconds` how long a hit lasts after a touch is found, and `NO_PASSES=1` takes the 15 extra passes of every body away.
+    if let Some(passes) = std::env::var("BETWEEN").ok().and_then(|text| text.parse().ok()) {
+        settings.settling_passes_between_hits = passes;
+    }
+    if let Some(seconds) = std::env::var("HIT_DURATION").ok().and_then(|text| text.parse().ok()) {
+        settings.hit_duration = seconds;
+    }
+    if std::env::var("NO_PASSES").is_ok() {
+        settings.solver = SolverDials::default();
+    }
     BodyWorld::new(BrickCoordinate::ORIGIN, settings)
 }
 
@@ -372,6 +383,141 @@ fn levers() {
     }
 }
 
+/// `hangover` (the cost cut, section 21): the kept speed of a stranger on a chain of four (true 0.2) that arrives `arrives` ticks in, for 3, 6, 12 and 24 steps a tick, for each kind of
+/// coupling (what `a_hit_comes_out_the_same_whatever_number_of_steps_a_tick_is_cut_into` asks of the world). `HIT_DURATION=seconds` is how long the world settles each piece as a hit
+/// after a touch is found (the default is 0.5), `BETWEEN=16` the world as it was before the cost was cut.
+fn hangover(speed: f64, arrives: f64) {
+    println!("\nthe stranger's kept speed on a chain of four (true 0.2), v = {speed}, arriving {arrives} ticks in, by steps a tick: 3, 6, 12, 24");
+    let couplings: [(&str, Vec<PivotPair>, bool); 4] = [
+        ("rigid, cars pass through each other", rigid_face(), false),
+        ("rigid, cars meet", rigid_face(), true),
+        ("a ball, cars meet (the game's)", ball_face(), true),
+        ("a hinge", hinge_face(), false),
+    ];
+    for (label, pivots, contacts) in &couplings {
+        let kept: Vec<String> = [3u32, 6, 12, 24]
+            .iter()
+            .map(|&substeps| {
+                let settings = BodySettings { substeps, gravity: [0.0; 3], ..BodySettings::default() };
+                format!("{:.6}", kept_under(pivots, *contacts, speed, settings, speed * TICK * arrives))
+            })
+            .collect();
+        println!("{label:<38} {}", kept.join(" "));
+    }
+}
+
+/// One cube of one voxel lands squarely on terrain at `speed` (no pull) in a world cut into `substeps` steps a tick, `phase` of the way through a tick: (how fast it goes up at
+/// the most, how fast it turns at the end), in radians and voxels a second.
+fn slow_landing(speed: f64, substeps: u32, phase: f64) -> (f64, f64) {
+    let settings = BodySettings { substeps, gravity: [0.0; 3], ..BodySettings::default() };
+    let mut world = new_world(settings);
+    for x in -1..=1 {
+        for z in -1..=1 {
+            world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
+        }
+    }
+    let gap = speed * TICK * (3.0 + phase);
+    add_cube(&mut world, 1, [10.0, gap, 10.0], [0.0; 3]);
+    // Two ticks at rest first: the broad phase knows a body only after a step, and a cube that is made already inside the margin of the ground (0.02 voxels) and moving is in a step that
+    // nothing has been asked about (`WARM=0` leaves them out).
+    if std::env::var("WARM").map_or(true, |text| text != "0") {
+        world.step();
+        world.step();
+    }
+    let mut state = world.state(BodyId(1)).unwrap();
+    state.linear_velocity = [0.0, -speed, 0.0];
+    world.set_state(BodyId(1), state).unwrap();
+    let mut up = 0.0f64;
+    for _ in 0..(((gap + 0.03) / speed + 1.0) / TICK).ceil() as usize {
+        world.step();
+        up = up.max(world.state(BodyId(1)).unwrap().linear_velocity[1]);
+    }
+    let spin = world.state(BodyId(1)).unwrap().angular_velocity;
+    (up, (spin[0] * spin[0] + spin[1] * spin[1] + spin[2] * spin[2]).sqrt())
+}
+
+/// `slowlanding` (the cost cut, section 21): a cube of one voxel lands squarely at slow speeds, the worst of 12 moments of a tick, in a world cut into 3 steps a tick and one cut into
+/// 24 (a ship far away going fast makes the steps short): how fast it goes up (voxels a second) and turns (radians a second). With the default world and with `BETWEEN=16`.
+fn slow_landings() {
+    println!("\na cube of one voxel lands squarely at slow speeds (no pull), the worst of 12 moments of a tick: up (voxels/s) / turn (radians/s), by steps a tick");
+    println!("{:>6} | {:>22} | {:>22}", "v", "3 steps a tick", "24 steps a tick");
+    for speed in [0.002f64, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0] {
+        print!("{speed:>6} |");
+        for substeps in [3u32, 24] {
+            let (mut up, mut turn) = (0.0f64, 0.0f64);
+            for moment in 0..12 {
+                let (u, t) = slow_landing(speed, substeps, f64::from(moment) / 12.0);
+                up = up.max(u);
+                turn = turn.max(t);
+            }
+            print!(" {up:>9.5} / {turn:>9.5}  |");
+        }
+        println!();
+    }
+}
+
+/// `restnoise` (the cost cut, section 21): what a body at rest on terrain does under the game's pull with `between` settling passes between hits (1 is Rapier's own pass, 16 the world's
+/// hit number): after 100 ticks, over the next 100, the fastest it goes (voxels a second), the fastest it turns (radians a second) and how deep it is in the ground at the end (voxels).
+/// `what` is `cube:SIDE` (a cube of SIDE voxels), `gear` (a platform on four legs) or `stack:N` (N cubes of one voxel on each other).
+fn rest_noise(what: &str, between: usize) -> (f64, f64, f64) {
+    let settings = BodySettings { settling_passes_between_hits: between, ..BodySettings::default() };
+    let mut world = new_world(settings);
+    for x in -1..=1 {
+        for z in -1..=1 {
+            world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
+        }
+    }
+    let mut ids = Vec::new();
+    match what.split_once(':') {
+        Some(("cube", side)) => {
+            add_block(&mut world, 1, side.parse().unwrap(), [10.0, 0.0, 10.0], [0.0; 3]);
+            ids.push(1u64);
+        }
+        Some(("stack", count)) => {
+            for level in 0..count.parse::<u64>().unwrap() {
+                add_cube(&mut world, level + 1, [10.0, level as f64, 10.0], [0.0; 3]);
+                ids.push(level + 1);
+            }
+        }
+        _ => {
+            let state = BodyState { position: WorldPosition::from_voxels([10.0, 0.0, 10.0]), orientation: Orientation::IDENTITY, linear_velocity: [0.0; 3], angular_velocity: [0.0; 3] };
+            world.add_body(BodyId(1), state, BodyKind::Dynamic).unwrap();
+            world.set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut Gear).unwrap();
+            let voxels = (0..8).flat_map(|x| (0..3).flat_map(move |y| (0..8).map(move |z| (x, y, z)))).filter(|&(x, y, z)| Gear.collision_at(VoxelCoordinate::new(x, y, z)) == Collision::Full);
+            world.set_mass(BodyId(1), MassMoments::sum(voxels.map(|(x, y, z)| MassMoments::of_voxel([x, y, z], DENSITY))).properties().unwrap()).unwrap();
+            ids.push(1);
+        }
+    }
+    let (mut fastest, mut turning) = (0.0f64, 0.0f64);
+    for tick in 0..200 {
+        // A force too small to see keeps a body awake (a body that is asleep is not solved).
+        for &id in &ids {
+            world.apply_force(BodyId(id), [1e-9, 0.0, 0.0], None).unwrap();
+        }
+        world.step();
+        if tick >= 100 {
+            for &id in &ids {
+                let state = world.state(BodyId(id)).unwrap();
+                fastest = fastest.max(state.linear_velocity.iter().fold(0.0f64, |most, part| most.max(part.abs())));
+                turning = turning.max(state.angular_velocity.iter().fold(0.0f64, |most, part| most.max(part.abs())));
+            }
+        }
+    }
+    let lowest = world.state(BodyId(1)).unwrap().position.relative_to(WorldPosition::from_voxels([0.0; 3]))[1];
+    (fastest, turning, -lowest)
+}
+
+/// `restnoise`: the table of [`rest_noise`] for the bodies it knows, with 1 and with 16 settling passes between hits.
+fn rest_noises() {
+    println!("\nbodies at rest on terrain (the game's pull), 100 ticks in and then 100 more: fastest speed (voxels/s), fastest turn (radians/s), depth of the lowest body's origin (voxels); by settling passes between hits");
+    println!("{:<12} | {:>34} | {:>34}", "body", "1 pass", "16 passes");
+    for what in ["cube:1", "cube:4", "cube:16", "cube:32", "stack:2", "stack:5", "stack:10", "gear"] {
+        let one = rest_noise(what, 1);
+        let sixteen = rest_noise(what, 16);
+        println!("{what:<12} | {:>10.2e} {:>10.2e} {:>10.2e}   | {:>10.2e} {:>10.2e} {:>10.2e}", one.0, one.1, one.2, sixteen.0, sixteen.1, sixteen.2);
+    }
+}
+
 /// What a landing came to, after a second of flight with no pull.
 struct Landing {
     /// The deepest the cube's lower face was in the ground at the end of a tick (the ground's top is at 0).
@@ -479,7 +625,8 @@ impl CollisionSource for Gear {
 /// A ship on four legs lands squarely at `speed` from `gap` voxels, with `settling` settling passes (and the world's other defaults): (how fast it goes up at most, how fast it turns at the end, how deep it was at most).
 fn land_gear(speed: f64, gap: f64, settling: usize) -> (f64, f64, f64) {
     let settings = BodySettings { substeps: 3, gravity: [0.0; 3], settling_passes: settling, ..BodySettings::default() };
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    // (`new_world`, so that `BETWEEN`, `HIT_DURATION` and `NO_PASSES` count; `SETTLING` would override `settling`, so it is not set when this is run.)
+    let mut world = new_world(settings);
     for x in -1..=1 {
         for z in -1..=1 {
             world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Terrain(|_, y, _| y < 0));
@@ -878,6 +1025,17 @@ fn main() {
     let which = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
     if which == "castcost" {
         castcost();
+    }
+    if which == "restnoise" {
+        rest_noises();
+    }
+    if which == "slowlanding" {
+        slow_landings();
+    }
+    if which == "hangover" {
+        let speed: f64 = std::env::args().nth(2).and_then(|text| text.parse().ok()).unwrap_or(5.0);
+        let arrives: f64 = std::env::args().nth(3).and_then(|text| text.parse().ok()).unwrap_or(2.0);
+        hangover(speed, arrives);
     }
     if which == "levers" {
         levers();

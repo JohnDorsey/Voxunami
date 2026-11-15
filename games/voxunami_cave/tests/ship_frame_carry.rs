@@ -97,7 +97,8 @@ fn a_block_let_fall_on_a_floor_lands_as_it_always_did_when_both_go_to_another_fr
     // where Rapier makes one, and the piece after a cut is what is left of the step (`docs/history/loop-probe.md`, section 20). Control: with the one pass and the piece of a twelfth
     // of a tick put back the numbers before this came back bit for bit (ran, then they were removed). The block lands as a block should: after 6 seconds it faces 6.5 degrees
     // from the way it began, is 0.0000002 over a voxel up and goes at 0.2 voxels a second and turns at 0.05 radians a second, where the numbers before had it turned 88 degrees,
-    // 0.016 over, going at 0.8 and turning at 0.3.)
+    // 0.016 over, going at 0.8 and turning at 0.3.) (Not moved by the cost cut of the settling passes, section 21: ran, the world that makes the 16 only while something hits, and the world that makes
+    // them always, both give the numbers below to the bit.)
     let expected_block: [u64; 16] = [
         0x57e,
         0x3d09,
