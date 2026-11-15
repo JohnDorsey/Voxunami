@@ -1340,3 +1340,269 @@ fn a_cube_that_lands_gently_neither_goes_up_nor_turns_whatever_number_of_steps_a
     }
     assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }
+
+/// The passes over the constraints that the solver is told to make for a body.
+fn extra_passes_of(world: &BodyWorld, id: u64) -> usize {
+    world
+        .solver_dials_in_force(BodyId(id))
+        .expect("a body")
+        .extra_passes
+}
+
+fn couple_cubes(world: &mut BodyWorld, coupling: u64, first: u64, second: u64) {
+    world
+        .couple(
+            CouplingId(coupling),
+            BodyId(first),
+            BodyId(second),
+            &[pivot(0.5, 0.5)],
+            CouplingOptions::default(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn the_extra_passes_are_made_in_a_hit_and_not_between_hits() {
+    // The 15 extra passes (`BodySettings::solver`) are what an impact needs (an impact through a chain of joints, or the landing of a body of a thousand cubes: a cube of 32 voxels that
+    // lands at 20 voxels a second goes up at 0.77 without them); a body at rest has no speed of approach for them to take away, and they are paid for in every piece by every body that is awake
+    // and touching. So they are made as the settling passes are: in a piece that is solved as a hit, which is from a touch for half a second.
+    let wanted = BodySettings::default().solver.extra_passes;
+    assert!(wanted > 0, "the world gives no extra passes in a hit");
+    assert_eq!(BodySettings::default().solver_between_hits.extra_passes, 0);
+    let mut world = floor_world(settings_with(3));
+    add_cube(&mut world, 1, [10.0, 4.0, 10.0], [0.0, -10.0, 0.0]);
+    add_cube(&mut world, 2, [30.0, 40.0, 10.0], [0.0; 3]);
+    assert_eq!(extra_passes_of(&world, 1), 0, "before the first step");
+    let mut in_a_hit = Vec::new();
+    for _ in 0..80 {
+        world.step();
+        in_a_hit.push((extra_passes_of(&world, 1), extra_passes_of(&world, 2)));
+    }
+    // (The cube that falls from 4 voxels at 10 voxels a second is down in under half a second and is a hit from the touch for half a second.)
+    let first_hit = in_a_hit
+        .iter()
+        .position(|&(landing, _)| landing > 0)
+        .expect("the passes of a hit were never made for the cube that landed");
+    assert!(first_hit < 10, "the hit began at tick {first_hit}");
+    assert!(
+        in_a_hit[first_hit..first_hit + 8]
+            .iter()
+            .all(|&(landing, _)| landing == wanted),
+        "the passes of a hit were not kept for the half second after the touch"
+    );
+    assert_eq!(
+        in_a_hit.last().unwrap().0,
+        0,
+        "the cube at rest went on being given the extra passes"
+    );
+    // The same for a body that nothing is near: it is given them while the world is solved as a hit, which a world is in all of it.
+    assert!(
+        in_a_hit[first_hit..first_hit + 8]
+            .iter()
+            .all(|&(_, far)| far == wanted),
+        "a body that is not in the hit is solved in a world that is"
+    );
+}
+
+#[test]
+fn a_world_that_has_a_coupling_in_it_gives_every_body_the_extra_passes_all_the_time() {
+    // As the settling passes are made all the time in a world with a coupling (the test above of them), so are the extra: the chain's impacts are what they are for, and a coupling
+    // that came to them only some of the time swings differently (promise (a) of the joint plan).
+    let wanted = BodySettings::default().solver.extra_passes;
+    let mut world = free_space(3);
+    for id in 1..=3 {
+        add_cube(&mut world, id, [id as f64 * 5.0, 10.0, 10.0], [0.0; 3]);
+    }
+    couple_cubes(&mut world, 1, 1, 2);
+    for _ in 0..40 {
+        world.step();
+    }
+    for id in 1..=3 {
+        assert_eq!(
+            extra_passes_of(&world, id),
+            wanted,
+            "body {id}, in a world with a coupling"
+        );
+    }
+    world.decouple(CouplingId(1)).unwrap();
+    world.step();
+    for id in 1..=3 {
+        assert_eq!(
+            extra_passes_of(&world, id),
+            0,
+            "body {id}, when none is coupled and nothing is near"
+        );
+    }
+}
+
+#[test]
+fn a_body_that_is_added_while_the_world_is_solved_as_a_hit_is_given_the_extra_passes() {
+    // The world tells every body what to do when it goes into a hit or out of one, so a body that is made after that has to be told as well: the hit lasts half a second, and the
+    // body is in the next piece.
+    let wanted = BodySettings::default().solver.extra_passes;
+    let mut world = floor_world(settings_with(3));
+    add_cube(&mut world, 1, [10.0, 2.0, 10.0], [0.0, -10.0, 0.0]);
+    let mut ticks = 0;
+    while extra_passes_of(&world, 1) == 0 {
+        world.step();
+        ticks += 1;
+        assert!(ticks < 30, "the cube never landed");
+    }
+    add_cube(&mut world, 2, [30.0, 10.0, 10.0], [0.0; 3]);
+    assert_eq!(
+        extra_passes_of(&world, 2),
+        wanted,
+        "a body added during a hit"
+    );
+    // And when the hit is over, it is told so, with the others.
+    for _ in 0..40 {
+        world.step();
+    }
+    assert_eq!(extra_passes_of(&world, 1), 0);
+    assert_eq!(
+        extra_passes_of(&world, 2),
+        0,
+        "the body that was added during a hit, after it"
+    );
+}
+
+#[test]
+fn the_extra_substeps_of_the_world_are_made_in_a_hit_and_not_between_hits_as_the_extra_passes_are()
+{
+    // (The default has none; a world that is given some has them where it has the passes.)
+    let settings = BodySettings {
+        solver: SolverDials {
+            extra_substeps: 2,
+            extra_passes: 0,
+        },
+        solver_between_hits: SolverDials {
+            extra_substeps: 1,
+            extra_passes: 0,
+        },
+        ..settings_with(3)
+    };
+    let substeps = |world: &BodyWorld| {
+        world
+            .solver_dials_in_force(BodyId(1))
+            .unwrap()
+            .extra_substeps
+    };
+    let mut alone = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    add_cube(&mut alone, 1, [5.0, 10.0, 10.0], [0.0; 3]);
+    alone.step();
+    assert_eq!(substeps(&alone), 1, "between hits");
+    let mut coupled = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
+    add_cube(&mut coupled, 1, [5.0, 10.0, 10.0], [0.0; 3]);
+    add_cube(&mut coupled, 2, [10.0, 10.0, 10.0], [0.0; 3]);
+    couple_cubes(&mut coupled, 1, 1, 2);
+    coupled.step();
+    assert_eq!(substeps(&coupled), 2, "in a hit");
+}
+
+#[test]
+fn what_a_body_is_asked_for_is_in_addition_where_it_is_more_than_the_world_gives() {
+    let wanted = BodySettings::default().solver.extra_passes;
+    let mut world = free_space(3);
+    for id in 1..=3 {
+        add_cube(&mut world, id, [id as f64 * 5.0, 10.0, 10.0], [0.0; 3]);
+    }
+    world
+        .set_solver_dials(
+            BodyId(1),
+            SolverDials {
+                extra_substeps: 2,
+                extra_passes: wanted + 16,
+            },
+        )
+        .unwrap();
+    world
+        .set_solver_dials(
+            BodyId(2),
+            SolverDials {
+                extra_substeps: 0,
+                extra_passes: 3,
+            },
+        )
+        .unwrap();
+    world.step();
+    assert_eq!(
+        extra_passes_of(&world, 1),
+        wanted + 16,
+        "more than the world gives, between hits"
+    );
+    assert_eq!(
+        extra_passes_of(&world, 2),
+        3,
+        "less than the world gives in a hit, between hits"
+    );
+    assert_eq!(extra_passes_of(&world, 3), 0);
+    assert_eq!(
+        world
+            .solver_dials_in_force(BodyId(1))
+            .unwrap()
+            .extra_substeps,
+        2
+    );
+    couple_cubes(&mut world, 1, 2, 3);
+    world.step();
+    assert_eq!(
+        extra_passes_of(&world, 1),
+        wanted + 16,
+        "more than the world gives, in a hit"
+    );
+    assert_eq!(
+        extra_passes_of(&world, 2),
+        wanted,
+        "less than the world gives, in a hit"
+    );
+    assert_eq!(extra_passes_of(&world, 3), wanted);
+}
+
+/// `count` cubes of one voxel on each other on terrain, under the game's pull, kept awake by a force too small to see: the fastest any goes (voxels a second) over the last
+/// 100 of 200 ticks, and how many pieces were solved as a hit over those.
+fn stack_at_rest(count: u64, settings: BodySettings) -> (f64, u64) {
+    let mut world = floor_world(settings);
+    for level in 0..count {
+        add_cube(&mut world, level + 1, [10.0, level as f64, 10.0], [0.0; 3]);
+    }
+    let (mut fastest, mut hits_before) = (0.0f64, 0);
+    for tick in 0..200 {
+        if tick == 100 {
+            hits_before = world.hit_pieces_made();
+        }
+        for id in 1..=count {
+            world
+                .apply_force(BodyId(id), [1e-9, 0.0, 0.0], None)
+                .unwrap();
+        }
+        world.step();
+        if tick >= 100 {
+            for id in 1..=count {
+                let [x, y, z] = velocity(&world, id);
+                fastest = fastest.max(x.abs()).max(y.abs()).max(z.abs());
+            }
+        }
+    }
+    (fastest, world.hit_pieces_made() - hits_before)
+}
+
+#[test]
+fn a_stack_of_cubes_rests_as_still_with_the_extra_passes_made_in_a_hit_only_and_is_no_hit() {
+    // What the 15 extra passes did for a stack of cubes at rest: with none at all (not made in a hit either) a stack of five went at 2.9e-4 voxels a second, of ten 8.7e-4
+    // (`engine_probe restnoise`, with `NO_PASSES=1`), over the floor of a hit (`HIT_SPEED_FLOOR`), so that it was solved as a hit most of the time. Made in the hit that the stack's
+    // own settling is (the cubes touch from the first step, and a hit lasts half a second), they leave it as still as made in every piece: measured for 1 to 9 cubes, over the last
+    // 100 of 200 ticks, 7e-16, 2e-14, 7e-14, 1e-12, 5e-12, 3e-11, 2e-8, 2e-6 and 4e-5 voxels a second (with them in every piece: 8e-16 to 7e-5), and no piece solved as a hit in them.
+    // (A stack of ten goes at 2.8e-4 either way, and is a hit in 42 of the 300 pieces.)
+    let settings = BodySettings::default();
+    for count in 1..=9 {
+        let (fastest, hit_pieces) = stack_at_rest(count, settings);
+        assert!(
+            fastest < 1e-4,
+            "a stack of {count} at rest went at {fastest:e} voxels a second"
+        );
+        assert_eq!(
+            hit_pieces, 0,
+            "a stack of {count} at rest was solved as a hit {hit_pieces} times in 100 ticks"
+        );
+    }
+}

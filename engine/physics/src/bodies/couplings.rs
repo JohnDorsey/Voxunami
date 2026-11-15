@@ -47,7 +47,8 @@ impl Default for CouplingOptions {
 /// `extra_substeps` splits each step of the solver into more parts: the gap of a joint falls about four times for each doubling (`docs/history/loop-probe.md`, section 14), at a
 /// cost in proportion. `extra_passes` goes over the constraints more often in each part, which an impact through a chain of joints needs and a swing does not.
 ///
-/// The world gives every body some of this already ([`super::BodySettings::solver`], 15 passes): what is set for a body is in addition only where it is more.
+/// The world gives every body some of this already, in a piece that is solved as a hit ([`super::BodySettings::solver`], 15 passes; and between hits
+/// [`super::BodySettings::solver_between_hits`], none): what is set for a body is in addition only where it is more.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SolverDials {
     pub extra_substeps: usize,
@@ -262,14 +263,37 @@ impl BodyWorld {
         Ok(())
     }
 
-    /// Tells the solver what a body is to be worked with: the larger of what was asked for it and what the world gives every body.
+    /// What the solver is told to do for a body now: the larger of what was asked for it and what the world gives every body in a hit or between hits, as it is.
+    pub fn solver_dials_in_force(&self, id: BodyId) -> Result<SolverDials, BodyError> {
+        let body = self.by_id.get(&id).ok_or(BodyError::UnknownBody(id))?;
+        let rapier = &self.bodies[body.handle];
+        Ok(SolverDials {
+            extra_substeps: rapier.additional_solver_iterations(),
+            extra_passes: rapier.additional_pgs_iterations(),
+        })
+    }
+
+    /// Tells the solver what a body is to be worked with: the larger of what was asked for it and what the world gives every body now (in a hit, or between hits).
     pub(super) fn apply_solver_dials(&mut self, id: BodyId) {
         let Some(body) = self.by_id.get(&id) else {
             return;
         };
-        let (asked, world, handle) = (body.dials, self.settings.solver, body.handle);
+        let world = if self.dials_of_a_hit {
+            self.settings.solver
+        } else {
+            self.settings.solver_between_hits
+        };
+        let (asked, handle) = (body.dials, body.handle);
         let rapier = &mut self.bodies[handle];
         rapier.set_additional_solver_iterations(asked.extra_substeps.max(world.extra_substeps));
         rapier.set_additional_pgs_iterations(asked.extra_passes.max(world.extra_passes));
+    }
+
+    /// Tells the solver what every body is to be worked with, after the world went into or out of a hit.
+    pub(super) fn apply_all_solver_dials(&mut self) {
+        let ids: Vec<BodyId> = self.by_id.keys().copied().collect();
+        for id in ids {
+            self.apply_solver_dials(id);
+        }
     }
 }

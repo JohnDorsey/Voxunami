@@ -534,7 +534,11 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // (And a third time on 2026-11-14: 3_334_067_579_008_514_955 before. The 16 settling passes are made while a touch is found, or shapes that touch go against each other, and
     // for half a second after, and the world makes Rapier's one pass in between, unless it has a coupling in it: `docs/history/loop-probe.md`, section 21. Control: with a temporary
     // switch in the game's plugin that made the 16 between hits as well, this test and the next passed with the values before, bit for bit (ran, then the switch was removed).)
-    assert_eq!(hash_of_poses(&busy_scene()), 14_452_881_593_180_846_775);
+    // (And a fourth time on 2026-11-14: 14_452_881_593_180_846_775 before. The 15 extra solver passes are made in the pieces that are solved as a hit, as the settling passes are,
+    // and no longer in every piece: `docs/history/loop-probe.md`, section 22. Control: with a temporary switch in the game's plugin that made them between hits as well, this test
+    // and the next passed with the values before, bit for bit; with that and the 16 settling passes between hits, with the values of the third move's "before" (3_334_067_579_008_514_955
+    // and 9_337_883_707_654_218_207) (ran, then the switch was removed).)
+    assert_eq!(hash_of_poses(&busy_scene()), 4_235_048_276_999_765_216);
 }
 
 #[test]
@@ -551,7 +555,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (And on 2026-11-14: 13_859_437_887_424_448_532 before; see the test of the poses.)
     // (And again on 2026-11-14: 3_693_345_421_220_211_019 before; see the test of the poses.)
     // (And a third time on 2026-11-14: 9_337_883_707_654_218_207 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 546_511_535_485_162_239);
+    // (And a fourth time on 2026-11-14: 546_511_535_485_162_239 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 5_214_168_435_068_449_193);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where

@@ -1,9 +1,10 @@
 //! What it costs to simulate ships: stepping, and making the colliders of a brick again after an edit, for ships of 10,000 and 100,000 blocks,
 //! and for a hundred ships. Run with `cargo run --release -p physics --example ship_cost`; the numbers are for the machine they are run on.
-//! Every row is given four times, in one run, so that they are measured under the same load: for the world as it was before step 4c-5-A (no extra solver passes, no cut of a step at
+//! Every row is given five times, in one run, so that they are measured under the same load: for the world as it was before step 4c-5-A (no extra solver passes, no cut of a step at
 //! the first touch, Rapier's one settling pass), as it was at a605b4f (the extra passes and the cut, one settling pass), as it was at 5b36264 (the 16 settling passes made at every step),
-//! and as it is now (`BodySettings::default()`: the 16 settling passes made for half a second after a touch is found, Rapier's one in between).
-//! `SETTLING=n` in the environment changes the settling passes of a hit in the last two rows (the default is 16), and `BETWEEN=n` the settling passes between hits in the last one (1).
+//! as it was at 0e5c9bb (the 16 settling passes made for half a second after a touch is found, Rapier's one in between, and the 15 extra passes in every piece),
+//! and as it is now (`BodySettings::default()`: the 15 extra passes as well only in a piece that is solved as a hit).
+//! `SETTLING=n` in the environment changes the settling passes of a hit in the last three rows (the default is 16), and `BETWEEN=n` the settling passes between hits in the last two (1).
 //! A ship is let fall half a voxel onto the ground, so its first ticks are a landing; the average is given over all 200 ticks (as the tables of `docs/history/loop-probe.md` before
 //! section 21 were) and over the last 100, which is a ship at rest.
 
@@ -243,6 +244,7 @@ fn main() {
             "a605b4f (the passes and the cut, one settling pass)",
             BodySettings {
                 solver: now.solver,
+                solver_between_hits: now.solver,
                 cut_at_first_touch: true,
                 ..before
             },
@@ -251,11 +253,19 @@ fn main() {
             "5b36264 (the settling passes made at every step)",
             BodySettings {
                 settling_passes_between_hits: now.settling_passes,
+                solver_between_hits: now.solver,
                 ..now
             },
         ),
         (
-            "now (the settling passes for half a second after a touch)",
+            "0e5c9bb (the settling passes for half a second after a touch, the extra passes in every piece)",
+            BodySettings {
+                solver_between_hits: now.solver,
+                ..now
+            },
+        ),
+        (
+            "now (the settling passes and the extra passes for half a second after a touch)",
             now,
         ),
     ] {

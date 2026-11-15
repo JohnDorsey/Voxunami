@@ -51,14 +51,15 @@ const MOST_A_STEP_MOVES: Real = 0.8;
 /// (at 20 ticks a second); faster, a step is longer than that.
 const MOST_STEPS: u32 = 24;
 
-/// The passes over its constraints that the solver makes for every body, beyond its own: what makes a hit come out as momentum says and not as a chain of joints gives way. A
+/// The passes over its constraints that the solver makes for every body in a piece that is solved as a hit, beyond its own: what makes a hit come out as momentum says and not as a chain of joints gives way. A
 /// stranger on a rigid chain of four keeps 0.04 to 0.14 of its speed with none, where 0.2 is true; the 15 that this is were found by the study of `docs/history/loop-probe.md`,
 /// section 18 (the rest noise of landing gear on a carrier, 113 mm/s, goes to nothing with them). The settling passes ([`SETTLING_PASSES`], section 20) do most of the same work
 /// since: with them alone the chain keeps 0.1985 to 0.1994 and with these as well 0.1988 to 0.2000, and the turn of a head-on hit is theirs (two cubes that meet squarely turned at
 /// 0.01 radians a second at 60 voxels a second with these and one settling pass, and under 5e-15 with the settling passes and none of these). Rapier runs the largest request of a
 /// connected set of bodies (the contacts and the joints between them) on all of it, so what touches a chain is solved with it, and a body that touches nothing has no constraint to
 /// make passes over. What they cost is paid by a body that is awake and touching (a ship at rest on the ground, awake, went from 15 to 35 microseconds a tick with them,
-/// measured): a body that is asleep costs nothing.
+/// measured): a body that is asleep costs nothing, and they are made in a piece that is solved as a hit (the settling passes are), and in none between hits
+/// (`BodySettings::solver_between_hits`; `docs/history/loop-probe.md`, section 22: an awake ship at rest costs what it cost before step 4c-5-A).
 const HIT_PASSES: usize = 15;
 
 /// How many settling passes the solver makes ([`BodySettings::settling_passes`]). Rapier solves each part of a step with a bias that pushes bodies out of each other, moves them,
@@ -94,8 +95,13 @@ pub struct BodySettings {
     pub substeps: u32,
     /// The acceleration of gravity, in voxels per second per second.
     pub gravity: [f64; 3],
-    /// How hard the solver works on every body at the least: a body that is given more with [`BodyWorld::set_solver_dials`] gets that. Nothing extra is the solver's own work.
+    /// How hard the solver works on every body at the least, in a piece that is solved as a hit (see `settling_passes`): a body that is given more with
+    /// [`BodyWorld::set_solver_dials`] gets that. Nothing extra is the solver's own work.
     pub solver: SolverDials,
+    /// How hard the solver works on every body at the least in a piece that is not solved as a hit (the default is nothing extra, the solver's own work: the extra passes of a hit are
+    /// what an impact needs, and a body at rest has none, while they are paid for in every piece by every body that is awake and touching). A world that has a coupling in it is
+    /// solved as a hit all the time, so a coupling has them always. With `solver` here as well the world is what it was before this setting (`docs/history/loop-probe.md`, section 22).
+    pub solver_between_hits: SolverDials,
     /// How many passes the solver makes over all the constraints, after each part of a step, to take away the speed it gave bodies to push them out of each other (Rapier's "solve
     /// without bias" and its `num_internal_stabilization_iterations`; at least 1, which is Rapier's own), in a piece that is solved as a hit: from when a touch is found, or two
     /// shapes that touch are found going against each other (see `cut_at_first_touch`), for `hit_duration`. A body that lands meets the ground at several points at once, and one pass leaves part of what the soft contact let through as a
@@ -122,8 +128,9 @@ pub struct BodySettings {
 }
 
 impl Default for BodySettings {
-    /// A tick of a twentieth of a second solved at 60 steps a second, the gravity characters fall in, the passes that make a hit come out right (15 for every body, and 16 settling
-    /// passes for half a second after a touch is found, one between hits), and the cut of a step where two bodies first touch.
+    /// A tick of a twentieth of a second solved at 60 steps a second, the gravity characters fall in, the passes that make a hit come out right (15 extra and 16 settling passes, for
+    /// half a second after a touch is found and all the time in a world with a coupling; none extra and one settling pass between hits), and the cut of a step where two bodies first
+    /// touch.
     fn default() -> Self {
         Self {
             time_step: 1.0 / 20.0,
@@ -133,6 +140,7 @@ impl Default for BodySettings {
                 extra_substeps: 0,
                 extra_passes: HIT_PASSES,
             },
+            solver_between_hits: SolverDials::default(),
             settling_passes: SETTLING_PASSES,
             settling_passes_between_hits: SETTLING_PASSES_BETWEEN_HITS,
             hit_duration: HIT_DURATION,
@@ -238,6 +246,8 @@ pub struct BodyWorld {
     cuts: u64,
     /// How much longer, in seconds, the pieces of a step are solved as a hit: set to `BodySettings::hit_duration` when a touch is found and run down by each piece (see `first_touch.rs`).
     hit_time_left: Real,
+    /// Whether the solver is told the world's `solver` (the last piece was solved as a hit) or its `solver_between_hits` for every body.
+    dials_of_a_hit: bool,
     /// How many pieces of a step were solved as a hit.
     hit_pieces: u64,
 }
@@ -283,6 +293,7 @@ impl BodyWorld {
             couplings: BTreeMap::new(),
             cuts: 0,
             hit_time_left: 0.0,
+            dials_of_a_hit: false,
             hit_pieces: 0,
         }
     }
@@ -919,6 +930,10 @@ impl BodyWorld {
         let as_a_hit = self.hit_time_left > 0.0
             || !self.settings.cut_at_first_touch
             || !self.couplings.is_empty();
+        if as_a_hit != self.dials_of_a_hit {
+            self.dials_of_a_hit = as_a_hit;
+            self.apply_all_solver_dials();
+        }
         let passes = if as_a_hit {
             self.hit_pieces += 1;
             self.settings.settling_passes
@@ -2329,17 +2344,34 @@ mod tests {
         // each other, and for half a second after, and the world makes Rapier's one pass in between: `docs/history/loop-probe.md`, section 21. A touch is found at a closing speed
         // that is a speed (a millimetre a second), no longer what a step can take across the margin. Control, in the test after this one: with the 16 made between hits as well the old
         // value comes back bit for bit.)
+        // (Moved on purpose, 2026-11-14, the fourth time: 8_652_255_924_237_869_372 before. The 15 extra passes are made in the pieces that are solved as a hit, as the settling
+        // passes are, and no longer in every piece: `docs/history/loop-probe.md`, section 22. Control, in the test after this one: with them made between hits as well the old value
+        // comes back bit for bit.)
         assert!(
             first.cuts_made() > 0,
             "no step was cut in the busy scene: the pin below is not about the cut"
         );
-        assert_eq!(first.state_hash(), 8_652_255_924_237_869_372);
+        assert_eq!(first.state_hash(), 16_015_789_674_459_971_760);
+    }
+
+    #[test]
+    fn with_the_extra_passes_between_hits_as_well_the_busy_scene_is_what_it_was_bit_for_bit() {
+        // The control of the move of 2026-11-14, the fourth time: the world as it was before the extra passes were kept for the pieces that are solved as a hit.
+        let settings = BodySettings {
+            solver_between_hits: BodySettings::default().solver,
+            ..heavy_planet()
+        };
+        assert_eq!(
+            busy_scene_under(settings).state_hash(),
+            8_652_255_924_237_869_372
+        );
     }
 
     #[test]
     fn with_the_passes_of_a_hit_between_hits_as_well_the_busy_scene_is_what_it_was_bit_for_bit() {
-        // The control of the move of 2026-11-14, the third time: the world as it was before the cost of the settling passes was cut.
+        // The control of the move of 2026-11-14, the third time: the world as it was before the cost of the settling passes was cut (and the extra passes made for every body).
         let settings = BodySettings {
+            solver_between_hits: BodySettings::default().solver,
             settling_passes_between_hits: BodySettings::default().settling_passes,
             ..heavy_planet()
         };
