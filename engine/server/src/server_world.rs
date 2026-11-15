@@ -1957,6 +1957,9 @@ impl ServerWorld {
     }
 }
 
+mod contact_room;
+pub use contact_room::ContactRoom;
+
 mod coasting;
 pub use coasting::{FlightState, NotCoasting, PredictedRail, Prediction, PredictionEnd, RailGroup};
 

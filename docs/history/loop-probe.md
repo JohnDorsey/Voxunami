@@ -833,3 +833,5 @@ The owner's word, after the hull (4c-5-1) was built: "Go on with 4C-5-2. The bit
 6. *Frames differ by a shift and a speed*: the plugin tells the ghost each body's place and speed in the ghost's frame, and a correction is a difference, which a frame that only shifts and goes at a speed does not change; a frame that turns is not that.
 
 7. *Linux (WSL)*: the physics crate, 261 tests, passes, and the random scenes of the gate count the same (103 touched, the gate shut in 542).
+
+8. *Step (a) built (2026-11-15):* `ServerWorld::ships_near_group` gives every ship near a group by hull; `decisions/joints-and-cars.md`, 4c-5-2 (a). Items 1 to 6 above are still to be settled by (b) to (e).

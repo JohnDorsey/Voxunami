@@ -1,0 +1,98 @@
+//! Which ships are near a group of ships coupled by their joint ends: the ships that the contact ghost of the group is made for (step (a) of 4c-5-2 in
+//! `docs/decisions/joints-and-cars.md`; `ContactGhost` in `engine/physics`).
+//!
+//! The rules of the rails (`coasting/neighbours.rs`) ask for the lowest of the grids that is in the way, by the sphere through the far corner of a ship's bricks (55 voxels for a
+//! ship of one brick, whatever is in it) and a margin of 64 voxels. A ghost needs **all** the ships that could touch the group, and a measure that is not that coarse: the hull of
+//! each ship (the box its blocks fill, step 4c-5-1, [`world_storage::HullBox`]), taken as the sphere about its middle through its farthest corner, which no turn of the ship
+//! changes. A ghost that is born near nothing costs nothing (its gate leaves a tick unstepped when no two sides could touch), so the room asked for is the caller's and may be
+//! generous: a ghost has to be there a step before anything can touch (`docs/history/loop-probe.md`, section 18).
+
+use voxel_space::{BrickCoordinate, GridId, WorldPosition};
+use world_storage::MovingGrid;
+
+use super::ServerWorld;
+
+/// How much room a ghost is given: two ships are near each other when the gap between their hulls is less than `margin` voxels and the way they would close in `seconds` at the
+/// speed they close at, which counts the speed of the two origins against each other and what the turn of each carries its far corner (the turn in radians a second times the
+/// reach of the hull).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContactRoom {
+    /// The gap, in voxels, that is near whatever the speed.
+    pub margin: f64,
+    /// The seconds the speed they close at is carried for.
+    pub seconds: f64,
+}
+
+/// Where the blocks of a ship are and how they move: the sphere about the middle of its hull through the farthest corner, the speed of its origin and the speed of its turn.
+struct HullSphere {
+    centre: WorldPosition,
+    radius: f64,
+    velocity: [f64; 3],
+    spin: f64,
+}
+
+impl HullSphere {
+    /// What a ship is now; `None` for one that has no hull (a planet, a ship with no blocks or one that has not been weighed: nothing of it can touch) or whose hull the world
+    /// cannot place.
+    fn of(ship: &MovingGrid) -> Option<HullSphere> {
+        if ship.terrain.is_some() {
+            return None;
+        }
+        let hull = ship.hull?;
+        let centre = ship
+            .pose
+            .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, hull.middle()))?;
+        Some(HullSphere {
+            centre,
+            radius: hull.radius(),
+            velocity: ship.linear_velocity,
+            spin: size(ship.angular_velocity),
+        })
+    }
+
+    /// Whether the gap between the two spheres is less than the room: the gap between the middles less the two radii, against the margin and the way the two close in the seconds
+    /// (the speed of one against the other and what each turn carries a corner).
+    fn is_near(&self, other: &HullSphere, room: ContactRoom) -> bool {
+        let apart = size(self.centre.displacement_to(other.centre).in_voxels());
+        let gap = apart - self.radius - other.radius;
+        let relative: [f64; 3] = [0, 1, 2].map(|axis| other.velocity[axis] - self.velocity[axis]);
+        let closing = size(relative) + self.spin * self.radius + other.spin * other.radius;
+        gap < room.margin + closing * room.seconds
+    }
+}
+
+fn size(vector: [f64; 3]) -> f64 {
+    libm::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
+}
+
+impl ServerWorld {
+    /// Every ship that is near the group of ships coupled by their joint ends that `anchor` (the ship of it with the lowest number) speaks for, in the order of their numbers: a
+    /// ship of the group's level that is not of the group and is near one of its ships by the room given (see [`ContactRoom`]). A ship with no hull is not counted (it has no
+    /// blocks to touch with, or is not weighed yet), nor a member without one, nor a planet (the ground is a matter of its own), and nothing is given for a ship that is not
+    /// the anchor of a group of two ships or more. Every ship is looked at once, so the cost is the ships times the group's.
+    pub fn ships_near_group(&self, anchor: GridId, room: ContactRoom) -> Vec<GridId> {
+        let members = self.data.grids().group_of(anchor);
+        if members.len() < 2 || members[0] != anchor {
+            return Vec::new();
+        }
+        let group: Vec<_> = members
+            .iter()
+            .filter_map(|member| {
+                let ship = self.data.grids().get(*member)?;
+                Some((ship.level, HullSphere::of(ship)?))
+            })
+            .collect();
+        self.data
+            .grids()
+            .iter()
+            .filter(|(id, _)| !members.contains(id))
+            .filter_map(|(id, other)| {
+                let sphere = HullSphere::of(other)?;
+                group
+                    .iter()
+                    .any(|(level, member)| *level == other.level && member.is_near(&sphere, room))
+                    .then_some(id)
+            })
+            .collect()
+    }
+}
