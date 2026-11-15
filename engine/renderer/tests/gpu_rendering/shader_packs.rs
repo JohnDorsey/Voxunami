@@ -36,7 +36,9 @@ fn srgb_byte(linear: f64) -> u8 {
 }
 
 /// The shadow tests' block scene, lit by the sun over the east with the shadows on, and the camera and the places probed.
-fn block_scene(context: &GraphicsContext) -> (VoxelRenderer, Camera, Vec<(u32, u32, bool)>) {
+pub(super) fn block_scene(
+    context: &GraphicsContext,
+) -> (VoxelRenderer, Camera, Vec<(u32, u32, bool)>) {
     let mut renderer = new_renderer(context);
     upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
     let (camera, cells, probes) = shadow_scene_setup(ShadowScene::Block, 0);
@@ -407,14 +409,39 @@ fn a_pack_is_told_how_much_of_the_sky_is_over_the_place() {
 }
 
 /// The text of the lighting file of an example pack of the renderer's `example_shader_packs` folder.
-fn example(name: &str) -> ShaderPack {
+pub(super) fn example(name: &str) -> ShaderPack {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("example_shader_packs")
         .join(name);
     let lighting =
         std::fs::read_to_string(folder.join("lighting.wgsl")).expect("the example's lighting file");
-    ShaderPack::new(&format!("voxunami:{name}"), name, &lighting)
-        .expect("an example is a good pack")
+    // (The renderer's tests do not read `pack.json`: the settings an example declares are written here, and the shell's tests check that its file says the same.)
+    ShaderPack::new_with_settings(
+        &format!("voxunami:{name}"),
+        name,
+        &lighting,
+        example_settings(name),
+    )
+    .expect("an example is a good pack")
+}
+
+/// The settings the example pack of this name declares in its `pack.json`.
+pub(super) fn example_settings(name: &str) -> Vec<renderer::SettingDeclaration> {
+    match name {
+        "cel" => vec![
+            renderer::SettingDeclaration::new(
+                "steps",
+                "",
+                renderer::SettingKind::Integer {
+                    default: 3,
+                    minimum: 2,
+                    maximum: 8,
+                },
+            )
+            .expect("a good declaration"),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 #[test]

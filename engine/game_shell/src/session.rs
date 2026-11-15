@@ -1151,6 +1151,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     pub fn reject_shader_pack(&mut self) {
         self.settings.shader_pack = None;
         self.settings.shader_settings.clear();
+        self.settings.pack_settings.clear();
     }
 
     /// The sun of the level the player is in and the time of day by the world's clock, if the game has a sun there.

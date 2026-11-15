@@ -27,6 +27,8 @@ shaderpacks/
 - `interface`: the version of the pack interface the pack is written for. The engine's is **1**; a pack for another is refused, so that a change of the interface is never a quiet break. May be left out.
 - `format`: 1 (may be left out). `description`: free text.
 - `relief`: how the relief of block pictures is drawn, `"flat"` or `"prisms"`. **Prisms** make each pixel of a picture whose normal companion (LabPBR `_n`) has a height in its alpha a square column that deep, 0.1 voxel at most, with its sides lit by the sun; **flat** draws the face flat (the picture's bumps and the shade of its own relief stay). Left out, the engine's own choice: prisms, while they are tested. A pack that says `"flat"` has no prisms in its shaders at all, which costs about 1.2 to 1.5 ms of a 3 ms frame of nothing but dirt on an integrated GPU (nothing on a picture with no relief); it needs no new interface number, since a pack still reads only `Surface`. See `engine/renderer/example_shader_packs/flat`.
+- `settings`: settings of the pack's own, which its lighting reads and the player changes (see "Settings" below).
+- `engine_settings`: the defaults the pack sets for the engine's settings, by name (`{ "scene_lift": 1.0 }`); each must be in the setting's range.
 - Any other key is an error.
 
 ## `lighting.wgsl`
@@ -86,7 +88,29 @@ The engine has numbers of taste that a player changes by eye. Each has a name, a
 
 While playing, `.shadersetting` lists them, `.shadersetting NAME` says what one is for and what it takes, `.shadersetting NAME VALUE` changes it (the beginning of a name will do) and `.shadersetting NAME default` goes back. A change makes the shaders again, which is a pause of a fifth to half a second. The values are for the session; they are not saved yet. A pack reads them as it reads the engine's other constants (`RELIEF_DEPTH`, `WALL_DARKNESS`, `SCENE_LIFT`), and may not define a name of the same spelling.
 
-Settings of a pack's own, declared in `pack.json` and chosen by the player, are not built yet (`docs/specs/shader-pack-spec.md`, decision 8).
+**A pack's own settings** are declared in `pack.json`, never scraped from the shader's text:
+
+```json
+"settings": {
+  "steps": {
+    "type": "integer",
+    "description": "how many steps the sun's light has",
+    "default": 3,
+    "minimum": 2,
+    "maximum": 8
+  },
+  "outline": { "type": "switch", "default": true }
+},
+"engine_settings": { "scene_lift": 1.0 }
+```
+
+- The key is the name: lower case letters, digits and underscores, beginning with a letter, and not the name of an engine setting.
+- `type` is `float` (a number), `integer` (a whole number) or `switch` (true or false). A number has a `minimum`, a `maximum` and a `default` between them; a switch has a `default`. `description` is free text that `.shadersetting NAME` shows. Any other key is an error.
+- The lighting reads it as the constant `SETTING_` and the name in upper case: `steps` is `SETTING_STEPS`, an `i32` (a float is an `f32`, a switch a `bool`). A pack that reads one it did not declare is refused with the line.
+- `.shadersetting` lists the engine's settings, with the pack's defaults, and then the pack's own, while the pack is in use. A value chosen for a pack's own setting is that pack's (it is there again when the pack is chosen again); a value chosen for an engine setting is the player's, whatever the pack. A change makes the shaders again, as for the engine's.
+- `engine_settings` sets what a setting of the engine's is until the player says: `.shadersetting NAME default` goes back to the pack's.
+
+See `engine/renderer/example_shader_packs/cel`, which has `steps`.
 
 ## Checking and using a pack
 
@@ -107,14 +131,15 @@ While playing, `.shader` says which pack is in use and what there is, `.shader N
 
 `engine/renderer/example_shader_packs` has three (they are checked by tests, and drawn on every graphics card the tests run on):
 
-- `cel`: the sun's light in three steps instead of a smooth fall-off:
+- `cel`: the sun's light in steps (three, or what the pack's setting `steps` is) instead of a smooth fall-off:
 
   ```wgsl
   fn pack_shade(s: Surface) -> vec3<f32> {
       let sky = frame.sun_light.y * s.sky_visible + frame.heavens.w * (1.0 - s.above_horizon) * s.uncovered;
       let shaded = s.side * (s.lamp + sky * (1.0 - s.lamp));
       let cosine = max(dot(s.normal, frame.sun_direction.xyz), 0.0) * s.sun_visible;
-      let stepped = floor(cosine * 3.0 + 0.5) / 3.0;
+      let steps = f32(SETTING_STEPS);
+      let stepped = floor(cosine * steps + 0.5) / steps;
       let sun = frame.sun_light.x * stepped;
       return s.albedo * (shaded + sun * (1.0 - shaded));
   }
@@ -125,4 +150,4 @@ While playing, `.shader` says which pack is in use and what there is, `.shader N
 
 ## Not yet
 
-A pack cannot change the sky, the fog or the stars, move vertices (waving leaves), know the time, have settings of its own, or draw a pass after the world: those are hooks to add when a pack needs them (`docs/specs/shader-pack-spec.md`, section 6).
+A pack cannot change the sky, the fog or the stars, move vertices (waving leaves), know the time, or draw a pass after the world: those are hooks to add when a pack needs them (`docs/specs/shader-pack-spec.md`, section 6).

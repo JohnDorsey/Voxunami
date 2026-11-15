@@ -30,6 +30,8 @@ pub struct ClientSettings {
     pub shader_pack: Option<String>,
     /// The values the player has chosen for the engine's shader settings (`.shadersetting`, `renderer::engine_settings`), by name; a setting that is not here is its default.
     pub shader_settings: renderer::SettingChoices,
+    /// The values chosen for the settings a pack declares itself, by the id of the pack and then the name (what a pack's setting is is the pack's own).
+    pub pack_settings: std::collections::BTreeMap<String, renderer::SettingChoices>,
 }
 
 impl ClientSettings {
@@ -46,6 +48,61 @@ impl ClientSettings {
             shader_packs: Vec::new(),
             shader_pack: None,
             shader_settings: renderer::SettingChoices::new(),
+            pack_settings: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// The settings that are in play with the shader in use: the engine's alone for the game's own, and for a pack the engine's with the pack's defaults, then the pack's own.
+    pub fn settings_in_play(&self) -> Vec<renderer::SettingDeclaration> {
+        self.shader_pack
+            .as_ref()
+            .and_then(|id| self.shader_packs.iter().find(|pack| &pack.id == id))
+            .map_or_else(renderer::engine_settings, |pack| pack.settings.clone())
+    }
+
+    /// What the renderer is told of the player's choices: the engine's, and the pack's own for the pack in use.
+    pub fn chosen_settings(&self) -> renderer::SettingChoices {
+        let mut chosen = self.shader_settings.clone();
+        if let Some(own) = self
+            .shader_pack
+            .as_ref()
+            .and_then(|id| self.pack_settings.get(id))
+        {
+            chosen.extend(own.iter().map(|(name, value)| (name.clone(), *value)));
+        }
+        chosen
+    }
+
+    /// The value the player has chosen for the setting of this name in play, if any.
+    fn chosen_value(&self, name: &str) -> Option<renderer::SettingValue> {
+        self.shader_settings.get(name).copied().or_else(|| {
+            self.shader_pack
+                .as_ref()
+                .and_then(|id| self.pack_settings.get(id))
+                .and_then(|own| own.get(name).copied())
+        })
+    }
+
+    /// Chooses a value for the setting of this name in play, or none (its default again). The engine's settings are the player's whatever the pack; a pack's own are its own.
+    fn choose_value(&mut self, name: &str, value: Option<renderer::SettingValue>) {
+        let engine = renderer::engine_settings()
+            .iter()
+            .any(|declaration| declaration.name() == name);
+        let choices = if engine {
+            &mut self.shader_settings
+        } else {
+            let Some(id) = self.shader_pack.clone() else {
+                return;
+            };
+            self.pack_settings.entry(id).or_default()
+        };
+        match value {
+            Some(value) => {
+                choices.insert(name.to_owned(), value);
+            }
+            None => {
+                choices.remove(name);
+            }
         }
     }
 }
@@ -84,13 +141,12 @@ fn pick_setting<'a>(
 
 /// What `.shadersetting` says with no name: each setting with its value, and its default where the player has changed it.
 fn settings_listed(settings: &ClientSettings) -> String {
-    let listed: Vec<String> = renderer::engine_settings()
+    let listed: Vec<String> = settings
+        .settings_in_play()
         .iter()
         .map(|declaration| {
             let value = settings
-                .shader_settings
-                .get(declaration.name())
-                .copied()
+                .chosen_value(declaration.name())
                 .unwrap_or_else(|| declaration.default_value());
             if value == declaration.default_value() {
                 format!("{} {value}", declaration.name())
@@ -369,7 +425,7 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
     registrar.command(
         CommandSpec::new(
             "shadersetting",
-            "changes a number of how the engine draws, by eye (how deep the relief of block pictures is, how dark the foot of a prism's wall is, how much brighter the darks of the whole scene are made): .shadersetting NAME VALUE (the beginning of a name will do), .shadersetting NAME default goes back, .shadersetting NAME says what one is for, .shadersetting alone lists them; a change makes the shaders again, a pause of a moment",
+            "changes a number of how the engine draws, by eye (how deep the relief of block pictures is, how dark the foot of a prism's wall is, how much brighter the darks of the whole scene are made, and the settings of the shader pack in use): .shadersetting NAME VALUE (the beginning of a name will do), .shadersetting NAME default goes back, .shadersetting NAME says what one is for, .shadersetting alone lists them; a change makes the shaders again, a pause of a moment",
         )
         .with_prefix('.')
         .argument(Argument::word("setting").optional())
@@ -379,18 +435,14 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
             if !arguments.present(0) {
                 return settings_listed(settings);
             }
-            let declarations = renderer::engine_settings();
+            let declarations = settings.settings_in_play();
             let declaration = match pick_setting(&declarations, arguments.word(0)) {
                 Ok(declaration) => declaration,
                 Err(error) => return error,
             };
             let name = declaration.name();
             let default = declaration.default_value();
-            let current = settings
-                .shader_settings
-                .get(name)
-                .copied()
-                .unwrap_or(default);
+            let current = settings.chosen_value(name).unwrap_or(default);
             if !arguments.present(1) {
                 return format!(
                     "{name} is {current}{}: {}; it takes {}",
@@ -407,10 +459,10 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                 },
             };
             if wanted == default {
-                settings.shader_settings.remove(name);
+                settings.choose_value(name, None);
                 return format!("{name} is {default}, the default");
             }
-            settings.shader_settings.insert(name.to_owned(), wanted);
+            settings.choose_value(name, Some(wanted));
             format!(
                 "{name} is now {wanted} (the default is {default}); .shadersetting {name} default goes back"
             )
@@ -442,6 +494,9 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
 }
 
 #[cfg(test)]
+mod pack_settings_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -453,7 +508,7 @@ mod tests {
     use crate::view::camera_at;
 
     /// Runs a typed line the way the window does, against these settings.
-    fn run(line: &str, settings: &mut ClientSettings) -> String {
+    pub(super) fn run(line: &str, settings: &mut ClientSettings) -> String {
         run_with_questions(line, settings, &[]).0
     }
 
@@ -508,6 +563,7 @@ mod tests {
             .map(|(id, name)| ShaderPackName {
                 id: id.to_owned(),
                 name: name.to_owned(),
+                settings: renderer::engine_settings(),
             })
             .to_vec();
         settings

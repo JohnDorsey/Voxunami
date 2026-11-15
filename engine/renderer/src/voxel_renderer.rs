@@ -27,7 +27,7 @@ use crate::overlay::{Overlay, OverlayRect};
 use crate::shader_pack::{
     DEFAULT_LIGHTING, DEFAULT_RELIEF, Relief, ShaderPack, ShaderPackError, Shading,
 };
-use crate::shader_settings::{SettingChoices, ShaderSettings};
+use crate::shader_settings::{SettingChoices, SettingDeclaration, ShaderSettings};
 use crate::shadow::{
     Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
     sky_half_widths,
@@ -952,6 +952,8 @@ pub struct VoxelRenderer {
     shading: Shading,
     /// The choices of settings the shading was made from (what [`VoxelRenderer::set_shader_pack_with_settings`] was last given that it took).
     shading_choices: SettingChoices,
+    /// What the pack the shading was made for declared of settings: the defaults it set for the engine's, and its own.
+    shading_declared: (SettingChoices, Vec<SettingDeclaration>),
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
@@ -1265,6 +1267,7 @@ impl VoxelRenderer {
             entities_in_the_sun_walk: true,
             shading: Shading::engine_default(),
             shading_choices: SettingChoices::new(),
+            shading_declared: (SettingChoices::new(), Vec::new()),
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
             bricks: HashMap::new(),
@@ -1892,14 +1895,21 @@ impl VoxelRenderer {
     ) -> Result<(), ShaderPackError> {
         let lighting = pack.map_or(DEFAULT_LIGHTING, ShaderPack::lighting);
         let relief = pack.and_then(ShaderPack::relief).unwrap_or(DEFAULT_RELIEF);
+        static NO_DEFAULTS: SettingChoices = SettingChoices::new();
+        let (defaults, own) = match pack {
+            Some(pack) => (pack.engine_defaults(), pack.own_settings()),
+            None => (&NO_DEFAULTS, &[][..]),
+        };
         // (The window asks every frame: what is the same as last time is told apart without making anything.)
         if lighting == self.shading.lighting
             && relief == self.shading.relief
             && *choices == self.shading_choices
+            && *defaults == self.shading_declared.0
+            && own == self.shading_declared.1.as_slice()
         {
             return Ok(());
         }
-        let settings = ShaderSettings::resolve(choices)
+        let settings = ShaderSettings::resolve_for(defaults, own, choices)
             .map_err(|message| ShaderPackError::bad_settings(&message))?;
         let shading = Shading {
             lighting: lighting.to_owned(),
@@ -1909,6 +1919,7 @@ impl VoxelRenderer {
         if shading == self.shading {
             // (Other choices that make the same values, such as a default said in words: nothing to make.)
             self.shading_choices = choices.clone();
+            self.shading_declared = (defaults.clone(), own.to_vec());
             return Ok(());
         }
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1964,6 +1975,7 @@ impl VoxelRenderer {
         self.contact = contact;
         self.shading = shading;
         self.shading_choices = choices.clone();
+        self.shading_declared = (defaults.clone(), own.to_vec());
         self.sky_pipeline = sky;
         (self.pipeline, self.detailed_pipeline) = pipelines;
         match pictures {

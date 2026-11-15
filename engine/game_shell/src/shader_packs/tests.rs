@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::*;
 
 /// A folder in the temporary directory that is removed with it.
-struct Folder(PathBuf);
+pub(super) struct Folder(PathBuf);
 
 impl Folder {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "voxunami_shader_packs_{name}_{}_{}",
@@ -18,14 +18,14 @@ impl Folder {
     }
 
     /// Writes a file in it (and the folders on the way).
-    fn write(&self, file: &str, text: &str) -> &Self {
+    pub(super) fn write(&self, file: &str, text: &str) -> &Self {
         let path = self.0.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
         self
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -187,11 +187,13 @@ fn a_folder_of_packs_gives_the_good_ones_by_id_and_the_problems_of_the_others_an
         [
             ShaderPackName {
                 id: "tester:apple".to_owned(),
-                name: "Apple".to_owned()
+                name: "Apple".to_owned(),
+                settings: renderer::engine_settings()
             },
             ShaderPackName {
                 id: "tester:zebra".to_owned(),
-                name: "Zebra".to_owned()
+                name: "Zebra".to_owned(),
+                settings: renderer::engine_settings()
             },
         ]
     );
@@ -215,6 +217,7 @@ fn names() -> Vec<ShaderPackName> {
     .map(|(id, name)| ShaderPackName {
         id: id.to_owned(),
         name: name.to_owned(),
+        settings: renderer::engine_settings(),
     })
     .to_vec()
 }

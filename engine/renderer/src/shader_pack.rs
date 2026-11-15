@@ -17,7 +17,9 @@
 
 use std::fmt;
 
-use crate::shader_settings::ShaderSettings;
+use crate::shader_settings::{
+    SettingChoices, SettingDeclaration, ShaderSettings, engine_settings, engine_settings_with,
+};
 use crate::voxel_renderer::{SunWalk, voxel_source};
 
 /// Which version of the interface a pack is written for: the fields of `Surface` and what `pack_shade` is given and returns. A pack's `pack.json` names it, and a version of the
@@ -136,25 +138,81 @@ impl ShaderPackError {
 }
 
 /// A pack: its id and name, the text of its `pack_shade`, checked, and how it draws the relief of pictures, if it says.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShaderPack {
     id: String,
     name: String,
     lighting: String,
     relief: Option<Relief>,
+    own_settings: Vec<SettingDeclaration>,
+    engine_defaults: SettingChoices,
 }
 
 impl ShaderPack {
     /// A pack with this id and name and the text of its lighting file; an error says everything that is wrong with the text. It draws the relief as the engine does
     /// ([`DEFAULT_RELIEF`]) until [`ShaderPack::with_relief`] says otherwise.
     pub fn new(id: &str, name: &str, lighting: &str) -> Result<Self, ShaderPackError> {
-        check_lighting(lighting)?;
+        Self::new_with_settings(id, name, lighting, Vec::new())
+    }
+
+    /// A pack with settings of its own, which its lighting reads as constants: the setting `steps` is `SETTING_STEPS` (a float, a whole number or a switch, as it is declared). A name
+    /// that an engine setting has, or another setting of the pack, is an error; so is anything wrong with the text, which is checked with the constants before it.
+    pub fn new_with_settings(
+        id: &str,
+        name: &str,
+        lighting: &str,
+        settings: Vec<SettingDeclaration>,
+    ) -> Result<Self, ShaderPackError> {
+        let engine = engine_settings();
+        for (index, setting) in settings.iter().enumerate() {
+            let taken = engine
+                .iter()
+                .any(|declaration| declaration.name() == setting.name())
+                || settings[..index]
+                    .iter()
+                    .any(|earlier| earlier.name() == setting.name());
+            if taken {
+                return Err(ShaderPackError::one(format!(
+                    "the setting {} is the name of an engine setting or of another of the pack's: rename it",
+                    setting.name()
+                )));
+            }
+        }
+        check_lighting_with(lighting, &settings)?;
         Ok(Self {
             id: id.to_owned(),
             name: name.to_owned(),
             lighting: lighting.to_owned(),
             relief: None,
+            own_settings: settings,
+            engine_defaults: SettingChoices::new(),
         })
+    }
+
+    /// The same pack setting these defaults for engine settings (`"engine_settings"` in `pack.json`), by name. An error says which name is not an engine setting or which value is
+    /// not one of its setting.
+    pub fn with_engine_defaults(mut self, defaults: SettingChoices) -> Result<Self, String> {
+        engine_settings_with(&defaults)?;
+        self.engine_defaults = defaults;
+        Ok(self)
+    }
+
+    /// The settings the pack declares itself.
+    pub fn own_settings(&self) -> &[SettingDeclaration] {
+        &self.own_settings
+    }
+
+    /// The defaults the pack sets for engine settings.
+    pub fn engine_defaults(&self) -> &SettingChoices {
+        &self.engine_defaults
+    }
+
+    /// Every setting that is in play when the pack is: the engine's with the defaults the pack sets, then the pack's own.
+    pub fn settings(&self) -> Vec<SettingDeclaration> {
+        let mut settings = engine_settings_with(&self.engine_defaults)
+            .expect("the defaults were checked when they were set");
+        settings.extend(self.own_settings.iter().cloned());
+        settings
     }
 
     /// The same pack drawing the relief of pictures this way (`"relief"` in `pack.json`).
@@ -319,6 +377,7 @@ fn language_problem(
     with_pictures: bool,
     relief: Relief,
     walk: SunWalk,
+    own_settings: &[SettingDeclaration],
     text: &str,
 ) -> Option<ShaderPackProblem> {
     let before = voxel_source(
@@ -327,7 +386,12 @@ fn language_problem(
         &Shading {
             lighting: String::new(),
             relief,
-            settings: ShaderSettings::defaults(),
+            settings: ShaderSettings::resolve_for(
+                &SettingChoices::new(),
+                own_settings,
+                &SettingChoices::new(),
+            )
+            .expect("defaults are in their ranges"),
         },
     );
     let source = format!("{before}{text}");
@@ -393,7 +457,16 @@ fn problem_at(
 /// Checks the text of a pack's lighting: the words it may not use, and that the engine's shader of the plainest kind and of the heaviest (with each relief), with the text after it,
 /// is accepted by the shader language. (The pack's text sees only the `Surface` and the frame's uniform, which every kind has, so the kinds between are as these; the names the
 /// pack may not define are those of the heaviest, and of each relief, which has names of its own.)
+#[cfg(test)]
 pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
+    check_lighting_with(text, &[])
+}
+
+/// [`check_lighting`] for a pack that declares these settings, whose constants are before its text.
+pub(crate) fn check_lighting_with(
+    text: &str,
+    own_settings: &[SettingDeclaration],
+) -> Result<(), ShaderPackError> {
     let problems = lexical_problems(text);
     if !problems.is_empty() {
         return Err(ShaderPackError { problems });
@@ -408,7 +481,7 @@ pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
         (true, Relief::Flat, heaviest),
         (true, Relief::Prisms, heaviest),
     ] {
-        if let Some(problem) = language_problem(with_pictures, relief, walk, text) {
+        if let Some(problem) = language_problem(with_pictures, relief, walk, own_settings, text) {
             return Err(ShaderPackError {
                 problems: vec![problem],
             });
@@ -417,5 +490,7 @@ pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod pack_settings_tests;
 #[cfg(test)]
 mod tests;

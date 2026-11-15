@@ -68,7 +68,7 @@ pub fn apply_shader_pack(
         .as_ref()
         .and_then(|id| packs.iter().find(|pack| pack.id() == id));
     renderer
-        .set_shader_pack_with_settings(wanted, &settings.shader_settings)
+        .set_shader_pack_with_settings(wanted, &settings.chosen_settings())
         .map_err(|error| {
             format!(
                 "the shader pack {} with the settings chosen is refused (the game's own shader and settings are used again):\n{error}",

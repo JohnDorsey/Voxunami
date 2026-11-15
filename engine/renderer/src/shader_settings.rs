@@ -190,10 +190,77 @@ impl SettingDeclaration {
     pub fn default_value(&self) -> SettingValue {
         self.kind.default_value()
     }
+
+    /// The same setting with another default, which must be a value of it.
+    pub fn with_default(&self, value: SettingValue) -> Result<Self, String> {
+        let kind = match (self.kind, self.kind.check(value)?) {
+            (
+                SettingKind::Float {
+                    minimum, maximum, ..
+                },
+                SettingValue::Float(default),
+            ) => SettingKind::Float {
+                default,
+                minimum,
+                maximum,
+            },
+            (
+                SettingKind::Integer {
+                    minimum, maximum, ..
+                },
+                SettingValue::Integer(default),
+            ) => SettingKind::Integer {
+                default,
+                minimum,
+                maximum,
+            },
+            (SettingKind::Switch { .. }, SettingValue::Switch(default)) => {
+                SettingKind::Switch { default }
+            }
+            _ => unreachable!("check accepts only a value of the kind"),
+        };
+        Ok(Self {
+            kind,
+            ..self.clone()
+        })
+    }
+}
+
+/// The engine's settings with the defaults a pack sets for them. An error names the one that is not an engine setting, or whose default is not a value of it.
+pub(crate) fn engine_settings_with(
+    defaults: &SettingChoices,
+) -> Result<Vec<SettingDeclaration>, String> {
+    let declarations = engine_settings();
+    if let Some(unknown) = defaults.keys().find(|name| {
+        !declarations
+            .iter()
+            .any(|declaration| declaration.name() == *name)
+    }) {
+        return Err(format!(
+            "{unknown:?} is not an engine setting; there are {}",
+            declarations
+                .iter()
+                .map(SettingDeclaration::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    declarations
+        .into_iter()
+        .map(|declaration| match defaults.get(declaration.name()) {
+            Some(&value) => declaration
+                .with_default(value)
+                .map_err(|error| format!("{}: {error}", declaration.name())),
+            None => Ok(declaration),
+        })
+        .collect()
 }
 
 /// What a player (or a pack) has chosen, by the names of settings: the rest are as their declarations say.
 pub type SettingChoices = BTreeMap<String, SettingValue>;
+
+/// What a pack's own setting's constant begins with: the pack's `steps` is `SETTING_STEPS`, which no name of the engine's is.
+pub(crate) const OWN_PREFIX: &str = "SETTING_";
 
 /// The default of the number of the lift of the whole scene: the colour raised to the power of one over it (1 is no lift).
 pub const DEFAULT_SCENE_LIFT: f32 = 1.2;
@@ -249,23 +316,43 @@ impl ShaderSettings {
     /// The engine's settings with what is chosen of them (the rest are their defaults). An error says which name is not a setting (and what there are) or which value is not
     /// one of its setting.
     pub(crate) fn resolve(choices: &SettingChoices) -> Result<Self, String> {
-        let declarations = engine_settings();
+        Self::resolve_for(&SettingChoices::new(), &[], choices)
+    }
+
+    /// The settings of a pack: the engine's with the defaults the pack sets (`engine_defaults`), then the pack's own (`own`, whose constants are `SETTING_` and the name in
+    /// upper case), with what is chosen of any of them over the defaults.
+    pub(crate) fn resolve_for(
+        engine_defaults: &SettingChoices,
+        own: &[SettingDeclaration],
+        choices: &SettingChoices,
+    ) -> Result<Self, String> {
+        let engine = engine_settings_with(engine_defaults)?;
+        let declared: Vec<(String, &SettingDeclaration)> = engine
+            .iter()
+            .map(|declaration| (declaration.name().to_uppercase(), declaration))
+            .chain(own.iter().map(|declaration| {
+                (
+                    format!("{OWN_PREFIX}{}", declaration.name().to_uppercase()),
+                    declaration,
+                )
+            }))
+            .collect();
         if let Some(unknown) = choices.keys().find(|name| {
-            !declarations
+            !declared
                 .iter()
-                .any(|declaration| declaration.name() == *name)
+                .any(|(_, declaration)| declaration.name() == *name)
         }) {
             return Err(format!(
                 "{unknown:?} is not a setting; there are {}",
-                declarations
+                declared
                     .iter()
-                    .map(SettingDeclaration::name)
+                    .map(|(_, declaration)| declaration.name())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
         }
         let mut values = Vec::new();
-        for declaration in &declarations {
+        for (constant, declaration) in declared {
             let value = match choices.get(declaration.name()) {
                 Some(&chosen) => declaration
                     .kind()
@@ -273,7 +360,7 @@ impl ShaderSettings {
                     .map_err(|error| format!("{}: {error}", declaration.name()))?,
                 None => declaration.default_value(),
             };
-            values.push((declaration.name().to_uppercase(), value));
+            values.push((constant, value));
         }
         Ok(Self { values })
     }
@@ -306,5 +393,7 @@ impl ShaderSettings {
     }
 }
 
+#[cfg(test)]
+mod pack_tests;
 #[cfg(test)]
 mod tests;

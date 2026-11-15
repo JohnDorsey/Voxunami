@@ -46,6 +46,8 @@ mod glints;
 mod lift;
 #[path = "gpu_rendering/occlusion.rs"]
 mod occlusion;
+#[path = "gpu_rendering/pack_settings.rs"]
+mod pack_settings;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
 mod pixelated_shadows;
 #[path = "gpu_rendering/prisms.rs"]
