@@ -135,6 +135,8 @@ voxunami cave --shader-packs my_packs --shader-pack cel
 
 While playing, `.shader` says which pack is in use and what there is, `.shader NAME` chooses one and `.shader default` goes back to the game's own. A pack the graphics card refuses is taken off again and you are told.
 
+**Editing a pack while the game runs.** `.reload` reads the folders of packs and the files of settings again and uses them if all of it is good; `--watch` does it by itself a moment after a file stops changing (editors write in two steps). The pack in use stays in use: a pack that is no good (a loop, a syntax error), or that the graphics card refuses, leaves the game exactly as it was, and the reason is in the chat and on the error stream. A pack you deleted goes back to the game's own shader. Making the shaders again took 84 to 411 ms on the RTX 3090 (measured, in a real window, five reloads).
+
 ## Examples
 
 `engine/renderer/example_shader_packs` has three (they are checked by tests, and drawn on every graphics card the tests run on):

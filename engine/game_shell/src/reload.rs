@@ -236,9 +236,9 @@ pub trait Reloadable<C> {
     type Loaded;
     /// Reads and checks the files. It cannot change the state in use (`context` is shared, not mutable), so an error leaves the game as it was.
     fn load(&self, context: &C) -> Result<Self::Loaded, String>;
-    /// Puts what was loaded in use. Returns what the player is told, or the reason it was refused (the graphics card refused a shader), in which case the state in use must be
-    /// as it was before the call.
-    fn swap(&self, context: &mut C, loaded: Self::Loaded) -> Result<String, String>;
+    /// Puts what was loaded in use. Returns what the player is told, `None` if what was loaded is what is in use already (a file the game itself wrote), or the reason it was
+    /// refused (the graphics card refused a shader), in which case the state in use must be as it was before the call.
+    fn swap(&self, context: &mut C, loaded: Self::Loaded) -> Result<Option<String>, String>;
 }
 
 /// How a reload ended.
@@ -251,6 +251,8 @@ pub enum Outcome {
         /// Loading and swapping together.
         took: Duration,
     },
+    /// What was loaded is what was in use: nothing was done (told when asked for by hand, not when watching).
+    Unchanged,
     /// Nothing was changed. `reason` says why.
     Failed {
         /// Why: what the kind or the source said.
@@ -266,10 +268,11 @@ pub fn reload_once<C, R: Reloadable<C>>(kind: &R, context: &mut C) -> Outcome {
         Err(reason) => return Outcome::Failed { reason },
     };
     match kind.swap(context, loaded) {
-        Ok(detail) => Outcome::Reloaded {
+        Ok(Some(detail)) => Outcome::Reloaded {
             detail,
             took: start.elapsed(),
         },
+        Ok(None) => Outcome::Unchanged,
         Err(reason) => Outcome::Failed { reason },
     }
 }
@@ -292,6 +295,7 @@ impl Report {
                 self.kind,
                 took.as_secs_f64() * 1000.0
             ),
+            Outcome::Unchanged => format!("{}: nothing has changed", self.kind),
             Outcome::Failed { reason } => {
                 format!(
                     "reload of {} failed, nothing was changed: {reason}",
@@ -375,10 +379,7 @@ impl<C> Reloads<C> {
         settle: Duration,
         interval: Duration,
         logic: R,
-    ) -> Result<(), String>
-    where
-        C: 'static,
-    {
+    ) -> Result<(), String> {
         if self.kinds.iter().any(|kind| kind.name() == name) {
             return Err(format!("a kind of reload called `{name}` is already there"));
         }
@@ -416,6 +417,7 @@ impl<C> Reloads<C> {
         self.kinds
             .iter_mut()
             .filter_map(|kind| kind.watch(now, context))
+            .filter(|report| report.outcome != Outcome::Unchanged)
             .collect()
     }
 
@@ -451,6 +453,41 @@ fn is_editor_leftover(name: &str) -> bool {
         || name.ends_with(".swp")
         || name.ends_with(".swx")
         || name.ends_with(".part")
+}
+
+/// Several folders and files as one source (the folders of shader packs, say). A file is read by the part whose root it is under.
+#[derive(Clone, Debug)]
+pub struct DiskSources(Vec<DiskSource>);
+
+impl DiskSources {
+    /// The union of these sources.
+    pub fn new(sources: Vec<DiskSource>) -> Self {
+        Self(sources)
+    }
+}
+
+impl Source for DiskSources {
+    fn scan(&mut self) -> Result<BTreeMap<PathBuf, FileStamp>, String> {
+        let mut files = BTreeMap::new();
+        for source in &mut self.0 {
+            files.extend(source.scan()?);
+        }
+        Ok(files)
+    }
+
+    fn digest(&mut self, path: &Path) -> Result<u64, String> {
+        match self
+            .0
+            .iter_mut()
+            .find(|source| path.starts_with(&source.root))
+        {
+            Some(source) => source.digest(path),
+            None => Err(format!(
+                "{}: not in any of the places watched",
+                path.display()
+            )),
+        }
+    }
 }
 
 /// A folder (every file in it, and in the folders in it) or one file on disk.

@@ -27,6 +27,7 @@ use crate::files::{open_recording, open_world, record_connection, recorded_game,
 use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
+use crate::reload::{DiskSource, DiskSources, Reloadable, Reloads, Watcher};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
@@ -189,6 +190,8 @@ struct Viewer<G: GameDefinition> {
     renderer: VoxelRenderer,
     /// The shader packs the player has, which `.shader` chooses among (see `crate::shader_packs`), and the files that keep what they chose of the settings.
     shader_packs: crate::view::ShaderPacks,
+    /// What can be reloaded while the game runs (`.reload`, `--watch`): taken out while it reloads, since a reload changes the viewer it belongs to.
+    reloads: Option<Reloads<Viewer<G>>>,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
@@ -286,6 +289,7 @@ impl<G: GameDefinition> Viewer<G> {
             session.fog_radius_bricks(),
         );
         let shader_packs = prepare_shader_packs(view, &mut session)?;
+        let reloads = what_can_be_reloaded::<G>(view);
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
         let ticks_per_second = session.client().world().server_info().ticks_per_second;
@@ -296,6 +300,7 @@ impl<G: GameDefinition> Viewer<G> {
             context,
             renderer,
             shader_packs,
+            reloads: Some(reloads),
             session,
             keys: HashSet::new(),
             mouse_captured: false,
@@ -323,6 +328,33 @@ impl<G: GameDefinition> Viewer<G> {
             ticks_played: 0,
             recording_ended: false,
         })
+    }
+
+    /// Does what `.reload` asked, and, with `--watch`, what the files that changed ask: the replies are told in the window and on the output.
+    fn run_reloads(&mut self, now: Instant) {
+        let request = self.session.take_reload_request();
+        let Some(mut reloads) = self.reloads.take() else {
+            return;
+        };
+        let mut lines = Vec::new();
+        if let Some(kind) = request {
+            match reloads.reload(kind.as_deref(), self) {
+                Ok(reports) => lines.extend(reports.iter().map(|report| report.line())),
+                Err(error) => lines.push(error),
+            }
+        }
+        let elapsed = now.duration_since(self.started);
+        lines.extend(
+            reloads
+                .poll(elapsed, self)
+                .iter()
+                .map(|report| report.line()),
+        );
+        self.reloads = Some(reloads);
+        for line in lines {
+            println!("{line}");
+            self.reply = Some((line, now));
+        }
     }
 
     /// Runs what was typed on the command line: a line that starts with a period is the window's own
@@ -606,6 +638,7 @@ impl<G: GameDefinition> Viewer<G> {
         // The light of the picture: the terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe), so
         // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.
         light_the_scene(&mut self.renderer, &self.session);
+        self.run_reloads(now);
         // The shader the player chose (`.shader`): at once if it is the one drawn with. A pack the graphics card refuses is taken off, and the player is told.
         if let Err(error) = apply_shader_pack(
             &mut self.renderer,
@@ -704,6 +737,60 @@ fn screen_key(code: KeyCode, shift: bool) -> Option<ScreenKey> {
         KeyCode::Digit9 | KeyCode::Numpad9 => ScreenKey::Number(9),
         _ => return None,
     })
+}
+
+/// The folders of shader packs, as a reload reads them again (the same as at the start).
+struct ShaderPackFolders {
+    directory: Option<std::path::PathBuf>,
+    asked: Option<std::path::PathBuf>,
+}
+
+impl<G: GameDefinition> Reloadable<Viewer<G>> for ShaderPackFolders {
+    type Loaded = crate::view::ReadShaderPacks;
+
+    fn load(&self, _viewer: &Viewer<G>) -> Result<Self::Loaded, String> {
+        crate::view::read_shader_packs(self.directory.as_deref(), self.asked.as_deref())
+    }
+
+    fn swap(&self, viewer: &mut Viewer<G>, loaded: Self::Loaded) -> Result<Option<String>, String> {
+        for problem in loaded.problems() {
+            eprintln!("warning: {problem}");
+        }
+        crate::view::swap_shader_packs(
+            &mut viewer.renderer,
+            &mut viewer.shader_packs,
+            viewer.session.settings_mut(),
+            loaded,
+        )
+    }
+}
+
+/// The kinds of content this window can reload (`.reload`), watched for changes if `--watch` was given. A kind whose folders are not there is not offered.
+fn what_can_be_reloaded<G: GameDefinition>(view: &ViewOptions) -> Reloads<Viewer<G>> {
+    let mut reloads = Reloads::new(view.watch);
+    let directory = crate::shader_packs::default_directory();
+    let places: Vec<DiskSource> = directory
+        .iter()
+        .chain(view.shader_packs.iter())
+        .filter(|folder| folder.is_dir())
+        .map(DiskSource::new)
+        .collect();
+    if !places.is_empty() {
+        let added = reloads.add(
+            "shaders",
+            DiskSources::new(places),
+            Watcher::<DiskSources>::DEFAULT_SETTLE,
+            Watcher::<DiskSources>::DEFAULT_INTERVAL,
+            ShaderPackFolders {
+                directory,
+                asked: view.shader_packs.clone(),
+            },
+        );
+        if let Err(error) = added {
+            eprintln!("warning: shader packs will not be reloaded: {error}");
+        }
+    }
+    reloads
 }
 
 impl<G: GameDefinition> ApplicationHandler for App<G> {

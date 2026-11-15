@@ -1142,6 +1142,16 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.settings
     }
 
+    /// What the window's own commands change, for the shell to put right (a reload gives it the packs read again).
+    pub fn settings_mut(&mut self) -> &mut ClientSettings {
+        &mut self.settings
+    }
+
+    /// What `.reload` asked for since the last time this was called (see [`ClientSettings::reload_requested`]).
+    pub fn take_reload_request(&mut self) -> Option<Option<String>> {
+        self.settings.reload_requested.take()
+    }
+
     /// Tells the session which shader packs the player has (`.shader` chooses among them), which is chosen to start with (`None`: the game's own), and what the player chose of
     /// the settings of each (read from the files next to them).
     pub fn offer_shader_packs(

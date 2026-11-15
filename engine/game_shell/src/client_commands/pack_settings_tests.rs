@@ -282,3 +282,12 @@ fn a_shader_the_graphics_card_refuses_loses_its_choices_and_nothing_else_does() 
         SettingChoices::from([("relief".to_owned(), SettingValue::Choice("flat".to_owned()))])
     );
 }
+
+#[test]
+fn reload_asks_the_window_to_reload_everything_or_one_kind() {
+    let mut settings = ClientSettings::new(0);
+    assert_eq!(run(".reload", &mut settings), "reloading");
+    assert_eq!(settings.reload_requested, Some(None));
+    assert_eq!(run(".reload shaders", &mut settings), "reloading");
+    assert_eq!(settings.reload_requested, Some(Some("shaders".to_owned())));
+}

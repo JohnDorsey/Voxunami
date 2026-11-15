@@ -32,6 +32,8 @@ pub struct ClientSettings {
     /// (`None` for the game's own) and then the name; a setting that is not here is its default. The shell keeps them in files next to the packs
     /// ([`crate::shader_pack_settings`]).
     pub pack_settings: crate::shader_pack_settings::PackChoices,
+    /// What `.reload` asked for and the window has not done yet: `Some(None)` is everything that can be reloaded, `Some(Some(name))` one kind ([`crate::reload`]).
+    pub reload_requested: Option<Option<String>>,
 }
 
 impl ClientSettings {
@@ -48,6 +50,7 @@ impl ClientSettings {
             shader_packs: Vec::new(),
             shader_pack: None,
             pack_settings: std::collections::BTreeMap::new(),
+            reload_requested: None,
         }
     }
 
@@ -337,6 +340,19 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                 }
                 _ => "usage: .pixelshadows [on|off]".to_owned(),
             }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "reload",
+            "reads again the files of what can be reloaded while the game runs (shader packs and their settings) and uses them if all of it is good; .reload NAME reloads one kind, .reload alone every kind. --watch does it by itself when a file changes",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("kind").optional()),
+        |context, arguments| {
+            let kind = arguments.present(0).then(|| arguments.word(0).to_owned());
+            context.settings_mut().reload_requested = Some(kind);
+            "reloading".to_owned()
         },
     );
     registrar.command(
@@ -983,18 +999,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .reload [KIND], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .reload [KIND], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .reload [KIND], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

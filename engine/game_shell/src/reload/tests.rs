@@ -403,13 +403,16 @@ impl Reloadable<World> for TextKind {
         }
     }
 
-    fn swap(&self, world: &mut World, loaded: String) -> Result<String, String> {
+    fn swap(&self, world: &mut World, loaded: String) -> Result<Option<String>, String> {
         if self.refuse_swap {
             return Err("the graphics card refused it".to_owned());
         }
+        if world.in_use == loaded {
+            return Ok(None);
+        }
         world.swaps += 1;
         world.in_use = loaded.clone();
-        Ok(format!("now `{loaded}`"))
+        Ok(Some(format!("now `{loaded}`")))
     }
 }
 
@@ -798,4 +801,39 @@ fn a_folder_that_goes_away_is_unreadable_and_comes_back() {
         Poll::Waiting,
         "a rewritten file has a new stamp: it is looked at again"
     );
+}
+
+#[test]
+fn what_is_in_use_already_is_unchanged_silent_when_watching_and_said_when_asked() {
+    let folder = FakeFolder::with(&[("a", "one")]);
+    let mut reloads = reloads_with(&folder, true);
+    let mut world = World {
+        in_use: "one".to_owned(),
+        swaps: 0,
+    };
+    // The file changes, and what is loaded is what is in use already (the game wrote it itself).
+    folder.write("a", "two");
+    world.in_use = "two".to_owned();
+    assert_eq!(poll_through(&mut reloads, &mut world, 100, 1000), vec![]);
+    let reports = reloads.reload(None, &mut world).unwrap();
+    assert_eq!(reports[0].outcome, Outcome::Unchanged);
+    assert_eq!(reports[0].line(), "text: nothing has changed");
+    assert_eq!(world.swaps, 0);
+}
+
+#[test]
+fn several_folders_are_one_source_and_each_file_is_read_in_its_own() {
+    let first = Folder::new("reload_multi_a");
+    let second = Folder::new("reload_multi_b");
+    first.write("one", "1");
+    second.write("two", "22");
+    let mut source = DiskSources::new(vec![
+        DiskSource::new(first.path()),
+        DiskSource::new(second.path()),
+    ]);
+    let files = source.scan().unwrap();
+    assert_eq!(files.len(), 2);
+    let one = source.digest(&first.path().join("one")).unwrap();
+    assert_ne!(one, source.digest(&second.path().join("two")).unwrap());
+    assert!(source.digest(Path::new("elsewhere")).is_err());
 }
