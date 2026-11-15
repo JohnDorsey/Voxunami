@@ -10,8 +10,7 @@
 //! from the generator the world assigns to their region, and edited bricks are taken as they are.
 
 use std::any::Any;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -27,6 +26,7 @@ use voxel_meshing::{
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, VoxelCoordinate};
 use world_storage::LevelData;
 
+use crate::brick_states::{BrickState, BrickStates};
 use crate::occupancy::{OccupancyChange, OccupancyLog, OccupancyStatistics};
 
 /// Where the bricks around a viewer come from: the terrain of a level, or the terrain of a ship (a planet). A brick is either known as it is (an edited one) or
@@ -281,28 +281,17 @@ pub struct WorldMesher {
     settings: ViewSettings,
     channels: ViewChannels,
     table: Arc<BlockTable>,
-    /// The bricks near the viewer, whether edited or generated here.
-    bricks: HashMap<BrickCoordinate, Arc<Brick>>,
-    generating: HashSet<BrickCoordinate>,
-    /// Bricks being meshed, with the version of the world they were meshed from.
-    meshing: HashMap<BrickCoordinate, u64>,
-    /// Bricks whose current mesh is up to date. When held back, a brick is here exactly while its picture exists somewhere: waiting in `finished`, or handed out
-    /// and `shown` (checked by [`WorldMesher::check_consistency`]).
-    meshed: HashSet<BrickCoordinate>,
-    /// Bricks the renderer currently holds a mesh for.
-    displayed: HashSet<BrickCoordinate>,
+    /// What is known of each brick near the viewer: its voxels (edited or generated here), whether a job is making them or its picture, the picture if it is
+    /// held back, and whether it is shown (see [`BrickStates`]).
+    states: BrickStates,
     /// Bumped when a brick or a neighbour of it changes; results from older versions are stale.
     versions: HashMap<BrickCoordinate, u64>,
     /// Offsets of bricks to load: the view sphere plus a one-brick shell for neighbours.
     load_offsets: Vec<[i128; 3]>,
     /// Whether the pictures are kept until they are asked for (see [`WorldMesher::with_held_back_display`]).
     held_back: bool,
-    /// The pictures of bricks that are up to date and not shown, when held back.
-    finished: HashMap<BrickCoordinate, PackedBrickMesh>,
     /// Counts the pictures that have become ready, so that a coordinator can tell that there is something new.
     ready_serial: u64,
-    /// The bricks that were asked to be shown and not to be hidden, when held back (including the ones with nothing to see).
-    shown: HashSet<BrickCoordinate>,
     jobs: Option<mpsc::Sender<Job>>,
     results: mpsc::Receiver<JobResult>,
     workers: Vec<JoinHandle<()>>,
@@ -318,8 +307,8 @@ impl std::fmt::Debug for WorldMesher {
         formatter
             .debug_struct("WorldMesher")
             .field("settings", &self.settings)
-            .field("loaded", &self.bricks.len())
-            .field("meshed", &self.meshed.len())
+            .field("loaded", &self.states.loaded_count())
+            .field("meshed", &self.states.meshed_count())
             .finish_non_exhaustive()
     }
 }
@@ -412,17 +401,11 @@ impl WorldMesher {
             settings,
             channels,
             table,
-            bricks: HashMap::new(),
-            generating: HashSet::new(),
-            meshing: HashMap::new(),
-            meshed: HashSet::new(),
-            displayed: HashSet::new(),
+            states: BrickStates::new(),
             versions: HashMap::new(),
             load_offsets: offsets_within(settings.view_radius_bricks + 1),
             held_back: false,
-            finished: HashMap::new(),
             ready_serial: 0,
-            shown: HashSet::new(),
             jobs: Some(job_sender),
             results,
             workers,
@@ -474,12 +457,12 @@ impl WorldMesher {
 
     /// Whether a picture of the brick is waiting to be shown (when held back).
     pub fn is_ready(&self, coordinate: BrickCoordinate) -> bool {
-        self.finished.contains_key(&coordinate)
+        self.states.is_waiting(coordinate)
     }
 
     /// Whether the brick has been asked to be shown and not hidden since (when held back).
     pub fn is_shown(&self, coordinate: BrickCoordinate) -> bool {
-        self.shown.contains(&coordinate)
+        self.states.is_shown(coordinate)
     }
 
     /// Why a picture of the brick is not waiting to be shown, in words, for the report of a view that has stopped; `None` if one is. A brick wanted by a viewer is
@@ -489,21 +472,22 @@ impl WorldMesher {
         source: &impl TerrainSource,
         coordinate: BrickCoordinate,
     ) -> Option<String> {
-        if self.finished.contains_key(&coordinate) {
+        if self.states.is_waiting(coordinate) {
             return None;
         }
         let made_by_nothing = |coordinate: BrickCoordinate| {
             source.known(coordinate).is_none() && source.generator_for(coordinate).is_none()
         };
-        Some(if self.generating.contains(&coordinate) {
+        let state = self.states.get(coordinate);
+        Some(if state.is_some_and(BrickState::is_generating) {
             "it is being generated".to_string()
-        } else if self.meshing.contains_key(&coordinate) {
+        } else if state.is_some_and(BrickState::is_meshing) {
             "it is being meshed".to_string()
-        } else if self.shown.contains(&coordinate) {
+        } else if state.is_some_and(BrickState::is_shown) {
             "it is shown already".to_string()
-        } else if self.meshed.contains(&coordinate) {
+        } else if state.is_some_and(BrickState::is_meshed) {
             "it is meshed and its picture is gone (it would never be meshed again)".to_string()
-        } else if !self.bricks.contains_key(&coordinate) {
+        } else if self.states.data(coordinate).is_none() {
             if made_by_nothing(coordinate) {
                 "nothing here can make it: it is not known and no generator has it".to_string()
             } else {
@@ -512,7 +496,7 @@ impl WorldMesher {
         } else if let Some(missing) = FaceDirection::ALL
             .iter()
             .filter_map(|&face| coordinate.neighbour(face))
-            .find(|neighbour| !self.bricks.contains_key(neighbour))
+            .find(|&neighbour| self.states.data(neighbour).is_none())
         {
             let reason = if made_by_nothing(missing) {
                 ", and nothing here can make it"
@@ -528,31 +512,25 @@ impl WorldMesher {
     /// Shows the picture of a brick that [`WorldMesher::is_ready`]: returns what the renderer must be given for it, which is nothing if there is nothing to see
     /// (the brick is shown all the same). Nothing happens, and nothing is returned, for a brick that is not ready.
     pub fn show(&mut self, coordinate: BrickCoordinate) -> Option<MeshUpdate> {
-        let mesh = self.finished.remove(&coordinate)?;
-        self.shown.insert(coordinate);
+        let mesh = self.states.hand_out(coordinate)?;
         if mesh.is_empty() {
             return None;
         }
-        self.displayed.insert(coordinate);
+        self.states.set_displayed(coordinate, true);
         Some(MeshUpdate::Upload { coordinate, mesh })
     }
 
     /// Takes a shown brick down: returns what the renderer must do, which is nothing if it had nothing on the screen. The picture is gone with it (it was handed
-    /// out by [`WorldMesher::show`]), so the brick is no longer meshed, and is made again if it is wanted again.
+    /// out by [`WorldMesher::show`]), so the brick has none, and is made again if it is wanted again.
     pub fn hide(&mut self, coordinate: BrickCoordinate) -> Option<MeshUpdate> {
-        if !self.shown.remove(&coordinate) {
-            return None;
-        }
-        // A brick left in `meshed` with no picture anywhere would never be made again, and a view that wants it back would wait for it for ever.
-        self.meshed.remove(&coordinate);
-        self.displayed
-            .remove(&coordinate)
+        self.states
+            .take_down(coordinate)?
             .then_some(MeshUpdate::Remove(coordinate))
     }
 
     /// Jobs handed to workers and not yet finished.
     pub fn pending_jobs(&self) -> usize {
-        self.generating.len() + self.meshing.len()
+        self.states.jobs_in_flight()
     }
 
     /// Whether the mesher has nothing more to do until something changes: no job is in flight, and the last update started none and loaded no brick (a brick that
@@ -561,63 +539,30 @@ impl WorldMesher {
         self.pending_jobs() == 0 && self.scheduled_last_update == 0
     }
 
-    /// Checks that the sets that say what state a brick is in agree with each other, and says what is wrong if they do not. The ones that disagree would be a bug of this type, not of
-    /// its callers: a brick the mesher believes is meshed that has no picture anywhere is never meshed again, and a view that waits for it waits for ever. Cheap enough to call every
-    /// update of a test; the first thing found is returned.
+    /// Checks what the records of the bricks cannot make impossible by their shape, and says what is wrong if it is not so (the first thing found): a brick
+    /// whose picture was given out and that is not shown is never meshed again, and a view that waits for it waits for ever. Cheap enough to call at every
+    /// update of a test.
     pub fn check_consistency(&self) -> Result<(), String> {
-        for coordinate in &self.meshed {
-            if !self.bricks.contains_key(coordinate) {
-                return Err(format!("{coordinate:?} is meshed and not loaded"));
-            }
-            if self.meshing.contains_key(coordinate) {
-                return Err(format!("{coordinate:?} is meshed and being meshed"));
-            }
-            if self.held_back
-                && !self.finished.contains_key(coordinate)
-                && !self.shown.contains(coordinate)
-            {
-                return Err(format!(
-                    "{coordinate:?} is meshed, and its picture is neither waiting nor shown, so it would never be meshed again"
-                ));
-            }
-        }
-        if self.held_back {
-            for coordinate in self.finished.keys() {
-                if !self.meshed.contains(coordinate) {
-                    return Err(format!(
-                        "{coordinate:?} has a picture waiting and is not meshed"
-                    ));
-                }
-                if self.shown.contains(coordinate) {
-                    return Err(format!("{coordinate:?} has a picture waiting and is shown"));
-                }
-            }
-            for coordinate in &self.displayed {
-                if !self.shown.contains(coordinate) {
-                    return Err(format!("{coordinate:?} is on the screen and not shown"));
-                }
-            }
-        }
-        Ok(())
+        self.states.check_consistency(self.held_back)
     }
 
     /// Bricks currently held in memory (whether or not drawn).
     pub fn loaded_brick_count(&self) -> usize {
-        self.bricks.len()
+        self.states.loaded_count()
     }
 
     /// The block in a voxel, if its brick is loaded.
     pub fn material_at(&self, coordinate: VoxelCoordinate) -> Option<u32> {
         let (brick, local) = coordinate.split();
-        self.bricks
-            .get(&brick)
+        self.states
+            .data(brick)
             .map(|loaded| loaded.get(self.channels.blocks, local))
     }
 
     /// The state of the block in a voxel (0 where the game has no states), if its brick is loaded.
     pub fn state_at(&self, coordinate: VoxelCoordinate) -> Option<u32> {
         let (brick, local) = coordinate.split();
-        self.bricks.get(&brick).map(|loaded| {
+        self.states.data(brick).map(|loaded| {
             self.channels
                 .states
                 .map_or(0, |states| loaded.get(states, local))
@@ -627,7 +572,7 @@ impl WorldMesher {
     /// The orientation of the block in a voxel (0 where the game has none), if its brick is loaded.
     pub fn orientation_at(&self, coordinate: VoxelCoordinate) -> Option<u32> {
         let (brick, local) = coordinate.split();
-        self.bricks.get(&brick).map(|loaded| {
+        self.states.data(brick).map(|loaded| {
             self.channels
                 .orientations
                 .map_or(0, |orientations| loaded.get(orientations, local))
@@ -658,16 +603,14 @@ impl WorldMesher {
     /// Tells the mesher a brick's edited contents changed, so it and its neighbours are meshed
     /// again from the new contents.
     pub fn brick_changed(&mut self, coordinate: BrickCoordinate) {
-        self.bricks.remove(&coordinate);
-        self.generating.remove(&coordinate);
+        self.states.forget_data(coordinate);
         for affected in std::iter::once(coordinate).chain(
             FaceDirection::ALL
                 .iter()
                 .filter_map(|&f| coordinate.neighbour(f)),
         ) {
             *self.versions.entry(affected).or_insert(0) += 1;
-            self.meshed.remove(&affected);
-            self.finished.remove(&affected);
+            self.states.drop_picture(affected);
         }
     }
 
@@ -678,30 +621,20 @@ impl WorldMesher {
             return;
         }
         self.channels = channels;
-        let loaded: Vec<BrickCoordinate> = self.bricks.keys().copied().collect();
-        for coordinate in loaded {
+        for coordinate in self.states.loaded_coordinates() {
             *self.versions.entry(coordinate).or_insert(0) += 1;
         }
-        self.meshed.clear();
-        self.meshing.clear();
-        self.finished.clear();
+        self.states.drop_all_pictures();
     }
 
     /// Forgets every brick and all work in progress, as when the viewer moves to another level whose
     /// bricks have nothing to do with the old ones. Returns the removal of every mesh displayed.
     pub fn reset(&mut self) -> Vec<MeshUpdate> {
         self.epoch += 1;
-        self.bricks.clear();
-        self.generating.clear();
-        self.meshing.clear();
-        self.meshed.clear();
-        self.finished.clear();
-        self.shown.clear();
+        let displayed = self.states.clear();
         self.versions.clear();
         self.scheduled_last_update = 0;
         self.occupancy.clear_all();
-        let mut displayed: Vec<BrickCoordinate> = self.displayed.drain().collect();
-        displayed.sort();
         displayed.into_iter().map(MeshUpdate::Remove).collect()
     }
 
@@ -730,8 +663,8 @@ impl WorldMesher {
                     coordinate,
                     brick,
                 } => {
-                    if epoch == self.epoch && self.generating.remove(&coordinate) {
-                        self.bricks.entry(coordinate).or_insert(brick);
+                    if epoch == self.epoch {
+                        self.states.finish_generating(coordinate, brick);
                     }
                 }
                 JobResult::Meshed {
@@ -742,28 +675,24 @@ impl WorldMesher {
                     occupancy,
                 } => {
                     if epoch != self.epoch
-                        || self.meshing.remove(&coordinate).is_none()
+                        || !self.states.finish_meshing(coordinate)
                         || version != self.version_of(coordinate)
                     {
                         continue; // unloaded, or changed since: the brick will be meshed again
                     }
-                    self.meshed.insert(coordinate);
                     if let Some(occupancy) = occupancy {
                         self.occupancy.set(coordinate, occupancy);
                     }
-                    if self.held_back && !self.shown.contains(&coordinate) {
-                        self.finished.insert(coordinate, mesh);
+                    if self.held_back && !self.states.is_shown(coordinate) {
+                        self.states.hold(coordinate, mesh);
                         self.ready_serial += 1;
                         continue;
                     }
-                    if mesh.is_empty() && !self.displayed.contains(&coordinate) {
+                    self.states.deliver(coordinate);
+                    if mesh.is_empty() && !self.states.is_displayed(coordinate) {
                         continue;
                     }
-                    if mesh.is_empty() {
-                        self.displayed.remove(&coordinate);
-                    } else {
-                        self.displayed.insert(coordinate);
-                    }
+                    self.states.set_displayed(coordinate, !mesh.is_empty());
                     updates.push(MeshUpdate::Upload { coordinate, mesh });
                 }
             }
@@ -771,18 +700,15 @@ impl WorldMesher {
 
         // Unload what is out of range. A removal is reported for every displayed brick.
         let too_far: Vec<BrickCoordinate> = self
-            .bricks
-            .keys()
-            .copied()
+            .states
+            .loaded_coordinates()
             .filter(|&coordinate| is_farther_than(coordinate, center, keep_radius))
             .collect();
         for coordinate in too_far {
-            self.bricks.remove(&coordinate);
-            self.meshed.remove(&coordinate);
-            self.meshing.remove(&coordinate);
-            self.finished.remove(&coordinate);
+            self.states.unload(coordinate);
             self.occupancy.clear(coordinate);
-            if !self.held_back && self.displayed.remove(&coordinate) {
+            if !self.held_back && self.states.is_displayed(coordinate) {
+                self.states.set_displayed(coordinate, false);
                 updates.push(MeshUpdate::Remove(coordinate));
             }
         }
@@ -790,21 +716,23 @@ impl WorldMesher {
         let maximum_in_flight = self.workers.len() * 4;
         let mut scheduled = 0;
         for &[dx, dy, dz] in &self.load_offsets {
-            if self.generating.len() + self.meshing.len() >= maximum_in_flight {
+            if self.states.jobs_in_flight() >= maximum_in_flight {
                 break;
             }
             let Some(coordinate) = center.checked_offset(dx, dy, dz) else {
                 continue;
             };
-            if let Entry::Vacant(slot) = self.bricks.entry(coordinate) {
+            let mut state = self.states.get(coordinate);
+            if state.and_then(BrickState::data).is_none() {
                 if let Some(known) = source.known(coordinate) {
-                    slot.insert(known);
+                    self.states.load(coordinate, known);
                     // No job, and yet the bricks beside it may be whole now, and are looked at again by the next update.
                     scheduled += 1;
-                } else if !self.generating.contains(&coordinate)
+                    state = self.states.get(coordinate);
+                } else if !state.is_some_and(BrickState::is_generating)
                     && let Some(generator) = source.generator_for(coordinate)
                 {
-                    self.generating.insert(coordinate);
+                    self.states.start_generating(coordinate);
                     self.jobs
                         .as_ref()
                         .expect("workers run until the mesher is dropped")
@@ -824,15 +752,12 @@ impl WorldMesher {
             } else {
                 dx * dx + dy * dy + dz * dz <= view_radius * view_radius
             };
-            if !within_view
-                || self.meshed.contains(&coordinate)
-                || self.meshing.contains_key(&coordinate)
-            {
+            if !within_view || !state.is_some_and(BrickState::needs_meshing) {
                 continue;
             }
             if let Some(snapshot) = self.snapshot_of(coordinate) {
                 let version = self.version_of(coordinate);
-                self.meshing.insert(coordinate, version);
+                self.states.start_meshing(coordinate);
                 self.jobs
                     .as_ref()
                     .expect("workers run until the mesher is dropped")
@@ -854,11 +779,11 @@ impl WorldMesher {
 
     /// The brick and its six neighbours, if all of them are loaded.
     fn snapshot_of(&self, coordinate: BrickCoordinate) -> Option<NeighbourhoodSnapshot> {
-        let center = Arc::clone(self.bricks.get(&coordinate)?);
+        let center = Arc::clone(self.states.data(coordinate)?);
         let mut neighbours = Vec::with_capacity(6);
         for face in FaceDirection::ALL {
             let neighbour = coordinate.neighbour(face)?;
-            neighbours.push(Arc::clone(self.bricks.get(&neighbour)?));
+            neighbours.push(Arc::clone(self.states.data(neighbour)?));
         }
         Some(NeighbourhoodSnapshot {
             center,
