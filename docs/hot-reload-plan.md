@@ -1,0 +1,52 @@
+# Hot reloading in every way Voxunami will support it: an order of steps
+
+**A proposal; nothing here is built.** Written 2026-11-15 on the branch `graphics-world-painting`, at the owner's request ("hot reloading in all the ways Voxunami will support it, in whatever order is best for the health of the project"). Marks: **[read]** read in the code or a document, **[believed]** my reasoning, not run, **[measured]** run.
+
+## What can be reloaded, and what a reload touches
+
+Two things decide how hard a kind of reload is: **who sees the change** (only this player, or the world) and **whether a recording has to know**. A recording carries the package and then the server's stream, so anything the server changes after the join is a thing a replay must be able to show again **[read: `protocol-and-replay.md`, the package is in the Welcome]**.
+
+| Kind | Where it lives today | Who sees it | A recording must know? | Exists today |
+|---|---|---|---|---|
+| Shader pack files (`lighting.wgsl`, `pack.json`) | a client folder `shaderpacks` | this player | no | read once at start; `.shader NAME` switches live and a refused pack is taken off again **[read]** |
+| Shader pack settings (`NAME.settings.json`) | beside the pack | this player | no | read once at start **[read]** |
+| The engine's own shaders (`voxel.wgsl`, `pictures_on.wgsl`, `relief_*.wgsl`) | `include_str!` into the program | this player | no | none; a developer rebuilds **[believed]** |
+| Pictures (tiles and their `_s`, `_n` companions) | base pictures are `include_bytes!`; a pack's are in its `textures/` | this player, if the change is client-side | no, if it stays a client override | none; texture packs (D9) are specified, not built **[read]** |
+| Block data (blocks, patches) | the base blocks' JSON is `include_str!`; a pack's is on disk | the world | **yes** (it changes the package) | none; "packs are read once at start" **[read: `architecture-review.md`, F3]** |
+| Bodies (planets, moons) | a pack | the world | yes | "a body in a pack reaches only a new world" **[read]** |
+| Terrain generators | code, by version | the world | yes | **never reloaded**: a generator version is a file format, so a changed one is a new version |
+| Rules of server plugins | compiled Rust | the world | yes | none, and compiled Rust cannot be (the WASM stage, `architecture-review.md` M4, is where it could be) |
+
+## The order I recommend
+
+The rule behind it (**medium-high confidence**): first what only this player sees, which touches no protocol and no recording; then what changes the package, which needs a decision about recordings first; last what needs a new runtime. Inside each, the smallest blast radius first, and each step is the first user of a piece the next one needs.
+
+**Step 0. The spine, with no behaviour of its own.** One small module in `game_shell` that every kind uses: *a source* (a folder or a file), *a fingerprint* (modification time and size, then a hash only when those moved, polled a few times a second, so there is no new dependency; `notify` would need a licence check), a *settle* (a file counts as changed when it has not moved for about 150 ms, because editors write in two steps and a half-written file must never load), and a *result* (reloaded, or failed with the reason). Its one rule: **load everything beside the old state, and swap only when all of it is good**; a failed reload leaves the game as it was and says why in the chat. The shader packs already have half of that (a refused pack is taken off again). Tests first, on a fake source: a half-written file, an error, a change during a reload, two changes in a row. The command: `.reload [kind]` by hand, and `--watch` to do it on change (off by default). *Why first:* it is small, it is the same code in every later step, and a bad one would be copied six times.
+
+**Step 1. Shader pack files and their settings (client only).** The apply path exists (`set_shader_pack_with_settings`); what is missing is reading the pack's folder again and the settings file again. This is the step with the most use for the work in hand (the owner edits shaders by eye), and it cannot touch the world. *Property to test:* **a reload equals a fresh start** (the pictures of a pack that was reloaded are byte-identical to the pictures of the same files loaded at start, on all four adapters, as the relief refactor was shown). **[Not measured:]** how long making the shaders again takes; step 1 should print it, since it decides whether `--watch` is comfortable.
+
+**Step 2. The engine's own shaders in a development build.** A flag that reads `voxel.wgsl` and its parts from the source folder instead of the program, through the same spine. For the owner and for me: it ends the rebuild of the program for a change to a shader. It shares the "make the shaders again" path of step 1, so it is small after it. Left out of a player's build **[believed: the owner's call]**.
+
+**Step 3. Pictures, client only.** The renderer writes one picture's layer and its smaller sizes (`set_picture`, a 16 by 16 picture has 5 levels); the client has an override table that wins over the package's picture; a folder of loose pictures is read into it (this **is** the texture pack of D9). A flag reads the base pictures from the source folder instead of the program. The tool that paints on blocks (`world-painting-options.md`) needs exactly this, so it is also its first step. Covers the specular and normal companions. *Why before block data:* the package does not change, so no recording and no server is involved.
+
+**Step 4. A decision, then a spec: what a recording does when the package changes.** No code until it is written and the owner agrees. The choice is between a new stream message that replaces the package at tick T (a recording keeps showing what the player saw), and refusing a reload while a recording is made. I **believe** the message is better: a recording that cannot show a reload is a recording that lies about it. It is a protocol version, so it comes before any server reload exists and it is decided once. Tests on the fake server: replay of a stream with a replaced package equals the live view, at every tick.
+
+**Step 5. `/reload` of block data (the server).** The `A6` of the architecture review: load the packs again beside the old content, check them, and then replace the content and send the new package; **blocks keep their numbers by name**; the client rebuilds its block table and palette and meshes again what changed. The hard question is a block that is in the world and not in the new data: the rule in `CLAUDE.md` (data from a missing plugin is kept byte for byte) says it stays, drawn as the "missing block" magenta; the reload refuses nothing and says what is missing. Needs the base game to be read the way a pack is (the architecture review's F3: "make the first-party blocks a pack read by the same loader"), at least in a development flag, so that editing a base block shows. *Tests:* the package after a reload equals the package of a fresh start with the same files, to the byte; the saved world equals the world saved after a fresh start.
+
+**Step 6. Bodies (planets and moons).** Today only a new world sees them. Either leave it so and say so in the reload's answer ("applies to new worlds") or build the in-place change that `planetary-mass-change.md` looks at. I would **leave it, with the message**, until something needs more.
+
+**Step 7. Rules of plugins, when the WASM stage exists.** Reload at a tick boundary; the plugin's saved state (the saved sections the host already writes, sorted by identifier) is what carries across; a module that fails to load or to read its state is not swapped. It is the one kind where a design made too early would be wrong, so it waits for the runtime and is only listed here so that the WASM host is built with "reloadable between ticks, state through the saved section" as a requirement, not found out later.
+
+**Never.** Terrain generators (a released version is a file format), and a plugin in compiled Rust.
+
+## Why not another order
+
+- *Block data first* is what a modder wants most (`A6`), and it is the biggest step: it changes the package, needs the decision about recordings, and needs the base blocks as data. Done before steps 0 to 4 it would build the spine and the decisions for the first time inside the hardest step.
+- *Pictures before shader packs* is just as safe; shader packs go first because the apply path exists and the owner needs it daily.
+- *Step 2 before step 1* would be a nuisance for no gain: the pack path is what step 2 reuses.
+
+## What I did not check
+
+- That `discard` in a pack's `pack_shade` is or is not refused (`shader-pack-format.md` does not list it).
+- How long a shader rebuild takes, and how Windows editors write files (the settle time of 150 ms is a guess, to be checked against the owner's editor).
+- That polling modification times is cheap enough for a folder of many pictures (a few hundred files **[believed]**; step 0 should measure it).
