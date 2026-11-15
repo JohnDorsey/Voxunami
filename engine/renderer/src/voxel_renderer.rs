@@ -3358,7 +3358,16 @@ pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading
             Relief::Prisms => concat!(
                 include_str!("pictures_on.wgsl"),
                 "\n",
+                include_str!("relief_ray.wgsl"),
+                "\n",
                 include_str!("relief_prisms.wgsl")
+            ),
+            Relief::ParallaxOcclusion => concat!(
+                include_str!("pictures_on.wgsl"),
+                "\n",
+                include_str!("relief_ray.wgsl"),
+                "\n",
+                include_str!("relief_parallax_occlusion.wgsl")
             ),
         }
     } else {
@@ -3459,6 +3468,7 @@ pub(crate) fn voxel_shader(
             (false, _) => "",
             (true, Relief::Flat) => " with pictures",
             (true, Relief::Prisms) => " with pictures and prisms",
+            (true, Relief::ParallaxOcclusion) => " with pictures and parallax occlusion",
         },
         match walk {
             SunWalk::None => "",

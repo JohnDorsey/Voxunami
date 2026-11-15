@@ -17,7 +17,7 @@ pub(super) const DIRT_NORMAL: &str = concat!(
     "/../../plugins/base_blocks/textures/dirt_n.png"
 );
 
-const PICTURE_SIDE: usize = 16;
+pub(super) const PICTURE_SIDE: usize = 16;
 
 pub(super) fn decode(path: &str) -> Vec<u8> {
     let file = std::fs::File::open(path).expect("picture file");
@@ -42,7 +42,7 @@ fn heights(height: impl Fn(usize, usize) -> u8) -> Vec<u8> {
 }
 
 /// A square plateau at the top, 6 by 6 pixels in the middle of the picture, in a floor 0.1 of a voxel lower.
-fn plateau() -> Vec<u8> {
+pub(super) fn plateau() -> Vec<u8> {
     heights(|column, row| {
         if (5..11).contains(&column) && (5..11).contains(&row) {
             255
@@ -53,7 +53,7 @@ fn plateau() -> Vec<u8> {
 }
 
 /// The picture of a block with no normal companion's stand-in: every height at the top.
-fn all_at_the_top() -> Vec<u8> {
+pub(super) fn all_at_the_top() -> Vec<u8> {
     heights(|_, _| 255)
 }
 
@@ -92,7 +92,7 @@ pub(super) fn floor(
     renderer
 }
 
-fn set_sun(renderer: &mut VoxelRenderer, sun: [f32; 3]) {
+pub(super) fn set_sun(renderer: &mut VoxelRenderer, sun: [f32; 3]) {
     renderer.set_atmosphere(Atmosphere {
         sun_direction: sun,
         sun_light: 255,
@@ -123,7 +123,7 @@ pub(super) fn view_of(
     camera
 }
 
-fn with_relief(renderer: &mut VoxelRenderer, relief: Option<Relief>) {
+pub(super) fn with_relief(renderer: &mut VoxelRenderer, relief: Option<Relief>) {
     match relief {
         Some(relief) => {
             let pack = ShaderPack::new("test:relief", "Relief", default_lighting())
@@ -334,9 +334,12 @@ fn prisms_sheet() {
             .collect();
         let mut renderer = floor(&context, &dirt, &normal, [0.5, 0.5, 0.7], 100.0);
         let elevations = [65.0, 40.0, 22.0];
-        let (width, height) = (WIDTH * 2, HEIGHT * elevations.len() as u32);
+        let (width, height) = (
+            WIDTH * Relief::ALL.len() as u32,
+            HEIGHT * elevations.len() as u32,
+        );
         let mut sheet = vec![0u8; (width * height * 4) as usize];
-        for (column, relief) in [Relief::Flat, Relief::Prisms].into_iter().enumerate() {
+        for (column, relief) in Relief::ALL.into_iter().enumerate() {
             with_relief(&mut renderer, Some(relief));
             for (row, elevation) in elevations.iter().enumerate() {
                 let camera = view_of([16.0, 17.0, 16.0], *elevation, 0.0, 1.2, 0.38);
@@ -361,7 +364,7 @@ fn prisms_sheet() {
             .write_image_data(&sheet)
             .expect("png data");
         eprintln!(
-            "SHEET {name}: columns flat and prisms, rows the eye 65, 40 and 22 degrees over the floor"
+            "SHEET {name}: columns flat, prisms and parallax occlusion, rows the eye 65, 40 and 22 degrees over the floor"
         );
     }
 }
@@ -382,10 +385,10 @@ fn prisms_cost() {
             ("flat (every height at the top)", &all_at_the_top()),
         ] {
             let mut renderer = floor(&context, &dirt, normal, [0.5, 0.5, 0.7], 100.0);
-            let mut totals = [0.0f64; 2];
+            let mut totals = [0.0f64; Relief::ALL.len()];
             let mut counted = 0u32;
             for round in 0..7 {
-                for (index, relief) in [Relief::Flat, Relief::Prisms].into_iter().enumerate() {
+                for (index, relief) in Relief::ALL.into_iter().enumerate() {
                     with_relief(&mut renderer, Some(relief));
                     renderer.render_to_rgba(&camera, 1280, 720);
                     let start = std::time::Instant::now();
@@ -402,9 +405,10 @@ fn prisms_cost() {
             }
             let mean = |index: usize| totals[index] / f64::from(counted);
             eprintln!(
-                "COST {name}, {label}, eye {elevation} degrees: flat {:.3} ms, prisms {:+.3}",
+                "COST {name}, {label}, eye {elevation} degrees: flat {:.3} ms, prisms {:+.3}, parallax occlusion {:+.3}",
                 mean(0),
-                mean(1) - mean(0)
+                mean(1) - mean(0),
+                mean(2) - mean(0)
             );
         }
     }

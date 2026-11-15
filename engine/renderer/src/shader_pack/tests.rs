@@ -39,10 +39,19 @@ fn a_pack_says_how_the_relief_is_drawn_or_leaves_it_to_the_engine() {
         Some(Relief::Flat)
     );
     assert_eq!(
-        pack.with_relief(Relief::Prisms).relief(),
+        pack.clone().with_relief(Relief::Prisms).relief(),
         Some(Relief::Prisms)
     );
-    for relief in [Relief::Flat, Relief::Prisms] {
+    assert_eq!(
+        pack.with_relief(Relief::ParallaxOcclusion).relief(),
+        Some(Relief::ParallaxOcclusion)
+    );
+    // Every relief, in the order of its words (the place of a word is its constant in the shaders, so a new one goes last), by the name it is usually called.
+    assert_eq!(
+        Relief::ALL.map(Relief::name),
+        ["flat", "prisms", "parallax_occlusion"]
+    );
+    for relief in Relief::ALL {
         assert_eq!(Relief::from_name(relief.name()), Some(relief));
     }
     assert_eq!(Relief::from_name("bumpy"), None);
@@ -55,8 +64,16 @@ fn a_pack_says_how_the_relief_is_drawn_or_leaves_it_to_the_engine() {
 
 #[test]
 fn a_pack_may_not_define_a_name_of_either_relief_and_each_relief_has_names_of_its_own() {
-    // Names both reliefs have (as constants in one and variables in the other) and names that only the prisms have: the pack is checked against both.
-    for name in ["parallax_shift", "picture_prepare", "column_height"] {
+    // Names every relief has (as constants in one and variables in the others), names that prisms and parallax occlusion share, and names that only one of them has: the pack is
+    // checked against all of them (`smooth_height` is only in the shader of parallax occlusion, `column_height` only in the prisms').
+    for name in [
+        "parallax_shift",
+        "picture_prepare",
+        "column_height",
+        "gather_heights",
+        "smooth_height",
+        "relief_ray",
+    ] {
         let text = format!(
             "fn {name}() -> f32 {{ return 1.0; }}\nfn pack_shade(s: Surface) -> vec3<f32> {{ return s.albedo; }}"
         );

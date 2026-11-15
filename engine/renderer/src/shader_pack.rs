@@ -44,6 +44,10 @@ pub enum Relief {
     /// Each pixel of the picture is a square column as deep as its height says, and the eye's ray is walked through the columns: a flat top is the picture's colours, a side wall
     /// is lit as the sun says and darker the deeper it is (`docs/specs/block-textures-spec.md`, "Prisms" under "As built").
     Prisms,
+    /// Parallax occlusion mapping, the usual smooth parallax: the heights are a smooth surface (the four pixels round a place mixed as a bilinear filter would), the eye's ray is
+    /// marched down through it in equal steps and the picture is read where the ray meets it. Nothing is a wall and the normal picture's tilts still light what is seen, so it is
+    /// the lumpy look: right for mud and stone, and not for pixel art (`docs/history/parallax-spike.md`).
+    ParallaxOcclusion,
 }
 
 /// The relief a pack that does not say is drawn with, and the default pack: the default of the engine setting `relief`. Prisms are on while they are tested (owner, 2026-11-14);
@@ -52,13 +56,15 @@ pub const DEFAULT_RELIEF: Relief = Relief::Prisms;
 
 impl Relief {
     /// Every relief, in the order of the words of the setting `relief`.
-    pub const ALL: [Relief; 2] = [Relief::Flat, Relief::Prisms];
+    /// (The place of a word is its constant in the shaders, `RELIEF_PRISMS` being 1: a new relief goes last.)
+    pub const ALL: [Relief; 3] = [Relief::Flat, Relief::Prisms, Relief::ParallaxOcclusion];
 
     /// The word of the setting `relief` for it.
     pub fn name(self) -> &'static str {
         match self {
             Relief::Flat => "flat",
             Relief::Prisms => "prisms",
+            Relief::ParallaxOcclusion => "parallax_occlusion",
         }
     }
 
@@ -509,6 +515,7 @@ pub(crate) fn check_lighting_with(
         (false, Relief::Flat, SunWalk::None),
         (true, Relief::Flat, heaviest),
         (true, Relief::Prisms, heaviest),
+        (true, Relief::ParallaxOcclusion, heaviest),
     ] {
         // (Each relief, whatever the player chooses of it: a setting's value is a constant of the same text of the pack.)
         if let Some(problem) = language_problem(with_pictures, relief, walk, own_settings, text) {

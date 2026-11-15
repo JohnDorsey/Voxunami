@@ -89,6 +89,10 @@ fn a_pack_says_how_the_relief_of_pictures_is_drawn_as_the_default_of_the_engine_
         relief_of(r#", "engine_settings": { "relief": "prisms" }"#),
         Ok(Some(renderer::Relief::Prisms))
     );
+    assert_eq!(
+        relief_of(r#", "engine_settings": { "relief": "parallax_occlusion" }"#),
+        Ok(Some(renderer::Relief::ParallaxOcclusion))
+    );
     for bad in [
         r#", "engine_settings": { "relief": "bumpy" }"#,
         r#", "engine_settings": { "relief": 3 }"#,
@@ -97,7 +101,8 @@ fn a_pack_says_how_the_relief_of_pictures_is_drawn_as_the_default_of_the_engine_
         let problems = relief_of(bad).expect_err(bad);
         assert_eq!(problems.len(), 1, "{bad}: {problems:?}");
         assert!(
-            problems[0].contains("`relief`") && problems[0].contains("one of flat, prisms"),
+            problems[0].contains("`relief`")
+                && problems[0].contains("one of flat, prisms, parallax_occlusion"),
             "{bad}: {problems:?}"
         );
     }

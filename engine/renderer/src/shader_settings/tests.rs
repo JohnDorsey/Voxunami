@@ -35,7 +35,7 @@ fn the_engines_settings_are_the_numbers_the_shaders_had_before_they_were_setting
 fn the_default_prelude_is_one_constant_for_each_setting() {
     assert_eq!(
         ShaderSettings::defaults().prelude(),
-        "const RELIEF: i32 = 1;\nconst RELIEF_FLAT: i32 = 0;\nconst RELIEF_PRISMS: i32 = 1;\nconst RELIEF_DEPTH: f32 = 0.1;\nconst WALL_DARKNESS: f32 = 0.2;\nconst SCENE_LIFT: f32 = 1.2;\n"
+        "const RELIEF: i32 = 1;\nconst RELIEF_FLAT: i32 = 0;\nconst RELIEF_PRISMS: i32 = 1;\nconst RELIEF_PARALLAX_OCCLUSION: i32 = 2;\nconst RELIEF_DEPTH: f32 = 0.1;\nconst WALL_DARKNESS: f32 = 0.2;\nconst SCENE_LIFT: f32 = 1.2;\n"
     );
 }
 

@@ -48,6 +48,8 @@ mod lift;
 mod occlusion;
 #[path = "gpu_rendering/pack_settings.rs"]
 mod pack_settings;
+#[path = "gpu_rendering/parallax_occlusion.rs"]
+mod parallax_occlusion;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
 mod pixelated_shadows;
 #[path = "gpu_rendering/prisms.rs"]

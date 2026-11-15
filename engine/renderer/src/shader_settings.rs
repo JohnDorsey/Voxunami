@@ -334,8 +334,8 @@ pub(crate) const OWN_PREFIX: &str = "SETTING_";
 /// The default of the number of the lift of the whole scene: the colour raised to the power of one over it (1 is no lift).
 pub const DEFAULT_SCENE_LIFT: f32 = 1.2;
 
-/// The settings the engine has, whatever the pack: how the relief of a block's picture is drawn (`flat`, where the normal pictures' tilts bump the face, or `prisms`), how deep, in
-/// voxels, the relief is (the lowest of a height field whose top is the face; prisms are that deep), how much darker the ambient light is at the foot of the wall of the deepest
+/// The settings the engine has, whatever the pack: how the relief of a block's picture is drawn (`flat`, where the normal pictures' tilts bump the face, `prisms`, or the smooth
+/// `parallax_occlusion`), how deep, in voxels, the relief is (the lowest of a height field whose top is the face; prisms and parallax occlusion are that deep), how much darker the ambient light is at the foot of the wall of the deepest
 /// prism than at its top, and how much the whole scene is lifted.
 pub fn engine_settings() -> Vec<SettingDeclaration> {
     let float = |name, description, default, minimum, maximum| {
@@ -353,7 +353,7 @@ pub fn engine_settings() -> Vec<SettingDeclaration> {
     vec![
         SettingDeclaration::new(
             "relief",
-            "how the relief of block pictures is drawn: flat (the face is flat, and the tilts of a normal picture bump it, so that the sun's light is the cosine of the tilted normal) or prisms (each pixel of the picture is a square column as deep as its height, with shaded walls, and its top is flat: the tilts are left out where prisms are drawn)",
+            "how the relief of block pictures is drawn: flat (the face is flat, and the tilts of a normal picture bump it, so that the sun's light is the cosine of the tilted normal) prisms (each pixel of the picture is a square column as deep as its height, with shaded walls, and its top is flat: the tilts are left out where prisms are drawn) or parallax_occlusion (the heights are a smooth surface the eye's ray is marched through: the usual parallax, lumpy, with no walls, and the tilts still light it)",
             SettingKind::Choice {
                 default: DEFAULT_RELIEF.name().to_owned(),
                 options: Relief::ALL
