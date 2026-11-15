@@ -364,6 +364,7 @@ proptest! {
 fn make_ship(world: &mut WorldData, pose: GridPose) -> GridId {
     let layout = Arc::clone(world.main().overrides.layout());
     world.grids_mut().create(MovingGrid {
+        hull: None,
         level: LevelIndex::MAIN,
         pose,
         linear_velocity: [0.0; 3],

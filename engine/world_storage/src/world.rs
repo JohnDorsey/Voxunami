@@ -841,6 +841,7 @@ impl WorldData {
         // The world file says where the ship is; the file says how it moved (a file that was shared may not say).
         let flight = contents.flight;
         Ok(MovingGrid {
+            hull: None,
             level: parked.level,
             pose: flight.map_or(parked.pose, |flight| flight.pose),
             linear_velocity: flight.map_or([0.0; 3], |flight| flight.linear_velocity),

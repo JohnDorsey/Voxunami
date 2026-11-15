@@ -333,6 +333,7 @@ impl ContentPackage {
                 .transpose()
                 .map_err(|error| format!("{identifier}: {error}"))?;
             let ship = world.grids_mut().create(MovingGrid {
+                hull: None,
                 level,
                 pose: GridPose::new(
                     WorldPosition::from_voxels(body.position),

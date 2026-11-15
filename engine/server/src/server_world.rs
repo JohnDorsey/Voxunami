@@ -14,8 +14,8 @@ use voxel_space::{
 };
 use world_storage::rail::{Centre, Rail, RailMemo, RailTime};
 use world_storage::{
-    GridTerrain, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError,
-    WorldData,
+    GridTerrain, HullBox, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError,
+    ShipParkError, WorldData,
 };
 
 use crate::GridView;
@@ -1326,6 +1326,21 @@ impl ServerWorld {
         Ok(())
     }
 
+    /// Says what box the blocks of a ship fill (the bodies do this as they weigh it, from the voxels: `None` where it has none).
+    pub fn set_grid_hull(
+        &mut self,
+        grid: GridId,
+        hull: Option<HullBox>,
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.hull = hull;
+        Ok(())
+    }
+
     /// Whether the rules of a grid run and its bodies move: the terrain of a level always, and a ship unless it is frozen. A grid that is not
     /// there is not.
     pub fn grid_is_simulated(&self, grid: GridId) -> bool {
@@ -1672,6 +1687,7 @@ impl ServerWorld {
                     .local_to_world(centre)
                     .map_or(old.linear_velocity, |place| old.velocity_at(place));
                 MovingGrid {
+                    hull: None,
                     level: old.level,
                     pose: old.pose,
                     linear_velocity,
@@ -1805,6 +1821,7 @@ impl ServerWorld {
                 .layout(),
         );
         Ok(self.data.grids_mut().create(MovingGrid {
+            hull: None,
             level,
             pose,
             linear_velocity: [0.0; 3],

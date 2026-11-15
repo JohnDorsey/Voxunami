@@ -13,7 +13,7 @@ use voxel_space::{
     AlignmentTolerance, BRICK_EDGE_LENGTH, BrickCoordinate, Displacement, GridId, GridPose,
     LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
-use world_storage::MovingGrid;
+use world_storage::{HullBox, MovingGrid};
 
 use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
@@ -204,6 +204,8 @@ impl Plugin for GridBodiesPlugin {
 struct Ship {
     /// The mass of each brick that has any, summed in order of brick for the body's mass.
     moments: BTreeMap<BrickCoordinate, MassMoments>,
+    /// The box of the blocks in each brick that has any, put together (as a box of boxes) for the ship's hull.
+    extents: BTreeMap<BrickCoordinate, HullBox>,
     /// The docking ports in each brick that has any.
     ports: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
     /// The ends of joints in each brick that has any.
@@ -577,7 +579,7 @@ struct Bodies {
     checks: BTreeMap<GridId, Check>,
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
     /// What the world is to be told of the weight of ships, at the end of the step.
-    weighed: BTreeMap<GridId, (f64, [f64; 3])>,
+    weighed: BTreeMap<GridId, (f64, [f64; 3], Option<HullBox>)>,
     /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
     /// attempt works out the whole of the smaller ship, and a pair whose blocks meet and are pushed about by the bodies would be tried every tick.
     refused: BTreeMap<(GridId, GridId), u64>,
@@ -599,6 +601,7 @@ struct Bodies {
 struct Carried {
     colliders: BodyColliders,
     moments: BTreeMap<BrickCoordinate, MassMoments>,
+    extents: BTreeMap<BrickCoordinate, HullBox>,
     ports: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
     joint_ends: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
 }
@@ -693,6 +696,7 @@ impl Bodies {
         };
         let BrickScan {
             moments,
+            extent,
             ports,
             joint_ends,
         } = self.weigher().scan_brick(ship, brick, faces_by);
@@ -708,16 +712,24 @@ impl Bodies {
         };
         // A brick too far from the ship's origin for a collider has none (and no mass either).
         let made = bodies.bodies.set_brick(BodyId(id.get()), brick, &mut hull);
-        let (moments, ports, joint_ends) = if made.is_ok() {
-            (moments, ports, joint_ends)
+        let (moments, extent, ports, joint_ends) = if made.is_ok() {
+            (moments, extent, ports, joint_ends)
         } else {
-            (MassMoments::NOTHING, Vec::new(), Vec::new())
+            (MassMoments::NOTHING, None, Vec::new(), Vec::new())
         };
         if let Some(record) = bodies.ships.get_mut(&id) {
             if moments.mass() > 0.0 {
                 record.moments.insert(brick, moments);
             } else {
                 record.moments.remove(&brick);
+            }
+            match extent {
+                Some(extent) => {
+                    record.extents.insert(brick, extent);
+                }
+                None => {
+                    record.extents.remove(&brick);
+                }
             }
             if ports.is_empty() {
                 record.ports.remove(&brick);
@@ -746,6 +758,7 @@ impl Bodies {
         let Carried {
             colliders,
             moments,
+            extents,
             ports,
             joint_ends,
         } = carried;
@@ -767,6 +780,7 @@ impl Bodies {
             .and_then(|bodies| bodies.ships.get_mut(&id))
         {
             record.moments = moments;
+            record.extents = extents;
             record.ports = ports;
             record.joint_ends = joint_ends;
         }
@@ -968,6 +982,7 @@ impl Bodies {
                         Carried {
                             colliders,
                             moments: record.moments,
+                            extents: record.extents,
                             ports: record.ports,
                             joint_ends: record.joint_ends,
                         },
@@ -986,8 +1001,9 @@ impl Bodies {
         self.scan_planets_for_ports(world, &changed_ships);
         self.keep_terrain(world, &changed_terrain, &changed_ships);
 
-        for (id, (mass, centre)) in std::mem::take(&mut self.weighed) {
+        for (id, (mass, centre, hull)) in std::mem::take(&mut self.weighed) {
             let _ = world.set_grid_mass(id, mass, centre);
+            let _ = world.set_grid_hull(id, hull);
         }
         self.apply_gravity(world);
         self.couple_joints(world);
@@ -1120,6 +1136,7 @@ impl Bodies {
                 id,
                 Ship {
                     moments: BTreeMap::new(),
+                    extents: BTreeMap::new(),
                     ports: BTreeMap::new(),
                     joint_ends: BTreeMap::new(),
                     mass: 0.0,
@@ -1228,8 +1245,14 @@ impl Bodies {
                 record.centre_of_mass = [0.0; 3];
             }
         }
+        // The box of the blocks is the box of the boxes of the bricks, in any order.
+        let hull = record
+            .extents
+            .values()
+            .copied()
+            .reduce(|first, second| first.union(second));
         self.weighed
-            .insert(id, (record.mass, record.centre_of_mass));
+            .insert(id, (record.mass, record.centre_of_mass, hull));
     }
 
     /// The groups of ships coupled by their joint ends that are off a rail and alone (`ServerWorld::group_is_alone`), by their anchors. A group that has a frame of its own
@@ -2169,6 +2192,8 @@ impl Bodies {
 pub(crate) struct BrickScan {
     /// The mass in the brick.
     pub moments: MassMoments,
+    /// The box of the voxels in it that have a block with a shape (`None` for a brick with none): a block may weigh nothing and be in the hull all the same.
+    pub extent: Option<HullBox>,
     /// The faces of its docking ports (`engine:docking_face`), in the order its voxels are scanned.
     pub ports: Vec<BlockFace>,
     /// The faces that are the ends of its joints (`engine:joint_face`), in the same order. A joint end is never in `ports` and a port never here.
@@ -2228,12 +2253,14 @@ impl Weigher<'_> {
         let Some(contents) = ship.voxels.brick(brick) else {
             return BrickScan {
                 moments: MassMoments::NOTHING,
+                extent: None,
                 ports: Vec::new(),
                 joint_ends: Vec::new(),
             };
         };
         let first = brick.origin();
         let mut parts = Vec::new();
+        let mut extent: Option<HullBox> = None;
         let mut ports = Vec::new();
         let mut joint_ends = Vec::new();
         for z in 0..BRICK_EDGE_LENGTH {
@@ -2250,7 +2277,12 @@ impl Weigher<'_> {
                         first.y() + y as i128,
                         first.z() + z as i128,
                     ];
-                    parts.extend(self.voxel_moments(voxel, block, state, orientation));
+                    if let Some(moments) = self.voxel_moments(voxel, block, state, orientation) {
+                        let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+                        extent =
+                            Some(extent.map_or(HullBox::of_voxel(at), |hull| hull.including(at)));
+                        parts.push(moments);
+                    }
                     if let Some(table) = faces_by
                         && block != self.air
                     {
@@ -2267,6 +2299,7 @@ impl Weigher<'_> {
         }
         BrickScan {
             moments: MassMoments::sum(parts),
+            extent,
             ports,
             joint_ends,
         }

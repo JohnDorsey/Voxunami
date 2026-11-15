@@ -312,6 +312,7 @@ impl Game {
             );
         }
         MovingGrid {
+            hull: None,
             level: LevelIndex::MAIN,
             pose: GridPose::new(
                 WorldPosition::new(brick(-3 + shift, 2, 7), [1.5, 20.25, 31.0]),

@@ -64,6 +64,7 @@ fn world_with_a_moon(content: &CaveContent) -> WorldData {
     let mass = voxunami_cave::game::PULLING_MASS * 2.0;
     let first = world.main();
     let ship = MovingGrid {
+        hull: None,
         level: LevelIndex::MAIN,
         pose: moon_pose(),
         linear_velocity: [0.0; 3],

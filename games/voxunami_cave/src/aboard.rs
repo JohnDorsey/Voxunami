@@ -186,6 +186,7 @@ mod tests {
         }
         voxels.set(block, VoxelCoordinate::new(2, 2, 2), STONE);
         let ship = MovingGrid {
+            hull: None,
             level: LevelIndex::MAIN,
             pose,
             linear_velocity: [0.0; 3],

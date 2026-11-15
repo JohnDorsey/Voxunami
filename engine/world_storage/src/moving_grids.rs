@@ -7,6 +7,7 @@ use voxel_space::{
 };
 
 use crate::container::Section;
+use crate::hull::HullBox;
 #[cfg(any(test, feature = "test-support"))]
 use crate::rail::Centre;
 use crate::rail::Rail;
@@ -50,6 +51,9 @@ pub struct MovingGrid {
     /// (zero where nothing has). A ship of enough mass pulls things toward its centre of mass (see `voxel_space::gravity_at`).
     pub mass: f64,
     pub centre_of_mass: [f64; 3],
+    /// The box that the blocks of the ship fill, in its own coordinates, as the bodies work it out where they weigh it (`None` where nothing has: a ship that has not been
+    /// weighed yet, one with no blocks, a planet, whose blocks are mostly not stored). It is not saved: it is worked out again when the ship is next weighed.
+    pub hull: Option<HullBox>,
     /// A held ship does not move: gravity, forces and collisions leave it where it is, and everything else collides with it.
     pub held: bool,
     /// A frozen ship is held, and its rules wait, because no player is near it (see `server::ShipSettings`). It is not saved: a ship that
@@ -681,6 +685,7 @@ mod tests {
         let channel = voxels.layout().channel_indices().next().unwrap();
         voxels.set(channel, VoxelCoordinate::new(1, 2, 3), marker);
         MovingGrid {
+            hull: None,
             level: LevelIndex::MAIN,
             pose: GridPose::identity(),
             linear_velocity: [0.0; 3],

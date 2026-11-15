@@ -413,6 +413,7 @@ mod tests {
             grid.set(block, VoxelCoordinate::new(x, y, z), STONE);
         }
         let ship = MovingGrid {
+            hull: None,
             level: LevelIndex::MAIN,
             pose: GridPose::identity(),
             linear_velocity: [0.0; 3],

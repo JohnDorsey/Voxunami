@@ -19,6 +19,7 @@ pub mod file;
 mod fit_orbit;
 mod grid_frame;
 mod hand_over;
+mod hull;
 mod moving_grids;
 pub mod rail;
 mod ship_file;
@@ -31,6 +32,7 @@ mod world;
 pub use container::{ContainerError, Section};
 pub use engine_sections::GeneratorRecipe;
 pub use grid_frame::GridFrame;
+pub use hull::HullBox;
 #[cfg(any(test, feature = "test-support"))]
 pub use moving_grids::RenumberError;
 pub use moving_grids::{GridStore, GridTerrain, GroupCentre, MovingGrid, ParkedGrid, PilotLogout};
