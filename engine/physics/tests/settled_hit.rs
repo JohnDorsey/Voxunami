@@ -1225,6 +1225,111 @@ fn a_cube_that_rests_on_a_platform_that_carries_it_is_not_solved_as_a_hit() {
     );
 }
 
+/// A kinematic body that turns about the vertical axis through its centre of mass, (16, 16, 16) (`block_mass(32)`), at `turn` radians a second: two bricks of ground (32 by 32,
+/// their tops at height 0), one at the axis and one 4,800 voxels from it. The far one is what gives the body its reach (4,800 voxels or more: its turn times its reach is 2.4 at 5e-4),
+/// as the other side of a planet does; what rests on the near one goes round at 0.7 voxels from the axis, a thousandth of that.
+fn turntable(turn: f64) -> BodyWorld {
+    struct Slabs;
+    impl CollisionSource for Slabs {
+        fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+            let under = (-32..0).contains(&voxel.y()) && (0..32).contains(&voxel.z());
+            if under && ((0..32).contains(&voxel.x()) || (4800..4832).contains(&voxel.x())) {
+                Collision::Full
+            } else {
+                Collision::Empty
+            }
+        }
+    }
+    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+    let state = BodyState {
+        position: WorldPosition::from_voxels([0.0; 3]),
+        orientation: Orientation::IDENTITY,
+        linear_velocity: [0.0; 3],
+        angular_velocity: [0.0, turn, 0.0],
+    };
+    world
+        .add_body(BodyId(1), state, BodyKind::Kinematic)
+        .unwrap();
+    for x in [0, 150] {
+        world
+            .set_brick(BodyId(1), BrickCoordinate::new(x, -1, 0), &mut Slabs)
+            .unwrap();
+    }
+    world.set_mass(BodyId(1), block_mass(32)).unwrap();
+    world
+}
+
+#[test]
+fn a_cube_that_rests_on_ground_that_turns_under_it_is_not_solved_as_a_hit() {
+    // A planet that turns has ground that goes round at five voxels a second at its rim (10,000 voxels out, one turn in 12,566 seconds), and a ship at rest on it, near the place where
+    // it turns, goes at hardly anything against it. Measured by the speed of the whole shape of the ground (its turn times its reach, 2.4 voxels a second for this one, over a
+    // thousand times the floor of a hit) it looked as if they did, and a ship at rest on the ground of a turning planet was solved as a hit in every piece, in the game
+    // (`frames_that_follow.rs`: 300 of 300 pieces in a hundred ticks, where on a planet that does not turn it is none). The speed that counts is the one at the contact: here
+    // the cube lies 0.7 voxels from the axis, and the ground goes at 3.5e-4 voxels a second there.
+    let turn = 5e-4;
+    let mut world = turntable(turn);
+    let state = BodyState {
+        position: WorldPosition::from_voxels([16.0, 0.0, 16.0]),
+        orientation: Orientation::IDENTITY,
+        linear_velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+    };
+    world.add_body(BodyId(2), state, BodyKind::Dynamic).unwrap();
+    world
+        .set_brick(BodyId(2), BrickCoordinate::ORIGIN, &mut Block(1))
+        .unwrap();
+    world.set_mass(BodyId(2), block_mass(1)).unwrap();
+    for _ in 0..60 {
+        world.step();
+    }
+    let at_rest = world.hit_pieces_made();
+    for _ in 0..100 {
+        world.step();
+    }
+    assert_eq!(
+        world.hit_pieces_made(),
+        at_rest,
+        "a cube that rests on ground that turns under it was solved as a hit, though it goes at under a thousandth of a voxel a second against it"
+    );
+    // (It rests on it: it is where it was, to a voxel, on the ground.)
+    let [x, y, z] = world
+        .state(BodyId(2))
+        .unwrap()
+        .position
+        .relative_to(WorldPosition::from_voxels([0.0; 3]));
+    assert!(
+        (x - 16.0).abs() < 1.0 && y.abs() < 0.1 && (z - 16.0).abs() < 1.0,
+        "the cube is at ({x}, {y}, {z})"
+    );
+}
+
+#[test]
+fn a_cube_that_lies_still_on_ground_that_turns_under_it_is_solved_as_a_hit_while_it_is_dragged() {
+    // The control of the one above: the same ground and a cube on the far brick, 4,800 voxels from the axis, where the ground goes at 2.4 voxels a second under it. The ground
+    // drags it, which is a moving contact, and a hit.
+    let turn = 5e-4;
+    let mut world = turntable(turn);
+    let state = BodyState {
+        position: WorldPosition::from_voxels([4816.0, 0.0, 16.0]),
+        orientation: Orientation::IDENTITY,
+        linear_velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+    };
+    world.add_body(BodyId(2), state, BodyKind::Dynamic).unwrap();
+    world
+        .set_brick(BodyId(2), BrickCoordinate::ORIGIN, &mut Block(1))
+        .unwrap();
+    world.set_mass(BodyId(2), block_mass(1)).unwrap();
+    for _ in 0..10 {
+        world.step();
+    }
+    assert!(
+        world.hit_pieces_made() >= 10,
+        "a cube dragged over ground that goes at 2.4 voxels a second against it was solved as a hit in {} pieces of 30",
+        world.hit_pieces_made()
+    );
+}
+
 #[test]
 fn a_cube_that_is_sent_into_a_cube_it_touches_is_a_hit_from_the_first_piece() {
     // Two cubes lie with their faces together, with no gap, and one is given 20 voxels a second into the other. There is no first touch to find, for they touch now (a contact is
@@ -1587,14 +1692,17 @@ fn stack_at_rest(count: u64, settings: BodySettings) -> (f64, u64) {
 }
 
 #[test]
-fn a_stack_of_cubes_rests_as_still_with_the_extra_passes_made_in_a_hit_only_and_is_no_hit() {
+fn a_stack_of_up_to_eight_cubes_rests_as_still_with_the_extra_passes_made_in_a_hit_only_and_is_no_hit()
+ {
     // What the 15 extra passes did for a stack of cubes at rest: with none at all (not made in a hit either) a stack of five went at 2.9e-4 voxels a second, of ten 8.7e-4
-    // (`engine_probe restnoise`, with `NO_PASSES=1`), over the floor of a hit (`HIT_SPEED_FLOOR`), so that it was solved as a hit most of the time. Made in the hit that the stack's
-    // own settling is (the cubes touch from the first step, and a hit lasts half a second), they leave it as still as made in every piece: measured for 1 to 9 cubes, over the last
-    // 100 of 200 ticks, 7e-16, 2e-14, 7e-14, 1e-12, 5e-12, 3e-11, 2e-8, 2e-6 and 4e-5 voxels a second (with them in every piece: 8e-16 to 7e-5), and no piece solved as a hit in them.
-    // (A stack of ten goes at 2.8e-4 either way, and is a hit in 42 of the 300 pieces.)
+    // (`engine_probe restnoise`, with `NO_PASSES=1`). Made in the hit that the stack's own settling is (the cubes touch from the first step, and a hit lasts half a second), they
+    // leave a stack of up to eight as still as made in every piece: measured for 1 to 8 cubes, over the last 100 of 200 ticks, 7e-16, 2e-14, 1e-13, 2e-12, 6e-12, 3e-11, 2e-8 and
+    // 1e-5 voxels a second, and no piece solved as a hit in them. A taller stack is less still: 9 cubes go at 2.6e-4, 10 at 1.7e-3, 11 at 4.9e-3 and 12 at 6.2e-3 (what Rapier's
+    // one pass leaves of a stack: 2.5e-3 for ten before step 4c-5-A), and none of those pieces is a hit either, for the speeds of the cubes against each other at their contacts
+    // are under the floor of a hit (`HIT_SPEED_FLOOR`) though their own speeds are over it. (Judged by a shape's speed and its turn times its reach, which is what the rule was
+    // until the ground of a turning planet, a stack of ten was a hit in 42 of 300 pieces and went at 2.8e-4.)
     let settings = BodySettings::default();
-    for count in 1..=9 {
+    for count in 1..=8 {
         let (fastest, hit_pieces) = stack_at_rest(count, settings);
         assert!(
             fastest < 1e-4,

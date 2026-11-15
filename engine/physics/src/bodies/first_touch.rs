@@ -24,7 +24,8 @@
 //! with a contact (a chain that swings into the car it is joined to, a ship that rocks onto its other legs, a cube that slides) or with none yet (a cube that is sinking into terrain
 //! slowly, to the depth at which a voxel contact engages), the pieces are solved with the settling passes of a hit ([`super::BodySettings::settling_passes`]) for
 //! [`super::BodySettings::hit_duration`] from then, and with the one pass between hits otherwise (`docs/history/loop-probe.md`, section 21). What is found as a hit is a touch, or shapes
-//! that move against each other, at a millimetre a second or more ([`HIT_SPEED_FLOOR`]), and not at what a step can take across the solver's margin, which was 1.2 voxels a second
+//! that move against each other, at a millimetre a second or more ([`HIT_SPEED_FLOOR`]; for a contact that is there, the speed of the two bodies against each other at its points,
+//! and not a bound with the whole reach of a turning body in it: section 23), and not at what a step can take across the solver's margin, which was 1.2 voxels a second
 //! at 3 steps a tick and 9.6 at 24, and made what a slow hit comes out as depend on how fast a ship far away went (a hit at 5 voxels a second kept 0.1986 on the chain at 24 steps
 //! a tick, where 0.1999 was true); nor at what a tick can take across it (0.4 voxels a second): a cube that landed at 0.2 voxels a second went up at 0.05 and turned at 0.05, where the
 //! world with the passes of a hit made at every step leaves nothing. The step is cut only at the touches that a step can take across the margin, as it was: cut at a slower one, a
@@ -185,13 +186,15 @@ impl BodyWorld {
                     if relative < HIT_SPEED_FLOOR {
                         continue;
                     }
-                    // A contact that is there is not a first touch, and whether the shapes go against each other through it is a hit.
-                    if self
-                        .narrow_phase
-                        .contact_pair(first_handle, second_handle)
-                        .is_some_and(|pair| pair.has_any_active_contact())
+                    // A contact that is there is not a first touch, and whether the shapes go against each other through it is a hit: judged by the speeds of the two bodies at the
+                    // points of the contact, and not by the bound above, which for a body that turns has the whole of its reach in it (the ground of a planet that turns once in
+                    // 12,566 seconds goes round at five voxels a second at its rim, and a ship that goes round with it was a hit in every piece: `docs/history/loop-probe.md`, section 23).
+                    if let Some(pair) = self.narrow_phase.contact_pair(first_handle, second_handle)
+                        && pair.has_any_active_contact()
                     {
-                        found.hit = true;
+                        if self.speed_across_contacts(pair) >= HIT_SPEED_FLOOR {
+                            found.hit = true;
+                        }
                         continue;
                     }
                     // The boxes as they are now (the broad phase's are a step old), swept by the relative motion.
@@ -238,6 +241,31 @@ impl BodyWorld {
     }
 
     /// The farthest a point of a body is from its middle, by the boxes of its colliders (a body that does not turn has no use for it: 0).
+    /// How fast the two sides of a contact go against each other at its points, the most of them: the speed of the one body at the point, as it turns and goes, minus the
+    /// other's (a side that is no body, or is fixed, is still).
+    fn speed_across_contacts(&self, pair: &ContactPair) -> Real {
+        let velocity_at = |handle: ColliderHandle, point: Vector| {
+            self.colliders[handle]
+                .parent()
+                .and_then(|body| self.bodies.get(body))
+                .map_or(Vector::ZERO, |body| body.velocity_at_point(point))
+        };
+        let (first, second) = (
+            &self.colliders[pair.collider1],
+            &self.colliders[pair.collider2],
+        );
+        pair.solver_manifolds()
+            .iter()
+            .flat_map(|manifold| manifold.points.iter())
+            .map(|contact| {
+                let point = (*first.position() * contact.local_p1
+                    + *second.position() * contact.local_p2)
+                    * 0.5;
+                (velocity_at(pair.collider1, point) - velocity_at(pair.collider2, point)).length()
+            })
+            .fold(0.0, Real::max)
+    }
+
     pub(super) fn reach_of(&self, body: &RigidBody) -> Real {
         if body.angvel() == Vector::ZERO {
             return 0.0;

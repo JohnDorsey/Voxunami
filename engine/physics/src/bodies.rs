@@ -2346,25 +2346,16 @@ mod tests {
         // value comes back bit for bit.)
         // (Moved on purpose, 2026-11-14, the fourth time: 8_652_255_924_237_869_372 before. The 15 extra passes are made in the pieces that are solved as a hit, as the settling
         // passes are, and no longer in every piece: `docs/history/loop-probe.md`, section 22. Control, in the test after this one: with them made between hits as well the old value
-        // comes back bit for bit.)
+        // comes back bit for bit; ran at 367fa6b, as a test of its own that was removed when the next move made it no longer the world before.)
+        // (Moved on purpose, 2026-11-14, the fifth time: 16_015_789_674_459_971_760 before. Whether two shapes that have a contact go against each other, which makes the pieces a hit,
+        // is judged by the speeds of their bodies at the points of the contact, and no longer by a bound that has the whole reach of a turning body in it: the ground of a planet that
+        // turns made a ship at rest on it a hit in every piece (`docs/history/loop-probe.md`, section 23). Control: with the rule as it was, and nothing else changed, the old value
+        // comes back bit for bit (ran, with the file put back from a copy). The control of the third move, in the test after this one, makes every piece a hit and is not moved.)
         assert!(
             first.cuts_made() > 0,
             "no step was cut in the busy scene: the pin below is not about the cut"
         );
-        assert_eq!(first.state_hash(), 16_015_789_674_459_971_760);
-    }
-
-    #[test]
-    fn with_the_extra_passes_between_hits_as_well_the_busy_scene_is_what_it_was_bit_for_bit() {
-        // The control of the move of 2026-11-14, the fourth time: the world as it was before the extra passes were kept for the pieces that are solved as a hit.
-        let settings = BodySettings {
-            solver_between_hits: BodySettings::default().solver,
-            ..heavy_planet()
-        };
-        assert_eq!(
-            busy_scene_under(settings).state_hash(),
-            8_652_255_924_237_869_372
-        );
+        assert_eq!(first.state_hash(), 7_979_597_850_111_435_684);
     }
 
     #[test]
