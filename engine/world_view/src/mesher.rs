@@ -555,6 +555,12 @@ impl WorldMesher {
         self.generating.len() + self.meshing.len()
     }
 
+    /// Whether the mesher has nothing more to do until something changes: no job is in flight, and the last update started none and loaded no brick (a brick that
+    /// is loaded may complete its neighbours, which the next update looks at). What a viewer waits for when it wants everything that is wanted to be made.
+    pub fn is_settled(&self) -> bool {
+        self.pending_jobs() == 0 && self.scheduled_last_update == 0
+    }
+
     /// Checks that the sets that say what state a brick is in agree with each other, and says what is wrong if they do not. The ones that disagree would be a bug of this type, not of
     /// its callers: a brick the mesher believes is meshed that has no picture anywhere is never meshed again, and a view that waits for it waits for ever. Cheap enough to call every
     /// update of a test; the first thing found is returned.
@@ -793,6 +799,8 @@ impl WorldMesher {
             if let Entry::Vacant(slot) = self.bricks.entry(coordinate) {
                 if let Some(known) = source.known(coordinate) {
                     slot.insert(known);
+                    // No job, and yet the bricks beside it may be whole now, and are looked at again by the next update.
+                    scheduled += 1;
                 } else if !self.generating.contains(&coordinate)
                     && let Some(generator) = source.generator_for(coordinate)
                 {
@@ -868,7 +876,7 @@ impl WorldMesher {
         let mut updates = Vec::new();
         loop {
             updates.extend(self.update(source, center));
-            if self.pending_jobs() == 0 && self.scheduled_last_update == 0 {
+            if self.is_settled() {
                 return updates;
             }
             std::thread::sleep(std::time::Duration::from_micros(200));

@@ -330,7 +330,11 @@ impl LodView {
 
     /// Whether anything is waiting to be made or swapped: the view is not yet what it is to be.
     pub fn is_settled(&self) -> bool {
-        self.pending_jobs() == 0 && self.queue.is_empty() && !self.plan_needed && !self.new_edits
+        self.mesher.is_settled()
+            && self.in_flight == 0
+            && self.queue.is_empty()
+            && !self.plan_needed
+            && !self.new_edits
     }
 
     /// The node the server says is the node of a cube instead of what the generators give (a `None` takes back what was said). Bricks have none, and
