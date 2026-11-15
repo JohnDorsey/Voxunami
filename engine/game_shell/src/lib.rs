@@ -24,6 +24,7 @@ mod packs;
 #[cfg(test)]
 mod planet_view_tests;
 mod player_identity;
+pub mod reload;
 pub mod screen;
 pub mod serve;
 pub mod session;
