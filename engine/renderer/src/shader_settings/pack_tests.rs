@@ -25,7 +25,7 @@ fn a_pack_with_settings_of_its_own_has_a_constant_for_each_with_the_prefix_and_i
         ShaderSettings::resolve_for(&engine_defaults, &own, &none).expect("the defaults");
     assert_eq!(
         settings.prelude(),
-        "const RELIEF_DEPTH: f32 = 0.1;\nconst WALL_DARKNESS: f32 = 0.2;\nconst SCENE_LIFT: f32 = 1.0;\nconst SETTING_STEPS: i32 = 3;\n"
+        "const RELIEF: i32 = 1;\nconst RELIEF_FLAT: i32 = 0;\nconst RELIEF_PRISMS: i32 = 1;\nconst RELIEF_DEPTH: f32 = 0.1;\nconst WALL_DARKNESS: f32 = 0.2;\nconst SCENE_LIFT: f32 = 1.0;\nconst SETTING_STEPS: i32 = 3;\n"
     );
     assert_eq!(settings.scene_lift(), 1.0);
     // What the player chooses is over the pack's defaults, and a choice of the engine's own default is still a choice over the pack's.

@@ -1,5 +1,7 @@
 //! Glue between a session and the renderer.
 
+use std::collections::BTreeMap;
+
 use block_models::BlockTable;
 use data_packs::Tile;
 use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, ShaderPack, VoxelRenderer};
@@ -11,6 +13,7 @@ use crate::definition::GameDefinition;
 use crate::options::ViewOptions;
 use crate::package_data::PackageData;
 use crate::session::Session;
+use crate::shader_pack_settings::SettingsFiles;
 
 /// Palette (with the pictures of the blocks that have them) and fog suited to the view distance: the world fades into the sky just before it ends.
 pub fn configure_renderer(
@@ -29,17 +32,25 @@ pub fn configure_renderer(
     renderer.set_sun_shapes(&block_table.shape_cells());
 }
 
-/// Reads the shader packs the player has (the game data folder's, and the folder `--shader-packs` names), tells the session of them and of the one `--shader-pack` chose, and
-/// returns them for [`apply_shader_pack`]. A pack that is no good is a warning on the error stream and the others are kept; a folder asked for that cannot be read, and a pack
-/// asked for that is not there, are errors.
+/// The shader packs the player has, and where what they chose of the settings of each is kept.
+#[derive(Debug)]
+pub struct ShaderPacks {
+    /// For [`apply_shader_pack`].
+    pub packs: Vec<ShaderPack>,
+    /// The files of what the player chose of the settings (`crate::shader_pack_settings`): [`SettingsFiles::save_changes`] writes what changed.
+    pub files: SettingsFiles,
+}
+
+/// Reads the shader packs the player has (the game data folder's, and the folder `--shader-packs` names) and what they chose of the settings of each (a file next to each pack's
+/// folder, and `default.settings.json` for the game's own shader), tells the session of them and of the one `--shader-pack` chose, and returns them for [`apply_shader_pack`]. A
+/// pack that is no good, and a choice that is no good, are a warning on the error stream and the others are kept; a folder asked for that cannot be read, and a pack asked for
+/// that is not there, are errors.
 pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
     view: &ViewOptions,
     session: &mut Session<C, G>,
-) -> Result<Vec<ShaderPack>, String> {
-    let shelf = crate::shader_packs::shelf_of(
-        crate::shader_packs::default_directory().as_deref(),
-        view.shader_packs.as_deref(),
-    )?;
+) -> Result<ShaderPacks, String> {
+    let directory = crate::shader_packs::default_directory();
+    let shelf = crate::shader_packs::shelf_of(directory.as_deref(), view.shader_packs.as_deref())?;
     for problem in &shelf.problems {
         eprintln!("warning: shader pack: {problem}");
     }
@@ -52,8 +63,30 @@ pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
         ),
         None => None,
     };
-    session.offer_shader_packs(names, chosen);
-    Ok(shelf.packs)
+    // The game's own shader has the engine's settings; a pack's are the engine's with its defaults and then its own.
+    let mut declared = BTreeMap::from([(None, renderer::engine_settings())]);
+    declared.extend(
+        names
+            .iter()
+            .map(|name| (Some(name.id.clone()), name.settings.clone())),
+    );
+    let mut files: BTreeMap<_, _> = shelf
+        .settings_files
+        .iter()
+        .map(|(id, file)| (Some(id.clone()), file.clone()))
+        .collect();
+    if let Some(file) = crate::shader_packs::own_settings_file(directory.as_deref()) {
+        files.insert(None, file);
+    }
+    let (files, choices, warnings) = SettingsFiles::load(files, &declared);
+    for warning in &warnings {
+        eprintln!("warning: shader settings: {warning}");
+    }
+    session.offer_shader_packs(names, chosen, choices);
+    Ok(ShaderPacks {
+        packs: shelf.packs,
+        files,
+    })
 }
 
 /// Gives the renderer the shader pack the player's settings choose (or the game's own): at once if it is the one the renderer has. An error says the graphics card refused it,

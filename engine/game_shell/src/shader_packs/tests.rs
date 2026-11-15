@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::*;
 
 /// A folder in the temporary directory that is removed with it.
-pub(super) struct Folder(PathBuf);
+pub(crate) struct Folder(PathBuf);
 
 impl Folder {
-    pub(super) fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "voxunami_shader_packs_{name}_{}_{}",
@@ -18,14 +18,14 @@ impl Folder {
     }
 
     /// Writes a file in it (and the folders on the way).
-    pub(super) fn write(&self, file: &str, text: &str) -> &Self {
+    pub(crate) fn write(&self, file: &str, text: &str) -> &Self {
         let path = self.0.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
         self
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -69,8 +69,8 @@ fn a_folder_with_a_pack_json_and_a_lighting_file_is_a_pack() {
 }
 
 #[test]
-fn a_pack_may_say_how_the_relief_of_pictures_is_drawn_and_a_word_that_is_none_of_them_is_a_problem()
-{
+fn a_pack_says_how_the_relief_of_pictures_is_drawn_as_the_default_of_the_engine_setting_relief_and_a_word_that_is_none_of_them_is_a_problem()
+ {
     let folder = Folder::new("relief");
     folder.write("lighting.wgsl", LIGHTING);
     let relief_of = |text: &str| {
@@ -82,18 +82,31 @@ fn a_pack_may_say_how_the_relief_of_pictures_is_drawn_and_a_word_that_is_none_of
     };
     assert_eq!(relief_of(""), Ok(None));
     assert_eq!(
-        relief_of(r#", "relief": "flat""#),
+        relief_of(r#", "engine_settings": { "relief": "flat" }"#),
         Ok(Some(renderer::Relief::Flat))
     );
     assert_eq!(
-        relief_of(r#", "relief": "prisms""#),
+        relief_of(r#", "engine_settings": { "relief": "prisms" }"#),
         Ok(Some(renderer::Relief::Prisms))
     );
-    for bad in [r#", "relief": "bumpy""#, r#", "relief": 3"#] {
+    for bad in [
+        r#", "engine_settings": { "relief": "bumpy" }"#,
+        r#", "engine_settings": { "relief": 3 }"#,
+        r#", "engine_settings": { "relief": true }"#,
+    ] {
         let problems = relief_of(bad).expect_err(bad);
         assert_eq!(problems.len(), 1, "{bad}: {problems:?}");
-        assert!(problems[0].contains("`relief`"), "{bad}: {problems:?}");
+        assert!(
+            problems[0].contains("`relief`") && problems[0].contains("one of flat, prisms"),
+            "{bad}: {problems:?}"
+        );
     }
+    // The old key of the file is no key: the relief is a setting like the rest.
+    let problems = relief_of(r#", "relief": "flat""#).expect_err("the key is gone");
+    assert!(
+        problems[0].contains("`relief` is not a key of a pack"),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -351,5 +364,67 @@ fn checking_shader_packs_says_ok_for_each_and_every_problem_of_the_rest_and_take
         run_check_shader_packs(vec!["a".into(), "b".into()])
             .unwrap_err()
             .contains("usage")
+    );
+}
+
+#[test]
+fn a_packs_settings_file_is_next_to_its_folder_in_the_folder_of_packs_it_was_found_in() {
+    let data = Folder::new("files_data");
+    good_pack(&data, "one", "tester:one", "One");
+    good_pack(
+        &data,
+        "shared",
+        "tester:shared",
+        "Shared (the data folder's)",
+    );
+    let asked = Folder::new("files_asked");
+    good_pack(&asked, "two", "tester:two", "Two");
+    good_pack(
+        &asked,
+        "shared",
+        "tester:shared",
+        "Shared (the asked folder's)",
+    );
+    let shelf = shelf_of(Some(data.path()), Some(asked.path())).unwrap();
+    assert_eq!(
+        shelf.settings_files,
+        std::collections::BTreeMap::from([
+            (
+                "tester:one".to_owned(),
+                data.path().join("one.settings.json")
+            ),
+            (
+                "tester:shared".to_owned(),
+                data.path().join("shared.settings.json")
+            ),
+            (
+                "tester:two".to_owned(),
+                asked.path().join("two.settings.json")
+            ),
+        ]),
+        "the file of the pack that is used, named for its folder, beside it"
+    );
+    // The game's own shader keeps its choices in the folder of the data folder, whether or not a folder of packs is there.
+    assert_eq!(
+        own_settings_file(Some(data.path())),
+        Some(data.path().join("default.settings.json"))
+    );
+    assert_eq!(own_settings_file(None), None);
+}
+
+#[test]
+fn a_pack_in_a_folder_called_default_is_a_problem_for_that_is_the_name_of_the_game_own_settings_file()
+ {
+    let folder = Folder::new("default_folder");
+    good_pack(&folder, "default", "tester:default", "Default");
+    good_pack(&folder, "other", "tester:other", "Other");
+    let shelf = read_directory(folder.path()).expect("a folder");
+    let ids: Vec<&str> = shelf.packs.iter().map(ShaderPack::id).collect();
+    assert_eq!(ids, ["tester:other"]);
+    assert_eq!(shelf.problems.len(), 1, "{:?}", shelf.problems);
+    assert!(
+        shelf.problems[0].contains("default.settings.json") && shelf.problems[0].contains("rename"),
+        "{:?}",
+        shelf.problems
     );
 }

@@ -93,8 +93,84 @@ fn the_settings_of_a_pack_are_the_engines_with_the_packs_defaults_and_then_its_o
         .collect();
     assert_eq!(
         names,
-        ["relief_depth", "wall_darkness", "scene_lift", "steps"]
+        [
+            "relief",
+            "relief_depth",
+            "wall_darkness",
+            "scene_lift",
+            "steps"
+        ]
     );
     let plain = ShaderPack::new("test:x", "X", DEFAULT_LIGHTING).expect("a valid pack");
     assert_eq!(plain.settings(), engine_settings());
+}
+
+fn quality() -> SettingDeclaration {
+    SettingDeclaration::new(
+        "quality",
+        "how many steps the sun's light has",
+        SettingKind::Choice {
+            default: "medium".to_owned(),
+            options: ["low", "medium", "high"].map(str::to_owned).to_vec(),
+        },
+    )
+    .expect("a good declaration")
+}
+
+#[test]
+fn a_pack_reads_a_choice_of_its_own_by_its_words() {
+    let text = "
+fn pack_shade(s: Surface) -> vec3<f32> {
+    let cosine = max(dot(s.normal, frame.sun_direction.xyz), 0.0) * s.sun_visible;
+    let lit = select(cosine, floor(cosine * 3.0 + 0.5) / 3.0, SETTING_QUALITY == SETTING_QUALITY_HIGH);
+    return s.albedo * (s.side * s.lamp + frame.sun_light.x * lit);
+}
+";
+    ShaderPack::new_with_settings("test:quality", "Quality", text, vec![quality()])
+        .unwrap_or_else(|error| panic!("{error}"));
+    // A word the choice does not have is no constant.
+    let wrong = text.replace("SETTING_QUALITY_HIGH", "SETTING_QUALITY_ULTRA");
+    ShaderPack::new_with_settings("test:quality", "Quality", &wrong, vec![quality()])
+        .expect_err("ULTRA is not a word of the choice");
+}
+
+#[test]
+fn the_constants_of_the_words_of_a_choice_may_not_be_those_of_another_setting() {
+    // `quality` with the word `high` makes `SETTING_QUALITY_HIGH`, and so would a setting called `quality_high`.
+    let same = SettingDeclaration::new("quality_high", "", SettingKind::Switch { default: false })
+        .expect("a good declaration");
+    for settings in [vec![quality(), same.clone()], vec![same, quality()]] {
+        let error = ShaderPack::new_with_settings("test:x", "X", DEFAULT_LIGHTING, settings)
+            .expect_err("two settings make one constant");
+        assert!(
+            error.to_string().contains("SETTING_QUALITY_HIGH"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_pack_sets_the_relief_by_setting_the_default_of_the_engines_relief() {
+    let pack = ShaderPack::new("test:x", "X", DEFAULT_LIGHTING).expect("a valid pack");
+    assert_eq!(pack.relief(), None);
+    let flat = pack.with_relief(Relief::Flat);
+    assert_eq!(flat.relief(), Some(Relief::Flat));
+    let relief = flat
+        .settings()
+        .into_iter()
+        .find(|declaration| declaration.name() == "relief")
+        .expect("the engine's relief is among the pack's settings");
+    assert_eq!(
+        relief.default_value(),
+        SettingValue::Choice("flat".to_owned())
+    );
+    // The same by the defaults a `pack.json` says.
+    let by_defaults = ShaderPack::new("test:x", "X", DEFAULT_LIGHTING)
+        .expect("a valid pack")
+        .with_engine_defaults(SettingChoices::from([(
+            "relief".to_owned(),
+            SettingValue::Choice("flat".to_owned()),
+        )]))
+        .expect("flat is a relief");
+    assert_eq!(by_defaults.relief(), Some(Relief::Flat));
 }

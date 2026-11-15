@@ -27,6 +27,7 @@ mod player_identity;
 pub mod screen;
 pub mod serve;
 pub mod session;
+pub mod shader_pack_settings;
 pub mod shader_packs;
 pub mod sun;
 #[cfg(test)]

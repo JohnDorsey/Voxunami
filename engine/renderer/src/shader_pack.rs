@@ -18,7 +18,8 @@
 use std::fmt;
 
 use crate::shader_settings::{
-    SettingChoices, SettingDeclaration, ShaderSettings, engine_settings, engine_settings_with,
+    OWN_PREFIX, SettingChoices, SettingDeclaration, SettingValue, ShaderSettings, constants_of,
+    engine_settings, engine_settings_with,
 };
 use crate::voxel_renderer::{SunWalk, voxel_source};
 
@@ -45,11 +46,15 @@ pub enum Relief {
     Prisms,
 }
 
-/// The relief a pack that does not say is drawn with, and the default pack. Prisms are on while they are tested (owner, 2026-11-14); whether they stay the default is open.
+/// The relief a pack that does not say is drawn with, and the default pack: the default of the engine setting `relief`. Prisms are on while they are tested (owner, 2026-11-14);
+/// whether they stay the default is open.
 pub const DEFAULT_RELIEF: Relief = Relief::Prisms;
 
 impl Relief {
-    /// The word of `pack.json` for it.
+    /// Every relief, in the order of the words of the setting `relief`.
+    pub const ALL: [Relief; 2] = [Relief::Flat, Relief::Prisms];
+
+    /// The word of the setting `relief` for it.
     pub fn name(self) -> &'static str {
         match self {
             Relief::Flat => "flat",
@@ -57,31 +62,32 @@ impl Relief {
         }
     }
 
-    /// The relief a `pack.json` word names.
+    /// The relief a word of the setting `relief` names.
     pub fn from_name(name: &str) -> Option<Self> {
-        [Relief::Flat, Relief::Prisms]
-            .into_iter()
-            .find(|relief| relief.name() == name)
+        Self::ALL.into_iter().find(|relief| relief.name() == name)
     }
 }
 
-/// What the voxel shaders are made of besides the engine's own text: the pack's lighting (`pack_shade`), how the relief of pictures is drawn, and the values of the settings. Equal
-/// shadings make the same shaders.
+/// What the voxel shaders are made of besides the engine's own text: the pack's lighting (`pack_shade`) and the values of the settings (among them how the relief of pictures is
+/// drawn, [`Shading::relief`]). Equal shadings make the same shaders.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Shading {
     pub lighting: String,
-    pub relief: Relief,
     pub settings: ShaderSettings,
 }
 
 impl Shading {
-    /// How the engine draws with no pack: the default lighting, relief and settings.
+    /// How the engine draws with no pack: the default lighting and settings.
     pub(crate) fn engine_default() -> Self {
         Self {
             lighting: DEFAULT_LIGHTING.to_owned(),
-            relief: DEFAULT_RELIEF,
             settings: ShaderSettings::defaults(),
         }
+    }
+
+    /// How the relief of pictures is drawn: each is a different shader.
+    pub(crate) fn relief(&self) -> Relief {
+        self.settings.relief()
     }
 }
 
@@ -137,13 +143,13 @@ impl ShaderPackError {
     }
 }
 
-/// A pack: its id and name, the text of its `pack_shade`, checked, and how it draws the relief of pictures, if it says.
+/// A pack: its id and name, the text of its `pack_shade`, checked, the settings it declares and the defaults it sets for the engine's (among them how it draws the relief of
+/// pictures, if it says).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShaderPack {
     id: String,
     name: String,
     lighting: String,
-    relief: Option<Relief>,
     own_settings: Vec<SettingDeclaration>,
     engine_defaults: SettingChoices,
 }
@@ -178,12 +184,27 @@ impl ShaderPack {
                 )));
             }
         }
+        // (The constants of a choice's words are made of its name: `quality` with the word `high` and a setting `quality_high` would be the same constant.)
+        let mut constants: Vec<String> = engine
+            .iter()
+            .flat_map(|declaration| constants_of("", declaration))
+            .collect();
+        for setting in &settings {
+            for constant in constants_of(OWN_PREFIX, setting) {
+                if constants.contains(&constant) {
+                    return Err(ShaderPackError::one(format!(
+                        "the setting {} makes the constant {constant}, which another setting (or a word of a choice) makes too: rename one",
+                        setting.name()
+                    )));
+                }
+                constants.push(constant);
+            }
+        }
         check_lighting_with(lighting, &settings)?;
         Ok(Self {
             id: id.to_owned(),
             name: name.to_owned(),
             lighting: lighting.to_owned(),
-            relief: None,
             own_settings: settings,
             engine_defaults: SettingChoices::new(),
         })
@@ -215,15 +236,21 @@ impl ShaderPack {
         settings
     }
 
-    /// The same pack drawing the relief of pictures this way (`"relief"` in `pack.json`).
+    /// The same pack drawing the relief of pictures this way unless the player chooses another: the default of the engine setting `relief`.
     pub fn with_relief(mut self, relief: Relief) -> Self {
-        self.relief = Some(relief);
+        self.engine_defaults.insert(
+            "relief".to_owned(),
+            SettingValue::Choice(relief.name().to_owned()),
+        );
         self
     }
 
     /// How the pack asked for the relief of pictures to be drawn; `None` for the engine's own choice ([`DEFAULT_RELIEF`]).
     pub fn relief(&self) -> Option<Relief> {
-        self.relief
+        match self.engine_defaults.get("relief") {
+            Some(SettingValue::Choice(word)) => Relief::from_name(word),
+            _ => None,
+        }
     }
 
     pub fn id(&self) -> &str {
@@ -385,13 +412,15 @@ fn language_problem(
         walk,
         &Shading {
             lighting: String::new(),
-            relief,
             settings: ShaderSettings::resolve_for(
                 &SettingChoices::new(),
                 own_settings,
-                &SettingChoices::new(),
+                &SettingChoices::from([(
+                    "relief".to_owned(),
+                    SettingValue::Choice(relief.name().to_owned()),
+                )]),
             )
-            .expect("defaults are in their ranges"),
+            .expect("defaults and the words of the relief are in their ranges"),
         },
     );
     let source = format!("{before}{text}");
@@ -481,6 +510,7 @@ pub(crate) fn check_lighting_with(
         (true, Relief::Flat, heaviest),
         (true, Relief::Prisms, heaviest),
     ] {
+        // (Each relief, whatever the player chooses of it: a setting's value is a constant of the same text of the pack.)
         if let Some(problem) = language_problem(with_pictures, relief, walk, own_settings, text) {
             return Err(ShaderPackError {
                 problems: vec![problem],

@@ -1136,22 +1136,23 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.settings
     }
 
-    /// Tells the session which shader packs the player has (`.shader` chooses among them) and which is chosen to start with (`None`: the game's own).
+    /// Tells the session which shader packs the player has (`.shader` chooses among them), which is chosen to start with (`None`: the game's own), and what the player chose of
+    /// the settings of each (read from the files next to them).
     pub fn offer_shader_packs(
         &mut self,
         packs: Vec<crate::shader_packs::ShaderPackName>,
         chosen: Option<String>,
+        choices: crate::shader_pack_settings::PackChoices,
     ) {
         self.settings.shader_packs = packs;
         self.settings.shader_pack = chosen;
+        self.settings.pack_settings = choices;
     }
 
-    /// Goes back to the game's own shader and its settings' defaults, for a pack or a value the graphics card did not take (which of them it was is not known, and the game's own
-    /// are known to draw).
+    /// Goes back to the game's own shader, for a pack or a value the graphics card did not take (which of them it was is not known), and forgets what was chosen of the settings of
+    /// the shader that was refused ([`ClientSettings::forget_the_refused_shader`]; the shell's files forget it too). The game's own shader at its defaults is known to draw.
     pub fn reject_shader_pack(&mut self) {
-        self.settings.shader_pack = None;
-        self.settings.shader_settings.clear();
-        self.settings.pack_settings.clear();
+        self.settings.forget_the_refused_shader();
     }
 
     /// The sun of the level the player is in and the time of day by the world's clock, if the game has a sun there.

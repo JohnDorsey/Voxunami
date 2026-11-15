@@ -26,9 +26,8 @@ shaderpacks/
 - `name` (required): what a person reads. You choose a pack by its id, the part of the id after the colon, its name (any case) or the beginning of any of them.
 - `interface`: the version of the pack interface the pack is written for. The engine's is **1**; a pack for another is refused, so that a change of the interface is never a quiet break. May be left out.
 - `format`: 1 (may be left out). `description`: free text.
-- `relief`: how the relief of block pictures is drawn, `"flat"` or `"prisms"`. **Prisms** make each pixel of a picture whose normal companion (LabPBR `_n`) has a height in its alpha a square column that deep, 0.1 voxel at most, with its sides lit by the sun; **flat** draws the face flat (the picture's bumps and the shade of its own relief stay). Left out, the engine's own choice: prisms, while they are tested. A pack that says `"flat"` has no prisms in its shaders at all, which costs about 1.2 to 1.5 ms of a 3 ms frame of nothing but dirt on an integrated GPU (nothing on a picture with no relief); it needs no new interface number, since a pack still reads only `Surface`. See `engine/renderer/example_shader_packs/flat`.
 - `settings`: settings of the pack's own, which its lighting reads and the player changes (see "Settings" below).
-- `engine_settings`: the defaults the pack sets for the engine's settings, by name (`{ "scene_lift": 1.0 }`); each must be in the setting's range.
+- `engine_settings`: the defaults the pack sets for the engine's settings, by name (`{ "scene_lift": 1.0, "relief": "flat" }`); each must be in the setting's range, or one of the words of a choice. How the relief of block pictures is drawn is the engine setting `relief`, so a pack that wants it flat says `"engine_settings": { "relief": "flat" }` (there is no `relief` key of the file any more). See `engine/renderer/example_shader_packs/flat`.
 - Any other key is an error.
 
 ## `lighting.wgsl`
@@ -78,15 +77,24 @@ A pack **may** ignore what it is given: a pack with no shadows is a style (`shad
 
 ## Settings
 
-The engine has numbers of taste that a player changes by eye. Each has a name, a range and a default, and is written into the shaders as a constant of the same name in upper case, so that it costs nothing in a frame:
+The engine has numbers and words of taste that a player changes by eye. Each has a name, a range (or a list of words) and a default, and is written into the shaders as a constant of the same name in upper case, so that it costs nothing in a frame:
 
-| setting | default | range | what it is |
+| setting | default | takes | what it is |
 |---|---|---|---|
+| `relief` | `prisms` | one of `flat`, `prisms` | how the relief of block pictures is drawn. **`flat`** draws the face flat: the tilts of a picture's normal companion (LabPBR `_n`, the "normal map") bump it, so that the sun's light is the cosine of the tilted normal, and the height shades the picture's own relief. **`prisms`** makes each pixel of a picture whose normal companion has a height in its alpha a square column that deep, with its sides lit by the sun; a prism is flat on top, so near the camera the tilts are left out where prisms are drawn. Flat has no prisms in its shaders at all, which saves about 1.2 to 1.5 ms of a 3 ms frame of nothing but dirt on an integrated GPU (nothing on a picture with no relief) |
 | `relief_depth` | 0.1 | 0 to 0.2 | how deep, in voxels, the relief of a block's picture is (the lowest pixel of its height field below the top); past about 0.15 the shader's limit of steps shows |
 | `wall_darkness` | 0.2 | 0 to 1 | how much darker the ambient light is at the foot of the wall of the deepest prism than at its top |
 | `scene_lift` | 1.2 | 0.5 to 3 | the light of the whole scene is raised to the power of 1 over this, so 1 is no lift; black stays black and full brightness stays full |
 
-While playing, `.shadersetting` lists them, `.shadersetting NAME` says what one is for and what it takes, `.shadersetting NAME VALUE` changes it (the beginning of a name will do) and `.shadersetting NAME default` goes back. A change makes the shaders again, which is a pause of a fifth to half a second. The values are for the session; they are not saved yet. A pack reads them as it reads the engine's other constants (`RELIEF_DEPTH`, `WALL_DARKNESS`, `SCENE_LIFT`), and may not define a name of the same spelling.
+While playing, `.shadersetting` lists them, `.shadersetting NAME` says what one is for and what it takes, `.shadersetting NAME VALUE` changes it (the beginning of a name will do; a word of a choice is typed in full, in any case, as in `.shadersetting relief flat`) and `.shadersetting NAME default` goes back. A change makes the shaders again, which is a pause of a fifth to half a second. A pack reads them as it reads the engine's other constants (`RELIEF`, `RELIEF_DEPTH`, `WALL_DARKNESS`, `SCENE_LIFT`), and may not define a name of the same spelling. A choice's constant is the place of the word in its list from 0 (`relief` is `RELIEF`), and each word has a constant of its own, so that a shader says what it means: `RELIEF == RELIEF_FLAT` (the engine's words are `RELIEF_FLAT` and `RELIEF_PRISMS`).
+
+**Choices are kept in a file next to each pack.** What a player chooses of the settings of a shader is its own, the engine's settings and the pack's, and is written when it changes to a file in the same folder of packs as the pack's folder, called after the folder and `.settings.json`: the pack in `shaderpacks/cel` keeps its choices in `shaderpacks/cel.settings.json`. The game's own shader, which has no folder, keeps them in `shaderpacks/default.settings.json` in the game data folder (so a pack's folder may not be called `default`). The file is one JSON object, a name and the value chosen, a number, `true` or `false`, or the text of a word:
+
+```json
+{ "relief": "flat", "scene_lift": 1.4 }
+```
+
+Only what is chosen is in it, and a shader with nothing chosen has no file; the game reads it when it starts and writes it whenever a value changes. A name that is not a setting of the shader, or a value that is not one of its setting, is a warning on the error stream and is left out. A file that is not a JSON object is a warning, and is not written over until it is mended or removed. A graphics card that refuses a pack with the choices made for it takes the pack off and forgets those choices (and so its file). `--screenshot` and the other headless runs read the files and never write them.
 
 **A pack's own settings** are declared in `pack.json`, never scraped from the shader's text:
 
@@ -105,9 +113,9 @@ While playing, `.shadersetting` lists them, `.shadersetting NAME` says what one 
 ```
 
 - The key is the name: lower case letters, digits and underscores, beginning with a letter, and not the name of an engine setting.
-- `type` is `float` (a number), `integer` (a whole number) or `switch` (true or false). A number has a `minimum`, a `maximum` and a `default` between them; a switch has a `default`. `description` is free text that `.shadersetting NAME` shows. Any other key is an error.
-- The lighting reads it as the constant `SETTING_` and the name in upper case: `steps` is `SETTING_STEPS`, an `i32` (a float is an `f32`, a switch a `bool`). A pack that reads one it did not declare is refused with the line.
-- `.shadersetting` lists the engine's settings, with the pack's defaults, and then the pack's own, while the pack is in use. A value chosen for a pack's own setting is that pack's (it is there again when the pack is chosen again); a value chosen for an engine setting is the player's, whatever the pack. A change makes the shaders again, as for the engine's.
+- `type` is `float` (a number), `integer` (a whole number), `switch` (true or false) or `choice` (one of some words). A number has a `minimum`, a `maximum` and a `default` between them; a switch has a `default`; a choice has `options`, a list of at least two words (each lower case letters, digits and underscores, beginning with a letter, none twice) and a `default` that is one of them. `description` is free text that `.shadersetting NAME` shows. Any other key, or one for another type (`options` of a number), is an error.
+- The lighting reads it as the constant `SETTING_` and the name in upper case: `steps` is `SETTING_STEPS`, an `i32` (a float is an `f32`, a switch a `bool`). A choice is an `i32` too, the place of its word from 0, and each word is a constant of its own, `SETTING_` and the name and the word in upper case: `"quality": { "type": "choice", "options": ["low", "high"], "default": "low" }` makes `SETTING_QUALITY`, `SETTING_QUALITY_LOW` (0) and `SETTING_QUALITY_HIGH` (1), and `SETTING_QUALITY == SETTING_QUALITY_HIGH` reads as it says. Two settings that make one constant (a setting `quality_high` beside that one) are refused. A pack that reads a constant it did not declare is refused with the line.
+- `.shadersetting` lists the engine's settings, with the pack's defaults, and then the pack's own, while the pack is in use. What a player chooses is for the shader in use alone, engine settings too: the pack has its own choices (and its file, above), and the game's own shader has its own. A change makes the shaders again, as for the engine's.
 - `engine_settings` sets what a setting of the engine's is until the player says: `.shadersetting NAME default` goes back to the pack's.
 
 See `engine/renderer/example_shader_packs/cel`, which has `steps`.
@@ -145,7 +153,7 @@ While playing, `.shader` says which pack is in use and what there is, `.shader N
   }
   ```
 
-- `flat`: the default's lighting (a copy, checked against it by a test) with `"relief": "flat"`: the one example that changes only a setting.
+- `flat`: the default's lighting (a copy, checked against it by a test) with `"engine_settings": { "relief": "flat" }`: the one example that changes only a setting. (The game's own shader is the same with `.shadersetting relief flat`.)
 - `shadowless`: a sun that no terrain hides (only the horizon of the planet does): it does not look at `sun_visible`, `sky_visible` or `uncovered`.
 
 ## Not yet

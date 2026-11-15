@@ -38,7 +38,7 @@ fn a_pack_declares_settings_of_each_kind_with_their_ranges_and_defaults() {
     };
     assert_eq!(
         by_name("steps").kind(),
-        SettingKind::Integer {
+        &SettingKind::Integer {
             default: 3,
             minimum: 2,
             maximum: 8
@@ -47,7 +47,7 @@ fn a_pack_declares_settings_of_each_kind_with_their_ranges_and_defaults() {
     assert_eq!(by_name("steps").description(), "How many steps.");
     assert_eq!(
         by_name("softness").kind(),
-        SettingKind::Float {
+        &SettingKind::Float {
             default: 0.5,
             minimum: 0.0,
             maximum: 2.0
@@ -56,6 +56,110 @@ fn a_pack_declares_settings_of_each_kind_with_their_ranges_and_defaults() {
     assert_eq!(
         by_name("outline").default_value(),
         SettingValue::Switch(true)
+    );
+}
+
+#[test]
+fn a_pack_declares_a_choice_with_its_words_and_one_of_them_as_the_default() {
+    let pack = read(
+        r#", "settings": {
+            "quality": { "type": "choice", "description": "How fine.", "options": ["low", "medium", "high"], "default": "medium" }
+        }"#,
+        "fn pack_shade(s: Surface) -> vec3<f32> { return s.albedo * select(0.5, 1.0, SETTING_QUALITY == SETTING_QUALITY_HIGH); }",
+    )
+    .unwrap_or_else(|problems| panic!("{problems:?}"));
+    let quality = &pack.own_settings()[0];
+    assert_eq!(
+        quality.kind(),
+        &SettingKind::Choice {
+            default: "medium".to_owned(),
+            options: vec!["low".to_owned(), "medium".to_owned(), "high".to_owned()],
+        }
+    );
+    assert_eq!(
+        quality.default_value(),
+        SettingValue::Choice("medium".into())
+    );
+}
+
+#[test]
+fn a_choice_that_is_wrong_is_a_problem_that_names_the_pack_json_and_the_setting() {
+    let lighting = renderer::default_lighting();
+    for (extra, says) in [
+        (
+            r#", "settings": { "a": { "type": "choice", "default": "x" } }"#,
+            "`options`",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": "low", "default": "low" } }"#,
+            "list of texts",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", 2], "default": "low" } }"#,
+            "list of texts",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", "high"] } }"#,
+            "`default`",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", "high"], "default": 1 } }"#,
+            "`default`",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", "high"], "default": "ultra" } }"#,
+            "one of low, high",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low"], "default": "low" } }"#,
+            "at least two",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", "low"], "default": "low" } }"#,
+            "twice",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", "High"], "default": "low" } }"#,
+            "not a word of a choice",
+        ),
+        (
+            r#", "settings": { "a": { "type": "choice", "options": ["low", "high"], "default": "low", "minimum": 0 } }"#,
+            "`minimum` of the setting `a` is not for a choice",
+        ),
+        (
+            r#", "settings": { "a": { "type": "integer", "default": 1, "minimum": 0, "maximum": 3, "options": ["x", "y"] } }"#,
+            "`options` of the setting `a` is not for a number",
+        ),
+        (
+            r#", "settings": { "a": { "type": "switch", "default": true, "options": ["x", "y"] } }"#,
+            "`options` of the setting `a` is not for a switch",
+        ),
+    ] {
+        let problems = read(extra, lighting).expect_err(extra);
+        assert_eq!(problems.len(), 1, "{extra}: {problems:?}");
+        assert!(
+            problems[0].contains("pack.json") && problems[0].contains(says),
+            "{extra}: {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pack_sets_the_default_of_an_engine_choice_by_its_word() {
+    let pack = read(
+        r#", "engine_settings": { "relief": "flat", "scene_lift": 1.0 }"#,
+        renderer::default_lighting(),
+    )
+    .unwrap_or_else(|problems| panic!("{problems:?}"));
+    assert_eq!(
+        pack.engine_defaults().get("relief"),
+        Some(&SettingValue::Choice("flat".to_owned()))
+    );
+    let settings = pack.settings();
+    assert_eq!(settings[0].name(), "relief");
+    assert_eq!(
+        settings[0].default_value(),
+        SettingValue::Choice("flat".into())
     );
 }
 
@@ -161,7 +265,7 @@ fn the_cel_example_declares_the_steps_the_renderers_tests_assume() {
     assert_eq!(steps.name(), "steps");
     assert_eq!(
         steps.kind(),
-        SettingKind::Integer {
+        &SettingKind::Integer {
             default: 3,
             minimum: 2,
             maximum: 8

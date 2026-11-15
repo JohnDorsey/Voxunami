@@ -24,9 +24,7 @@ use crate::occupancy_volume::{
     MAXIMUM_WINDOWS, SLOT_BYTES, Volume, VolumeKey, VolumeStatistics, WINDOW_BRICKS, WINDOW_ENTRIES,
 };
 use crate::overlay::{Overlay, OverlayRect};
-use crate::shader_pack::{
-    DEFAULT_LIGHTING, DEFAULT_RELIEF, Relief, ShaderPack, ShaderPackError, Shading,
-};
+use crate::shader_pack::{DEFAULT_LIGHTING, Relief, ShaderPack, ShaderPackError, Shading};
 use crate::shader_settings::{SettingChoices, SettingDeclaration, ShaderSettings};
 use crate::shadow::{
     Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
@@ -1894,7 +1892,6 @@ impl VoxelRenderer {
         choices: &SettingChoices,
     ) -> Result<(), ShaderPackError> {
         let lighting = pack.map_or(DEFAULT_LIGHTING, ShaderPack::lighting);
-        let relief = pack.and_then(ShaderPack::relief).unwrap_or(DEFAULT_RELIEF);
         static NO_DEFAULTS: SettingChoices = SettingChoices::new();
         let (defaults, own) = match pack {
             Some(pack) => (pack.engine_defaults(), pack.own_settings()),
@@ -1902,7 +1899,6 @@ impl VoxelRenderer {
         };
         // (The window asks every frame: what is the same as last time is told apart without making anything.)
         if lighting == self.shading.lighting
-            && relief == self.shading.relief
             && *choices == self.shading_choices
             && *defaults == self.shading_declared.0
             && own == self.shading_declared.1.as_slice()
@@ -1913,7 +1909,6 @@ impl VoxelRenderer {
             .map_err(|message| ShaderPackError::bad_settings(&message))?;
         let shading = Shading {
             lighting: lighting.to_owned(),
-            relief,
             settings,
         };
         if shading == self.shading {
@@ -3354,7 +3349,7 @@ pub(crate) enum SunWalk {
 pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading) -> String {
     let pictures = if with_pictures {
         // (Both read the picture where `parallax_shift` says; the one with no prisms says nowhere else than where the face is.)
-        match shading.relief {
+        match shading.relief() {
             Relief::Flat => concat!(
                 include_str!("pictures_on.wgsl"),
                 "\n",
@@ -3460,7 +3455,7 @@ pub(crate) fn voxel_shader(
 ) -> wgpu::ShaderModule {
     let label = format!(
         "voxel shader{}{}{}{}{}",
-        match (with_pictures, shading.relief) {
+        match (with_pictures, shading.relief()) {
             (false, _) => "",
             (true, Relief::Flat) => " with pictures",
             (true, Relief::Prisms) => " with pictures and prisms",
