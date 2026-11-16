@@ -338,6 +338,7 @@ fn the_shaders_are_accepted_with_every_setting_at_either_end_of_its_range() {
                     &Shading {
                         lighting: DEFAULT_LIGHTING.to_owned(),
                         settings: settings.clone(),
+                        engine: None,
                     },
                 );
                 let module = naga::front::wgsl::parse_str(&source)

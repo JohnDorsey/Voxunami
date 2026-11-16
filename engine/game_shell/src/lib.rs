@@ -13,6 +13,8 @@ pub mod client_plugin;
 mod coarse_view_tests;
 mod command_entry;
 mod definition;
+#[cfg(test)]
+mod engine_shader_reload_tests;
 pub mod files;
 pub mod following;
 mod headless;

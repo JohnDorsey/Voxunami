@@ -1,6 +1,7 @@
 //! Glue between a session and the renderer.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use block_models::BlockTable;
 use data_packs::Tile;
@@ -150,6 +151,58 @@ impl ShaderApplier for VoxelRenderer {
         self.set_shader_pack_with_settings(pack, choices)
             .map_err(|error| error.to_string())
     }
+}
+
+/// What a reload of the engine's own shaders draws with: the renderer, or a stand-in in a test.
+pub trait EngineShaderApplier {
+    /// As [`renderer::VoxelRenderer::set_engine_shaders`], with the reason as text: whether anything was made. An error leaves what is drawn with as it was.
+    fn apply(&mut self, texts: renderer::EngineShaderTexts) -> Result<bool, String>;
+}
+
+impl EngineShaderApplier for VoxelRenderer {
+    fn apply(&mut self, texts: renderer::EngineShaderTexts) -> Result<bool, String> {
+        self.set_engine_shaders(Some(texts))
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Reads the engine's shaders from this folder (a developer's, `--engine-shaders`) and gives them to the renderer, which makes them at once, for the start and for a reload.
+/// `Ok(None)` says the renderer draws with what the files say already. An error (a file that is not there, or a shader the language or the card refuses) leaves the shaders in use.
+pub fn use_engine_shaders_from(
+    applier: &mut impl EngineShaderApplier,
+    folder: &Path,
+) -> Result<Option<String>, String> {
+    let texts = renderer::EngineShaderTexts::read(folder)?;
+    swap_engine_shaders(applier, folder, texts)
+}
+
+/// Puts the engine's shaders that were read from this folder in use (the swap of a reload): as [`use_engine_shaders_from`], with the files already read.
+pub fn swap_engine_shaders(
+    applier: &mut impl EngineShaderApplier,
+    folder: &Path,
+    texts: renderer::EngineShaderTexts,
+) -> Result<Option<String>, String> {
+    let made = applier.apply(texts).map_err(|error| {
+        format!(
+            "the engine's shaders in {} are refused (the shaders in use stay):\n{error}",
+            folder.display()
+        )
+    })?;
+    Ok(made.then(|| format!("the engine's shaders, read from {}", folder.display())))
+}
+
+/// Starts with the engine's shaders from the folder `--engine-shaders` names, if it names one: what is told of them is printed (the shaders that are not the program's are not to be
+/// taken for them). An error leaves the program's own.
+pub fn start_with_engine_shaders(
+    renderer: &mut VoxelRenderer,
+    view: &ViewOptions,
+) -> Result<(), String> {
+    if let Some(folder) = &view.engine_shaders
+        && let Some(detail) = use_engine_shaders_from(renderer, folder)?
+    {
+        println!("{detail}");
+    }
+    Ok(())
 }
 
 /// Puts shader packs that were read again in use (the swap of a reload): the pack the player has chosen stays chosen if it is still there, and is drawn with as it is now in its

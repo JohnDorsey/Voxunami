@@ -16,7 +16,9 @@
 //! file. What it cannot know is what the graphics card says of it: that is [`crate::VoxelRenderer::set_shader_pack`]'s.
 
 use std::fmt;
+use std::sync::Arc;
 
+use crate::engine_shaders::EngineShaderTexts;
 use crate::shader_settings::{
     OWN_PREFIX, SettingChoices, SettingDeclaration, SettingValue, ShaderSettings, constants_of,
     engine_settings, engine_settings_with,
@@ -80,6 +82,8 @@ impl Relief {
 pub(crate) struct Shading {
     pub lighting: String,
     pub settings: ShaderSettings,
+    /// The text of the engine's own shaders when a developer has given one ([`crate::EngineShaderTexts`]); `None` is the program's own, which is what a player has.
+    pub engine: Option<Arc<EngineShaderTexts>>,
 }
 
 impl Shading {
@@ -88,7 +92,15 @@ impl Shading {
         Self {
             lighting: DEFAULT_LIGHTING.to_owned(),
             settings: ShaderSettings::defaults(),
+            engine: None,
         }
+    }
+
+    /// The text the engine's shaders are made of.
+    pub(crate) fn engine_texts(&self) -> &EngineShaderTexts {
+        self.engine
+            .as_deref()
+            .unwrap_or_else(|| EngineShaderTexts::built_in())
     }
 
     /// How the relief of pictures is drawn: each is a different shader.
@@ -427,6 +439,7 @@ fn language_problem(
                 )]),
             )
             .expect("defaults and the words of the relief are in their ranges"),
+            engine: None,
         },
     );
     let source = format!("{before}{text}");

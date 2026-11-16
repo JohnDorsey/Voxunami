@@ -13,6 +13,7 @@ mod block_textures;
 mod camera;
 mod contact_volume;
 mod crosshair;
+mod engine_shaders;
 mod graphics_context;
 mod occupancy_volume;
 mod overlay;
@@ -27,6 +28,7 @@ mod voxel_renderer;
 
 pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
 pub use camera::{Camera, Frustum};
+pub use engine_shaders::{EngineShaderError, EngineShaderTexts};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };

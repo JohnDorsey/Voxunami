@@ -33,7 +33,7 @@ use crate::session::{Mode, Session};
 use crate::view::{
     apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
     hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
-    show_screen,
+    show_screen, start_with_engine_shaders, swap_engine_shaders,
 };
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
@@ -289,6 +289,9 @@ impl<G: GameDefinition> Viewer<G> {
             session.fog_radius_bricks(),
         );
         let shader_packs = prepare_shader_packs(view, &mut session)?;
+        if let Err(error) = start_with_engine_shaders(&mut renderer, view) {
+            eprintln!("warning: the program's own engine shaders are used: {error}");
+        }
         let reloads = what_can_be_reloaded::<G>(view);
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
@@ -765,6 +768,21 @@ impl<G: GameDefinition> Reloadable<Viewer<G>> for ShaderPackFolders {
     }
 }
 
+/// The folder the engine's own shaders are read from, as a reload reads them again (the same as at the start).
+struct EngineShaderFolder(std::path::PathBuf);
+
+impl<G: GameDefinition> Reloadable<Viewer<G>> for EngineShaderFolder {
+    type Loaded = renderer::EngineShaderTexts;
+
+    fn load(&self, _viewer: &Viewer<G>) -> Result<Self::Loaded, String> {
+        renderer::EngineShaderTexts::read(&self.0)
+    }
+
+    fn swap(&self, viewer: &mut Viewer<G>, loaded: Self::Loaded) -> Result<Option<String>, String> {
+        swap_engine_shaders(&mut viewer.renderer, &self.0, loaded)
+    }
+}
+
 /// The kinds of content this window can reload (`.reload`), watched for changes if `--watch` was given. A kind whose folders are not there is not offered.
 fn what_can_be_reloaded<G: GameDefinition>(view: &ViewOptions) -> Reloads<Viewer<G>> {
     let mut reloads = Reloads::new(view.watch);
@@ -788,6 +806,23 @@ fn what_can_be_reloaded<G: GameDefinition>(view: &ViewOptions) -> Reloads<Viewer
         );
         if let Err(error) = added {
             eprintln!("warning: shader packs will not be reloaded: {error}");
+        }
+    }
+    if let Some(folder) = &view.engine_shaders {
+        // (Only the files the shaders are made of: the rest of the folder is Rust.)
+        let places = renderer::EngineShaderTexts::FILES
+            .iter()
+            .map(|file| DiskSource::new(folder.join(file)))
+            .collect();
+        let added = reloads.add(
+            "engine-shaders",
+            DiskSources::new(places),
+            Watcher::<DiskSources>::DEFAULT_SETTLE,
+            Watcher::<DiskSources>::DEFAULT_INTERVAL,
+            EngineShaderFolder(folder.clone()),
+        );
+        if let Err(error) = added {
+            eprintln!("warning: the engine's shaders will not be reloaded: {error}");
         }
     }
     reloads

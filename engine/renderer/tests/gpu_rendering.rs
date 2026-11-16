@@ -38,6 +38,8 @@ mod contact_shapes;
 mod contact_trace;
 #[path = "gpu_rendering/emission.rs"]
 mod emission;
+#[path = "gpu_rendering/engine_shaders.rs"]
+mod engine_shaders;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
 #[path = "gpu_rendering/glints.rs"]
