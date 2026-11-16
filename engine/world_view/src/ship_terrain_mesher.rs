@@ -311,7 +311,7 @@ impl ShipTerrainMesher {
     /// Whether there is nothing more to make or to put on the screen.
     pub fn is_settled(&self) -> bool {
         match &self.drawn {
-            Drawn::Bricks(mesher) => mesher.pending_jobs() == 0,
+            Drawn::Bricks(mesher) => mesher.is_settled(),
             Drawn::Detailed { view, .. } => view.is_settled(),
         }
     }

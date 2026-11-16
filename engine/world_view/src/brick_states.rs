@@ -178,6 +178,14 @@ impl BrickStates {
             .map(|(coordinate, _)| *coordinate)
     }
 
+    /// The bricks that were asked to be shown and not hidden since, in no order.
+    pub(crate) fn shown_coordinates(&self) -> impl Iterator<Item = BrickCoordinate> + '_ {
+        self.records
+            .iter()
+            .filter(|(_, state)| state.shown)
+            .map(|(coordinate, _)| *coordinate)
+    }
+
     /// Changes the record of a brick, making one if there is none and dropping it if it says nothing afterwards, and keeps the tally.
     fn change<R>(
         &mut self,

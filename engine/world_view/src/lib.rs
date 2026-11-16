@@ -7,6 +7,7 @@
 //! under a crosshair using that answer.
 
 mod brick_states;
+mod cube_states;
 mod grid_mesher;
 mod horizon;
 mod lod;

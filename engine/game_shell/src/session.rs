@@ -115,7 +115,7 @@ impl TerrainView {
     /// Whether there is nothing more to make or to put on the screen.
     fn is_settled(&self) -> bool {
         match self {
-            Self::Bricks(mesher) => mesher.pending_jobs() == 0,
+            Self::Bricks(mesher) => mesher.is_settled(),
             Self::Coarse(coarse) => coarse.view.is_settled(),
         }
     }

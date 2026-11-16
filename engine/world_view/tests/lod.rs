@@ -303,8 +303,8 @@ fn settle_checked(
     let started = std::time::Instant::now();
     loop {
         screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, settings));
-        if let Err(problem) = view.mesher().check_consistency() {
-            panic!("{context}: the mesher's sets disagree: {problem}");
+        if let Err(problem) = view.check_consistency() {
+            panic!("{context}: the view's records disagree: {problem}");
         }
         if view.is_settled() {
             return;

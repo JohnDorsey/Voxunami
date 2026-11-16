@@ -465,6 +465,11 @@ impl WorldMesher {
         self.states.is_shown(coordinate)
     }
 
+    /// The bricks that have been asked to be shown and not hidden since (when held back), in no order.
+    pub(crate) fn shown_coordinates(&self) -> impl Iterator<Item = BrickCoordinate> + '_ {
+        self.states.shown_coordinates()
+    }
+
     /// Why a picture of the brick is not waiting to be shown, in words, for the report of a view that has stopped; `None` if one is. A brick wanted by a viewer is
     /// made unless something is wrong, so what this says when nothing is being done for it is what to look at.
     pub fn why_not_ready(
