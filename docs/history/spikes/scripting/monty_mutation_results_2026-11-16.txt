@@ -57,3 +57,15 @@ M4 no immediate walk for a bulk allocation
 M10 the limit is not sent over the wire
     -p monty-proto --test roundtrip: KILLED ['resource_limits_round_trip', 'the_model_memory_limit_uses_its_own_wire_field']
     (24 s)
+
+Added with the eval/exec pricing (M13: the VM leaves compiled source out; its REPL-level cost test survives because the REPL path does not use the VM's count, the limit test kills it):
+M13 the VM leaves compiled source out of the count
+    -p monty --test model_memory_limit every_runaway_is_stopped: KILLED ['every_runaway_is_stopped_with_a_memory_error']
+    -p monty --test model_memory_costs: SURVIVED []
+    (25 s)
+M14 published source bytes are not counted
+    -p monty --test model_memory_costs: KILLED ['source_compiled_by_eval_and_exec_is_kept_for_the_session_and_costs_by_its_length', 'the_count_is_the_same_after_a_dump_and_restore']
+    (22 s)
+M15 the byte counter is not rebuilt on load
+    -p monty --test model_memory_costs: KILLED ['the_count_is_the_same_after_a_dump_and_restore']
+    (22 s)
