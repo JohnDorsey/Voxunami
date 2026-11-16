@@ -259,6 +259,8 @@ pub struct BodyWorld {
     dials_of_a_hit: bool,
     /// How many pieces of a step were solved as a hit.
     hit_pieces: u64,
+    /// How many solver steps [`BodyWorld::step`] has cut its ticks into.
+    steps: u64,
     /// The pieces that the step now being made is solved in, if it is being recorded (see [`BodyWorld::step_recording`]).
     recorder: Option<Vec<Piece>>,
     /// Whether any piece of the step being recorded had a contact between bodies on different sides.
@@ -310,6 +312,7 @@ impl BodyWorld {
             hit_time_left: 0.0,
             dials_of_a_hit: false,
             hit_pieces: 0,
+            steps: 0,
             recorder: None,
             crossed: false,
             forced_hit: None,
@@ -965,12 +968,20 @@ impl BodyWorld {
     pub fn step(&mut self) {
         self.apply_sleep_rule();
         let steps = self.steps_for_this_tick();
+        self.steps += u64::from(steps);
         let length = self.settings.time_step / Real::from(steps);
         for _ in 0..steps {
             // (A step is cut in pieces where two bodies first touch: `first_touch.rs`.)
             self.solve_in_pieces(length);
         }
         self.forget_forces();
+    }
+
+    /// How many solver steps the ticks of [`BodyWorld::step`] have been cut into, since this world was made (a world that was stepped by a recording or a replay of another's
+    /// is not counted: they are steps of a ghost). It counts what a tick costs and not the time it took, so that what is simulated, and what is asked of it, does not depend on how
+    /// fast a machine is.
+    pub fn steps_taken(&self) -> u64 {
+        self.steps
     }
 
     /// One step of the solver, `time` seconds long.

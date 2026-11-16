@@ -130,6 +130,29 @@ fn what_counts_is_the_speed_the_two_close_at_and_the_speed_of_the_slab_where_the
 }
 
 #[test]
+fn the_steps_a_world_has_taken_are_counted_as_the_ticks_cut_them() {
+    // (What a cost counts, for a test of what the ground of a planet costs a body: a count of steps does not depend on how fast a machine is.) A cube at rest: the settings' 3
+    // steps a tick. The same cube with a slab coming at it at 300 voxels a second: 19 in the first tick (the second asks for what the cube has become, so the count is of the first).
+    let mut world = free_space(3);
+    add_block(&mut world, 2, 2, [10.0, 3.0, 10.0], [0.0; 3]);
+    assert_eq!(world.steps_taken(), 0, "nothing stepped yet");
+    world.step();
+    world.step();
+    assert_eq!(world.steps_taken(), 6, "two ticks of 3 steps");
+    let mut world = free_space(3);
+    add_slab(&mut world, BodyKind::Kinematic, [0.0, 300.0, 0.0]);
+    add_block(&mut world, 2, 2, [10.0, 3.0, 10.0], [0.0; 3]);
+    let asked = world.steps_this_tick();
+    world.step();
+    assert_eq!(asked, 19, "the premise");
+    assert_eq!(
+        world.steps_taken(),
+        u64::from(asked),
+        "the steps of the tick"
+    );
+}
+
+#[test]
 fn a_slab_that_carries_the_cube_and_a_slab_with_no_ground_made_leave_the_steps_as_the_settings_say()
 {
     // A slab at 30 voxels a second and a cube on it going the same way: they close on each other at nothing, and the tick is cut as the settings say (as it was).

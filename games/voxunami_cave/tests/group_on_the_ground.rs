@@ -11,19 +11,15 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
 use common::chains::{
     Setting, a_chain, a_chain_in_orbit, centre_of, has_swung, how_the_chain_turns_going,
     most_apart, origins_of,
 };
 use common::docking::make_all_going;
-use common::{Scene, length, pose_at, ship_id};
+use common::{Scene, length, pose_at, ship_id, top_of_the_ground};
 use game_shell::GameDefinition;
 use grid_bodies::BodiesReport;
-use server::GridView;
-use voxel_space::{GravitySettings, GridId, VoxelCoordinate};
-use voxunami_cave::content::CaveContent;
+use voxel_space::{GravitySettings, GridId};
 use voxunami_cave::game::Cave;
 
 /// Where the chain is made: 25 voxels outside the room in which the ground is in the way, at rest.
@@ -230,26 +226,8 @@ fn the_ground_under_the_chain_is_where_the_other_tests_say() {
     let highest = [0, 4, 8, 12, 16]
         .into_iter()
         .flat_map(|x| [0, 3].map(move |z| (x, z)))
-        .map(|(x, z)| top_of_the_ground(&mut scene, x, z))
+        .map(|(x, z)| top_of_the_ground(&mut scene, 0, x, z, 63_000..67_000))
         .max()
         .expect("columns");
     assert_eq!(highest as f64, GROUND);
-}
-
-/// The highest voxel of the ground in the column (x, z) of the home planet (searched down from 67,000).
-fn top_of_the_ground(scene: &mut Scene, x: i128, z: i128) -> i128 {
-    let found = Arc::new(Mutex::new(0i128));
-    let slot = Arc::clone(&found);
-    let channel = CaveContent::new().block_channel();
-    scene.run(move |world| {
-        let mut grid = world.grid(ship_id(0)).unwrap();
-        for y in (63_000..67_000).rev() {
-            if grid.get(channel, VoxelCoordinate::new(x, y, z)).unwrap() != 0 {
-                *slot.lock().unwrap() = y;
-                return;
-            }
-        }
-    });
-    scene.ticks(1);
-    std::mem::take(&mut *found.lock().unwrap())
 }

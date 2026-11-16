@@ -747,6 +747,31 @@ pub fn ship_voxels(scene: &Scene, number: u64) -> [f64; 3] {
     ship_pose(scene, number).position.in_voxels()
 }
 
+/// The highest voxel of the ground of ship `planet` (a body with terrain) in the column (`x`, `z`) of its own voxels, looked for from the top of `heights` down: the ground is where
+/// its generator puts it (a planet of radius 10,000 with hills 20 high has it between 9,980 and 10,020 over its pole).
+pub fn top_of_the_ground(
+    scene: &mut Scene,
+    planet: u64,
+    x: i128,
+    z: i128,
+    heights: std::ops::Range<i128>,
+) -> i128 {
+    let found = Arc::new(Mutex::new(0i128));
+    let slot = Arc::clone(&found);
+    let channel = CaveContent::new().block_channel();
+    scene.run(move |world| {
+        let mut grid = world.grid(ship_id(planet)).unwrap();
+        for y in heights.rev() {
+            if grid.get(channel, VoxelCoordinate::new(x, y, z)).unwrap() != 0 {
+                *slot.lock().unwrap() = y;
+                return;
+            }
+        }
+    });
+    scene.ticks(1);
+    std::mem::take(&mut *found.lock().unwrap())
+}
+
 /// A raft of stone, 6 by 1 by 6, made `offset` voxels (in the world's axes) from the middle of ship `planet`, free or held, going `against` the ground there: at
 /// rest on it for no `against`, as a ship made by someone who stands on it would be. (It is put there in the tick after it is made, from the planet where the
 /// planet is in that tick, so that it is where it is said to be from the planet however far the planet has gone since the test looked.) Its number.

@@ -112,6 +112,10 @@ pub struct BodiesReport {
     pub terrain_bricks_made_last_tick: u64,
     pub terrain_bricks_made_most_in_a_tick: u64,
     pub terrain_bricks_made: u64,
+    /// Solver steps that the frames' ticks were cut into (`BodyWorld::steps_taken`, of every frame): in the last tick, and in all. What the ground of a planet asks of the
+    /// solver, with the bricks above: both count work and not time, so a test can ask that the cost of a ship near the ground is the same whatever the planet does.
+    pub solver_steps_last_tick: u64,
+    pub solver_steps: u64,
     /// Ships made one by docking, and times two ships that were near enough and in line could not be (blocks of the two would be in one place).
     pub dockings_made: u64,
     pub dockings_refused: u64,
@@ -1137,8 +1141,11 @@ impl Bodies {
 
         // (The ghosts are told where everything is and what is applied to it, and stepped, before any world takes its step: and what they found is added to each after.)
         self.ghosts_before_the_step(world);
+        let mut solver_steps = 0;
         for frame in self.frames.values_mut() {
+            let before = frame.bodies.steps_taken();
             frame.bodies.step();
+            solver_steps += frame.bodies.steps_taken() - before;
         }
         self.ghosts_after_the_step();
         self.note_the_groups_on_the_ground();
@@ -1165,6 +1172,8 @@ impl Bodies {
             .map(|planet| planet.bricks.len() as u64)
             .sum();
         self.count(|report| {
+            report.solver_steps_last_tick = solver_steps;
+            report.solver_steps += solver_steps;
             report.frames = frames;
             report.group_frames = group_frames;
             report.group_ground_bricks = group_ground_bricks;

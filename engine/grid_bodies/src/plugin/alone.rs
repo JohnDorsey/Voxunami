@@ -21,7 +21,8 @@ use crate::joints::JointSettings;
 impl Bodies {
     /// The groups of ships coupled by their joint ends that are off a rail and alone (`ServerWorld::group_is_alone_but_for_the_ground`, no ends of another ship that pull on theirs,
     /// and the ground, below), by their anchors. A group that has a frame of its own keeps it while it has the room of 1 and one that has not needs the room of 2 to get it, as for
-    /// a rail, so that it does not go in and out of it at the edge.
+    /// a rail, so that it does not go in and out of it at the edge. (The room counts for the ground and for the ends that pull; **what a planet carries has none**: the world carries a
+    /// group and lets it go by its own rule, `ServerWorld::group_is_alone_but_for_the_ground`.)
     ///
     /// **The ground of a planet** (step 4c-5-3): a group that has its frame keeps it however near the ground comes, with the ground in it as a body that comes at the group, until
     /// the group touches it (`grounded`). Then it is in the frame everything is in, where a group at rest on the ground is as exact as a ship's, and it is alone again when the
@@ -42,7 +43,7 @@ impl Bodies {
             });
             let room = if has_its_frame { 1.0 } else { 2.0 };
             let keeps_its_frame_over_the_ground = has_its_frame && !self.grounded.contains(&id);
-            if world.group_is_alone_but_for_the_ground(id, room)
+            if world.group_is_alone_but_for_the_ground(id)
                 && (keeps_its_frame_over_the_ground
                     || !world.ground_is_in_the_way_of_group(id, room))
                 && !self.ends_pull_on_the_group(world, id, room)
