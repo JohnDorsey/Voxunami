@@ -1010,6 +1010,10 @@ impl BodyWorld {
     /// How many solver steps this tick is cut into: the settings' number, or more when a body is fast enough to cross [`MOST_A_STEP_MOVES`] voxels in
     /// one of them, since a body that moves farther than the ground is thick goes through it. (Rapier's own continuous detection leaves out the voxel
     /// colliders that ships are made of.) At most [`MOST_STEPS`]. A tick in which nothing is fast is cut as the settings say, bit for bit.
+    ///
+    /// **A body that moves counts at the speed it closes on another, not only at its own:** a kinematic body that has ground made (a planet in the frame of a group that
+    /// is in free fall, whose ground comes at the group at the speed it closes on it, step 4c-5-3) is as fast as the dynamic bodies it comes at are against it. (Ran, before:
+    /// a slab of stone that came at a cube at rest from 300 voxels a second on went through it.) A kinematic body with no ground made can touch nothing and counts for nothing.
     fn steps_for_this_tick(&self) -> u32 {
         let base = self.settings.substeps.max(1);
         let mut fastest: Real = 0.0;
@@ -1024,8 +1028,33 @@ impl BodyWorld {
             }
             fastest = fastest.max(speed);
         }
+        fastest = fastest.max(self.fastest_ground_closing_on_a_body());
         let needed = (fastest * self.settings.time_step / MOST_A_STEP_MOVES).ceil();
         (needed as u32).clamp(base, MOST_STEPS.max(base))
+    }
+
+    /// The fastest that a kinematic body that has colliders goes against a dynamic body: its speed at the place of the body less the body's own, and the body's turn times its
+    /// reach. Nothing if there is no such pair.
+    fn fastest_ground_closing_on_a_body(&self) -> Real {
+        let mut fastest: Real = 0.0;
+        for (_, ground) in self.bodies.iter() {
+            if !ground.is_kinematic() || ground.colliders().is_empty() {
+                continue;
+            }
+            for (_, body) in self.bodies.iter() {
+                if !body.is_dynamic() {
+                    continue;
+                }
+                let mut speed =
+                    (ground.velocity_at_point(body.translation()) - body.linvel()).length();
+                let turn = body.angvel().length();
+                if turn > 0.0 {
+                    speed += turn * self.reach_of(body);
+                }
+                fastest = fastest.max(speed);
+            }
+        }
+        fastest
     }
 
     /// Moves the frame's origin to the corner of another brick, keeping everything where it is in the world. Positions near the new origin
