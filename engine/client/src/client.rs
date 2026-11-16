@@ -150,6 +150,16 @@ impl<C: Connection> Client<C> {
     /// Applies the next complete tick the server has sent, if one has fully arrived. Call it until it
     /// returns `None` to catch up. The view never shows half a tick.
     pub fn poll_tick(&mut self) -> Result<Option<TickUpdate>, ClientError> {
+        self.poll_tick_with(&mut |_, _| {
+            Err("this client was not given a way to grow its registries".to_owned())
+        })
+    }
+
+    /// As [`Client::poll_tick`], with a way to grow the program's registries if the server appends entries to them in this tick (see [`crate::RegistryGrowth`]).
+    pub fn poll_tick_with(
+        &mut self,
+        grow: &mut crate::RegistryGrowth<'_>,
+    ) -> Result<Option<TickUpdate>, ClientError> {
         loop {
             let frame = self
                 .connection
@@ -165,7 +175,7 @@ impl<C: Connection> Client<C> {
             }
             let mut events = Vec::new();
             for earlier in std::mem::take(&mut self.incomplete_tick) {
-                events.extend(self.world.apply(earlier)?);
+                events.extend(self.world.apply_growing(earlier, grow)?);
             }
             self.world.apply(message)?;
             return Ok(Some(TickUpdate {

@@ -46,14 +46,14 @@ pub use error::ProtocolError;
 pub use message::{Message, check_message};
 pub use server_message::{
     EntityChange, EntityState, GeneratorAssignment, GridChange, GridState, GridTerrainState,
-    ServerMessage, VoxelChange, Welcome, is_tick_boundary,
+    RegistryAdditions, ServerMessage, VoxelChange, Welcome, is_tick_boundary,
 };
 pub use types::{ClientId, EntityId, PlayerKey, Tick};
 
 /// Bumped whenever a message changes. A recording stores the version it was made with, and a program
 /// plays only recordings of its own version (nothing is kept to read older ones before a first release).
-/// (11: the offset of a position in its brick is three `f64`, not `f32`; 10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
-pub const PROTOCOL_VERSION: u32 = 11;
+/// (12: `PackageReplaced`, a message that replaces the package and appends entries to registries while the world runs (`docs/specs/package-replacement-spec.md`); 11: the offset of a position in its brick is three `f64`, not `f32`; 10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The most bytes of text a command may have; a longer one is a protocol violation.
 pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;

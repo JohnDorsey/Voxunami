@@ -192,6 +192,8 @@ struct Viewer<G: GameDefinition> {
     shader_packs: crate::view::ShaderPacks,
     /// The places the renderer draws with a picture of `--texture-pack` and not the world's.
     pictures_in_use: crate::texture_pack::PicturesInUse,
+    /// The folder of loose pictures (`--texture-pack`), written again over the pictures if the server replaces the package.
+    texture_pack: Option<std::path::PathBuf>,
     /// What can be reloaded while the game runs (`.reload`, `--watch`): taken out while it reloads, since a reload changes the viewer it belongs to.
     reloads: Option<Reloads<Viewer<G>>>,
     session: GameSession<G>,
@@ -314,6 +316,7 @@ impl<G: GameDefinition> Viewer<G> {
             renderer,
             shader_packs,
             pictures_in_use,
+            texture_pack: view.texture_pack.clone(),
             reloads: Some(reloads),
             session,
             keys: HashSet::new(),
@@ -580,6 +583,36 @@ impl<G: GameDefinition> Viewer<G> {
         Ok(())
     }
 
+    /// The server replaced the package: the palette and the pictures of the renderer are made from the new one, and the pictures of `--texture-pack` are written over them
+    /// again (the textures were made again, and what was written over the old ones is gone with them).
+    fn package_was_replaced(&mut self, now: Instant) {
+        configure_renderer(
+            &mut self.renderer,
+            self.session.block_table(),
+            self.session.package(),
+            self.session.fog_radius_bricks(),
+        );
+        self.pictures_in_use = Default::default();
+        let mut told = vec!["the server replaced the package".to_owned()];
+        if let Some(folder) = &self.texture_pack {
+            match crate::texture_pack::use_pictures_from(
+                &mut self.renderer,
+                self.session.package(),
+                &mut self.pictures_in_use,
+                folder,
+            ) {
+                Ok(Some(detail)) => told.push(detail),
+                Ok(None) => {}
+                Err(error) => told.push(format!(
+                    "the pictures of the folder were not written again: {error}"
+                )),
+            }
+        }
+        let line = told.join("; ");
+        println!("{line}");
+        self.reply = Some((line, now));
+    }
+
     /// When the newest tick the picture has seen is taken to have come (see [`TickClock`]).
     fn tick_seen(&mut self, now: Instant) -> Instant {
         let tick = self.session.client().world().world_clock();
@@ -641,6 +674,9 @@ impl<G: GameDefinition> Viewer<G> {
 
         self.follow_server(now, seconds)
             .map_err(|error| error.to_string())?;
+        if self.session.take_package_replaced() {
+            self.package_was_replaced(now);
+        }
         for text in self.session.take_command_replies() {
             println!("{text}");
             self.reply = Some((text, now));

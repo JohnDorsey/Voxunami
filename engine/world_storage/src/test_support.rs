@@ -134,6 +134,11 @@ impl Game {
         self.plugins.contains(&plugin)
     }
 
+    /// The number of a block, if the game has an entry for it.
+    pub fn raw_block_if(&self, name: &str) -> Option<u32> {
+        self.blocks.raw_id_of(&id(name))
+    }
+
     pub fn raw_block(&self, name: &str) -> u32 {
         self.blocks
             .raw_id_of(&id(name))

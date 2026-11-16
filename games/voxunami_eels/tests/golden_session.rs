@@ -221,4 +221,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The engine declares one more block property, `engine:joint_face` (the dev ball joint, 2026-11-09): every game's package carries the declaration, 198 bytes (measured in Cave's package, then predicted for this one
 /// and seen: 1,215 to 1,413 in `block_golden.rs`), and the stream is 198 bytes longer, 88,950 to 89,148, the welcome being the only place the package is in it. The saved world is the same to the hash (9_505_268_344_403_703_823),
 /// as predicted: nothing is saved that was not.
-const PINNED: (u64, usize, u64) = (3_053_214_642_131_070_801, 89_148, 9_505_268_344_403_703_823);
+// A replaced package (2026-11-16; protocol 12): the stream hash changed once, for the protocol version in the welcome (12, was 11); the length and the saved world did not,
+// and with the version put back to 11 the old hash, 3_053_214_642_131_070_801, came back.
+const PINNED: (u64, usize, u64) = (
+    14_850_974_223_715_851_973,
+    89_148,
+    9_505_268_344_403_703_823,
+);

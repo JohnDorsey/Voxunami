@@ -40,6 +40,8 @@ pub enum ClientError {
     EntityAlreadyKnown(EntityId),
     #[error("the server changed or removed {0}, which this client was not told of")]
     UnknownEntity(EntityId),
+    #[error("the server replaced the package in a way this client cannot follow: {0}")]
+    PackageReplacement(String),
 }
 
 impl From<LoadError> for ClientError {

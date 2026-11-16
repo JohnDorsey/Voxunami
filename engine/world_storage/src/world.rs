@@ -1612,14 +1612,10 @@ impl ParsedWorld {
             }
         }
         let layout = Arc::new(GridLayout::new(definitions)?);
-        let table_lengths: HashMap<&NamespacedId, usize> = file_tables
-            .iter()
-            .map(|(kind, entries)| (*kind, entries.len()))
-            .collect();
         let translator = SourceTranslator::new(
             Arc::clone(&layout),
             &self.channels,
-            &table_lengths,
+            &file_tables,
             mappings,
             generator_mapping,
         )?;

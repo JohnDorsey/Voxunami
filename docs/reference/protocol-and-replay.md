@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 11)
+# The message stream and replays (protocol version 12)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -95,11 +95,12 @@ Server to client:
 | 13 | `GridsSpawned` | count, then per ship: grid id (varint, never a level's number), level (varint), pose without a grid (the position and orientation as in a pose), and a byte that is 0 or 1; if 1, the ship has terrain (a planet): the generator (a varint, the number it has in the world description's table of generators, as in a `GeneratorAssignment`) and the box of bricks it makes (two bricks as three zigzag varints each). Ships that came into the watched region, and every planet of the level that is watched, wherever it is (Phase 39e), in order of id; each is followed in the same tick by a `BrickContents` of every brick it has: of every brick for a ship that nothing generates, and of the stored (edited) bricks only for a ship with terrain, whose other bricks the client makes |
 | 14 | `GridsChanged` | count, then per ship: grid id, pose without a grid. Ships the client knows that moved |
 | 15 | `GridsDespawned` | count, then ids: ships that left the watched region or no longer exist; the client forgets their bricks |
+| 16 | `PackageReplaced` | count of registries, then for each: the registry's kind (identifier), a count, and the identifiers appended to it, in order; then the package (bytes). Registries in order of their kinds, none with no entries, no entry twice |
 
 A **pose** is the grid id (varint), the brick x, y, z (zigzag), the offset in the brick (three `f64` since version 11, each in [0, 32)) and the orientation
 (four `f64` since version 7, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
 bytes the component's own codec made), in order of identifier and once each. Only the components the entity's kind says are replicated are
-sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4; the package in `Welcome` in version 5; messages 13 to 15, and the grid in place of the level in `BrickContents` and `VoxelEdits` (the same bytes for the terrain of a level), in version 6; the orientation of a pose as four `f64` instead of four `f32`, in version 7; the offset of a position as three `f64` instead of three `f32` (in poses, in the player presence messages and in the movement messages, which also carry their view angles as `f64`), in version 11. A program
+sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4; the package in `Welcome` in version 5; messages 13 to 15, and the grid in place of the level in `BrickContents` and `VoxelEdits` (the same bytes for the terrain of a level), in version 6; message 16, in version 12; the orientation of a pose as four `f64` instead of four `f32`, in version 7; the offset of a position as three `f64` instead of three `f32` (in poses, in the player presence messages and in the movement messages, which also carry their view angles as `f64`), in version 11. A program
 reads only its own version (nothing is kept to read older streams before a first release).
 
 The **package** is opaque to the protocol and the server: the game's *package data* (`content-package-spec.md`), which the client decodes after
@@ -188,6 +189,10 @@ guarantees.
   protocol version.
 - A recorder that wants to see the whole action (not one player's view) connects as a spectator with a large region.
 - Players are entities since Phase 27f (a client knows those in the region it watches); structures will be in Phase 32.
+
+## A package replaced while the world runs (since version 12)
+
+`PackageReplaced` says that the package the client holds is replaced from this tick on, and that registries have grown (`docs/specs/package-replacement-spec.md` is the reasoning and the rules). **The first message of a tick** for every joined client, before the interest change, so that the bricks and edits of the same tick, which may use a new block, are read with the new tables; the same bytes for every client. A registry only grows: an appended entry is the next number of the server's table, and an entry the package had never goes. A client applies it with the tick, at `TickCompleted`: its own registry gets an entry for each identifier appended (the one it has for the name, or a placeholder that keeps it), its translator learns the numbers, and the session reads the new package, makes its table and meshes again, and the program draws with the new palette and pictures. It does all of that beside what it has and swaps only if all of it is good; **a replacement that does not follow the rules (a block gone, an appended block that is not in the package, a package that cannot be read or drawn, an entry the table already has) is an error that stops the client with the reason**, and a replay of that stream stops the same way. A client that joins later is given the new package in its `Welcome` and is never sent the message. A recording holds the message as a frame like any other, so a replay needs nothing more. **Built: the message, its codec, the client's rules and the session's rebuild, and replay equals live across replacements (tested with a pretend server). Not built: a server that sends it** (step 5 of `hot-reload-plan.md` is not finished).
 
 ## Ships in the stream (since version 6)
 

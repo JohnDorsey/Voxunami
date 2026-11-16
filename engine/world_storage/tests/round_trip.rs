@@ -879,3 +879,107 @@ fn pruning_unchanged_bricks_covers_every_level() {
     assert_eq!(world.main().overrides.brick_count(), 0);
     assert_eq!(world.level(nether).unwrap().overrides.brick_count(), 0);
 }
+
+/// A receiver that has loaded a description of a source with these plugins, and the translator it made.
+fn joined(
+    source_plugins: &[Plugin],
+    receiver_plugins: &[Plugin],
+) -> (Game, world_storage::SourceTranslator) {
+    let source = Game::new(source_plugins);
+    let description = source.new_world().describe(&source.registries()).unwrap();
+    let mut receiver = Game::new(receiver_plugins);
+    let (_, _, translator) = ParsedWorld::parse(&description)
+        .unwrap()
+        .load_with_translator(receiver.load_context())
+        .unwrap();
+    (receiver, translator)
+}
+
+/// Gives the receiver's block registry an entry for `identifier` (as the client does for an entry the server appended) and says its number.
+fn receiver_registers(receiver: &mut Game, identifier: &str) -> u32 {
+    let mut context = receiver.load_context();
+    let (_, registry) = context
+        .registries
+        .iter_mut()
+        .find(|(kind, _)| *kind == block_kind())
+        .unwrap();
+    registry.register_missing_raw(id(identifier))
+}
+
+#[test]
+fn a_registry_the_source_grows_grows_in_the_translator_and_the_new_values_translate() {
+    let (mut receiver, mut translator) = joined(&[BaseBlocks], &[BaseBlocks]);
+    let blocks_in_source = 4; // air, stone, dirt, grass
+    // The source's block number 4 is a value past its table, until the source says what it is.
+    assert!(matches!(
+        translator.translate_value(0, blocks_in_source),
+        Err(TranslationError::ValueOutsideRegistry { .. })
+    ));
+    let local = receiver_registers(&mut receiver, "fancy_blocks:marble");
+    translator
+        .append_content(&block_kind(), &[id("fancy_blocks:marble")], &[local])
+        .unwrap();
+    let (_, translated) = translator.translate_value(0, blocks_in_source).unwrap();
+    assert_eq!(
+        translated, local,
+        "the appended entry is the next number of the source's"
+    );
+    assert!(
+        translator.translate_value(0, blocks_in_source + 1).is_err(),
+        "and no more than was appended"
+    );
+    // What was there is as it was.
+    assert_eq!(
+        translator.translate_value(0, 1).unwrap().1,
+        receiver.raw_block("base_blocks:stone")
+    );
+}
+
+#[test]
+fn an_appended_entry_the_source_already_lists_or_a_registry_it_has_no_table_for_is_refused_and_nothing_changes()
+ {
+    let (mut receiver, mut translator) = joined(&[BaseBlocks], &[BaseBlocks]);
+    let local = receiver_registers(&mut receiver, "fancy_blocks:marble");
+    // Stone is already the source's number 1.
+    assert!(matches!(
+        translator.append_content(&block_kind(), &[id("base_blocks:stone")], &[local]),
+        Err(TranslationError::AppendedEntryAlreadyListed { .. })
+    ));
+    assert!(matches!(
+        translator.append_content(&spell_kind(), &[id("magic:fire")], &[local]),
+        Err(TranslationError::RegistryNotInSource(_))
+    ));
+    // One number for each identifier.
+    assert!(matches!(
+        translator.append_content(&block_kind(), &[id("a:b"), id("a:c")], &[local]),
+        Err(TranslationError::AppendedEntryCountsDiffer { .. })
+    ));
+    assert!(
+        translator.translate_value(0, 4).is_err(),
+        "nothing was appended by the refusals"
+    );
+    // Twice in one call is refused too.
+    assert!(matches!(
+        translator.append_content(
+            &block_kind(),
+            &[id("fancy_blocks:marble"), id("fancy_blocks:marble")],
+            &[local, local]
+        ),
+        Err(TranslationError::AppendedEntryAlreadyListed { .. })
+    ));
+    assert!(translator.translate_value(0, 4).is_err(), "nor by that");
+}
+
+#[test]
+fn growing_the_registry_keeps_the_numbering_the_same_on_both_sides_when_it_was() {
+    // The receiver has the marble block as its own entry already, as the source will have it once it appends it.
+    let (receiver, mut translator) = joined(&[BaseBlocks], &[BaseBlocks, FancyBlocks]);
+    assert!(translator.is_identity());
+    let marble = receiver.raw_block("fancy_blocks:marble");
+    translator
+        .append_content(&block_kind(), &[id("fancy_blocks:marble")], &[marble])
+        .unwrap();
+    assert_eq!(translator.translate_value(0, 4).unwrap().1, marble);
+    // The receiver's own entries run base, fancy: the source's number 4 is the receiver's number of the marble, so the numbering agrees if that is 4.
+    assert_eq!(translator.is_identity(), marble == 4);
+}

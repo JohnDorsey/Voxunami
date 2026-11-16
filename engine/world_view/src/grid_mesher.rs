@@ -66,6 +66,11 @@ impl GridMesher {
         self.occupancy.statistics()
     }
 
+    /// The table this mesher makes its meshes with.
+    pub fn block_table(&self) -> &Arc<BlockTable> {
+        &self.table
+    }
+
     /// Bricks waiting to be meshed.
     pub fn pending(&self) -> usize {
         self.dirty.len()

@@ -32,6 +32,7 @@ const KIND_CHALLENGE: u8 = 12;
 const KIND_GRIDS_SPAWNED: u8 = 13;
 const KIND_GRIDS_CHANGED: u8 = 14;
 const KIND_GRIDS_DESPAWNED: u8 = 15;
+const KIND_PACKAGE_REPLACED: u8 = 16;
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +123,14 @@ pub struct GridChange {
     pub pose: GridPose,
 }
 
+/// The entries a server appended to one registry: the registry's kind (such as a game's block registry) and the identifiers that now follow its last entry, in order. A
+/// registry only grows, so the client gives each the next number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistryAdditions {
+    pub registry: NamespacedId,
+    pub identifiers: Vec<NamespacedId>,
+}
+
 /// Sent from the server to a client.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerMessage {
@@ -181,6 +190,14 @@ pub enum ServerMessage {
     GridsChanged(Vec<GridChange>),
     /// Ships the client knew that left the region it watches or no longer exist, in order of id. The client forgets their bricks.
     GridsDespawned(Vec<GridId>),
+    /// The package the client holds is replaced by this one, from this tick on, and the registries have the entries appended that are listed (registries in order of
+    /// their kinds, none empty, no entry twice). The first message of a tick, so that what follows it in the tick is read with the new tables. A server swaps its own
+    /// content at the start of the same tick (`docs/specs/package-replacement-spec.md`). (Protocol version 12.)
+    PackageReplaced {
+        appended: Vec<RegistryAdditions>,
+        /// The package data as `Welcome::package` has it.
+        package: Vec<u8>,
+    },
 }
 
 /// Whether `frame` is a `TickCompleted` message. Recorders use it to know when a tick ends without
@@ -332,6 +349,18 @@ impl ServerMessage {
                 for id in ids {
                     write_grid(&mut writer, *id);
                 }
+            }
+            Self::PackageReplaced { appended, package } => {
+                writer.write_u8(KIND_PACKAGE_REPLACED);
+                writer.write_varint(appended.len() as u64);
+                for additions in appended {
+                    writer.write_identifier(&additions.registry);
+                    writer.write_varint(additions.identifiers.len() as u64);
+                    for identifier in &additions.identifiers {
+                        writer.write_identifier(identifier);
+                    }
+                }
+                writer.write_bytes(package);
             }
         }
         writer.into_bytes()
@@ -533,6 +562,49 @@ impl ServerMessage {
                     ids.push(read_ship(&mut reader)?);
                 }
                 Self::GridsDespawned(ids)
+            }
+            KIND_PACKAGE_REPLACED => {
+                // A registry's kind (an identifier is at least four bytes) and a count.
+                let count = reader.read_count(5)?;
+                let mut appended: Vec<RegistryAdditions> = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let registry = reader.read_identifier()?;
+                    if appended
+                        .last()
+                        .is_some_and(|last| last.registry >= registry)
+                    {
+                        return Err(DecodeError::Invalid(
+                            "registries are out of order or repeated",
+                        )
+                        .into());
+                    }
+                    let entries = reader.read_count(4)?;
+                    if entries == 0 {
+                        return Err(DecodeError::Invalid(
+                            "a registry with nothing appended is not listed",
+                        )
+                        .into());
+                    }
+                    let mut identifiers: Vec<NamespacedId> = Vec::with_capacity(entries);
+                    for _ in 0..entries {
+                        let identifier = reader.read_identifier()?;
+                        if identifiers.contains(&identifier) {
+                            return Err(DecodeError::Invalid(
+                                "an entry is appended to a registry twice",
+                            )
+                            .into());
+                        }
+                        identifiers.push(identifier);
+                    }
+                    appended.push(RegistryAdditions {
+                        registry,
+                        identifiers,
+                    });
+                }
+                Self::PackageReplaced {
+                    appended,
+                    package: reader.read_bytes()?.to_vec(),
+                }
             }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
@@ -741,6 +813,23 @@ mod tests {
                 pose: sample_grid_pose(0),
             }]),
             ServerMessage::GridsDespawned(vec![ship(), GridId::new(GridId::FIRST_ALLOCATED + 300)]),
+            ServerMessage::PackageReplaced {
+                appended: vec![
+                    RegistryAdditions {
+                        registry: id("a:block"),
+                        identifiers: vec![id("a:marble"), id("b:glass")],
+                    },
+                    RegistryAdditions {
+                        registry: id("a:item"),
+                        identifiers: vec![id("a:wand")],
+                    },
+                ],
+                package: vec![1, 2, 3],
+            },
+            ServerMessage::PackageReplaced {
+                appended: Vec::new(),
+                package: Vec::new(),
+            },
         ]
     }
 
@@ -798,6 +887,84 @@ mod tests {
                 1, 0xAD, // the package
             ]
         );
+    }
+
+    #[test]
+    fn a_replaced_package_is_the_appended_entries_of_each_registry_and_then_the_package() {
+        // The kind, the count of registries, then for each the registry (an identifier: a length and its text), the count and the entries, and last the package as bytes.
+        assert_eq!(
+            ServerMessage::PackageReplaced {
+                appended: vec![
+                    RegistryAdditions {
+                        registry: id("a:b"),
+                        identifiers: vec![id("a:c"), id("a:d")],
+                    },
+                    RegistryAdditions {
+                        registry: id("a:i"),
+                        identifiers: vec![id("a:w")],
+                    },
+                ],
+                package: vec![0xAD, 0xAE],
+            }
+            .encode(),
+            [
+                16, // the kind
+                2,  // two registries
+                3, b'a', b':', b'b', 2, 3, b'a', b':', b'c', 3, b'a', b':', b'd', // the first
+                3, b'a', b':', b'i', 1, 3, b'a', b':', b'w', // the second
+                2, 0xAD, 0xAE, // the package
+            ]
+        );
+        assert_eq!(
+            ServerMessage::PackageReplaced {
+                appended: Vec::new(),
+                package: vec![7],
+            }
+            .encode(),
+            [16, 0, 1, 7]
+        );
+    }
+
+    #[test]
+    fn a_replaced_package_has_one_spelling_registries_in_order_none_empty_no_entry_twice() {
+        let encoded = |registries: &[(&str, &[&str])]| {
+            let mut bytes = vec![16, registries.len() as u8];
+            for (registry, identifiers) in registries {
+                bytes.push(registry.len() as u8);
+                bytes.extend(registry.bytes());
+                bytes.push(identifiers.len() as u8);
+                for identifier in *identifiers {
+                    bytes.push(identifier.len() as u8);
+                    bytes.extend(identifier.bytes());
+                }
+            }
+            bytes.extend([1, 9]);
+            bytes
+        };
+        assert!(ServerMessage::decode(&encoded(&[("a:b", &["a:c"]), ("a:i", &["a:w"])])).is_ok());
+        for (what, bytes) in [
+            (
+                "registries out of order",
+                encoded(&[("a:i", &["a:w"]), ("a:b", &["a:c"])]),
+            ),
+            (
+                "one registry twice",
+                encoded(&[("a:b", &["a:c"]), ("a:b", &["a:d"])]),
+            ),
+            ("a registry with nothing appended", encoded(&[("a:b", &[])])),
+            (
+                "an entry twice in a registry",
+                encoded(&[("a:b", &["a:c", "a:c"])]),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    ServerMessage::decode(&bytes),
+                    Err(ProtocolError::Malformed(DecodeError::Invalid(_)))
+                ),
+                "{what} is refused as invalid"
+            );
+        }
     }
 
     #[test]

@@ -380,7 +380,7 @@ impl ParsedShip {
             }
         }
         let mut seen: Vec<&NamespacedId> = Vec::new();
-        let mut lengths = HashMap::new();
+        let mut tables = HashMap::new();
         let mut mappings: HashMap<NamespacedId, Vec<u32>> = HashMap::new();
         for table in &self.registries {
             if seen.contains(&&table.kind) {
@@ -394,7 +394,7 @@ impl ParsedShip {
             if !used {
                 continue;
             }
-            lengths.insert(&table.kind, table.entries.len());
+            tables.insert(&table.kind, &table.entries);
             let mapping = table
                 .entries
                 .iter()
@@ -410,7 +410,7 @@ impl ParsedShip {
         let translator = SourceTranslator::new(
             Arc::clone(layout),
             &self.channels,
-            &lengths,
+            &tables,
             mappings,
             Vec::new(),
         )?;

@@ -61,7 +61,13 @@ impl Rig {
 
     fn with_plugins(plugins: &[Plugin]) -> Self {
         // The server side always runs the full game; the client may have fewer plugins.
-        let server_game = Game::new(&ALL_PLUGINS);
+        Self::with_games(&ALL_PLUGINS, plugins)
+    }
+
+    /// A client of plugins `client_plugins` joined to a pretend server of plugins `server_plugins`.
+    fn with_games(server_plugins: &[Plugin], client_plugins: &[Plugin]) -> Self {
+        let plugins = client_plugins;
+        let server_game = Game::new(server_plugins);
         let (client_end, mut server) = loopback_pair();
         let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
         let hello = ClientMessage::decode(&server.receive().unwrap().unwrap()).unwrap();
@@ -1299,4 +1305,293 @@ fn what_the_server_says_of_a_ship_it_never_described_or_described_twice_is_a_mis
         let error = rig.client.poll_tick().expect_err(name);
         assert!(recognised(&error), "{name}: {error}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// A package replaced while the world runs (`docs/specs/package-replacement-spec.md`)
+// ---------------------------------------------------------------------------------------------
+
+use protocol::RegistryAdditions;
+use world_storage::test_support::block_kind;
+
+/// Gives a game's block registry an entry for `identifier` (a placeholder if it has none) and says its number.
+fn register_block(game: &mut Game, identifier: &str) -> u32 {
+    let mut context = game.load_context();
+    let (_, registry) = context
+        .registries
+        .iter_mut()
+        .find(|(kind, _)| *kind == block_kind())
+        .unwrap();
+    registry.register_missing_raw(id(identifier))
+}
+
+fn appended_blocks(identifiers: &[&str]) -> RegistryAdditions {
+    RegistryAdditions {
+        registry: block_kind(),
+        identifiers: identifiers.iter().map(|text| id(text)).collect(),
+    }
+}
+
+impl Rig {
+    /// The client of a world that has only the base blocks, on both sides, and watches the origin.
+    fn with_only_base_blocks() -> Self {
+        let mut rig = Self::with_games(&[Plugin::BaseBlocks], &[Plugin::BaseBlocks]);
+        rig.watch_origin(1);
+        rig
+    }
+
+    /// Polls a tick, growing the client game's block registry as the client asks.
+    fn poll_growing(&mut self) -> Result<Option<client::TickUpdate>, ClientError> {
+        let game = &mut self.client_game;
+        self.client.poll_tick_with(&mut |registry, identifiers| {
+            if *registry != block_kind() {
+                return Err("only blocks are registered".to_owned());
+            }
+            Ok(identifiers
+                .iter()
+                .map(|identifier| register_block(game, &identifier.to_string()))
+                .collect())
+        })
+    }
+}
+
+#[test]
+fn a_replaced_package_is_the_first_event_of_its_tick_and_the_bricks_of_that_tick_use_the_new_entry()
+{
+    let mut rig = Rig::with_only_base_blocks();
+    // The server gains a block, which is its next number (4).
+    let marble = register_block(&mut rig.game, "fancy_blocks:marble");
+    assert_eq!(marble, 4);
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+        package: vec![9, 9],
+    });
+    let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
+    rig.send(ServerMessage::BrickContents {
+        grid: GridId::MAIN,
+        brick: brick(0, 0, 0),
+        contents: Arc::clone(&contents),
+    });
+    rig.tick(6);
+    let update = rig.poll_growing().unwrap().unwrap();
+    assert_eq!(
+        update.events[0],
+        ClientEvent::PackageReplaced {
+            appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+            package: vec![9, 9],
+        },
+        "first, so that what follows is read with the new tables"
+    );
+    // The brick of the same tick holds the client's own number for marble.
+    let local = rig.client_game.raw_block("fancy_blocks:marble");
+    let layout = Arc::clone(rig.client.world().world().main().overrides.layout());
+    let block_channel = layout.channel_index(&id("core:block")).unwrap();
+    let held = rig
+        .client
+        .world()
+        .world()
+        .main()
+        .overrides
+        .brick(brick(0, 0, 0))
+        .unwrap();
+    assert_eq!(
+        held.get(block_channel, VoxelCoordinate::new(1, 2, 3).split().1),
+        local
+    );
+    // And an edit of a later tick that uses it is understood too.
+    let voxel = VoxelCoordinate::new(9, 9, 9).split().1;
+    // (The numbering agrees on both sides, so the client checks the server's digest of the result: it is worked out as the server has it.)
+    let server_layout = Arc::clone(rig.game.new_world().main().overrides.layout());
+    let server_block_channel = server_layout.channel_index(&id("core:block")).unwrap();
+    let mut expected = (*contents).clone();
+    expected.set(server_block_channel, voxel, marble);
+    rig.send(ServerMessage::VoxelEdits {
+        grid: GridId::MAIN,
+        brick: brick(0, 0, 0),
+        changes: vec![VoxelChange {
+            voxel,
+            channel: server_block_channel.get() as u16,
+            value: marble,
+        }],
+        resulting_digest: expected.content_digest(),
+    });
+    rig.tick(7);
+    rig.poll_growing().unwrap().unwrap();
+    let held = rig
+        .client
+        .world()
+        .world()
+        .main()
+        .overrides
+        .brick(brick(0, 0, 0))
+        .unwrap();
+    assert_eq!(held.get(block_channel, voxel), local);
+}
+
+#[test]
+fn a_replacement_that_appends_nothing_needs_no_registry_and_is_an_event() {
+    let mut rig = Rig::with_only_base_blocks();
+    rig.send(ServerMessage::PackageReplaced {
+        appended: Vec::new(),
+        package: vec![1],
+    });
+    rig.tick(6);
+    let update = rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        update.events,
+        [ClientEvent::PackageReplaced {
+            appended: Vec::new(),
+            package: vec![1]
+        }]
+    );
+}
+
+#[test]
+fn a_replacement_that_appends_entries_to_a_client_that_cannot_grow_its_registries_is_an_error() {
+    let mut rig = Rig::with_only_base_blocks();
+    register_block(&mut rig.game, "fancy_blocks:marble");
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+        package: Vec::new(),
+    });
+    rig.tick(6);
+    assert!(matches!(
+        rig.client.poll_tick(),
+        Err(ClientError::PackageReplacement(_))
+    ));
+}
+
+#[test]
+fn a_replacement_that_does_not_follow_the_rules_stops_the_client_with_the_reason() {
+    let refused = |appended: Vec<RegistryAdditions>| {
+        let mut rig = Rig::with_only_base_blocks();
+        rig.send(ServerMessage::PackageReplaced {
+            appended,
+            package: Vec::new(),
+        });
+        rig.tick(6);
+        rig.poll_growing().expect_err("refused")
+    };
+    // An entry the registry already has (stone is number 1).
+    assert!(matches!(
+        refused(vec![appended_blocks(&["base_blocks:stone"])]),
+        ClientError::Translation(TranslationError::AppendedEntryAlreadyListed { .. })
+    ));
+    // A registry the world has no table for.
+    assert!(matches!(
+        refused(vec![RegistryAdditions {
+            registry: id("nowhere:registry"),
+            identifiers: vec![id("a:b")],
+        }]),
+        ClientError::Translation(TranslationError::RegistryNotInSource(_))
+    ));
+}
+
+#[test]
+fn a_client_whose_registry_refuses_to_grow_stops_with_the_reason_and_so_does_one_that_answers_wrongly()
+ {
+    let mut rig = Rig::with_only_base_blocks();
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+        package: Vec::new(),
+    });
+    rig.tick(6);
+    let error = rig
+        .client
+        .poll_tick_with(&mut |_, _| Err("no room".to_owned()))
+        .expect_err("refused");
+    assert!(
+        matches!(&error, ClientError::PackageReplacement(reason) if reason.contains("no room")),
+        "{error}"
+    );
+
+    let mut rig = Rig::with_only_base_blocks();
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+        package: Vec::new(),
+    });
+    rig.tick(6);
+    let error = rig
+        .client
+        .poll_tick_with(&mut |_, _| Ok(vec![1, 2]))
+        .expect_err("two numbers for one entry");
+    assert!(
+        matches!(
+            error,
+            ClientError::Translation(TranslationError::AppendedEntryCountsDiffer { .. })
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_tick_that_is_not_whole_changes_nothing_a_replacement_waits_for_its_tick_completed() {
+    let mut rig = Rig::with_only_base_blocks();
+    register_block(&mut rig.game, "fancy_blocks:marble");
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+        package: Vec::new(),
+    });
+    // The tick is not finished: nothing is applied and the client's registry has not grown.
+    assert!(rig.poll_growing().unwrap().is_none());
+    assert!(
+        rig.client_game
+            .raw_block_if("fancy_blocks:marble")
+            .is_none()
+    );
+    rig.tick(6);
+    rig.poll_growing().unwrap().unwrap();
+    assert!(
+        rig.client_game
+            .raw_block_if("fancy_blocks:marble")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_client_whose_numbering_stops_agreeing_with_the_servers_when_it_grows_stops_checking_digests() {
+    let mut rig = Rig::with_only_base_blocks();
+    assert!(
+        rig.client.world().verifies_edit_digests(),
+        "the numbering agrees at the start"
+    );
+    // The program gives an entry to something else first (a block of its own that the server does not have), so the server's next number is not the client's.
+    register_block(&mut rig.client_game, "own_blocks:extra");
+    register_block(&mut rig.game, "fancy_blocks:marble");
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["fancy_blocks:marble"])],
+        package: Vec::new(),
+    });
+    rig.tick(6);
+    rig.poll_growing().unwrap().unwrap();
+    assert!(
+        !rig.client.world().verifies_edit_digests(),
+        "the marble is the server's 4 and the client's 5: a digest of the server's numbering means nothing here"
+    );
+}
+
+#[test]
+fn a_replacement_that_is_refused_grows_nothing_the_program_is_not_asked_before_the_message_is_known_good()
+ {
+    let mut rig = Rig::with_only_base_blocks();
+    let asked = std::cell::Cell::new(0);
+    // Stone is already the server's number 1: the message is refused before the program is asked for anything.
+    rig.send(ServerMessage::PackageReplaced {
+        appended: vec![appended_blocks(&["base_blocks:stone"])],
+        package: Vec::new(),
+    });
+    rig.tick(6);
+    let error = rig
+        .client
+        .poll_tick_with(&mut |_, _| {
+            asked.set(asked.get() + 1);
+            Ok(vec![9])
+        })
+        .expect_err("refused");
+    assert!(matches!(error, ClientError::Translation(_)), "{error}");
+    assert_eq!(
+        asked.get(),
+        0,
+        "the program was not asked to grow its registry for a message that is refused"
+    );
 }

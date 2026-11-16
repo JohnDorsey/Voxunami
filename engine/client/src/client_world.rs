@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use namespaced_id::NamespacedId;
-use protocol::{PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
+use protocol::{PROTOCOL_VERSION, RegistryAdditions, ServerMessage, Tick, Welcome};
 use region_octree::BrickCube;
 use voxel_grid::Brick;
 use voxel_grid::Grid;
@@ -36,7 +36,18 @@ pub enum ClientEvent {
     EntitiesChanged,
     /// Ships appeared, moved or went away.
     GridsChanged,
+    /// The server replaced the package (`ServerMessage::PackageReplaced`), and the registries have the entries appended that are listed: the first event of its tick.
+    /// The client's numbering has already grown; what the package says is for the program to read.
+    PackageReplaced {
+        appended: Vec<RegistryAdditions>,
+        package: Vec<u8>,
+    },
 }
+
+/// What a client asks of the program when the server appends entries to a registry: the numbers the program's own registry gives these entries (its own number for one
+/// it already has, a new one for the others), in order, or why it cannot.
+pub type RegistryGrowth<'a> =
+    dyn FnMut(&NamespacedId, &[NamespacedId]) -> Result<Vec<u32>, String> + 'a;
 
 /// Facts about the connection, from the server's welcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,7 +275,36 @@ impl ClientWorld {
     /// Applies one message from the server. `TickCompleted` advances [`ClientWorld::tick`]; the view
     /// is consistent only between ticks, so callers apply a tick's messages together.
     pub fn apply(&mut self, message: ServerMessage) -> Result<Option<ClientEvent>, ClientError> {
+        self.apply_growing(message, &mut |_, _| {
+            Err("this client was not given a way to grow its registries".to_owned())
+        })
+    }
+
+    /// As [`ClientWorld::apply`], with a way to grow the program's registries for a server that appends entries to them.
+    pub fn apply_growing(
+        &mut self,
+        message: ServerMessage,
+        grow: &mut RegistryGrowth<'_>,
+    ) -> Result<Option<ClientEvent>, ClientError> {
         match message {
+            ServerMessage::PackageReplaced { appended, package } => {
+                // (Everything is checked before anything is grown, so a message that is refused leaves the registries as they were.)
+                for additions in &appended {
+                    self.translator
+                        .check_append(&additions.registry, &additions.identifiers)?;
+                }
+                for additions in &appended {
+                    let local_ids = grow(&additions.registry, &additions.identifiers)
+                        .map_err(ClientError::PackageReplacement)?;
+                    self.translator.append_content(
+                        &additions.registry,
+                        &additions.identifiers,
+                        &local_ids,
+                    )?;
+                }
+                self.verifies_edit_digests = self.translator.is_identity();
+                Ok(Some(ClientEvent::PackageReplaced { appended, package }))
+            }
             ServerMessage::Welcome(_) => Err(ClientError::UnexpectedMessage("a second welcome")),
             ServerMessage::Challenge { .. } => Err(ClientError::UnexpectedMessage(
                 "a challenge after the welcome",
