@@ -32,6 +32,7 @@ pub mod serve;
 pub mod session;
 pub mod shader_pack_settings;
 pub mod shader_packs;
+mod shared_package;
 pub mod sun;
 #[cfg(test)]
 mod sun_view_tests;
@@ -51,6 +52,7 @@ pub use identity::Identity;
 pub use package::{ContentPackage, FamilyFactory, GeneratorFactory, PackageSpec, no_families};
 pub use package_data::{PackageData, PackageError, check_materials};
 pub use player_presence::{PlayerPose, Presence};
+pub use shared_package::{ReplaceError, SharedPackage};
 pub use sun::{Sky, Sun, SunView};
 pub use winit::keyboard::KeyCode;
 

@@ -512,6 +512,14 @@ impl CharacterBody {
         self.world_position(self.center).brick()
     }
 
+    /// Forgets the colliders of the terrain and of the other grids that were made, so that the next [`CharacterBody::update_terrain`] and
+    /// [`CharacterBody::update_foreign`] make them again from what the source says: for when what the blocks are to a body changed (the table of them was replaced), which
+    /// no change to a brick says.
+    pub fn forget_colliders(&mut self) {
+        self.clear_terrain();
+        self.refresh_queries();
+    }
+
     fn clear_terrain(&mut self) {
         let loaded = std::mem::take(&mut self.loaded);
         for (_, handles) in loaded {

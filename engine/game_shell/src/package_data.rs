@@ -107,6 +107,16 @@ impl PackageData {
             .collect()
     }
 
+    /// The number of the block called `identifier`: its place among the blocks, which are in the order of their numbers. `None` for a block the package does not
+    /// list.
+    pub fn raw_of(&self, identifier: &NamespacedId) -> Option<u32> {
+        let place = self
+            .blocks
+            .iter()
+            .position(|(listed, _)| listed == identifier)?;
+        u32::try_from(place).ok()
+    }
+
     /// What every block and state looks like and how it fills its cell, by block number. An error if
     /// a definition sets a property the schema lacks, a value it does not take, or a state its block
     /// does not have.

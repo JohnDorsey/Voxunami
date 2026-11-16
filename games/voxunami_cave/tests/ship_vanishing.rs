@@ -11,6 +11,7 @@ use common::{
     player_pose, pose_at, put_stone, say, scene_with_a_deck, ship_id, ship_pose, tick_and_follow,
     walker_on_the_deck,
 };
+use game_shell::GameContent;
 use server::{LogoutPolicy, ShipSettings};
 use voxel_space::{GridId, GridPose, LevelIndex};
 use world_storage::{MovingGrid, ParkedGrid, ShipFiles};
@@ -476,6 +477,27 @@ fn a_pilot_whose_ship_would_land_in_a_block_is_asked_and_can_have_the_ship_moved
     let stone = voxunami_cave::content::CaveContent::new().blocks.stone;
     assert_eq!(block_at(&mut scene, IN_THE_WAY), stone);
     assert!(!back.hud_text().contains("(.choose N)"));
+}
+
+#[test]
+fn a_pilot_whose_ship_would_land_in_a_block_that_bodies_pass_through_now_is_not_asked() {
+    // The block in the way is stone, and the package of the server was replaced by one in which stone is something bodies pass through (the deck is stone too, and
+    // is as much in its place). Where the ship lands is what the table says of the blocks when the pilot comes back.
+    let (mut scene, pilot) = pilot_on_the_deck(Some(true));
+    drop(pilot);
+    scene.ticks(3);
+    assert!(!in_memory(&scene, 0));
+    put_stone(&mut scene, IN_THE_WAY);
+    let mut package = voxunami_cave::content::CaveContent::new().package_data();
+    for (name, definition) in &mut package.blocks {
+        if let (true, Some(definition)) = (name.as_str() == "base_blocks:stone", definition) {
+            definition.set_property_value("base_blocks:passable".parse().unwrap(), None, 1);
+        }
+    }
+    scene.package.replace(package).unwrap();
+    let mut back = pilot_returns(&mut scene);
+    assert!(!back.hud_text().starts_with(BLOCKED), "{}", back.hud_text());
+    assert!(in_memory(&scene, 0), "the ship is where it was left");
 }
 
 #[test]

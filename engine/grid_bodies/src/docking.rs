@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::{BlockTable, PropertyHandle};
+use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use server::{AccessError, DetachError, GridView, ServerWorld, SplitError};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
@@ -338,7 +338,7 @@ const PLANET_UNDOCK_BLOCKS: usize = 100_000;
 #[derive(Clone, Debug)]
 pub struct Docking {
     pub settings: DockingSettings,
-    table: Arc<BlockTable>,
+    table: SharedBlockTable,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: Option<ChannelIndex>,
@@ -348,7 +348,7 @@ pub struct Docking {
 }
 
 impl Docking {
-    /// Docking in a game whose blocks are in `table` (which declares the engine's properties, as every game's does).
+    /// Docking in a game whose blocks are in `table` (which declares the engine's properties, as every game's does), a table that is not replaced.
     pub fn new(
         settings: DockingSettings,
         table: impl Into<Arc<BlockTable>>,
@@ -357,13 +357,33 @@ impl Docking {
         orientation_channel: Option<ChannelIndex>,
         air: u32,
     ) -> Self {
-        let table = table.into();
+        Self::following(
+            settings,
+            &SharedBlockTable::new(table),
+            block_channel,
+            state_channel,
+            orientation_channel,
+            air,
+        )
+    }
+
+    /// Docking in a game whose blocks are in the table of a server, which is replaced while it runs: the ports and the weights are the ones of the table as it is when
+    /// they are asked.
+    pub fn following(
+        settings: DockingSettings,
+        table: &SharedBlockTable,
+        block_channel: ChannelIndex,
+        state_channel: ChannelIndex,
+        orientation_channel: Option<ChannelIndex>,
+        air: u32,
+    ) -> Self {
         let density = table
+            .current()
             .handle(&block_models::engine::DENSITY)
             .expect("the engine declares engine:density in every game");
         Self {
             settings,
-            table,
+            table: table.clone(),
             block_channel,
             state_channel,
             orientation_channel,
@@ -373,13 +393,15 @@ impl Docking {
         }
     }
 
-    pub(crate) fn table(&self) -> &BlockTable {
-        &self.table
+    /// The table of the blocks as it is now.
+    pub(crate) fn table(&self) -> Arc<BlockTable> {
+        self.table.current()
     }
 
-    fn weigher(&self) -> Weigher<'_> {
+    /// What weighs the blocks, by `table`, which is the table of now (the density is the column it has: a replacement has the same columns).
+    fn weigher<'a>(&self, table: &'a BlockTable) -> Weigher<'a> {
         Weigher {
-            table: &self.table,
+            table,
             density: self.density,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
@@ -440,6 +462,7 @@ impl Docking {
             .orientation_channel
             .map_or(0, |channel| ship.voxels.get(channel, port.voxel));
         self.table
+            .current()
             .docking_face(
                 ship.voxels.get(self.block_channel, port.voxel),
                 ship.voxels.get(self.state_channel, port.voxel),
@@ -451,25 +474,23 @@ impl Docking {
 
     /// The docking ports of a ship, in order of brick and voxel.
     pub fn ports_of(&self, ship: &MovingGrid) -> Vec<BlockFace> {
-        let weigher = self.weigher();
+        let table = self.table.current();
+        let weigher = self.weigher(&table);
         ship.voxels
             .sorted_brick_coordinates()
             .into_iter()
-            .flat_map(|brick| weigher.scan_brick(ship, brick, Some(&self.table)).ports)
+            .flat_map(|brick| weigher.scan_brick(ship, brick, Some(&table)).ports)
             .collect()
     }
 
     /// The faces of a ship that are the ends of joints (`engine:joint_face`), in order of brick and voxel. Never a docking port: `ports_of` does not have them and this does not have those.
     pub fn joint_ends_of(&self, ship: &MovingGrid) -> Vec<BlockFace> {
-        let weigher = self.weigher();
+        let table = self.table.current();
+        let weigher = self.weigher(&table);
         ship.voxels
             .sorted_brick_coordinates()
             .into_iter()
-            .flat_map(|brick| {
-                weigher
-                    .scan_brick(ship, brick, Some(&self.table))
-                    .joint_ends
-            })
+            .flat_map(|brick| weigher.scan_brick(ship, brick, Some(&table)).joint_ends)
             .collect()
     }
 
@@ -541,7 +562,8 @@ impl Docking {
         if side.contains(&pair.second.voxel) {
             return Err(UndockError::Welded);
         }
-        let parts = self.weigher().parts_of(moving, vec![side]);
+        let table = self.table.current();
+        let parts = self.weigher(&table).parts_of(moving, vec![side]);
         let masses: Vec<f64> = parts.iter().map(|(_, mass)| *mass).collect();
         let direction = moving
             .pose

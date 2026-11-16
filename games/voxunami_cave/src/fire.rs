@@ -98,6 +98,12 @@ impl Fire {
         }
     }
 
+    /// Has the rule read the blocks from `table` from now on, which replaces the table it was made with (and declares the properties it did, so that the handle of
+    /// flammability stays right). The fires there are go on burning, by what the blocks are now.
+    pub fn use_table(&mut self, table: impl Into<Arc<BlockTable>>) {
+        self.table = table.into();
+    }
+
     /// How many steps the rule has taken since the world began.
     pub fn clock(&self) -> u64 {
         self.clock

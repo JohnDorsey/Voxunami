@@ -121,20 +121,22 @@ fn a_walker_stands_on_a_slab_half_a_voxel_lower_than_on_a_whole_block() {
 #[test]
 fn every_rule_that_reads_the_block_table_reads_the_one_table_the_server_shares_and_makes_none_of_its_own()
  {
-    use block_models::SharedBlockTable;
+    use game_shell::SharedPackage;
     use voxunami_cave::plugins::cave_plugins_sharing;
 
     let content = CaveContent::new();
-    let table = SharedBlockTable::new(content.block_table());
+    let package = SharedPackage::new(content.package_data()).unwrap();
+    let table = package.table();
     assert_eq!((table.handle_count(), table.table_holders()), (1, 1));
-    let (plugins, report) = cave_plugins_sharing(&content, &table);
-    // Handles to the cell, which the plugins that read the table as it is now keep to read it again: block editing, items, fire, light and the ship commands.
-    assert_eq!(table.handle_count(), 1 + 5, "handles of the plugins");
-    // Holders of the table itself, which the rules that were made of it keep: the two ways of docking (the one in the ship commands and the one in the plugin that
-    // moves ships), the ground that a ship lands on when its pilot comes back, the table of the plugin that moves ships (the collisions it works out from it are
-    // made when the plugin is registered), and the collisions of the players' bodies. A rule that made a table of its own holds none of this one, and the count is
-    // one short.
-    assert_eq!(table.table_holders(), 1 + 5, "holders of the table");
+    let (plugins, report) = cave_plugins_sharing(&content, &package);
+    // Handles to the cell, which the parts that read the table as it is when they are asked keep: block editing, items (which hold the package), fire, light and the ship
+    // commands (5); the two ways of docking, the one in the ship commands and the one in the plugin that moves ships (2); the walking bodies, which hold one to see that
+    // it was replaced and one in their collisions (2); the ground that a ship lands on when its pilot comes back (1); and the plugin that moves ships (1). A part that made
+    // a table of its own holds none of these, and the count is short of it.
+    assert_eq!(table.handle_count(), 1 + 11, "handles");
+    // Holders of the table itself, which the parts that work out from it keep as it was when they last looked: the collisions of the walking bodies and the ground that a
+    // returning pilot's ship lands on (2). (The collisions of the plugin that moves ships are made when it is registered.)
+    assert_eq!(table.table_holders(), 1 + 2, "holders of the table");
     drop((plugins, report));
     assert_eq!(
         (table.handle_count(), table.table_holders()),

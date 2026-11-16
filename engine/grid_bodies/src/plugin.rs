@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::{BlockTable, PropertyHandle};
+use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use namespaced_id::NamespacedId;
 use physics::{
     BodyColliders, BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments,
@@ -71,7 +71,8 @@ const SAME_PLACE_VOXELS: f64 = 1e-3;
 /// What the plugin needs to know of a game's blocks.
 #[derive(Debug)]
 pub struct GridBodiesConfig {
-    pub table: Arc<BlockTable>,
+    /// The table of the blocks, which the server may replace while it runs: the plugin works out again what it made of the old one (see `Bodies::table_replaced`).
+    pub table: SharedBlockTable,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
     /// Where the game keeps the orientation of its blocks, if it has any.
@@ -565,6 +566,9 @@ enum Ground {
 
 struct Bodies {
     config: GridBodiesConfig,
+    /// The table of the blocks that the bodies were made from, and its version: when the version of the table is another, they are made again.
+    table: Arc<BlockTable>,
+    table_version: u64,
     collisions: BlockCollisions,
     frames: BTreeMap<FrameKey, Frame>,
     /// The number the next frame is given.
@@ -632,9 +636,12 @@ fn farther_than(radius: i128, first: BrickCoordinate, second: BrickCoordinate) -
 
 impl Bodies {
     fn new(config: GridBodiesConfig, report: Arc<Mutex<BodiesReport>>) -> Self {
-        let collisions = BlockCollisions::new(config.table.clone(), config.passable);
+        let collisions = BlockCollisions::following(&config.table, config.passable);
+        let (table, table_version) = config.table.snapshot();
         Self {
             config,
+            table,
+            table_version,
             collisions,
             frames: BTreeMap::new(),
             next_frame: 0,
@@ -651,6 +658,26 @@ impl Bodies {
             alone: BTreeSet::new(),
             report,
         }
+    }
+
+    /// The table of the blocks was replaced since the bodies were made from it: what a block weighs, what it is to a body and where the ports and the ends of joints are
+    /// may all be other, and are all kept in the bodies (the colliders of every brick, the mass and the ports of every ship). So the bodies are forgotten, and the next step
+    /// makes every ship and planet again from its voxels, with the place and the speed that the world has for it (which are what the bodies last wrote there). What the
+    /// world is told of the weight of each ship is told again. A ship's place and speed are not changed by it, to what a step of the bodies is accurate to.
+    fn table_replaced(&mut self) {
+        let (table, version) = self.config.table.snapshot();
+        self.table = table;
+        self.table_version = version;
+        self.frames.clear();
+        self.couplings.clear();
+        self.carried.clear();
+        self.checks.clear();
+        self.weighed.clear();
+        self.refused.clear();
+        self.alone.clear();
+        self.changed_ship_bricks.clear();
+        self.changed_ship_voxels.clear();
+        self.changed_terrain_bricks.clear();
     }
 
     /// The frame a ship has a body in, if it has one.
@@ -687,13 +714,10 @@ impl Bodies {
     ) {
         self.count(|report| report.ship_bricks_made += 1);
         // (The table the faces are read by: the game's docking has one, and a game with joints and no docking uses the game's own.)
-        let faces_by = match &self.config.docking {
-            Some(docking) => Some(docking.table()),
-            None => self
-                .config
-                .joints
-                .is_some()
-                .then_some(self.config.table.as_ref()),
+        let docking_table = self.config.docking.as_ref().map(Docking::table);
+        let faces_by = match &docking_table {
+            Some(table) => Some(table.as_ref()),
+            None => self.config.joints.is_some().then_some(self.table.as_ref()),
         };
         let BrickScan {
             moments,
@@ -799,7 +823,7 @@ impl Bodies {
     /// What it takes to weigh the voxels of a ship.
     fn weigher(&self) -> Weigher<'_> {
         Weigher {
-            table: &self.config.table,
+            table: &self.table,
             density: self.config.density,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
@@ -902,6 +926,9 @@ impl Bodies {
     /// One tick: what changed is made again, the ships are carried to where the world has them, the forces are applied, the bodies move and
     /// the ships are put where they went.
     fn step(&mut self, world: &mut ServerWorld) {
+        if self.config.table.version() != self.table_version {
+            self.table_replaced();
+        }
         self.tick += 1;
         let tick = self.tick;
         self.refused.retain(|_, until| tick < *until);
@@ -1371,8 +1398,9 @@ impl Bodies {
         let Some(docking) = &self.config.docking else {
             return;
         };
+        let docking_table = docking.table();
         let weigher = Weigher {
-            table: &self.config.table,
+            table: &self.table,
             density: self.config.density,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
@@ -1395,7 +1423,7 @@ impl Bodies {
                 };
                 planet.scanned = true;
                 for brick in bricks {
-                    let ports = weigher.scan_brick(grid, brick, Some(docking.table())).ports;
+                    let ports = weigher.scan_brick(grid, brick, Some(&docking_table)).ports;
                     if ports.is_empty() {
                         planet.ports.remove(&brick);
                     } else {

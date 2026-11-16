@@ -25,6 +25,9 @@ use crate::multiscale_light::{self, LightModel, LightScheme, MultiScaleLighting}
 #[derive(Debug)]
 struct LightState {
     table: Arc<BlockTable>,
+    /// The table of the server, which may be replaced, and the version of it that `table` is: the light is made again when they differ.
+    shared: SharedBlockTable,
+    table_version: u64,
     emission: PropertyHandle<u8>,
     channels: CaveChannels,
     /// The world's levels by identifier, in index order, for naming them in the saved light.
@@ -72,6 +75,24 @@ impl LightState {
     }
 
     fn change_light_model(&mut self, model: LightModel, context: &mut Context<'_>) {
+        self.restart_light(model, context, true);
+    }
+
+    /// If the table of the blocks was replaced since the light was made, has the world's light made again by what the blocks are now (what gives light, what lets it
+    /// through).
+    fn follow_the_table(&mut self, context: &mut Context<'_>) {
+        if self.shared.version() == self.table_version {
+            return;
+        }
+        let (table, version) = self.shared.snapshot();
+        self.table = table;
+        self.table_version = version;
+        self.restart_light(self.light_model, context, false);
+    }
+
+    /// Clears every light there is and has the light of `model` look at every lamp and fire in the world (see [`LightState::light_command`]), and tells everyone how the
+    /// light is cut into cells if `announce`.
+    fn restart_light(&mut self, model: LightModel, context: &mut Context<'_>, announce: bool) {
         // Light is only in edited bricks (generated terrain has no lamps), so those are all to clear,
         // and all that can hold a lamp.
         let mut channels = vec![self.channels.light];
@@ -113,11 +134,13 @@ impl LightState {
         };
         self.multiscale = MultiScaleLighting::new(self.table.clone(), scheme);
         self.light_model = model;
-        context.send(
-            Audience::Everyone,
-            LightSchemeChanged::kind(),
-            LightSchemeChanged(self.scheme_in_use()).encode(),
-        );
+        if announce {
+            context.send(
+                Audience::Everyone,
+                LightSchemeChanged::kind(),
+                LightSchemeChanged(self.scheme_in_use()).encode(),
+            );
+        }
         for (grid, voxel) in emitters {
             self.light_changed(grid, voxel);
         }
@@ -134,6 +157,7 @@ impl LightState {
 
     /// One tick of the light rule that the world has.
     fn spread(&mut self, context: &mut Context<'_>) {
+        self.follow_the_table(context);
         match self.light_model {
             LightModel::Classic => {
                 self.lighting.step_within(
@@ -220,7 +244,7 @@ impl Plugin for LightPlugin {
             LightModel::MultiScale(scheme) => scheme,
             LightModel::Classic => LightScheme::LEVELS_16,
         };
-        let table = self.table.current();
+        let (table, table_version) = self.table.snapshot();
         let multiscale = MultiScaleLighting::with_pending(
             Arc::clone(&table),
             scheme,
@@ -238,6 +262,8 @@ impl Plugin for LightPlugin {
         let state = Arc::new(Mutex::new(LightState {
             emission: crate::block_properties::emission(&table),
             table: Arc::clone(&table),
+            shared: self.table.clone(),
+            table_version,
             channels: self.channels.clone(),
             level_ids,
             lighting: Lighting::with_pending(table, pending),

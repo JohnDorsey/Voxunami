@@ -30,7 +30,7 @@ pub use property::{
     PropertyType, engine,
 };
 pub use shape::{FaceConnections, SUBDIVISIONS, Shape, ShapeBox, SubRect, face_axes};
-pub use shared::SharedBlockTable;
+pub use shared::{PropertiesChanged, SharedBlockTable};
 pub use table::{
     BlockTable, FacePicture, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement,
 };

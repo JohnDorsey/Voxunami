@@ -1,5 +1,6 @@
 //! Fire: it burns near players, spreads to what burns, and goes out.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use namespaced_id::NamespacedId;
@@ -65,8 +66,9 @@ impl Plugin for FirePlugin {
         let (clock, active) =
             Fire::read_section(world.opaque_sections(), |level| world.level_index(level))
                 .unwrap_or_default();
+        let (table, table_version) = self.table.snapshot();
         let fire = Arc::new(Mutex::new(Fire::new(
-            self.table.current(),
+            table,
             self.fire_block,
             self.air_block,
             world.world_seed,
@@ -94,15 +96,23 @@ impl Plugin for FirePlugin {
         );
 
         // Fires near a player burn; what they change is looked at by the light in the same tick.
-        let (burner, players, channels) = (
+        let (burner, players, channels, shared) = (
             Arc::clone(&fire),
             Arc::clone(&self.players),
             self.channels.clone(),
+            self.table.clone(),
         );
+        let seen = AtomicU64::new(table_version);
         registrar.system(
             SystemSpec::new("voxunami_cave:burn", Phase::Rules)
                 .writes(&[self.channels.block, self.channels.state]),
             move |context| {
+                // A table that replaced the one the rule was made with: it burns what the blocks are now.
+                if shared.version() != seen.load(Ordering::Relaxed) {
+                    let (table, version) = shared.snapshot();
+                    locked(&burner).use_table(table);
+                    seen.store(version, Ordering::Relaxed);
+                }
                 // Where the players and the ships are now: a fire is near a player if the place it is in the world is, whatever grid it is in.
                 let reach = PlayerReach::new(&lock(&players), context.world().data());
                 let _ = locked(&burner).step(

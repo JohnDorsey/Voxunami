@@ -436,6 +436,17 @@ impl BlockTable {
         })
     }
 
+    /// Whether `other` declares the same properties as this table, of the same kinds, in the same order: a [`PropertyHandle`] of one is then a handle of the other (a
+    /// handle is the place of a column). A table made of a changed package has the same properties as the table it replaces unless the game's declarations changed.
+    pub fn has_the_properties_of(&self, other: &BlockTable) -> bool {
+        self.columns.len() == other.columns.len()
+            && self
+                .columns
+                .iter()
+                .zip(&other.columns)
+                .all(|(ours, theirs)| ours.id == theirs.id && ours.kind == theirs.kind)
+    }
+
     /// Finds a property's column, to read through [`BlockTable::get`]. An error if the table's schema does
     /// not declare the key, or declares it as another kind than `T`.
     pub fn handle<T: PropertyType>(

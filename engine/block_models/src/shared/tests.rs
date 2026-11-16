@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::SharedBlockTable;
-use crate::{BlockDefinition, BlockTable};
+use super::{PropertiesChanged, SharedBlockTable};
+use crate::{BlockDefinition, BlockTable, PropertyKey, PropertySchema};
 
 /// A table of air and one cube whose red is `red`, so that a table says which one it is.
 fn table_with_red(red: f32) -> BlockTable {
@@ -38,11 +38,11 @@ fn a_clone_is_the_same_table_and_a_replacement_through_either_is_seen_by_both() 
     assert!(shared.is_the_same_as(&clone));
     assert_eq!(shared.handle_count(), 2);
 
-    assert_eq!(clone.replace(table_with_red(0.5)), 1);
+    assert_eq!(clone.replace(table_with_red(0.5)), Ok(1));
     assert_eq!((red_of(&shared.current()), shared.version()), (0.5, 1));
     assert_eq!((red_of(&clone.current()), clone.version()), (0.5, 1));
 
-    assert_eq!(shared.replace(table_with_red(0.75)), 2);
+    assert_eq!(shared.replace(table_with_red(0.75)), Ok(2));
     assert_eq!((red_of(&clone.current()), clone.version()), (0.75, 2));
 }
 
@@ -51,7 +51,7 @@ fn two_handles_made_separately_are_not_the_same_even_when_their_tables_are_equal
     let one = SharedBlockTable::new(table_with_red(0.25));
     let other = SharedBlockTable::new(table_with_red(0.25));
     assert!(!one.is_the_same_as(&other));
-    one.replace(table_with_red(0.5));
+    one.replace(table_with_red(0.5)).unwrap();
     assert_eq!(
         red_of(&other.current()),
         0.25,
@@ -63,7 +63,7 @@ fn two_handles_made_separately_are_not_the_same_even_when_their_tables_are_equal
 fn a_snapshot_taken_before_a_replacement_keeps_the_table_it_took() {
     let shared = SharedBlockTable::new(table_with_red(0.25));
     let (before, version) = shared.snapshot();
-    shared.replace(table_with_red(0.5));
+    shared.replace(table_with_red(0.5)).unwrap();
     assert_eq!((red_of(&before), version), (0.25, 0));
     assert_eq!(red_of(&shared.current()), 0.5);
 }
@@ -72,7 +72,7 @@ fn a_snapshot_taken_before_a_replacement_keeps_the_table_it_took() {
 fn the_version_counts_every_replacement_even_by_an_equal_table() {
     let shared = SharedBlockTable::new(table_with_red(0.25));
     for expected in 1..=5 {
-        assert_eq!(shared.replace(table_with_red(0.25)), expected);
+        assert_eq!(shared.replace(table_with_red(0.25)), Ok(expected));
     }
     assert_eq!(shared.version(), 5);
 }
@@ -96,9 +96,57 @@ fn the_holders_of_the_table_are_the_snapshots_kept_of_it_and_a_replaced_table_is
     assert_eq!(shared.table_holders(), 5);
     drop(also);
     // A replacement: the snapshots kept hold the table that was, and the new one is held by the handle alone.
-    shared.replace(table_with_red(0.5));
+    shared.replace(table_with_red(0.5)).unwrap();
     assert_eq!(shared.table_holders(), 1);
     assert_eq!(red_of(&kept[0]), 0.25);
+}
+
+/// A table of air and one cube that declares one property more than the engine's.
+fn table_with_an_extra_property(red: f32) -> BlockTable {
+    let mut schema = PropertySchema::new();
+    schema
+        .declare(
+            PropertyKey::new(
+                "tests:extra",
+                0u8,
+                "a property that the other table does not declare",
+            )
+            .declaration(),
+        )
+        .unwrap();
+    let air = BlockDefinition::air();
+    let cube = BlockDefinition::cube([red, 0.0, 0.0]);
+    BlockTable::try_from_definitions(&schema, &[Some(&air), Some(&cube)]).unwrap()
+}
+
+#[test]
+fn a_table_that_declares_other_properties_is_refused_and_nothing_changes() {
+    // (A property handle is the place of a column, so a handle taken from the table that is would read another column of the one that came: the replacement is
+    // refused, not made and left to be found by a wrong answer.)
+    let shared = SharedBlockTable::new(table_with_red(0.25));
+    let before = shared.current();
+    assert_eq!(
+        shared.replace(table_with_an_extra_property(0.5)),
+        Err(PropertiesChanged)
+    );
+    assert_eq!(shared.version(), 0, "a refused table is not a replacement");
+    assert!(
+        Arc::ptr_eq(&before, &shared.current()),
+        "the table is as it was"
+    );
+    // The table that has the extra property is the one that takes tables that have it.
+    let other = SharedBlockTable::new(table_with_an_extra_property(0.25));
+    assert_eq!(other.replace(table_with_an_extra_property(0.5)), Ok(1));
+    assert_eq!(other.replace(table_with_red(0.5)), Err(PropertiesChanged));
+}
+
+#[test]
+fn the_version_is_read_without_the_lock_so_that_it_can_be_asked_of_every_voxel() {
+    // (A reader that holds the table does not keep the version from being read: the lock is for the table.)
+    let shared = SharedBlockTable::new(table_with_red(0.25));
+    let guard = shared.inner.table.read().unwrap();
+    assert_eq!(shared.version(), 0);
+    drop(guard);
 }
 
 #[test]
@@ -127,7 +175,7 @@ fn readers_while_another_thread_replaces_always_see_a_table_with_the_version_it_
         })
         .collect();
     for version in 1..=REPLACEMENTS {
-        assert_eq!(shared.replace(table_with_red(version as f32)), version);
+        assert_eq!(shared.replace(table_with_red(version as f32)), Ok(version));
     }
     for reader in readers {
         reader.join().expect("a reader saw a mixed snapshot");

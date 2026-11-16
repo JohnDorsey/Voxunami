@@ -41,7 +41,7 @@ impl MovementPlugin {
         players: SharedPresence,
     ) -> Self {
         let movement = Movement::new(
-            table.current(),
+            table,
             content.block_channel(),
             content.state_channel(),
             content.orientation_channel(),

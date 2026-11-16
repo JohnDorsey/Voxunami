@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use block_models::{BlockTable, PropertyHandle};
+use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use physics::{BrickHint, Collision, CollisionSource};
 use server::{GridView, ServerWorld};
 use voxel_grid::{ChannelIndex, Grid};
@@ -14,34 +14,59 @@ use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 /// What each block's shape means to something moving through it, worked out once: the whole cube, the boxes in it, or nothing (air, and
 /// the blocks a game says can be passed through, such as flames). The sources below share one, so a body that meets several ships at
 /// once needs only the one table.
+///
+/// It follows the table it was made for: when that is replaced (a [`SharedBlockTable`]), what was worked out is forgotten and worked out again from the new one, at the
+/// next question. (The colliders that were made of the old answers are the business of whoever made them.)
 #[derive(Debug)]
 pub struct BlockCollisions {
-    table: Arc<BlockTable>,
+    shared: SharedBlockTable,
     passable: Option<PropertyHandle<bool>>,
-    cache: RefCell<HashMap<u32, Collision>>,
+    worked: RefCell<Worked>,
+}
+
+/// What was worked out, and from which table.
+#[derive(Debug)]
+struct Worked {
+    table: Arc<BlockTable>,
+    version: u64,
+    cache: HashMap<u32, Collision>,
 }
 
 impl BlockCollisions {
-    /// `passable` is the property of the game that says a block can be passed through, if it has one.
+    /// For a table that is not replaced. `passable` is the property of the game that says a block can be passed through, if it has one.
     pub fn new(table: impl Into<Arc<BlockTable>>, passable: Option<PropertyHandle<bool>>) -> Self {
+        Self::following(&SharedBlockTable::new(table), passable)
+    }
+
+    /// For the table of a server, which is replaced while it runs. A replacement declares the properties the table did, so `passable` stays right.
+    pub fn following(shared: &SharedBlockTable, passable: Option<PropertyHandle<bool>>) -> Self {
+        let (table, version) = shared.snapshot();
         Self {
-            table: table.into(),
+            shared: shared.clone(),
             passable,
-            cache: RefCell::new(HashMap::new()),
+            worked: RefCell::new(Worked {
+                table,
+                version,
+                cache: HashMap::new(),
+            }),
         }
     }
 
-    pub fn table(&self) -> &BlockTable {
-        &self.table
+    /// The table that the answers are from now.
+    pub fn table(&self) -> Arc<BlockTable> {
+        let mut worked = self.worked.borrow_mut();
+        self.keep_up(&mut worked);
+        Arc::clone(&worked.table)
     }
 
     /// What the block in this state, standing in this orientation, is to a body.
     pub fn of(&self, block: u32, state: u32, orientation: u32) -> Collision {
-        let model = self.table.model_of(block, state, orientation);
-        let table = &self.table;
+        let mut worked = self.worked.borrow_mut();
+        self.keep_up(&mut worked);
+        let Worked { table, cache, .. } = &mut *worked;
+        let model = table.model_of(block, state, orientation);
         let passable = self.passable;
-        self.cache
-            .borrow_mut()
+        cache
             .entry(model.get())
             .or_insert_with(|| {
                 let shape = table.shape(model);
@@ -54,6 +79,18 @@ impl BlockCollisions {
                 }
             })
             .clone()
+    }
+
+    /// Forgets what was worked out if the table was replaced since. (One atomic read when it was not: this is asked of every voxel.)
+    fn keep_up(&self, worked: &mut Worked) {
+        if self.shared.version() != worked.version {
+            let (table, version) = self.shared.snapshot();
+            *worked = Worked {
+                table,
+                version,
+                cache: HashMap::new(),
+            };
+        }
     }
 }
 
@@ -343,6 +380,48 @@ mod tests {
             voxels.set(state, voxel, shape);
         }
         (voxels, block, state)
+    }
+
+    /// A table like that of [`collisions`] in which the stone is the one shape it has (whole), and the mist, which is nothing in that table, is a whole block here.
+    fn table_with_a_solid_mist() -> BlockTable {
+        let air = BlockDefinition::air();
+        let stone = BlockDefinition::cube([0.5; 3])
+            .with_shapes(vec![Shape::half(FaceDirection::NegativeY)]);
+        let mist = BlockDefinition::cube([0.5; 3]);
+        BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&mist)])
+    }
+
+    #[test]
+    fn collisions_that_follow_a_table_answer_by_the_one_that_replaced_it_and_a_copy_does_not() {
+        let air = BlockDefinition::air();
+        let stone = BlockDefinition::cube([0.5; 3]);
+        let mist = BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::empty()]);
+        let shared = SharedBlockTable::new(BlockTable::from_definitions(&[
+            Some(&air),
+            Some(&stone),
+            Some(&mist),
+        ]));
+        let following = BlockCollisions::following(&shared, None);
+        let fixed = BlockCollisions::new(shared.current(), None);
+        // (The answers are worked out and kept: the first asking is from the table there is.)
+        assert_eq!(following.of(MIST, 0, 0), Collision::Empty);
+        assert_eq!(following.of(STONE, 0, 0), Collision::Full);
+
+        shared.replace(table_with_a_solid_mist()).unwrap();
+        assert_eq!(
+            following.of(MIST, 0, 0),
+            Collision::Full,
+            "what was kept of the mist is forgotten"
+        );
+        assert!(matches!(following.of(STONE, 0, 0), Collision::Partial(_)));
+        assert_eq!(following.table().color(MIST), shared.current().color(MIST));
+        assert!(
+            Arc::ptr_eq(&following.table(), &shared.current()),
+            "it holds the table that is current"
+        );
+        // A table that was given as it was is not the one that was replaced.
+        assert_eq!(fixed.of(MIST, 0, 0), Collision::Empty);
+        assert_eq!(fixed.of(STONE, 0, 0), Collision::Full);
     }
 
     #[test]
