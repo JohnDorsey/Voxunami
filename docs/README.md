@@ -44,7 +44,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 ## Specs (one per part or phase; the part's code cites them)
 
 Plugins and content: `plugin-api-spec.md`, `property-bags-spec.md`, `messages-and-commands-spec.md`, `client-interface-spec.md`,
-`entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `block-textures-spec.md` (textures, and the game's own blocks as JSON; **not built**), `ui-spec.md`. The game Voxunami 2048: `2048-spec.md`.
+`entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `block-textures-spec.md` (textures, and the game's own blocks as JSON; **not built**), `ui-spec.md`, `package-replacement-spec.md` (**a proposal, awaiting the owner**: what the stream says when the package changes while the world runs, so that a recording still equals what was seen; step 4 of `hot-reload-plan.md`). The game Voxunami 2048: `2048-spec.md`.
 The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rails-and-recipes-spec.md` (orbits, planets from data),
 `great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`, `contact-trace-spec.md` (**a design; phases 0 to 2 are built (the renderer too), and the cost in real Cave is over the budget: the owner's to decide**: the sun's exact short ray through the voxels that removes the lit strip at the foot of a wall), `shader-pack-spec.md` (swappable shaders: the engine works out what is lit and a pack makes the colour; **built: the interface, and the player's side (`--shader-pack`, `.shader`)**). Ships: `moving-grids-spec.md`.
 
