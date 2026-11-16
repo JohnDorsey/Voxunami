@@ -37,6 +37,7 @@ pub mod sun;
 mod sun_view_tests;
 #[cfg(test)]
 mod test_support;
+pub mod texture_pack;
 pub mod view;
 #[cfg(test)]
 mod view_reload_tests;

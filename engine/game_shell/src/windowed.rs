@@ -33,7 +33,7 @@ use crate::session::{Mode, Session};
 use crate::view::{
     apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
     hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
-    show_screen, start_with_engine_shaders, swap_engine_shaders,
+    show_screen, start_with_engine_shaders, start_with_texture_pack, swap_engine_shaders,
 };
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
@@ -190,6 +190,8 @@ struct Viewer<G: GameDefinition> {
     renderer: VoxelRenderer,
     /// The shader packs the player has, which `.shader` chooses among (see `crate::shader_packs`), and the files that keep what they chose of the settings.
     shader_packs: crate::view::ShaderPacks,
+    /// The places the renderer draws with a picture of `--texture-pack` and not the world's.
+    pictures_in_use: crate::texture_pack::PicturesInUse,
     /// What can be reloaded while the game runs (`.reload`, `--watch`): taken out while it reloads, since a reload changes the viewer it belongs to.
     reloads: Option<Reloads<Viewer<G>>>,
     session: GameSession<G>,
@@ -292,6 +294,14 @@ impl<G: GameDefinition> Viewer<G> {
         if let Err(error) = start_with_engine_shaders(&mut renderer, view) {
             eprintln!("warning: the program's own engine shaders are used: {error}");
         }
+        let pictures_in_use = match start_with_texture_pack(&mut renderer, session.package(), view)
+        {
+            Ok(in_use) => in_use,
+            Err(error) => {
+                eprintln!("warning: the world's own pictures are used: {error}");
+                Default::default()
+            }
+        };
         let reloads = what_can_be_reloaded::<G>(view);
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
@@ -303,6 +313,7 @@ impl<G: GameDefinition> Viewer<G> {
             context,
             renderer,
             shader_packs,
+            pictures_in_use,
             reloads: Some(reloads),
             session,
             keys: HashSet::new(),
@@ -783,6 +794,27 @@ impl<G: GameDefinition> Reloadable<Viewer<G>> for EngineShaderFolder {
     }
 }
 
+/// The folder of loose pictures, as a reload reads it again (the same as at the start).
+struct PictureFolder(std::path::PathBuf);
+
+impl<G: GameDefinition> Reloadable<Viewer<G>> for PictureFolder {
+    type Loaded = crate::texture_pack::ReadPictures;
+
+    fn load(&self, viewer: &Viewer<G>) -> Result<Self::Loaded, String> {
+        crate::texture_pack::read_pictures(&self.0, viewer.session.package())
+    }
+
+    fn swap(&self, viewer: &mut Viewer<G>, loaded: Self::Loaded) -> Result<Option<String>, String> {
+        crate::texture_pack::swap_pictures(
+            &mut viewer.renderer,
+            viewer.session.package(),
+            &mut viewer.pictures_in_use,
+            &self.0,
+            loaded,
+        )
+    }
+}
+
 /// The kinds of content this window can reload (`.reload`), watched for changes if `--watch` was given. A kind whose folders are not there is not offered.
 fn what_can_be_reloaded<G: GameDefinition>(view: &ViewOptions) -> Reloads<Viewer<G>> {
     let mut reloads = Reloads::new(view.watch);
@@ -806,6 +838,18 @@ fn what_can_be_reloaded<G: GameDefinition>(view: &ViewOptions) -> Reloads<Viewer
         );
         if let Err(error) = added {
             eprintln!("warning: shader packs will not be reloaded: {error}");
+        }
+    }
+    if let Some(folder) = &view.texture_pack {
+        let added = reloads.add(
+            "pictures",
+            DiskSource::new(folder),
+            Watcher::<DiskSource>::DEFAULT_SETTLE,
+            Watcher::<DiskSource>::DEFAULT_INTERVAL,
+            PictureFolder(folder.clone()),
+        );
+        if let Err(error) = added {
+            eprintln!("warning: the pictures will not be reloaded: {error}");
         }
     }
     if let Some(folder) = &view.engine_shaders {

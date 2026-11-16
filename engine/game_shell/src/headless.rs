@@ -17,7 +17,7 @@ use crate::session::{Mode, Session};
 use crate::view::{
     apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
     light_the_scene, prepare_shader_packs, show_entity_boxes, show_other_players, show_screen,
-    start_with_engine_shaders,
+    start_with_engine_shaders, start_with_texture_pack,
 };
 use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles};
 
@@ -92,6 +92,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     let shader_packs = prepare_shader_packs(&options.view, &mut session)?;
     apply_shader_pack(&mut renderer, &shader_packs.packs, session.settings())?;
     start_with_engine_shaders(&mut renderer, &options.view)?;
+    start_with_texture_pack(&mut renderer, session.package(), &options.view)?;
 
     // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray is told of.)
     let reports_occupancy = std::env::var_os(REPORT_OCCUPANCY).is_some();
@@ -198,6 +199,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     let shader_packs = prepare_shader_packs(view, &mut session)?;
     apply_shader_pack(&mut renderer, &shader_packs.packs, session.settings())?;
     start_with_engine_shaders(&mut renderer, view)?;
+    start_with_texture_pack(&mut renderer, session.package(), view)?;
     session.set_viewport_height(view.height);
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);

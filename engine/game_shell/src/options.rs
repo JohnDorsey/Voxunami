@@ -38,6 +38,9 @@ Usage: voxunami {command} [options]
                                   game data folder
   --watch                         read shader packs and their settings (and the engine's shaders, with
                                   --engine-shaders) again when their files change; .reload does it at once
+  --texture-pack DIRECTORY        draw blocks with the pictures in this folder where it has them
+                                  (NAMESPACE/textures/NAME.png, as `stone_top.png`, with `_s` and `_n`
+                                  companions); .reload pictures and --watch read it again
   --engine-shaders DIRECTORY      a developer's: read the engine's own shaders from this folder (the source's
                                   `engine/renderer/src`) instead of the program
   --screenshot FILE.png           render one image without a window and exit
@@ -109,6 +112,9 @@ Usage: voxunami replay FILE [options]
                                   game data folder
   --watch                         read shader packs and their settings (and the engine's shaders, with
                                   --engine-shaders) again when their files change; .reload does it at once
+  --texture-pack DIRECTORY        draw blocks with the pictures in this folder where it has them
+                                  (NAMESPACE/textures/NAME.png, as `stone_top.png`, with `_s` and `_n`
+                                  companions); .reload pictures and --watch read it again
   --engine-shaders DIRECTORY      a developer's: read the engine's own shaders from this folder (the source's
                                   `engine/renderer/src`) instead of the program
   --no-vsync                      do not wait for the display refresh
@@ -139,6 +145,9 @@ pub struct ViewOptions {
     pub shader_packs: Option<PathBuf>,
     /// The shader pack to start with (`--shader-pack`): an id or a name, or the beginning of one.
     pub shader_pack: Option<String>,
+    /// A folder of loose pictures that override the world's block pictures on this client (`--texture-pack`: `NAMESPACE/textures/NAME.png`, see [`crate::texture_pack`]); read at
+    /// the start, and again by `.reload pictures` and, with `--watch`, when the files change.
+    pub texture_pack: Option<PathBuf>,
     /// The folder to read the engine's own shaders from instead of the program (`--engine-shaders`): a developer's, `engine/renderer/src` of the source, so that a change to a
     /// shader shows without making the program again (`.reload engine-shaders`, or by itself with `--watch`). `None` is the shaders the program has.
     pub engine_shaders: Option<PathBuf>,
@@ -161,6 +170,7 @@ impl Default for ViewOptions {
             pixelated_shadows: false,
             shader_packs: None,
             engine_shaders: None,
+            texture_pack: None,
             shader_pack: None,
             watch: false,
         }
@@ -266,6 +276,7 @@ fn parse_view_flag(
             }
         }
         "--shader-packs" => view.shader_packs = Some(PathBuf::from(value(flag)?)),
+        "--texture-pack" => view.texture_pack = Some(PathBuf::from(value(flag)?)),
         "--engine-shaders" => view.engine_shaders = Some(PathBuf::from(value(flag)?)),
         "--shader-pack" => view.shader_pack = Some(value(flag)?),
         "--watch" => view.watch = true,
@@ -530,7 +541,8 @@ mod tests {
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
              --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off \
-             --shader-pack cel --shader-packs my_shaders --watch --engine-shaders src_shaders",
+             --shader-pack cel --shader-packs my_shaders --watch --engine-shaders src_shaders \
+             --texture-pack my_pictures",
         );
         assert_eq!(
             parsed,
@@ -549,6 +561,7 @@ mod tests {
                     shader_packs: Some(PathBuf::from("my_shaders")),
                     shader_pack: Some("cel".to_owned()),
                     engine_shaders: Some(PathBuf::from("src_shaders")),
+                    texture_pack: Some(PathBuf::from("my_pictures")),
                     watch: true,
                 },
                 seed: 7,

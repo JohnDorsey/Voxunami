@@ -26,7 +26,9 @@ mod sun;
 mod sun_boxes;
 mod voxel_renderer;
 
-pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
+pub use block_textures::{
+    MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize, PictureWrite, PictureWriteError,
+};
 pub use camera::{Camera, Frustum};
 pub use engine_shaders::{EngineShaderError, EngineShaderTexts};
 pub use graphics_context::{

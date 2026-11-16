@@ -33,7 +33,39 @@ pub(crate) struct BlockTextures {
     /// The same of the normal pictures.
     pub normal_views: [wgpu::TextureView; MOST_PICTURE_SIZES],
     pub sampler: wgpu::Sampler,
+    /// The textures behind the views of the sizes in use, which a picture is written into ([`BlockTextures::write_picture`]).
+    arrays: Vec<ClassArrays>,
 }
+
+/// The three texture arrays of one size of picture, with the side of its pictures and how many layers they have.
+struct ClassArrays {
+    side: u32,
+    layers: usize,
+    picture: wgpu::Texture,
+    specular: wgpu::Texture,
+    normal: wgpu::Texture,
+}
+
+/// One picture to write in its place ([`crate::VoxelRenderer::set_picture`]): the picture and, if it has them, its companions, as [`PictureSize`] has them. A companion that is
+/// `None` is the companion of a picture that has none (a flat face with no emission), which is what is written over the one that was there.
+#[derive(Clone, Copy, Debug)]
+pub struct PictureWrite<'a> {
+    pub rgba: &'a [u8],
+    pub specular: Option<&'a [u8]>,
+    pub normal: Option<&'a [u8]>,
+}
+
+/// Why a picture was not written: where it was to go is not a place of the pictures, or what was given is not as big as the place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PictureWriteError(String);
+
+impl std::fmt::Display for PictureWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "the picture was not written: {}", self.0)
+    }
+}
+
+impl std::error::Error for PictureWriteError {}
 
 impl BlockTextures {
     /// Panics if there are more sizes or pictures than there can be, or a picture is not as big as its size says.
@@ -44,8 +76,13 @@ impl BlockTextures {
         );
         // (A texture of one pixel stands in for every size that is not in use: nothing reads it, and one serves all four.)
         let mut stand_in: Option<wgpu::TextureView> = None;
+        let (mut pictures, mut speculars, mut normals) = (Vec::new(), Vec::new(), Vec::new());
         let views = std::array::from_fn(|class| match sizes.get(class) {
-            Some(size) => array_of(device, queue, size),
+            Some(size) => {
+                let (view, texture) = array_of(device, queue, size);
+                pictures.push(texture);
+                view
+            }
             None => stand_in
                 .get_or_insert_with(|| stand_in_array(device, queue))
                 .clone(),
@@ -53,13 +90,21 @@ impl BlockTextures {
         // (The same stand-in serves the specular arrays of the sizes not in use: nothing reads it there either, and a renderer with no pictures makes no texture more than it did
         // before there were specular pictures, which the integrated AMD GPU's first frames are sensitive to: `docs/test-flakes.md`.)
         let specular_views = std::array::from_fn(|class| match sizes.get(class) {
-            Some(size) => specular_array_of(device, queue, size),
+            Some(size) => {
+                let (view, texture) = specular_array_of(device, queue, size);
+                speculars.push(texture);
+                view
+            }
             None => stand_in
                 .get_or_insert_with(|| stand_in_array(device, queue))
                 .clone(),
         });
         let normal_views = std::array::from_fn(|class| match sizes.get(class) {
-            Some(size) => normal_array_of(device, queue, size),
+            Some(size) => {
+                let (view, texture) = normal_array_of(device, queue, size);
+                normals.push(texture);
+                view
+            }
             None => stand_in
                 .get_or_insert_with(|| stand_in_array(device, queue))
                 .clone(),
@@ -74,12 +119,124 @@ impl BlockTextures {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        let arrays = sizes
+            .iter()
+            .zip(pictures)
+            .zip(speculars)
+            .zip(normals)
+            .map(|(((size, picture), specular), normal)| ClassArrays {
+                side: size.size,
+                layers: size.tiles.len(),
+                picture,
+                specular,
+                normal,
+            })
+            .collect();
         Self {
             views,
             specular_views,
             normal_views,
             sampler,
+            arrays,
         }
+    }
+
+    /// Writes this picture, and the levels of smaller pictures under it, over the one at `layer` of the size number `class`: the same bytes that giving it to
+    /// [`BlockTextures::new`] would have put there. Nothing is written if it does not fit.
+    pub fn write_picture(
+        &self,
+        queue: &wgpu::Queue,
+        class: usize,
+        layer: usize,
+        picture: &PictureWrite<'_>,
+    ) -> Result<(), PictureWriteError> {
+        let error = |message: String| Err(PictureWriteError(message));
+        let Some(arrays) = self.arrays.get(class) else {
+            return error(format!(
+                "there is no size of picture number {class} (the world has {})",
+                self.arrays.len()
+            ));
+        };
+        if layer >= arrays.layers {
+            return error(format!(
+                "there is no picture {layer} of the size number {class} (it has {})",
+                arrays.layers
+            ));
+        }
+        let bytes = arrays.side as usize * arrays.side as usize * 4;
+        for (what, pixels) in [
+            ("the picture", Some(picture.rgba)),
+            ("its specular picture", picture.specular),
+            ("its normal picture", picture.normal),
+        ] {
+            if let Some(pixels) = pixels
+                && pixels.len() != bytes
+            {
+                return error(format!(
+                    "{what} has {} bytes and a picture of {} pixels across has {bytes}",
+                    pixels.len(),
+                    arrays.side
+                ));
+            }
+        }
+        write_levels(
+            queue,
+            &arrays.picture,
+            arrays.side,
+            layer,
+            &mip_chain(arrays.side, picture.rgba),
+        );
+        write_levels(
+            queue,
+            &arrays.specular,
+            arrays.side,
+            layer,
+            &companion_levels(arrays.side, &SPECULAR, picture.specular),
+        );
+        write_levels(
+            queue,
+            &arrays.normal,
+            arrays.side,
+            layer,
+            &companion_levels(arrays.side, &NORMAL, picture.normal),
+        );
+        Ok(())
+    }
+}
+
+/// Writes the levels of one picture (the picture, then each smaller one) into its layer of a texture array.
+fn write_levels(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    side: u32,
+    layer: usize,
+    levels: &[Vec<u8>],
+) {
+    for (level, pixels) in levels.iter().enumerate() {
+        let level_side = (side >> level).max(1);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer as u32,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(level_side * 4),
+                rows_per_image: Some(level_side),
+            },
+            wgpu::Extent3d {
+                width: level_side,
+                height: level_side,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -94,13 +251,14 @@ fn stand_in_array(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureVi
             ..PictureSize::default()
         },
     )
+    .0
 }
 
 fn array_of(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     size: &PictureSize<'_>,
-) -> wgpu::TextureView {
+) -> (wgpu::TextureView, wgpu::Texture) {
     assert!(
         size.size.is_power_of_two(),
         "a size of picture is a power of two, not {}",
@@ -136,20 +294,25 @@ fn specular_array_of(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     size: &PictureSize<'_>,
-) -> wgpu::TextureView {
-    companion_array_of(
-        device,
-        queue,
-        size,
-        &size.specular,
-        &Companion {
-            kind: "specular",
-            label: "block specular pictures",
-            none: NO_SPECULAR,
-            engine_form: engine_specular,
-        },
-    )
+) -> (wgpu::TextureView, wgpu::Texture) {
+    companion_array_of(device, queue, size, &size.specular, &SPECULAR)
 }
+
+/// The specular companion as a kind of companion.
+const SPECULAR: Companion = Companion {
+    kind: "specular",
+    label: "block specular pictures",
+    none: NO_SPECULAR,
+    engine_form: engine_specular,
+};
+
+/// The normal companion as a kind of companion.
+const NORMAL: Companion = Companion {
+    kind: "normal",
+    label: "block normal pictures",
+    none: NO_NORMAL,
+    engine_form: <[u8]>::to_vec,
+};
 
 /// The normal companions of the pictures of one size as an array with the layers of the pictures (a picture with none has the pixel of a flat face). Linear data, not
 /// colours, and a smaller level is the plain average of the four pixels it stands for, which is the right one for normals too: the average of tilts is a smaller tilt, as the
@@ -158,19 +321,8 @@ fn normal_array_of(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     size: &PictureSize<'_>,
-) -> wgpu::TextureView {
-    companion_array_of(
-        device,
-        queue,
-        size,
-        &size.normal,
-        &Companion {
-            kind: "normal",
-            label: "block normal pictures",
-            none: NO_NORMAL,
-            engine_form: <[u8]>::to_vec,
-        },
-    )
+) -> (wgpu::TextureView, wgpu::Texture) {
+    companion_array_of(device, queue, size, &size.normal, &NORMAL)
 }
 
 /// What a kind of companion picture is, to make an array of them: its name (for the messages), its label, the pixel of a picture that has none, and how the pixels of a file
@@ -190,7 +342,7 @@ fn companion_array_of(
     size: &PictureSize<'_>,
     companions: &[Option<&[u8]>],
     kind: &Companion,
-) -> wgpu::TextureView {
+) -> (wgpu::TextureView, wgpu::Texture) {
     assert!(
         companions.is_empty() || companions.len() == size.tiles.len(),
         "the {} pictures are one for each picture, or none",
@@ -199,18 +351,15 @@ fn companion_array_of(
     let bytes = size.size as usize * size.size as usize * 4;
     let mut data = Vec::new();
     for layer in 0..size.tiles.len() {
-        let pixels = match companions.get(layer).copied().flatten() {
-            Some(pixels) => {
-                assert_eq!(
-                    pixels.len(),
-                    bytes,
-                    "a picture has four bytes for each pixel"
-                );
-                (kind.engine_form)(pixels)
-            }
-            None => kind.none.repeat(bytes / 4),
-        };
-        for level in data_mip_chain(size.size, &pixels) {
+        let pixels = companions.get(layer).copied().flatten();
+        if let Some(pixels) = pixels {
+            assert_eq!(
+                pixels.len(),
+                bytes,
+                "a picture has four bytes for each pixel"
+            );
+        }
+        for level in companion_levels(size.size, kind, pixels) {
             data.extend_from_slice(&level);
         }
     }
@@ -222,6 +371,16 @@ fn companion_array_of(
         wgpu::TextureFormat::Rgba8Unorm,
         &data,
     )
+}
+
+/// The levels of a companion picture of this kind and this side (the picture, then each smaller one): the pixels as the shader reads them, or, for a picture that has none,
+/// the pixel `none` all over.
+fn companion_levels(side: u32, kind: &Companion, pixels: Option<&[u8]>) -> Vec<Vec<u8>> {
+    let pixels = match pixels {
+        Some(pixels) => (kind.engine_form)(pixels),
+        None => kind.none.repeat(side as usize * side as usize),
+    };
+    data_mip_chain(side, &pixels)
 }
 
 /// What a pixel with no specular picture is: smoothness, reflectance and porosity nothing, and no emission (see [`engine_specular`]).
@@ -237,19 +396,39 @@ pub(crate) const HAS_RELIEF: u32 = 1 << 18;
 
 /// The picture words with [`HAS_RELIEF`] set on those whose normal picture has relief. A word is as `FacePicture::word` says: bit 0 a picture, bits 1 and 2 the class of its size
 /// (the number in `sizes`) and bits 3 to 10 its layer (its number among the pictures of that size); a word of 0, a flat colour, is left as it is.
+#[cfg(test)]
 pub(crate) fn words_with_relief(words: &[u32], sizes: &[PictureSize<'_>]) -> Vec<u32> {
+    words_with_relief_flags(words, &relief_of(sizes))
+}
+
+/// Whether each picture of each size has a relief (a height under the top somewhere in its normal picture), by size and layer.
+pub(crate) fn relief_of(sizes: &[PictureSize<'_>]) -> Vec<Vec<bool>> {
+    sizes
+        .iter()
+        .map(|size| {
+            (0..size.tiles.len())
+                .map(|layer| has_relief(size.normal.get(layer).copied().flatten()))
+                .collect()
+        })
+        .collect()
+}
+
+/// Whether a normal picture has a pixel below the top of its relief.
+pub(crate) fn has_relief(normal: Option<&[u8]>) -> bool {
+    normal.is_some_and(|normal| normal.as_chunks::<4>().0.iter().any(|pixel| pixel[3] < 255))
+}
+
+/// As [`words_with_relief`], from what [`relief_of`] says of each picture.
+pub(crate) fn words_with_relief_flags(words: &[u32], relief: &[Vec<bool>]) -> Vec<u32> {
     words
         .iter()
         .map(|&word| {
             let has_relief = word & 1 != 0
-                && sizes
+                && relief
                     .get(((word >> 1) & 3) as usize)
-                    .and_then(|size| size.normal.get(((word >> 3) & 255) as usize))
+                    .and_then(|size| size.get(((word >> 3) & 255) as usize))
                     .copied()
-                    .flatten()
-                    .is_some_and(|normal| {
-                        normal.as_chunks::<4>().0.iter().any(|pixel| pixel[3] < 255)
-                    });
+                    .unwrap_or(false);
             word | if has_relief { HAS_RELIEF } else { 0 }
         })
         .collect()
@@ -263,7 +442,7 @@ fn layered(
     (side, layers): (u32, usize),
     format: wgpu::TextureFormat,
     data: &[u8],
-) -> wgpu::TextureView {
+) -> (wgpu::TextureView, wgpu::Texture) {
     let texture = device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
@@ -283,11 +462,12 @@ fn layered(
         wgpu::util::TextureDataOrder::LayerMajor,
         data,
     );
-    texture.create_view(&wgpu::TextureViewDescriptor {
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some(label),
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
-    })
+    });
+    (view, texture)
 }
 
 /// A LabPBR specular picture as the shader reads it: the same pixels, except that the alpha, where 255 means "no emission" and 0 to 254 is the amount, becomes the amount

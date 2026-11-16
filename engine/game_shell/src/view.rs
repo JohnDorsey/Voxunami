@@ -205,6 +205,22 @@ pub fn start_with_engine_shaders(
     Ok(())
 }
 
+/// Starts with the pictures of the folder `--texture-pack` names, if it names one: what is told of them is printed. An error leaves the world's own pictures.
+pub fn start_with_texture_pack(
+    renderer: &mut VoxelRenderer,
+    package: &PackageData,
+    view: &ViewOptions,
+) -> Result<crate::texture_pack::PicturesInUse, String> {
+    let mut in_use = crate::texture_pack::PicturesInUse::default();
+    if let Some(folder) = &view.texture_pack
+        && let Some(detail) =
+            crate::texture_pack::use_pictures_from(renderer, package, &mut in_use, folder)?
+    {
+        println!("{detail}");
+    }
+    Ok(in_use)
+}
+
 /// Puts shader packs that were read again in use (the swap of a reload): the pack the player has chosen stays chosen if it is still there, and is drawn with as it is now in its
 /// files; if it is gone the game's own shader is drawn with and the player is told. The renderer is given the pack first: if it refuses, nothing is changed and the error says why.
 /// `Ok(None)` says what was read is what was in use (the game wrote the files of settings itself).

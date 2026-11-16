@@ -16,7 +16,10 @@ use voxel_space::{
 };
 use wgpu::util::DeviceExt;
 
-use crate::block_textures::{BlockTextures, PictureSize, words_with_relief};
+use crate::block_textures::{
+    BlockTextures, PictureSize, PictureWrite, PictureWriteError, has_relief, relief_of,
+    words_with_relief_flags,
+};
 use crate::camera::{Camera, Frustum};
 use crate::contact_volume::{ContactGpu, WindowUniform, WindowsUniform};
 use crate::crosshair::Crosshair;
@@ -916,6 +919,11 @@ pub struct VoxelRenderer {
     frame_stride: u64,
     /// Linear RGB of every game material, which the shader reads by material value.
     palette_buffer: wgpu::Buffer,
+    /// What the palette was made from (`set_palette_with_pictures`), kept so that it is made again when a written picture gains or loses its relief ([`VoxelRenderer::set_picture`]):
+    /// the colours, the picture word of each, and whether each picture has a relief, by size and layer.
+    palette_colors: Vec<[f32; 3]>,
+    palette_words: Vec<u32>,
+    picture_relief: Vec<Vec<bool>>,
     /// The pictures of blocks on the GPU, and how far from the camera they are drawn.
     block_textures: BlockTextures,
     picture_distance: f32,
@@ -1243,6 +1251,9 @@ impl VoxelRenderer {
             frame_buffer,
             frame_stride,
             palette_buffer,
+            palette_colors: Vec::new(),
+            palette_words: Vec::new(),
+            picture_relief: Vec::new(),
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
             pixelated_shadows: false,
@@ -1495,8 +1506,14 @@ impl VoxelRenderer {
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
         // (The shader's words say which pictures have a relief to look past: the one bit the renderer adds, `HAS_RELIEF`.)
-        self.palette_buffer =
-            Self::palette_buffer(&self.device, colors, &words_with_relief(words, sizes));
+        self.picture_relief = relief_of(sizes);
+        self.palette_colors = colors.to_vec();
+        self.palette_words = words.to_vec();
+        self.palette_buffer = Self::palette_buffer(
+            &self.device,
+            colors,
+            &words_with_relief_flags(words, &self.picture_relief),
+        );
         self.block_textures = BlockTextures::new(&self.device, &self.queue, sizes);
         self.pictures_in_use = words.iter().any(|&word| word != 0);
         // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
@@ -1536,6 +1553,39 @@ impl VoxelRenderer {
         self.remake_frame_bind_group();
         // The maps that were drawn were drawn with other pictures, and are drawn again.
         self.terrain_version += 1;
+    }
+
+    /// Writes this picture (and its companions) over the one at `layer` among those of the size number `class`, which is the number in the words of the palette
+    /// ([`VoxelRenderer::set_palette_with_pictures`]): from the next picture on, the faces that have it are drawn with it, as if it had been given at the start (the same bytes,
+    /// the smaller levels under it too). The picture is as big as the place it goes to, and a companion that is `None` clears the one that was there. A picture that does not fit
+    /// is an error and nothing is changed.
+    pub fn set_picture(
+        &mut self,
+        class: usize,
+        layer: usize,
+        picture: &PictureWrite<'_>,
+    ) -> Result<(), PictureWriteError> {
+        self.block_textures
+            .write_picture(&self.queue, class, layer, picture)?;
+        // (The shader that walks a relief leaves a face alone unless the word says it has one, so a picture that gains or loses its relief changes its word in the palette.)
+        let relief = has_relief(picture.normal);
+        let known = self
+            .picture_relief
+            .get_mut(class)
+            .and_then(|size| size.get_mut(layer))
+            .expect("write_picture found the place");
+        if *known != relief {
+            *known = relief;
+            self.palette_buffer = Self::palette_buffer(
+                &self.device,
+                &self.palette_colors,
+                &words_with_relief_flags(&self.palette_words, &self.picture_relief),
+            );
+            self.remake_frame_bind_group();
+        }
+        // The maps that were drawn were drawn with the old picture (a cut-out one shades by its holes), and are drawn again.
+        self.terrain_version += 1;
+        Ok(())
     }
 
     /// How far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour (it is gone a quarter of that distance farther). 0 draws no
