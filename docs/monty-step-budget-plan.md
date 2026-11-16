@@ -1,6 +1,6 @@
 # Monty step budget: a plan
 
-**Status (2026-11-16): the owner approved the decisions below. Phases 0 to 3 are built and pushed in the fork (`JohnDorsey/monty`, branch `deterministic-math`, commit `aac99ca9`; `FORK.md` there lists what and the measured cost). Phase 4 (native operations) is built and pushed too (`0b0113fb`: the charges, 22 tests, Windows and Linux green). Phase 5 (the worker protocol) is built on the branch `catch-up-upstream-main`, which merges upstream `main` (36 commits ahead of v1.6.0 on 2026-11-16, no newer release); the owner has not yet chosen between that line and the pinned v1.6.0 line. Phase 6 is not started.** Written 2026-11-16; it extends the Monty fork described in the section "Decision (2026-11-15): Monty" of `history/interoperability-survey.md`.
+**Status (2026-11-16): the owner approved the decisions below. Phases 0 to 3 are built and pushed in the fork (`JohnDorsey/monty`, branch `deterministic-math`, commit `aac99ca9`; `FORK.md` there lists what and the measured cost). Phase 4 (native operations) is built and pushed too (`0b0113fb`: the charges, 22 tests, Windows and Linux green). Phase 5 (the worker protocol) is built, and `deterministic-math` now follows upstream `main` (owner's decision 2026-11-16: it was 36 commits ahead of v1.6.0 with no newer release; fast-forwarded to `78269eda`, 0 commits behind). Phase 6 is not started.** Written 2026-11-16; it extends the Monty fork described in the section "Decision (2026-11-15): Monty" of `history/interoperability-survey.md`.
 
 ## Why
 
