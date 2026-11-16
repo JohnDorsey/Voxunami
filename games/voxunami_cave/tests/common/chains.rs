@@ -310,6 +310,16 @@ pub fn how_the_chain_turns_after(
         let scene = Scene::in_a_new_world();
         super::circular_speed(&scene, 0, distance)
     };
+    how_the_chain_turns_going(distance, planet_speed, setting, ticks)
+}
+
+/// The same, going at `speed` along z in the world and not at the speed of a circle (a chain at rest over the ground, say).
+pub fn how_the_chain_turns_going(
+    distance: f64,
+    planet_speed: f64,
+    setting: Setting,
+    ticks: u32,
+) -> Vec<(Orientation, Vec3)> {
     let (mut scene, ships) =
         a_swinging_chain_at(distance, planet_speed, setting == Setting::WithAStranger);
     if setting == Setting::OnARail {

@@ -416,15 +416,16 @@ impl ServerWorld {
         self.level_gravity.get(&level).unwrap_or(&self.gravity.base) != &[0.0; 3]
     }
 
-    /// Whether the group of ships coupled by their joint ends that `anchor` (the ship of it with the lowest number) speaks for is **alone**, so that the bodies may give it a frame
-    /// of its own, centred on its centre of mass and in free fall, in which nothing but the group is (step 4c-4 of `docs/decisions/joints-and-cars.md`). It is alone if it is
-    /// two ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed, and no ground could touch it: **other ships are no part
-    /// of the rule** (step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame whatever is near; the bodies add that a ship with joint ends or docking
-    /// ports that pull on its own takes it out of its frame, which the world does not know), and the ground of no planet is within the lookahead of the terrain (`ground_in_the_way`: a
-    /// planet is no ship to the speed rule, which counts a second of the speed two things close at, and the group of a ship that orbits low would be near the planet it orbits all the
-    /// time). A planet on a rail that carries the group is in the way of it as it is of any ship (`near_with` counts the planets that carry whatever is set aside), so a group in the sphere of one has the frame of a planet and not one of its own. `factor` is the room, 2 for a group that is not alone to become so and 1 for one that is to stay so, as for a rail. Blocks built into the level itself are not looked at, as
-    /// for a frame that goes with a planet.
-    pub fn group_is_alone(&self, anchor: GridId, factor: f64) -> bool {
+    /// Whether the group of ships coupled by their joint ends that `anchor` (the ship of it with the lowest number) speaks for could be **alone**, so that the bodies may give it a
+    /// frame of its own, centred on its centre of mass and in free fall (step 4c-4 of `docs/decisions/joints-and-cars.md`), **whatever the ground of a planet is near it**: it is two
+    /// ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed, and no planet on a rail carries it. **Other ships are no
+    /// part of the rule** (step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame whatever is near; the bodies add that a ship with joint ends or
+    /// docking ports that pull on its own takes it out of its frame, which the world does not know). A planet on a rail that carries the group is in the way of it as it is of any
+    /// ship (`near_with` counts the planets that carry whatever is set aside), so a group in the sphere of one has the frame of a planet and not one of its own. `factor` is the
+    /// room, 2 for a group that is not alone to become so and 1 for one that is to stay so, as for a rail. Blocks built into the level itself are not looked at, as for a frame that
+    /// goes with a planet. **The ground of a planet is not asked about here** (step 4c-5-3: [`ServerWorld::ground_is_in_the_way_of_group`], and the bodies decide what it means: a
+    /// group that comes down to the ground keeps its frame, with the ground in it, until it touches it).
+    pub fn group_is_alone_but_for_the_ground(&self, anchor: GridId, factor: f64) -> bool {
         let members = self.data.grids().group_of(anchor);
         if members.len() < 2 || members[0] != anchor {
             return false;
@@ -452,16 +453,9 @@ impl ServerWorld {
         if self.level_pulls(level) {
             return false;
         }
-        let planets: Vec<GridId> = self
-            .data
-            .grids()
-            .iter()
-            .filter(|(_, other)| other.terrain.is_some() && other.level == level)
-            .map(|(id, _)| id)
-            .collect();
-        // (The planets are set aside from the sphere rule, with the group: their ground has its own. **Other ships are not asked about**: what is near a group is the ghost's.)
+        // (The planets are set aside from the sphere rule, with the group: only those that carry it count. **Other ships are not asked about**: what is near a group is the ghost's.)
         let mut set_aside = members.clone();
-        set_aside.extend(planets.iter().copied());
+        set_aside.extend(self.planets_of(level));
         for member in &members {
             let Some(ship) = self.data.grids().get(*member) else {
                 return false;
@@ -472,17 +466,45 @@ impl ServerWorld {
             {
                 return false;
             }
+        }
+        true
+    }
+
+    /// Whether the ground of a planet is within the lookahead of the terrain of a ship of the group (`ground_in_the_way`: a margin and a quarter of a second of the speed they close at,
+    /// `factor` times over; a planet is no ship to the speed rule, which counts a second of the speed two things close at, and the group of a ship that orbits low would be near the
+    /// planet it orbits all the time). It is the room in which the bodies have the ground of the planet in the group's frame, as bodies that come at it.
+    pub fn ground_is_in_the_way_of_group(&self, anchor: GridId, factor: f64) -> bool {
+        let members = self.data.grids().group_of(anchor);
+        let Some(level) = members
+            .first()
+            .and_then(|member| self.data.grids().get(*member))
+            .map(|ship| ship.level)
+        else {
+            return false;
+        };
+        let planets = self.planets_of(level);
+        members.iter().any(|member| {
+            let Some(ship) = self.data.grids().get(*member) else {
+                return false;
+            };
             let mine = Body::of(ship);
-            if planets.iter().any(|planet| {
+            planets.iter().any(|planet| {
                 self.data
                     .grids()
                     .get(*planet)
                     .is_some_and(|planet| ground_in_the_way(&mine, &Body::of(planet), factor))
-            }) {
-                return false;
-            }
-        }
-        true
+            })
+        })
+    }
+
+    /// The planets of a level: the grids that have terrain.
+    fn planets_of(&self, level: LevelIndex) -> Vec<GridId> {
+        self.data
+            .grids()
+            .iter()
+            .filter(|(_, other)| other.terrain.is_some() && other.level == level)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// The orbit a ship's speed and `place` (its centre of mass from the middle of the planet) are on round `planet`, with the mass the planet has now, if it is one the ship may go on a

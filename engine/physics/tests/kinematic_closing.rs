@@ -151,3 +151,68 @@ fn a_slab_that_carries_the_cube_and_a_slab_with_no_ground_made_leave_the_steps_a
     add_block(&mut world, 2, 2, [10.0, 3.0, 10.0], [0.0; 3]);
     assert_eq!(world.steps_this_tick(), 3, "a slab with no ground made");
 }
+
+#[test]
+fn how_fast_a_body_goes_at_a_place_is_its_speed_and_its_turn_about_its_centre_of_mass() {
+    // A slab that goes 7 voxels a second along x and turns 10 radians a second about the vertical axis through its centre of mass (16, -16, 16): the place (30, 3, 30) is 14 voxels
+    // along x and z of the axis, where the turn goes (10 * 14, 0, -10 * 14) = (140, 0, -140), and the speed is added.
+    let mut world = free_space(3);
+    let state = BodyState {
+        position: WorldPosition::from_voxels([0.0, -32.0, 0.0]),
+        orientation: Orientation::IDENTITY,
+        linear_velocity: [7.0, 0.0, 0.0],
+        angular_velocity: [0.0, 10.0, 0.0],
+    };
+    world
+        .add_body(BodyId(1), state, BodyKind::Kinematic)
+        .unwrap();
+    world
+        .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut Block(32))
+        .unwrap();
+    world.set_mass(BodyId(1), block_mass(32)).unwrap();
+    let there = world
+        .velocity_at(BodyId(1), WorldPosition::from_voxels([30.0, 3.0, 30.0]))
+        .unwrap();
+    for (axis, expected) in [147.0, 0.0, -140.0].into_iter().enumerate() {
+        assert!(
+            (there[axis] - expected).abs() < 1e-9,
+            "axis {axis}: {there:?}"
+        );
+    }
+    // On the axis there is only the speed. (And a body that is not there has none.)
+    let on_the_axis = world
+        .velocity_at(BodyId(1), WorldPosition::from_voxels([16.0, 3.0, 16.0]))
+        .unwrap();
+    assert!((on_the_axis[0] - 7.0).abs() < 1e-9 && on_the_axis[2].abs() < 1e-9);
+    assert!(
+        world
+            .velocity_at(BodyId(9), WorldPosition::from_voxels([0.0; 3]))
+            .is_none()
+    );
+}
+
+#[test]
+fn two_bodies_touch_when_the_last_step_had_a_contact_between_them_and_not_before_or_apart() {
+    // A cube comes down at 10 voxels a second on a slab of ground, 3 voxels over it, with a second cube far above it (and a third body that is not there).
+    let mut world = free_space(3);
+    add_slab(&mut world, BodyKind::Fixed, [0.0; 3]);
+    add_block(&mut world, 2, 2, [10.0, 3.0, 10.0], [0.0, -10.0, 0.0]);
+    add_block(&mut world, 3, 2, [20.0, 500.0, 10.0], [0.0; 3]);
+    assert!(
+        !world.touches(BodyId(2), BodyId(1)),
+        "before it has come down"
+    );
+    for _ in 0..30 {
+        world.step();
+    }
+    assert!(
+        world.touches(BodyId(2), BodyId(1)) && world.touches(BodyId(1), BodyId(2)),
+        "the cube lies on the slab: each touches the other"
+    );
+    assert!(
+        !world.touches(BodyId(3), BodyId(1)),
+        "a cube far above does not"
+    );
+    assert!(!world.touches(BodyId(2), BodyId(3)));
+    assert!(!world.touches(BodyId(2), BodyId(9)) && !world.touches(BodyId(9), BodyId(2)));
+}

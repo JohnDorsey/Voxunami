@@ -15,7 +15,7 @@
 //! frame everything is in is pulled by the whole of it. In the ghost, which is in the frame of the first group, the second is pulled by the difference only, which is what the pull
 //! on a body here is, less what is applied to it there, and less what the ghost's frame falls with (`apply_gravity` is what a body had applied; nothing that a ghost knows of).
 //!
-//! **Not done:** the ground (4c-5-3: a ghost has none, and a group is not alone near the ground of a planet), the kick that a hit gives a group on a rail, a coupling that is made
+//! **Not done:** the ground in the ghost (a ghost has none: a group has the ground in its own frame until it touches it, 4c-5-3, and a stranger that rests on the ground rests in the frame everything is in), the kick that a hit gives a group on a rail, a coupling that is made
 //! or pulled by a ship in a ghost (a group is not alone when the ends of a ship pull on its own: `alone.rs`).
 
 use std::collections::{BTreeMap, BTreeSet};

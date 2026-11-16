@@ -2,9 +2,9 @@
 //! centred on its centre of mass and in free fall, in which nothing but the group is, so the question the world answers is whether anything could touch the group. These are the
 //! rules (`ServerWorld::group_is_alone`); what the bodies do with a group that is alone is tested with them (`games/voxunami_cave/tests/group_off_a_rail.rs`).
 //!
-//! A group is alone when it is in a level with no pull of its own, every ship of it is free (not held, not frozen, not on a rail of its own) and weighed; no planet on a rail carries it (it is then in the frame of the planet);
-//! and the ground of no planet is within the lookahead of the terrain (a margin and a quarter of a second of the speed it closes at). **It takes the room of `factor` 2 to be alone
-//! and 1 to stay so**, so that a group does not go in and out of its frame at the edge. **Other ships are not part of the rule** (step 4c-5-2): what is near a group is the
+//! A group is alone when it is in a level with no pull of its own, every ship of it is free (not held, not frozen, not on a rail of its own) and weighed; and no planet on a rail carries it
+//! (it is then in the frame of the planet). **The ground of a planet is asked apart** (step 4c-5-3: `ground_is_in_the_way_of_group`; the frame holds it until the group touches it). **It takes the room of `factor` 2 to be alone
+//! and 1 to stay so** where a room counts (a planet that carries it), so that a group does not go in and out of its frame at the edge. **Other ships are not part of the rule** (step 4c-5-2): what is near a group is the
 //! contact ghost's, and the group keeps its frame and its bits whatever is near. (The world does not know the joint ends and the docking ports that would make a group leave it for
 //! a coupling or a docking: the bodies add that rule, `grid_bodies`.)
 
@@ -14,6 +14,13 @@ use world_storage::rail::Centre;
 
 /// What the planet of `space` weighs, and how far from its middle the group is (the ground reaches 3,200).
 const DISTANCE: f64 = 10_000.0;
+
+/// Whether the group is alone with the ground out of the way too, as the world said before step 4c-5-3 (the bodies now keep a group in its frame over the ground until it touches
+/// it: [`ServerWorld::ground_is_in_the_way_of_group`] is theirs to ask).
+fn alone(world: &ServerWorld, anchor: GridId, room: f64) -> bool {
+    world.group_is_alone_but_for_the_ground(anchor, room)
+        && !world.ground_is_in_the_way_of_group(anchor, room)
+}
 
 fn circular_speed(distance: f64) -> f64 {
     libm::sqrt(PULL * 1.0e22 / distance)
@@ -36,11 +43,11 @@ fn a_group(distance: f64) -> (ServerWorld, [GridId; 3]) {
 #[test]
 fn a_group_in_space_with_nothing_near_is_alone_whichever_ship_of_it_is_named_by_the_anchor() {
     let (world, ships) = a_group(DISTANCE);
-    assert!(world.group_is_alone(ships[0], 2.0));
-    assert!(world.group_is_alone(ships[0], 1.0));
+    assert!(alone(&world, ships[0], 2.0));
+    assert!(alone(&world, ships[0], 1.0));
     // Only the anchor, the ship with the lowest number, speaks for the group.
-    assert!(!world.group_is_alone(ships[1], 1.0));
-    assert!(!world.group_is_alone(ships[2], 1.0));
+    assert!(!alone(&world, ships[1], 1.0));
+    assert!(!alone(&world, ships[2], 1.0));
 }
 
 #[test]
@@ -48,31 +55,47 @@ fn a_ship_that_is_no_group_is_not_a_group_that_is_alone() {
     let (mut world, _) = space();
     let ship = ship_at(&mut world, [DISTANCE, 0.0, 0.0], [0.0, 0.0, 8_000.0]);
     world.set_grid_mass(ship, 1000.0, [0.0; 3]).unwrap();
-    assert!(!world.group_is_alone(ship, 1.0));
+    assert!(!alone(&world, ship, 1.0));
     // (Nor a ship the world does not have.)
-    assert!(!world.group_is_alone(GridId::new(9_999), 1.0));
+    assert!(!alone(&world, GridId::new(9_999), 1.0));
 }
 
 #[test]
 fn the_ground_of_a_planet_in_the_terrain_lookahead_is_in_the_way_and_the_room_to_stay_alone_is_half_the_room_to_become_so()
  {
     // At 7,000 from the middle the ground (3,200) is 3,800 below the group, which goes round at 9,764 voxels a second: the lookahead of the terrain is 64 + a quarter of a second of
-    // that, 2,505 voxels, and twice that is 5,010. So the group is not alone if it has not been, and stays so if it has.
+    // that, 2,505 voxels, and twice that is 5,010. So the ground is in the way at the room to become alone and not at the room to stay.
     let (world, ships) = a_group(7_000.0);
     assert!(
-        !world.group_is_alone(ships[0], 2.0),
-        "not alone at twice the room"
+        world.ground_is_in_the_way_of_group(ships[0], 2.0),
+        "in the way at twice the room"
     );
     assert!(
-        world.group_is_alone(ships[0], 1.0),
-        "alone at the room to stay"
+        !world.ground_is_in_the_way_of_group(ships[0], 1.0),
+        "not at the room to stay"
     );
     // Lower: in the lookahead even of the room to stay.
     let (world, ships) = a_group(5_500.0);
-    assert!(!world.group_is_alone(ships[0], 1.0));
-    // Higher: alone at twice the room.
+    assert!(world.ground_is_in_the_way_of_group(ships[0], 1.0));
+    // Higher: out of the way at twice the room.
     let (world, ships) = a_group(12_000.0);
-    assert!(world.group_is_alone(ships[0], 2.0));
+    assert!(!world.ground_is_in_the_way_of_group(ships[0], 2.0));
+}
+
+#[test]
+fn the_ground_of_a_planet_is_nothing_to_whether_a_group_could_be_alone_however_near_it_is() {
+    // (Step 4c-5-3: a group that has its frame keeps it over the ground, with the ground in it as a body that comes at the group, until it touches the ground: the bodies ask the
+    // two questions apart. The world's other rules do not look at the ground at all: a group is alone, apart from the ground, at 12,000, 7,000, 5,500 and 3,300 from the middle
+    // of a planet whose ground reaches 3,200.)
+    for distance in [12_000.0, 7_000.0, 5_500.0, 3_300.0] {
+        let (world, ships) = a_group(distance);
+        for room in [1.0, 2.0] {
+            assert!(
+                world.group_is_alone_but_for_the_ground(ships[0], room),
+                "a group {distance} voxels from the middle of the planet is not alone but for the ground, at room {room}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -97,7 +120,7 @@ fn a_ship_that_is_near_the_group_is_nothing_to_whether_it_is_alone_whatever_it_i
         ship_at(&mut world, place, velocity);
         for room in [1.0, 2.0] {
             assert!(
-                world.group_is_alone(ships[0], room),
+                alone(&world, ships[0], room),
                 "a ship at {place:?} going {velocity:?} takes the group out of being alone at room {room}"
             );
         }
@@ -108,13 +131,13 @@ fn a_ship_that_is_near_the_group_is_nothing_to_whether_it_is_alone_whatever_it_i
 fn a_group_with_a_ship_that_is_held_or_frozen_or_unweighed_or_on_a_rail_is_not_alone() {
     let (mut world, ships) = a_group(DISTANCE);
     world.set_grid_held(ships[1], true).unwrap();
-    assert!(!world.group_is_alone(ships[0], 1.0), "held");
+    assert!(!alone(&world, ships[0], 1.0), "held");
     let (mut world, ships) = a_group(DISTANCE);
     world.set_grid_frozen(ships[2], true).unwrap();
-    assert!(!world.group_is_alone(ships[0], 1.0), "frozen");
+    assert!(!alone(&world, ships[0], 1.0), "frozen");
     let (mut world, ships) = a_group(DISTANCE);
     world.set_grid_mass(ships[1], 0.0, [0.0; 3]).unwrap();
-    assert!(!world.group_is_alone(ships[0], 1.0), "not weighed");
+    assert!(!alone(&world, ships[0], 1.0), "not weighed");
     // (A ship with a rail of its own is the rail's: a group on a rail has its own frame.)
     let (mut world, ships) = a_group(DISTANCE);
     world
@@ -130,15 +153,15 @@ fn a_group_with_a_ship_that_is_held_or_frozen_or_unweighed_or_on_a_rail_is_not_a
             }),
         )
         .unwrap();
-    assert!(!world.group_is_alone(ships[0], 1.0), "on a rail");
+    assert!(!alone(&world, ships[0], 1.0), "on a rail");
 }
 
 #[test]
 fn a_group_in_a_level_that_pulls_is_not_alone() {
     let (mut world, ships) = a_group(DISTANCE);
-    assert!(world.group_is_alone(ships[0], 1.0));
+    assert!(alone(&world, ships[0], 1.0));
     world.set_level_gravity(LevelIndex::MAIN, [0.0, -5.0, 0.0]);
-    assert!(!world.group_is_alone(ships[0], 1.0));
+    assert!(!alone(&world, ships[0], 1.0));
 }
 
 #[test]
@@ -180,5 +203,5 @@ fn a_group_that_a_planet_on_a_rail_carries_is_not_alone() {
         Some(moon),
         "the premise: the moon carries them"
     );
-    assert!(!world.group_is_alone(ships[0], 1.0));
+    assert!(!alone(&world, ships[0], 1.0));
 }

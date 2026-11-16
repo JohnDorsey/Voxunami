@@ -122,6 +122,10 @@ pub struct BodiesReport {
     pub couplings_moved: u64,
     /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
     pub frames: u64,
+    /// How many of them go with a group that is alone and off a rail (`Followed::Group`: a frame of its own, in free fall).
+    pub group_frames: u64,
+    /// How many bricks of the ground of planets have colliders in those frames now (the ground that comes at a group: step 4c-5-3).
+    pub group_ground_bricks: u64,
     /// Bricks of ships whose colliders and mass were worked out from their voxels (the 32,768 places of each looked at), in all: the first time a ship has a body, and each
     /// brick an edit changes.
     pub ship_bricks_made: u64,
@@ -341,9 +345,11 @@ impl Followed {
         }
     }
 
-    /// Whether the planets of the level are bodies in a frame that goes with this. (Not in the frame of a ship on a rail: nothing there is to meet one.)
+    /// Whether the planets of the level are bodies in a frame that goes with this: in the frame of a planet, and in that of a group that is alone and off a rail (step 4c-5-3: the
+    /// group is at rest in its frame and the ground comes at it, as a kinematic body, at the speed they close at). Not in the frame of a ship on a rail, or of a group on one:
+    /// nothing there is to meet one.
     fn has_planets(self) -> bool {
-        matches!(self, Self::Planet(_))
+        matches!(self, Self::Planet(_) | Self::Group(_))
     }
 
     /// What the frame of a ship goes with: the planet that carries it (see `ServerWorld::carrier_of`), or the centre of mass of its group if it is coupled to other ships and the
@@ -431,6 +437,41 @@ impl Follow {
 
     fn local(&self, world: WorldPosition) -> Option<WorldPosition> {
         world.displaced(self.shift.negated())
+    }
+
+    /// Where a place of the world is in the frame at the end of the tick that is about to be stepped, for a place that the world has as it is at the end of the tick (a planet
+    /// on a rail). A frame that the world moves (a planet's) has its shift at the end of the tick already. **One that moves itself has the shift of the start of the tick**
+    /// and is moved after the step (`Follow::advance`), by `velocity * time_step` and half the pull `pull` at its point for a tick squared (the bodies' own move of the group
+    /// is added then, and not here: it is what the contact does): a planet that is where it is at the end of the tick is that much farther along the frame's way than the frame
+    /// will have gone, so it is placed that much back, and comes at the group as the group falls. (Put `v dt` short of that, the ground would be put a hundredth of a voxel
+    /// nearer each tick, and a group that rests on it would sink: ran.)
+    fn local_at_the_end_of_the_tick(
+        &self,
+        world: WorldPosition,
+        time_step: f64,
+        pull: [f64; 3],
+    ) -> Option<WorldPosition> {
+        if !self.followed.moves_itself() {
+            return self.local(world);
+        }
+        let by = shifted_by(
+            self.shift,
+            [0, 1, 2].map(|axis| {
+                self.velocity[axis] * time_step + 0.5 * pull[axis] * time_step * time_step
+            }),
+        );
+        world.displaced(by.negated())
+    }
+
+    /// How fast the frame goes at the end of the tick that is about to be stepped, in the world: its velocity at the start and the pull for the tick. (A frame that the world
+    /// moves goes at its velocity.) **This is the speed that the ground is given against a frame that falls, and not the average of the tick:** the ground of a planet comes at
+    /// a group that falls faster and faster, and a group that rests on it has to end the tick at the speed of the ground at the end of it, as the pull of the tick took the same
+    /// from its speed (given the average, a group at rest was left going at half a tick of the pull: ran, 0.2 voxels a second).
+    fn velocity_at_the_end_of_the_tick(&self, time_step: f64, pull: [f64; 3]) -> [f64; 3] {
+        if !self.followed.moves_itself() {
+            return self.velocity;
+        }
+        [0, 1, 2].map(|axis| self.velocity[axis] + pull[axis] * time_step)
     }
 
     fn world(&self, local: WorldPosition) -> Option<WorldPosition> {
@@ -576,7 +617,7 @@ fn state_before(state: BodyState, time_step: f64) -> BodyState {
 
 /// The state a planet's body is given before the step of a tick, from the pose and velocities the world has the planet at (the end of the tick): a planet that moves,
 /// set as it was at the start of the step (see [`state_before`]), and one that stands still, as it is. In the frame it is in: its place there, and its velocities
-/// against the frame. `None` where the world cannot give it a place there.
+/// against the frame; `pull` is the pull of the world at the point of a frame that moves itself (the planet comes at the group as the group falls in it). `None` where the world cannot give it a place there.
 fn planet_state(
     follow: Option<Follow>,
     moves: bool,
@@ -584,11 +625,21 @@ fn planet_state(
     linear_velocity: [f64; 3],
     angular_velocity: [f64; 3],
     time_step: f64,
+    pull: [f64; 3],
 ) -> Option<BodyState> {
     let end_of_tick = BodyState {
-        position: local_in(follow, pose.position)?,
+        position: match follow {
+            None => pose.position,
+            Some(follow) => follow.local_at_the_end_of_the_tick(pose.position, time_step, pull)?,
+        },
         orientation: pose.orientation,
-        linear_velocity: velocity_in(follow, linear_velocity),
+        linear_velocity: match follow {
+            None => linear_velocity,
+            Some(follow) => {
+                let frame = follow.velocity_at_the_end_of_the_tick(time_step, pull);
+                [0, 1, 2].map(|axis| linear_velocity[axis] - frame[axis])
+            }
+        },
         angular_velocity,
     };
     Some(if moves {
@@ -633,6 +684,9 @@ struct Bodies {
     tick: u64,
     /// The groups, named by their anchors, that are off a rail and alone this tick (see [`Bodies::alone_groups`]).
     alone: BTreeSet<GridId>,
+    /// The groups, named by their anchors, whose frame of their own had a ship in contact with the ground of a planet in the last step (see [`Bodies::note_the_groups_on_the_ground`]):
+    /// they have come down, and are alone again only when the ground is out of the way.
+    grounded: BTreeSet<GridId>,
     /// The contact ghosts of the groups that are alone, by the lowest anchor of the groups in each (`ghosts.rs`).
     ghosts: BTreeMap<GridId, MechanismGhost>,
     report: Arc<Mutex<BodiesReport>>,
@@ -694,6 +748,7 @@ impl Bodies {
             carried: BTreeMap::new(),
             tick: 0,
             alone: BTreeSet::new(),
+            grounded: BTreeSet::new(),
             ghosts: BTreeMap::new(),
             report,
         }
@@ -1086,9 +1141,34 @@ impl Bodies {
             frame.bodies.step();
         }
         self.ghosts_after_the_step();
+        self.note_the_groups_on_the_ground();
         self.hold_groups_at_their_points(world);
         let frames = self.frames.len() as u64;
-        self.count(|report| report.frames = frames);
+        let group_frames = self
+            .frames
+            .values()
+            .filter(|frame| {
+                frame
+                    .follow
+                    .is_some_and(|follow| matches!(follow.followed, Followed::Group(_)))
+            })
+            .count() as u64;
+        let group_ground_bricks = self
+            .frames
+            .values()
+            .filter(|frame| {
+                frame
+                    .follow
+                    .is_some_and(|follow| matches!(follow.followed, Followed::Group(_)))
+            })
+            .flat_map(|frame| frame.planets.values())
+            .map(|planet| planet.bricks.len() as u64)
+            .sum();
+        self.count(|report| {
+            report.frames = frames;
+            report.group_frames = group_frames;
+            report.group_ground_bricks = group_ground_bricks;
+        });
         self.write_back(world);
     }
 
@@ -1334,6 +1414,11 @@ impl Bodies {
             if follow.is_some_and(|follow| !follow.followed.has_planets()) {
                 continue;
             }
+            // (The pull at the point of a frame that falls: the planets come at what is in it as it falls.)
+            let pull = follow
+                .filter(|follow| follow.followed.moves_itself())
+                .and_then(|follow| follow.world(follow.anchor))
+                .map_or([0.0; 3], |point| world.gravity_at(level, point));
             let gone: Vec<GridId> = frame
                 .planets
                 .keys()
@@ -1364,6 +1449,7 @@ impl Bodies {
                     planet.linear_velocity,
                     planet.angular_velocity,
                     time_step,
+                    pull,
                 ) else {
                     continue;
                 };
@@ -1615,7 +1701,19 @@ impl Bodies {
             let Some(state) = level.bodies.state(body) else {
                 continue;
             };
-            let [vx, vy, vz] = state.linear_velocity;
+            // (The speed a body is to meet ground at is its speed against the ground. In a frame that moves itself (a group that is alone: at rest in it, with the planet
+            // coming at it) that is not its speed in the frame: the speed of the ground where the body is is taken from it.)
+            let mut velocity = state.linear_velocity;
+            if let Ground::Planet(id) = ground
+                && level
+                    .follow
+                    .is_some_and(|follow| follow.followed.moves_itself())
+                && let Some(ground_velocity) =
+                    level.bodies.velocity_at(BodyId(id.get()), state.position)
+            {
+                velocity = [0, 1, 2].map(|axis| velocity[axis] - ground_velocity[axis]);
+            }
+            let [vx, vy, vz] = velocity;
             let speed = (vx * vx + vy * vy + vz * vz).sqrt();
             let lookahead = TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * speed;
             let needed_margin = TERRAIN_NEEDED_VOXELS + TERRAIN_NEEDED_SECONDS * speed;
@@ -2679,14 +2777,14 @@ mod tests {
             turn_about([0.0, 1.0, 0.0], 0.3),
         );
         let (linear, angular) = ([0.0, 0.0, -100.0], [0.0, 2.0, 0.0]);
-        let standing = planet_state(None, false, pose, linear, angular, 0.05).unwrap();
+        let standing = planet_state(None, false, pose, linear, angular, 0.05, [0.0; 3]).unwrap();
         assert_eq!(standing.position, pose.position);
         assert_eq!(standing.orientation, pose.orientation);
         assert_eq!(
             (standing.linear_velocity, standing.angular_velocity),
             (linear, angular)
         );
-        let moving = planet_state(None, true, pose, linear, angular, 0.05).unwrap();
+        let moving = planet_state(None, true, pose, linear, angular, 0.05, [0.0; 3]).unwrap();
         // Five voxels back along its way (a twentieth of a second at a hundred), and a tenth of a radian back about its axis; with the velocities it has.
         let back = moving.position.displacement_to(pose.position).in_voxels();
         assert!(
@@ -2712,8 +2810,16 @@ mod tests {
             WorldPosition::new(BrickCoordinate::new(12, 0, 0), [8.0, 9.0, 10.0]),
             Orientation::IDENTITY,
         );
-        let this =
-            planet_state(Some(frame), true, pose, [100.0, 0.0, -50.0], [0.0; 3], 0.05).unwrap();
+        let this = planet_state(
+            Some(frame),
+            true,
+            pose,
+            [100.0, 0.0, -50.0],
+            [0.0; 3],
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
         assert_eq!(this.linear_velocity, [0.0; 3]);
         assert_eq!(
             this.position,
@@ -2721,13 +2827,111 @@ mod tests {
         );
         // Another planet that stands still in the world goes against the frame at minus the frame's velocity, (-100, 0, 50), and was a tick of that before: it is five
         // voxels along x and two and a half back along z of where it was put, so the place it was put is (-5, 0, 2.5) from it.
-        let other = planet_state(Some(frame), true, pose, [0.0; 3], [0.0; 3], 0.05).unwrap();
+        let other =
+            planet_state(Some(frame), true, pose, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).unwrap();
         assert_eq!(other.linear_velocity, [-100.0, 0.0, 50.0]);
         let back = other.position.displacement_to(this.position).in_voxels();
         assert!(
             (back[0] + 5.0).abs() < 1e-4 && back[1].abs() < 1e-6 && (back[2] - 2.5).abs() < 1e-4,
             "{back:?}"
         );
+    }
+
+    #[test]
+    fn a_planet_in_the_frame_of_a_group_that_falls_comes_at_it_from_where_it_was_to_where_it_will_be()
+     {
+        // The group goes at 100 voxels a second along -y in the world (the frame has not moved yet this tick), and the planet stands still 1,000 voxels under it. The frame moves
+        // with the group, which goes 5 voxels in the tick: against it the planet comes at it at 100 along +y, from 1,000 under it to 995, and the state the planet is given is
+        // the start of that: the world has the planet where it is at the end of the tick, and the frame has not gone with the group yet.
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let group = Follow {
+            followed: Followed::Group(GridId::new(7)),
+            anchor,
+            shift: Displacement::NONE,
+            velocity: [0.0, -100.0, 0.0],
+        };
+        let pose = GridPose::new(
+            anchor.translated([0.0, -1_000.0, 0.0]),
+            Orientation::IDENTITY,
+        );
+        let state =
+            planet_state(Some(group), true, pose, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).unwrap();
+        assert_eq!(state.linear_velocity, [0.0, 100.0, 0.0]);
+        let from_the_group = state.position.relative_to(anchor);
+        assert!(
+            from_the_group[0].abs() < 1e-9
+                && (from_the_group[1] - -1_000.0).abs() < 1e-9
+                && from_the_group[2].abs() < 1e-9,
+            "{from_the_group:?}"
+        );
+        // A frame that is moved by the world (a planet's) has its shift at the end of the tick already, and is not moved again.
+        let carried = Follow {
+            followed: Followed::Planet(GridId::new(7)),
+            velocity: [0.0, -100.0, 0.0],
+            ..group
+        };
+        let state = planet_state(
+            Some(carried),
+            true,
+            pose,
+            [0.0; 3],
+            [0.0; 3],
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
+        let from_the_point = state.position.relative_to(anchor);
+        assert!(
+            (from_the_point[1] - (-1_000.0 - 5.0)).abs() < 1e-9,
+            "{from_the_point:?}"
+        );
+    }
+
+    #[test]
+    fn a_planet_in_the_frame_of_a_group_that_falls_in_a_pull_comes_at_it_as_the_frame_falls_in_the_pull()
+     {
+        // The same, in a pull of 10 voxels a second a second along -y (a group that goes -100 along y falls 5 voxels and 0.0125 more in the tick, and goes -100.5 at the end of it):
+        // the ground ends the tick where the frame will be, 994.9875 under the group, and not a hundredth of a voxel short of it (the contact would have to push out what the frame
+        // went too far by, each tick: ran, a group on the ground sank), and goes at the speed the frame has at the end of the tick.
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let group = Follow {
+            followed: Followed::Group(GridId::new(7)),
+            anchor,
+            shift: Displacement::NONE,
+            velocity: [0.0, -100.0, 0.0],
+        };
+        let pose = GridPose::new(
+            anchor.translated([0.0, -1_000.0, 0.0]),
+            Orientation::IDENTITY,
+        );
+        let pull = [0.0, -10.0, 0.0];
+        let state = planet_state(Some(group), true, pose, [0.0; 3], [0.0; 3], 0.05, pull).unwrap();
+        // It comes at the group at the speed the frame will have at the end of the tick (100.5), and ends the tick where the frame will be (994.9875 under it), so it was
+        // put 1,000.0125 under it: a group that rests on it is then given the speed of the ground at the end of the tick, which is what the pull of the tick took from it.
+        assert!((state.linear_velocity[1] - 100.5).abs() < 1e-9);
+        let from_the_group = state.position.relative_to(anchor);
+        assert!(
+            (from_the_group[1] - -1_000.012_5).abs() < 1e-9,
+            "the planet was put {from_the_group:?} from the group at the start of the tick"
+        );
+        // (A pull is of no matter to a frame that the world moves.)
+        let carried = Follow {
+            followed: Followed::Planet(GridId::new(7)),
+            ..group
+        };
+        let with = planet_state(Some(carried), true, pose, [0.0; 3], [0.0; 3], 0.05, pull).unwrap();
+        let without = planet_state(
+            Some(carried),
+            true,
+            pose,
+            [0.0; 3],
+            [0.0; 3],
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
+        assert_eq!(with.position, without.position);
+        assert_eq!(with.linear_velocity, without.linear_velocity);
     }
 
     #[test]
@@ -2741,8 +2945,10 @@ mod tests {
             ),
             Orientation::IDENTITY,
         );
-        assert!(planet_state(Some(frame), false, last, [0.0; 3], [0.0; 3], 0.05).is_none());
-        assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05).is_some());
+        assert!(
+            planet_state(Some(frame), false, last, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).is_none()
+        );
+        assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).is_some());
     }
 
     /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every region: the meaning `wanted_rings` must keep.
@@ -3118,8 +3324,11 @@ mod tests {
         assert!(!Followed::RailGroup(GridId::new(7)).moves_itself());
         assert!(!Followed::RailPoint(GridId::new(7)).moves_itself());
         assert!(!Followed::Planet(GridId::new(7)).moves_itself());
-        // Nothing pulls on what is in it: it falls with the group.
-        let world_free = Followed::Group(GridId::new(7));
-        assert!(!world_free.has_planets());
+        // Nothing pulls on what is in it: it falls with the group. The planets of the level are in it, as bodies that come at the group (step 4c-5-3); none is in the
+        // frame of a ship or a group on a rail, where nothing is near to touch.
+        assert!(Followed::Group(GridId::new(7)).has_planets());
+        assert!(!Followed::RailGroup(GridId::new(7)).has_planets());
+        assert!(!Followed::RailPoint(GridId::new(7)).has_planets());
+        assert!(Followed::Planet(GridId::new(7)).has_planets());
     }
 }

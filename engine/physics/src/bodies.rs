@@ -486,6 +486,32 @@ impl BodyWorld {
         })
     }
 
+    /// How fast the body goes at a place, in voxels a second: its speed and its turn about its centre of mass (a planet's ground goes faster the farther the place is from
+    /// its axis). `None` if the body is not there.
+    pub fn velocity_at(&self, id: BodyId, place: WorldPosition) -> Option<[f64; 3]> {
+        let body = self.bodies.get(self.by_id.get(&id)?.handle)?;
+        Some(array(body.velocity_at_point(self.local(place))))
+    }
+
+    /// Whether two bodies touch, as the last step found them: a contact between a collider of the one and a collider of the other that the solver works on. `false` if either
+    /// is not there.
+    pub fn touches(&self, first: BodyId, second: BodyId) -> bool {
+        let (Some(first), Some(second)) = (self.by_id.get(&first), self.by_id.get(&second)) else {
+            return false;
+        };
+        let Some(body) = self.bodies.get(first.handle) else {
+            return false;
+        };
+        body.colliders().iter().any(|&collider| {
+            self.narrow_phase.contact_pairs_with(collider).any(|pair| {
+                pair.has_any_active_contact()
+                    && [pair.collider1, pair.collider2].into_iter().any(|other| {
+                        self.colliders.get(other).and_then(Collider::parent) == Some(second.handle)
+                    })
+            })
+        })
+    }
+
     pub fn is_asleep(&self, id: BodyId) -> bool {
         self.by_id
             .get(&id)
