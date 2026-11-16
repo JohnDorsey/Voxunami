@@ -1,0 +1,286 @@
+str.capitalize()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.capitalize()
+str.center(2000000)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.center(2000000)
+str.count(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.count('x')
+str.endswith(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.endswith('x')
+str.find(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.find('x')
+str.index(X2)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.index('ba')
+str.isalnum()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isalnum()
+str.isalpha()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isalpha()
+str.isascii()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isascii()
+str.isdigit()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isdigit()
+str.islower()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.islower()
+str.isspace()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isspace()
+str.istitle()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.istitle()
+str.isupper()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isupper()
+str.ljust(2000000)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.ljust(2000000)
+str.lower()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.lower()
+str.lstrip()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.lstrip()
+str.partition(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.partition('x')
+str.removeprefix(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.removeprefix('x')
+str.removesuffix(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.removesuffix('x')
+str.replace(X2, X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.replace('ba', 'x')
+str.rfind(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.rfind('x')
+str.rindex(X2)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.rindex('ba')
+str.rjust(2000000)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.rjust(2000000)
+str.rpartition(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.rpartition('x')
+str.rsplit(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.rsplit('x')
+str.rstrip()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.rstrip()
+str.split(X1)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.split('x')
+str.splitlines()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.splitlines()
+str.startswith(X2)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.startswith('ba')
+str.strip()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.strip()
+str.swapcase()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.swapcase()
+str.title()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.title()
+str.upper()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.upper()
+str.zfill(2000000)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.zfill(2000000)
+str.expandtabs()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.expandtabs()
+str.join(JARG)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.join(['a', 'b'])
+str.decode()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.decode()
+str.encode()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.encode()
+str.hex()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.hex()
+str.casefold()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.casefold()
+str.isidentifier()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isidentifier()
+str.isprintable()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isprintable()
+str.isnumeric()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isnumeric()
+str.isdecimal()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s.isdecimal()
+str.op s == t	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s == t
+str.op s != t	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s != t
+str.op s < t	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s < t
+str.op s + t	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s + t
+str.op s * 2	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s * 2
+str.op s[::-1]	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s[::-1]
+str.op s[1:]	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s[1:]
+str.op s[:-1]	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s[:-1]
+str.op len(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = len(s)
+str.op hash(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = hash(s)
+str.op X2 in s	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = 'ba' in s
+str.op X1 in s	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = 'x' in s
+str.op repr(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = repr(s)
+str.op str(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = str(s)
+str.op list(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = list(s)
+str.op s[500000]	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s[500000]
+str.op bool(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = bool(s)
+str.op sorted(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = sorted(s)
+str.op max(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = max(s)
+str.op reversed(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = reversed(s)
+str.op iter(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = iter(s)
+str.op enumerate(s)	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = enumerate(s)
+str.op s % ()	s = 'ab' * 500000\nt = 'ab' * 500000	for _ in range(5):\n    x = s % ()
+bytes.capitalize()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.capitalize()
+bytes.center(2000000)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.center(2000000)
+bytes.count(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.count(b'x')
+bytes.endswith(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.endswith(b'x')
+bytes.find(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.find(b'x')
+bytes.index(X2)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.index(b'ba')
+bytes.isalnum()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isalnum()
+bytes.isalpha()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isalpha()
+bytes.isascii()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isascii()
+bytes.isdigit()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isdigit()
+bytes.islower()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.islower()
+bytes.isspace()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isspace()
+bytes.istitle()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.istitle()
+bytes.isupper()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isupper()
+bytes.ljust(2000000)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.ljust(2000000)
+bytes.lower()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.lower()
+bytes.lstrip()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.lstrip()
+bytes.partition(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.partition(b'x')
+bytes.removeprefix(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.removeprefix(b'x')
+bytes.removesuffix(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.removesuffix(b'x')
+bytes.replace(X2, X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.replace(b'ba', b'x')
+bytes.rfind(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.rfind(b'x')
+bytes.rindex(X2)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.rindex(b'ba')
+bytes.rjust(2000000)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.rjust(2000000)
+bytes.rpartition(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.rpartition(b'x')
+bytes.rsplit(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.rsplit(b'x')
+bytes.rstrip()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.rstrip()
+bytes.split(X1)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.split(b'x')
+bytes.splitlines()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.splitlines()
+bytes.startswith(X2)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.startswith(b'ba')
+bytes.strip()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.strip()
+bytes.swapcase()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.swapcase()
+bytes.title()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.title()
+bytes.upper()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.upper()
+bytes.zfill(2000000)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.zfill(2000000)
+bytes.expandtabs()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.expandtabs()
+bytes.join(JARG)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.join([b'a', b'b'])
+bytes.decode()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.decode()
+bytes.encode()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.encode()
+bytes.hex()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.hex()
+bytes.casefold()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.casefold()
+bytes.isidentifier()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isidentifier()
+bytes.isprintable()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isprintable()
+bytes.isnumeric()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isnumeric()
+bytes.isdecimal()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s.isdecimal()
+bytes.op s == t	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s == t
+bytes.op s != t	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s != t
+bytes.op s < t	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s < t
+bytes.op s + t	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s + t
+bytes.op s * 2	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s * 2
+bytes.op s[::-1]	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s[::-1]
+bytes.op s[1:]	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s[1:]
+bytes.op s[:-1]	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s[:-1]
+bytes.op len(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = len(s)
+bytes.op hash(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = hash(s)
+bytes.op X2 in s	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = b'ba' in s
+bytes.op X1 in s	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = b'x' in s
+bytes.op repr(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = repr(s)
+bytes.op str(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = str(s)
+bytes.op list(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = list(s)
+bytes.op s[500000]	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s[500000]
+bytes.op bool(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = bool(s)
+bytes.op sorted(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = sorted(s)
+bytes.op max(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = max(s)
+bytes.op reversed(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = reversed(s)
+bytes.op iter(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = iter(s)
+bytes.op enumerate(s)	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = enumerate(s)
+bytes.op s % ()	s = b'ab' * 500000\nt = b'ab' * 500000	for _ in range(5):\n    x = s % ()
+list.append(1)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.append(1)
+list.extend([1])	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.extend([1])
+list.insert(0, 1)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.insert(0, 1)
+list.insert(len(s), 1)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.insert(len(s), 1)
+list.pop()	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.pop()
+list.pop(0)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.pop(0)
+list.remove(999999)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.remove(999999)
+list.index(999999)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.index(999999)
+list.count(5)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.count(5)
+list.reverse()	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.reverse()
+list.sort()	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.sort()
+list.copy()	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.copy()
+list.clear()	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.clear()
+list.extend(t)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.extend(t)
+list.__len__()	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.__len__()
+list.__contains__(5)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s.__contains__(5)
+deque.append(1)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.append(1)
+deque.appendleft(1)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.appendleft(1)
+deque.pop()	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.pop()
+deque.popleft()	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.popleft()
+deque.rotate(1)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.rotate(1)
+deque.rotate(500000)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.rotate(500000)
+deque.copy()	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.copy()
+deque.count(5)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.count(5)
+deque.index(999999)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.index(999999)
+deque.extend([1])	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.extend([1])
+deque.extend(t)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.extend(t)
+deque.reverse()	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.reverse()
+deque.clear()	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.clear()
+deque.remove(999999)	import collections\ns = collections.deque(range(1000000))\nt = collections.deque(range(1000000))	for _ in range(5):\n    x = s.remove(999999)
+list.op s == t	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s == t
+tuple.op s == t	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s == t
+list.op s != t	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s != t
+tuple.op s != t	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s != t
+list.op s < t	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s < t
+tuple.op s < t	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s < t
+list.op s + t	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s + t
+tuple.op s + t	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s + t
+list.op s * 2	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s * 2
+tuple.op s * 2	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s * 2
+list.op s[::-1]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[::-1]
+tuple.op s[::-1]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[::-1]
+list.op s[1:]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[1:]
+tuple.op s[1:]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[1:]
+list.op s[:-1]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[:-1]
+tuple.op s[:-1]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[:-1]
+list.op len(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = len(s)
+tuple.op len(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = len(s)
+list.op hash(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = hash(s)
+tuple.op hash(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = hash(s)
+list.op 5 in s	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = 5 in s
+tuple.op 5 in s	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = 5 in s
+list.op -1 in s	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = -1 in s
+tuple.op -1 in s	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = -1 in s
+list.op repr(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = repr(s)
+tuple.op repr(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = repr(s)
+list.op list(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = list(s)
+tuple.op list(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = list(s)
+list.op tuple(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = tuple(s)
+tuple.op tuple(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = tuple(s)
+list.op set(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = set(s)
+tuple.op set(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = set(s)
+list.op sorted(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = sorted(s)
+tuple.op sorted(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = sorted(s)
+list.op max(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = max(s)
+tuple.op max(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = max(s)
+list.op min(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = min(s)
+tuple.op min(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = min(s)
+list.op sum(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = sum(s)
+tuple.op sum(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = sum(s)
+list.op any(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = any(s)
+tuple.op any(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = any(s)
+list.op all(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = all(s)
+tuple.op all(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = all(s)
+list.op reversed(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = reversed(s)
+tuple.op reversed(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = reversed(s)
+list.op s[500000]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[500000]
+tuple.op s[500000]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[500000]
+list.op bool(s)	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = bool(s)
+tuple.op bool(s)	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = bool(s)
+list.op s[5:10]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[5:10]
+tuple.op s[5:10]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[5:10]
+list.op s[::2]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[::2]
+tuple.op s[::2]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[::2]
+list.op s[0:len(s)]	s = list(range(1000000))\nt = list(range(1000000))	for _ in range(5):\n    x = s[0:len(s)]
+tuple.op s[0:len(s)]	s = tuple(range(1000000))\nt = tuple(range(1000000))	for _ in range(5):\n    x = s[0:len(s)]
+dict.get(5)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.get(5)
+dict.setdefault(5, 1)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.setdefault(5, 1)
+dict.pop(5, None)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.pop(5, None)
+dict.popitem()	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.popitem()
+dict.keys()	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.keys()
+dict.values()	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.values()
+dict.items()	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.items()
+dict.copy()	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.copy()
+dict.update(t)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.update(t)
+dict.update({})	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.update({})
+dict.clear()	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.clear()
+dict.fromkeys(range(10))	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s.fromkeys(range(10))
+dict.op s == t	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s == t
+dict.op s | t	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s | t
+dict.op len(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = len(s)
+dict.op 5 in s	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = 5 in s
+dict.op list(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = list(s)
+dict.op list(s.items())	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = list(s.items())
+dict.op list(s.values())	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = list(s.values())
+dict.op sorted(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = sorted(s)
+dict.op dict(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = dict(s)
+dict.op repr(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = repr(s)
+dict.op s[5]	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = s[5]
+dict.op max(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = max(s)
+dict.op sum(s.values())	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = sum(s.values())
+dict.op bool(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = bool(s)
+dict.op {**s}	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = {**s}
+dict.op set(s)	s = {i: i for i in range(1000000)}\nt = {i: i for i in range(1000000)}	for _ in range(5):\n    x = set(s)
+set.add(5)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.add(5)
+set.remove(5)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.remove(5)
+set.discard(5)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.discard(5)
+set.pop()	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.pop()
+set.copy()	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.copy()
+set.clear()	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.clear()
+set.union(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.union(t)
+set.intersection(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.intersection(t)
+set.difference(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.difference(t)
+set.symmetric_difference(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.symmetric_difference(t)
+set.issubset(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.issubset(t)
+set.issuperset(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.issuperset(t)
+set.isdisjoint(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.isdisjoint(t)
+set.update(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.update(t)
+set.difference_update(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.difference_update(t)
+set.intersection_update(t)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.intersection_update(t)
+set.union({1})	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.union({1})
+set.intersection({1})	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.intersection({1})
+set.difference({1})	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.difference({1})
+set.isdisjoint({1})	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s.isdisjoint({1})
+set.op s == t	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s == t
+set.op s | t	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s | t
+set.op s & t	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s & t
+set.op s - t	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s - t
+set.op s ^ t	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s ^ t
+set.op s <= t	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = s <= t
+set.op len(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = len(s)
+set.op 5 in s	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = 5 in s
+set.op list(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = list(s)
+set.op sorted(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = sorted(s)
+set.op set(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = set(s)
+set.op frozenset(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = frozenset(s)
+set.op repr(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = repr(s)
+set.op max(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = max(s)
+set.op sum(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = sum(s)
+set.op bool(s)	s = set(range(1000000))\nt = set(range(1000000))	for _ in range(5):\n    x = bool(s)

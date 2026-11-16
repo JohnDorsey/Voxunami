@@ -1,0 +1,294 @@
+Monty method and operator sweep, 2026-11-16 (before the phase 4 charges; fork at aac99ca9)
+286 operations on str, bytes, list, tuple, dict, set and deque receivers of 10**6 elements, each run 5 times in
+a loop; steps and wall time cover the loop, so about 40 of the steps are the loop itself. Wall times under
+about 100 microseconds are measurement overhead, which is why constant-time calls show about 1000 ns a step.
+Harness: monty_native_audit/ (CASES_FILE=sweep.tsv). After the charges, tests/native_work*.rs in the fork pin
+the new numbers.
+
+  0 str.capitalize()                   steps           37  wall    12.2ms  ns/step     328983.8  ok
+  1 str.center(2000000)                steps           42  wall    14.6ms  ns/step     346600.0  ok
+  2 str.count(X1)                      steps           42  wall     2.0ms  ns/step      46959.5  ok
+  3 str.endswith(X1)                   steps           42  wall    45.6µs  ns/step       1085.7  ok
+  4 str.find(X1)                       steps           42  wall     1.7ms  ns/step      39940.5  ok
+  5 str.index(X2)                      steps           42  wall    38.0µs  ns/step        904.8  ok
+  6 str.isalnum()                      steps           37  wall     4.5ms  ns/step     120402.7  ok
+  7 str.isalpha()                      steps           37  wall     4.3ms  ns/step     115148.6  ok
+  8 str.isascii()                      steps           37  wall    94.3µs  ns/step       2548.6  ok
+  9 str.isdigit()                      steps           37  wall    36.1µs  ns/step        975.7  ok
+ 10 str.islower()                      steps           37  wall     5.5ms  ns/step     149713.5  ok
+ 11 str.isspace()                      steps           37  wall    41.9µs  ns/step       1132.4  ok
+ 12 str.istitle()                      steps           37  wall    42.9µs  ns/step       1159.5  ok
+ 13 str.isupper()                      steps           37  wall    36.3µs  ns/step        981.1  ok
+ 14 str.ljust(2000000)                 steps           42  wall    13.9ms  ns/step     329907.1  ok
+ 15 str.lower()                        steps           37  wall   609.2µs  ns/step      16464.9  ok
+ 16 str.lstrip()                       steps           37  wall   702.6µs  ns/step      18989.2  ok
+ 17 str.partition(X1)                  steps           42  wall     2.6ms  ns/step      62116.7  ok
+ 18 str.removeprefix(X1)               steps           42  wall   617.5µs  ns/step      14702.4  ok
+ 19 str.removesuffix(X1)               steps           42  wall   688.0µs  ns/step      16381.0  ok
+ 20 str.replace(X2, X1)                steps           47  wall    12.4ms  ns/step     264091.5  ok
+ 21 str.rfind(X1)                      steps           42  wall     2.0ms  ns/step      48152.4  ok
+ 22 str.rindex(X2)                     steps           42  wall   173.3µs  ns/step       4126.2  ok
+ 23 str.rjust(2000000)                 steps           42  wall    13.8ms  ns/step     329488.1  ok
+ 24 str.rpartition(X1)                 steps           42  wall     2.5ms  ns/step      60595.2  ok
+ 25 str.rsplit(X1)                     steps           42  wall     2.7ms  ns/step      63833.3  ok
+ 26 str.rstrip()                       steps           37  wall   613.4µs  ns/step      16578.4  ok
+ 27 str.split(X1)                      steps           42  wall     3.5ms  ns/step      84459.5  ok
+ 28 str.splitlines()                   steps           37  wall     2.8ms  ns/step      76416.2  ok
+ 29 str.startswith(X2)                 steps           42  wall    43.0µs  ns/step       1023.8  ok
+ 30 str.strip()                        steps           37  wall   681.1µs  ns/step      18408.1  ok
+ 31 str.swapcase()                     steps           37  wall    14.1ms  ns/step     381091.9  ok
+ 32 str.title()                        steps           37  wall    12.8ms  ns/step     344664.9  ok
+ 33 str.upper()                        steps           37  wall   562.2µs  ns/step      15194.6  ok
+ 34 str.zfill(2000000)                 steps           42  wall    13.5ms  ns/step     321273.8  ok
+ 35 str.expandtabs()                   steps           37  wall    13.2ms  ns/step     356435.1  ok
+ 36 str.join(JARG)                     steps           52  wall     1.0ms  ns/step      19425.0  ok
+ 37 str.decode()                       (stopped before the end of the setup or the op)  ERR AttributeError: 'str' object has no attribute 'decode'
+ 38 str.encode()                       steps           37  wall   630.9µs  ns/step      17051.4  ok
+ 39 str.hex()                          (stopped before the end of the setup or the op)  ERR AttributeError: 'str' object has no attribute 'hex'
+ 40 str.casefold()                     steps           37  wall   561.3µs  ns/step      15170.3  ok
+ 41 str.isidentifier()                 steps           37  wall     4.3ms  ns/step     115459.5  ok
+ 42 str.isprintable()                  steps           37  wall     4.6ms  ns/step     123618.9  ok
+ 43 str.isnumeric()                    steps           37  wall    36.4µs  ns/step        983.8  ok
+ 44 str.isdecimal()                    steps           37  wall    35.2µs  ns/step        951.4  ok
+ 45 str.op s == t                      steps           42  wall   184.6µs  ns/step       4395.2  ok
+ 46 str.op s != t                      steps           42  wall   166.2µs  ns/step       3957.1  ok
+ 47 str.op s < t                       steps           42  wall   192.5µs  ns/step       4583.3  ok
+ 48 str.op s + t                       steps           42  wall     1.5ms  ns/step      34626.2  ok
+ 49 str.op s * 2                       steps           42  wall     1.4ms  ns/step      33897.6  ok
+ 50 str.op s[::-1]                     steps      5000062  wall    24.6ms  ns/step          4.9  ok
+ 51 str.op s[1:]                       steps           57  wall     1.4ms  ns/step      24712.3  ok
+ 52 str.op s[:-1]                      steps           62  wall   722.0µs  ns/step      11645.2  ok
+ 53 str.op len(s)                      steps           37  wall    73.9µs  ns/step       1997.3  ok
+ 54 str.op hash(s)                     steps           37  wall   169.7µs  ns/step       4586.5  ok
+ 55 str.op X2 in s                     steps           42  wall    44.0µs  ns/step       1047.6  ok
+ 56 str.op X1 in s                     steps           42  wall   235.2µs  ns/step       5600.0  ok
+ 57 str.op repr(s)                     steps           37  wall    13.6ms  ns/step     368470.3  ok
+ 58 str.op str(s)                      steps           37  wall    38.6µs  ns/step       1043.2  ok
+ 59 str.op list(s)                     steps     10000037  wall   112.1ms  ns/step         11.2  ok
+ 60 str.op s[500000]                   steps           42  wall    56.4µs  ns/step       1342.9  ok
+ 61 str.op bool(s)                     steps           37  wall    28.3µs  ns/step        764.9  ok
+ 62 str.op sorted(s)                   steps     10000037  wall   168.7ms  ns/step         16.9  ok
+ 63 str.op max(s)                      steps      5000037  wall    86.4ms  ns/step         17.3  ok
+ 64 str.op reversed(s)                 steps     10000037  wall    82.7ms  ns/step          8.3  ok
+ 65 str.op iter(s)                     steps           37  wall    82.1µs  ns/step       2218.9  ok
+ 66 str.op enumerate(s)                steps      5000037  wall   284.8ms  ns/step         57.0  ok
+ 67 str.op s % ()                      steps         1002  wall     2.4ms  ns/step       2411.2  ok
+ 68 bytes.capitalize()                 steps           37  wall     3.4ms  ns/step      92335.1  ok
+ 69 bytes.center(2000000)              steps           42  wall     4.4ms  ns/step     105371.4  ok
+ 70 bytes.count(X1)                    steps           42  wall    98.3µs  ns/step       2340.5  ok
+ 71 bytes.endswith(X1)                 steps           42  wall    46.2µs  ns/step       1100.0  ok
+ 72 bytes.find(X1)                     steps           42  wall   110.0µs  ns/step       2619.0  ok
+ 73 bytes.index(X2)                    steps           42  wall    51.6µs  ns/step       1228.6  ok
+ 74 bytes.isalnum()                    steps           37  wall     4.0ms  ns/step     108094.6  ok
+ 75 bytes.isalpha()                    steps           37  wall     1.6ms  ns/step      42064.9  ok
+ 76 bytes.isascii()                    steps           37  wall     1.0ms  ns/step      27351.4  ok
+ 77 bytes.isdigit()                    steps           37  wall    38.0µs  ns/step       1027.0  ok
+ 78 bytes.islower()                    steps           37  wall     2.3ms  ns/step      62581.1  ok
+ 79 bytes.isspace()                    steps           37  wall    39.6µs  ns/step       1070.3  ok
+ 80 bytes.istitle()                    steps           37  wall    35.7µs  ns/step        964.9  ok
+ 81 bytes.isupper()                    steps           37  wall    36.1µs  ns/step        975.7  ok
+ 82 bytes.ljust(2000000)               steps           42  wall     3.5ms  ns/step      83566.7  ok
+ 83 bytes.lower()                      steps           37  wall   530.0µs  ns/step      14324.3  ok
+ 84 bytes.lstrip()                     steps           37  wall   567.2µs  ns/step      15329.7  ok
+ 85 bytes.partition(X1)                steps           42  wall     1.0ms  ns/step      24242.9  ok
+ 86 bytes.removeprefix(X1)             steps           42  wall     1.4ms  ns/step      34095.2  ok
+ 87 bytes.removesuffix(X1)             steps           42  wall   584.4µs  ns/step      13914.3  ok
+ 88 bytes.replace(X2, X1)              steps      2499887  wall    24.5ms  ns/step          9.8  ok
+ 89 bytes.rfind(X1)                    steps           42  wall    92.0µs  ns/step       2190.5  ok
+ 90 bytes.rindex(X2)                   steps           42  wall    41.4µs  ns/step        985.7  ok
+ 91 bytes.rjust(2000000)               steps           42  wall     5.0ms  ns/step     119616.7  ok
+ 92 bytes.rpartition(X1)               steps           42  wall     1.7ms  ns/step      40328.6  ok
+ 93 bytes.rsplit(X1)                   steps           42  wall     1.8ms  ns/step      41873.8  ok
+ 94 bytes.rstrip()                     steps           37  wall   744.3µs  ns/step      20116.2  ok
+ 95 bytes.split(X1)                    steps           42  wall     1.5ms  ns/step      36254.8  ok
+ 96 bytes.splitlines()                 steps           37  wall     2.1ms  ns/step      56308.1  ok
+ 97 bytes.startswith(X2)               steps           42  wall    47.6µs  ns/step       1133.3  ok
+ 98 bytes.strip()                      steps           37  wall   586.7µs  ns/step      15856.8  ok
+ 99 bytes.swapcase()                   steps           37  wall   603.8µs  ns/step      16318.9  ok
+100 bytes.title()                      steps           37  wall     6.1ms  ns/step     164486.5  ok
+101 bytes.upper()                      steps           37  wall     1.5ms  ns/step      40286.5  ok
+102 bytes.zfill(2000000)               steps           42  wall     1.4ms  ns/step      33764.3  ok
+103 bytes.expandtabs()                 (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'expandtabs'
+104 bytes.join(JARG)                   steps           52  wall     1.1ms  ns/step      20623.1  ok
+105 bytes.decode()                     steps           37  wall   747.2µs  ns/step      20194.6  ok
+106 bytes.encode()                     (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'encode'
+107 bytes.hex()                        steps           37  wall    12.8ms  ns/step     346618.9  ok
+108 bytes.casefold()                   (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'casefold'
+109 bytes.isidentifier()               (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'isidentifier'
+110 bytes.isprintable()                (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'isprintable'
+111 bytes.isnumeric()                  (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'isnumeric'
+112 bytes.isdecimal()                  (stopped before the end of the setup or the op)  ERR AttributeError: 'bytes' object has no attribute 'isdecimal'
+113 bytes.op s == t                    steps           42  wall   175.3µs  ns/step       4173.8  ok
+114 bytes.op s != t                    steps           42  wall   201.9µs  ns/step       4807.1  ok
+115 bytes.op s < t                     steps           42  wall   167.7µs  ns/step       3992.9  ok
+116 bytes.op s + t                     steps           42  wall     1.5ms  ns/step      34981.0  ok
+117 bytes.op s * 2                     steps           42  wall     1.6ms  ns/step      37478.6  ok
+118 bytes.op s[::-1]                   steps      5000062  wall    20.4ms  ns/step          4.1  ok
+119 bytes.op s[1:]                     steps      4999737  wall    39.6ms  ns/step          7.9  ok
+120 bytes.op s[:-1]                    steps      4999742  wall    40.4ms  ns/step          8.1  ok
+121 bytes.op len(s)                    steps           37  wall    39.7µs  ns/step       1073.0  ok
+122 bytes.op hash(s)                   steps           37  wall   241.5µs  ns/step       6527.0  ok
+123 bytes.op X2 in s                   steps           42  wall    58.8µs  ns/step       1400.0  ok
+124 bytes.op X1 in s                   steps           42  wall    93.2µs  ns/step       2219.0  ok
+125 bytes.op repr(s)                   steps           37  wall     6.0ms  ns/step     161159.5  ok
+126 bytes.op str(s)                    steps           37  wall     5.7ms  ns/step     155154.1  ok
+127 bytes.op list(s)                   steps     10000037  wall    71.5ms  ns/step          7.1  ok
+128 bytes.op s[500000]                 steps           42  wall    29.9µs  ns/step        711.9  ok
+129 bytes.op bool(s)                   steps           37  wall    29.1µs  ns/step        786.5  ok
+130 bytes.op sorted(s)                 steps     10000037  wall   147.4ms  ns/step         14.7  ok
+131 bytes.op max(s)                    steps      5000037  wall    80.9ms  ns/step         16.2  ok
+132 bytes.op reversed(s)               steps     10000037  wall    75.0ms  ns/step          7.5  ok
+133 bytes.op iter(s)                   steps           37  wall    46.4µs  ns/step       1254.1  ok
+134 bytes.op enumerate(s)              steps      5000037  wall   272.4ms  ns/step         54.5  ok
+135 bytes.op s % ()                    steps         1002  wall     2.6ms  ns/step       2624.4  ok
+136 list.append(1)                     steps           42  wall    48.9µs  ns/step       1164.3  ok
+137 list.extend([1])                   steps           47  wall    49.4µs  ns/step       1051.1  ok
+138 list.insert(0, 1)                  steps           47  wall     1.4ms  ns/step      29353.2  ok
+139 list.insert(len(s), 1)             steps           52  wall    38.0µs  ns/step        730.8  ok
+140 list.pop()                         steps           37  wall    30.4µs  ns/step        821.6  ok
+141 list.pop(0)                        steps           42  wall     3.2ms  ns/step      75361.9  ok
+142 list.remove(999999)                (stopped before the end of the setup or the op)  ERR ValueError: list.remove(x): x not in list
+143 list.index(999999)                 steps      5000042  wall   118.3ms  ns/step         23.7  ok
+144 list.count(5)                      steps      5000042  wall   147.1ms  ns/step         29.4  ok
+145 list.reverse()                     steps           37  wall     1.7ms  ns/step      46540.5  ok
+146 list.sort()                        steps           37  wall    16.9ms  ns/step     456321.6  ok
+147 list.copy()                        steps           37  wall    35.8ms  ns/step     966578.4  ok
+148 list.clear()                       steps           37  wall     1.2ms  ns/step      32989.2  ok
+149 list.extend(t)                     steps     10000042  wall   152.9ms  ns/step         15.3  ok
+150 list.__len__()                     (stopped before the end of the setup or the op)  ERR AttributeError: 'list' object has no attribute '__len__'
+151 list.__contains__(5)               (stopped before the end of the setup or the op)  ERR AttributeError: 'list' object has no attribute '__contains__'
+152 deque.append(1)                    steps           42  wall    41.8µs  ns/step        995.2  ok
+153 deque.appendleft(1)                steps           42  wall    42.8µs  ns/step       1019.0  ok
+154 deque.pop()                        steps           37  wall    31.4µs  ns/step        848.6  ok
+155 deque.popleft()                    steps           37  wall    31.9µs  ns/step        862.2  ok
+156 deque.rotate(1)                    steps           42  wall    43.6µs  ns/step       1038.1  ok
+157 deque.rotate(500000)               steps           42  wall     1.3ms  ns/step      30678.6  ok
+158 deque.copy()                       steps           37  wall    39.0ms  ns/step    1054283.8  ok
+159 deque.count(5)                     steps           42  wall   161.8ms  ns/step    3851609.5  ok
+160 deque.index(999999)                steps           42  wall   177.9ms  ns/step    4236457.1  ok
+161 deque.extend([1])                  steps           47  wall    60.7µs  ns/step       1291.5  ok
+162 deque.extend(t)                    steps      5000042  wall   170.9ms  ns/step         34.2  ok
+163 deque.reverse()                    steps           37  wall     1.6ms  ns/step      44456.8  ok
+164 deque.clear()                      steps           37  wall     6.9ms  ns/step     186716.2  ok
+165 deque.remove(999999)               (stopped before the end of the setup or the op)  ERR ValueError: deque.remove(x): x not in deque
+166 list.op s == t                     steps      5000042  wall   103.1ms  ns/step         20.6  ok
+167 tuple.op s == t                    steps      5000042  wall    64.2ms  ns/step         12.8  ok
+168 list.op s != t                     steps      5000042  wall   101.0ms  ns/step         20.2  ok
+169 tuple.op s != t                    steps      5000042  wall    62.3ms  ns/step         12.5  ok
+170 list.op s < t                      steps      5000042  wall   102.5ms  ns/step         20.5  ok
+171 tuple.op s < t                     steps      5000042  wall    56.4ms  ns/step         11.3  ok
+172 list.op s + t                      steps           42  wall    77.4ms  ns/step    1842997.6  ok
+173 tuple.op s + t                     steps           42  wall    82.6ms  ns/step    1966261.9  ok
+174 list.op s * 2                      steps           42  wall    66.8ms  ns/step    1589373.8  ok
+175 tuple.op s * 2                     steps           42  wall    51.3ms  ns/step    1221057.1  ok
+176 list.op s[::-1]                    steps      5000062  wall   162.3ms  ns/step         32.5  ok
+177 tuple.op s[::-1]                   steps      5000062  wall   153.1ms  ns/step         30.6  ok
+178 list.op s[1:]                      steps      4999737  wall   160.7ms  ns/step         32.2  ok
+179 tuple.op s[1:]                     steps      4999737  wall   158.6ms  ns/step         31.7  ok
+180 list.op s[:-1]                     steps      4999742  wall   154.7ms  ns/step         30.9  ok
+181 tuple.op s[:-1]                    steps      4999742  wall   158.1ms  ns/step         31.6  ok
+182 list.op len(s)                     steps           37  wall    26.4µs  ns/step        713.5  ok
+183 tuple.op len(s)                    steps           37  wall    28.7µs  ns/step        775.7  ok
+184 list.op hash(s)                    (stopped before the end of the setup or the op)  ERR TypeError: unhashable type: 'list'
+185 tuple.op hash(s)                   steps      1000037  wall     8.4ms  ns/step          8.4  ok
+186 list.op 5 in s                     steps           42  wall    36.0µs  ns/step        857.1  ok
+187 tuple.op 5 in s                    steps           42  wall    40.4µs  ns/step        961.9  ok
+188 list.op -1 in s                    steps      5000047  wall   123.0ms  ns/step         24.6  ok
+189 tuple.op -1 in s                   steps      5000047  wall   108.3ms  ns/step         21.7  ok
+190 list.op repr(s)                    steps      5000037  wall   132.5ms  ns/step         26.5  ok
+191 tuple.op repr(s)                   steps      5000037  wall   139.0ms  ns/step         27.8  ok
+192 list.op list(s)                    steps     10000037  wall   100.5ms  ns/step         10.0  ok
+193 tuple.op list(s)                   steps     10000037  wall   100.2ms  ns/step         10.0  ok
+194 list.op tuple(s)                   steps     10000037  wall    93.3ms  ns/step          9.3  ok
+195 tuple.op tuple(s)                  steps           37  wall    26.6µs  ns/step        718.9  ok
+196 list.op set(s)                     steps      5000037  wall   287.1ms  ns/step         57.4  ok
+197 tuple.op set(s)                    steps      5000037  wall   278.7ms  ns/step         55.7  ok
+198 list.op sorted(s)                  steps     10000037  wall   127.4ms  ns/step         12.7  ok
+199 tuple.op sorted(s)                 steps     10000037  wall   111.5ms  ns/step         11.2  ok
+200 list.op max(s)                     steps      5000037  wall   104.3ms  ns/step         20.9  ok
+201 tuple.op max(s)                    steps      5000037  wall   103.2ms  ns/step         20.6  ok
+202 list.op min(s)                     steps      5000037  wall   110.2ms  ns/step         22.0  ok
+203 tuple.op min(s)                    steps      5000037  wall   104.7ms  ns/step         20.9  ok
+204 list.op sum(s)                     steps      5000037  wall   187.3ms  ns/step         37.5  ok
+205 tuple.op sum(s)                    steps      5000037  wall   183.3ms  ns/step         36.7  ok
+206 list.op any(s)                     steps           37  wall    37.7µs  ns/step       1018.9  ok
+207 tuple.op any(s)                    steps           37  wall    30.1µs  ns/step        813.5  ok
+208 list.op all(s)                     steps           37  wall    45.0µs  ns/step       1216.2  ok
+209 tuple.op all(s)                    steps           37  wall    30.2µs  ns/step        816.2  ok
+210 list.op reversed(s)                steps     10000037  wall    92.1ms  ns/step          9.2  ok
+211 tuple.op reversed(s)               steps     10000037  wall    97.6ms  ns/step          9.8  ok
+212 list.op s[500000]                  steps           42  wall    28.6µs  ns/step        681.0  ok
+213 tuple.op s[500000]                 steps           42  wall    38.2µs  ns/step        909.5  ok
+214 list.op bool(s)                    steps           37  wall    22.3µs  ns/step        602.7  ok
+215 tuple.op bool(s)                   steps           37  wall    24.4µs  ns/step        659.5  ok
+216 list.op s[5:10]                    steps           57  wall    39.4µs  ns/step        691.2  ok
+217 tuple.op s[5:10]                   steps           57  wall    40.8µs  ns/step        715.8  ok
+218 list.op s[::2]                     steps      2499897  wall    81.8ms  ns/step         32.7  ok
+219 tuple.op s[::2]                    steps      2499897  wall    75.2ms  ns/step         30.1  ok
+220 list.op s[0:len(s)]                steps      5000062  wall   155.2ms  ns/step         31.0  ok
+221 tuple.op s[0:len(s)]               steps      5000062  wall   153.8ms  ns/step         30.8  ok
+222 dict.get(5)                        steps           42  wall    44.2µs  ns/step       1052.4  ok
+223 dict.setdefault(5, 1)              steps           47  wall    40.2µs  ns/step        855.3  ok
+224 dict.pop(5, None)                  steps           47  wall   215.9µs  ns/step       4593.6  ok
+225 dict.popitem()                     steps           37  wall    30.9µs  ns/step        835.1  ok
+226 dict.keys()                        steps           37  wall    35.7µs  ns/step        964.9  ok
+227 dict.values()                      steps           37  wall    27.1µs  ns/step        732.4  ok
+228 dict.items()                       steps           37  wall    33.9µs  ns/step        916.2  ok
+229 dict.copy()                        steps           37  wall   199.2ms  ns/step    5383378.4  ok
+230 dict.update(t)                     steps      5000042  wall   188.4ms  ns/step         37.7  ok
+231 dict.update({})                    steps           42  wall    34.6µs  ns/step        823.8  ok
+232 dict.clear()                       steps           37  wall     3.7ms  ns/step     101021.6  ok
+233 dict.fromkeys(range(10))           steps           47  wall    49.6µs  ns/step       1055.3  ok
+234 dict.op s == t                     steps      5000042  wall   244.6ms  ns/step         48.9  ok
+235 dict.op s | t                      steps      5000042  wall   393.8ms  ns/step         78.8  ok
+236 dict.op len(s)                     steps           37  wall    23.9µs  ns/step        645.9  ok
+237 dict.op 5 in s                     steps           42  wall    27.3µs  ns/step        650.0  ok
+238 dict.op list(s)                    steps     10000037  wall   139.4ms  ns/step         13.9  ok
+239 dict.op list(s.items())            steps     10000042  wall   394.6ms  ns/step         39.5  ok
+240 dict.op list(s.values())           steps     10000042  wall   115.5ms  ns/step         11.6  ok
+241 dict.op sorted(s)                  steps     10000037  wall   138.1ms  ns/step         13.8  ok
+242 dict.op dict(s)                    steps           37  wall   273.4ms  ns/step    7389378.4  ok
+243 dict.op repr(s)                    steps      5000037  wall   174.3ms  ns/step         34.9  ok
+244 dict.op s[5]                       steps           42  wall    36.6µs  ns/step        871.4  ok
+245 dict.op max(s)                     steps      5000037  wall   133.1ms  ns/step         26.6  ok
+246 dict.op sum(s.values())            steps      5000042  wall   207.2ms  ns/step         41.4  ok
+247 dict.op bool(s)                    steps           37  wall    26.4µs  ns/step        713.5  ok
+248 dict.op {**s}                      steps           42  wall   313.4ms  ns/step    7462050.0  ok
+249 dict.op set(s)                     steps      5000037  wall   299.5ms  ns/step         59.9  ok
+250 set.add(5)                         steps           42  wall    61.0µs  ns/step       1452.4  ok
+251 set.remove(5)                      (stopped before the end of the setup or the op)  ERR KeyError: 5
+252 set.discard(5)                     steps           42  wall   201.3µs  ns/step       4792.9  ok
+253 set.pop()                          steps           37  wall    30.6µs  ns/step        827.0  ok
+254 set.copy()                         steps           37  wall    81.1ms  ns/step    2192416.2  ok
+255 set.clear()                        steps           37  wall     2.2ms  ns/step      60800.0  ok
+256 set.union(t)                       steps      5000042  wall   270.2ms  ns/step         54.0  ok
+257 set.intersection(t)                steps      5000042  wall   318.1ms  ns/step         63.6  ok
+258 set.difference(t)                  steps      5000042  wall   167.2ms  ns/step         33.4  ok
+259 set.symmetric_difference(t)        steps     10000042  wall   241.2ms  ns/step         24.1  ok
+260 set.issubset(t)                    steps      5000042  wall   241.0ms  ns/step         48.2  ok
+261 set.issuperset(t)                  steps      5000042  wall   256.9ms  ns/step         51.4  ok
+262 set.isdisjoint(t)                  steps           42  wall   177.1ms  ns/step    4216550.0  ok
+263 set.update(t)                      steps           42  wall   123.8ms  ns/step    2946523.8  ok
+264 set.difference_update(t)           (stopped before the end of the setup or the op)  ERR AttributeError: 'set' object has no attribute 'difference_update'
+265 set.intersection_update(t)         (stopped before the end of the setup or the op)  ERR AttributeError: 'set' object has no attribute 'intersection_update'
+266 set.union({1})                     steps           47  wall    80.0ms  ns/step    1702774.5  ok
+267 set.intersection({1})              steps           47  wall    60.3µs  ns/step       1283.0  ok
+268 set.difference({1})                steps      5000047  wall   219.8ms  ns/step         44.0  ok
+269 set.isdisjoint({1})                steps           47  wall    81.9ms  ns/step    1741895.7  ok
+270 set.op s == t                      steps      5000042  wall    84.6ms  ns/step         16.9  ok
+271 set.op s | t                       steps      5000042  wall   259.0ms  ns/step         51.8  ok
+272 set.op s & t                       steps      5000042  wall   316.7ms  ns/step         63.3  ok
+273 set.op s - t                       steps      5000042  wall   167.3ms  ns/step         33.4  ok
+274 set.op s ^ t                       steps     10000042  wall   244.5ms  ns/step         24.5  ok
+275 set.op s <= t                      steps      5000042  wall    83.3ms  ns/step         16.7  ok
+276 set.op len(s)                      steps           37  wall    26.6µs  ns/step        718.9  ok
+277 set.op 5 in s                      steps           42  wall    49.4µs  ns/step       1176.2  ok
+278 set.op list(s)                     steps     10000037  wall   110.7ms  ns/step         11.1  ok
+279 set.op sorted(s)                   steps     10000037  wall   122.6ms  ns/step         12.3  ok
+280 set.op set(s)                      steps           37  wall    80.5ms  ns/step    2176956.8  ok
+281 set.op frozenset(s)                steps           37  wall    91.9ms  ns/step    2482648.6  ok
+282 set.op repr(s)                     steps     10000037  wall    96.8ms  ns/step          9.7  ok
+283 set.op max(s)                      steps      5000037  wall   110.0ms  ns/step         22.0  ok
+284 set.op sum(s)                      steps      5000037  wall   185.3ms  ns/step         37.1  ok
+285 set.op bool(s)                     steps           37  wall    24.3µs  ns/step        656.8  ok
+done
