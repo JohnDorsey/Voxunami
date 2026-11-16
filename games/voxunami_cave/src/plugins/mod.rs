@@ -11,6 +11,9 @@ mod light;
 mod movement;
 mod ships;
 
+use std::sync::Arc;
+
+use block_models::{BlockTable, SharedBlockTable};
 use game_shell::{GameContent, GameDefinition};
 use grid_bodies::collision::BlockCollisions;
 use grid_bodies::{BodiesReport, Docking, DockingSettings, GridBodiesConfig, GridBodiesPlugin};
@@ -42,6 +45,18 @@ pub fn cave_plugins_reporting(
     Vec<Box<dyn Plugin>>,
     impl Fn() -> BodiesReport + Send + Sync + 'static + use<>,
 ) {
+    cave_plugins_sharing(content, &SharedBlockTable::new(content.block_table()))
+}
+
+/// The same, with every rule that reads the table of blocks reading `table`: the one table of the server, which is held by every part of it that reads one, so
+/// that replacing it through the handle is seen by all of them (`SharedBlockTable`). None of them makes a table of its own.
+pub fn cave_plugins_sharing(
+    content: &CaveContent,
+    table: &SharedBlockTable,
+) -> (
+    Vec<Box<dyn Plugin>>,
+    impl Fn() -> BodiesReport + Send + Sync + 'static + use<>,
+) {
     // The server moves the players, so what a client says about where it is is not believed. A player sent to a level arrives on the ground at the top of the
     // planet that is in it; a player sent from a level with a planet in it to one that has none arrives where players start (the places of the one are nowhere in
     // the other); and otherwise they are at the same place.
@@ -52,41 +67,42 @@ pub fn cave_plugins_reporting(
         })
     });
     let presence = players.presence();
-    let movement = MovementPlugin::new(content, presence.clone());
+    let movement = MovementPlugin::new(content, table, presence.clone());
     // Ships with docking ports are drawn together and joined by the one that moves them, and undocked by the command; they share what docking is.
-    let docking = docking(content);
+    let docking = docking_of(content, table.current());
     // The one that flies ships by their pilots' keys shares the players' bodies with the one that moves them.
     let commands = ShipCommandsPlugin::new(
         content,
+        table,
         presence.clone(),
         movement.movement(),
         docking.clone(),
     );
     // Ships move while a player is near, wait farther off, and are put in files farther still. A player whose ship is lost can go to where
     // players start, and one whose ship went away with them and finds something in its place is asked what to do.
-    let table = content.block_table();
+    let snapshot = table.current();
     let lifecycle = GridLifecyclePlugin::new(presence.clone(), move |world, level| {
         crate::landing::spawn_in(world, level, block_channel, air)
     })
     .with_arrivals(ArrivalConfig {
         collisions: BlockCollisions::new(
-            table.clone(),
-            Some(crate::block_properties::passable(&table)),
+            Arc::clone(&snapshot),
+            Some(crate::block_properties::passable(&snapshot)),
         ),
         block_channel: content.block_channel(),
         state_channel: content.state_channel(),
         orientation_channel: Some(content.orientation_channel()),
         air: content.blocks.air,
     });
-    let bodies = ships(content, docking);
+    let bodies = ships(content, table, docking);
     let report = bodies.report_handle();
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(players),
-        Box::new(BlockEditingPlugin::new(content, presence.clone())),
-        Box::new(ItemsPlugin::new(content, presence.clone())),
+        Box::new(BlockEditingPlugin::new(content, table, presence.clone())),
+        Box::new(ItemsPlugin::new(content, table, presence.clone())),
         Box::new(movement),
-        Box::new(FirePlugin::new(content, presence)),
-        Box::new(LightPlugin::new(content)),
+        Box::new(FirePlugin::new(content, table, presence)),
+        Box::new(LightPlugin::new(content, table)),
         Box::new(bodies),
         Box::new(lifecycle),
         Box::new(commands),
@@ -102,9 +118,14 @@ pub fn world_spawn() -> WorldPosition {
 
 /// How ships dock in Cave: the dev docking port, with the distances, forces and angles the owner chose (see [`DockingSettings`]).
 pub fn docking(content: &CaveContent) -> Docking {
+    docking_of(content, Arc::new(content.block_table()))
+}
+
+/// The same, for the blocks of `table`.
+fn docking_of(content: &CaveContent, table: Arc<BlockTable>) -> Docking {
     Docking::new(
         DockingSettings::default(),
-        content.block_table(),
+        table,
         content.block_channel(),
         content.state_channel(),
         Some(content.orientation_channel()),
@@ -114,8 +135,8 @@ pub fn docking(content: &CaveContent) -> Docking {
 
 /// The plugin that moves ships: they fall under the gravity players do, rest on the terrain, are as heavy as the density of their blocks, and
 /// dock.
-fn ships(content: &CaveContent, docking: Docking) -> GridBodiesPlugin {
-    let table = content.block_table();
+fn ships(content: &CaveContent, table: &SharedBlockTable, docking: Docking) -> GridBodiesPlugin {
+    let table = table.current();
     GridBodiesPlugin::new(GridBodiesConfig {
         block_channel: content.block_channel(),
         state_channel: content.state_channel(),

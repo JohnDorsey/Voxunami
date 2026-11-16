@@ -2,7 +2,6 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerReach, SharedPresence, lock};
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SaveScope, SystemSpec};
@@ -19,17 +18,21 @@ use crate::logic::FIRE_RANGE;
 #[derive(Debug)]
 pub struct FirePlugin {
     channels: CaveChannels,
-    table: block_models::BlockTable,
+    table: block_models::SharedBlockTable,
     fire_block: u32,
     air_block: u32,
     players: SharedPresence,
 }
 
 impl FirePlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
+    pub fn new(
+        content: &CaveContent,
+        table: &block_models::SharedBlockTable,
+        players: SharedPresence,
+    ) -> Self {
         Self {
             channels: CaveChannels::of(content),
-            table: content.block_table(),
+            table: table.clone(),
             fire_block: content.blocks.fire,
             air_block: content.blocks.air,
             players,
@@ -63,7 +66,7 @@ impl Plugin for FirePlugin {
             Fire::read_section(world.opaque_sections(), |level| world.level_index(level))
                 .unwrap_or_default();
         let fire = Arc::new(Mutex::new(Fire::new(
-            self.table.clone(),
+            self.table.current(),
             self.fire_block,
             self.air_block,
             world.world_seed,

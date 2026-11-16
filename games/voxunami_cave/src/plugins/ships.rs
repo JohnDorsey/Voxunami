@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::BlockTable;
+use block_models::{BlockTable, SharedBlockTable};
 use game_shell::GameContent;
 use grid_bodies::collision::BlockCollisions;
 use grid_bodies::{Docking, UndockError};
@@ -109,7 +109,7 @@ struct Ships {
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: ChannelIndex,
-    table: BlockTable,
+    table: SharedBlockTable,
     /// How ships dock, shared with the plugin that moves them.
     docking: Docking,
 }
@@ -117,6 +117,7 @@ struct Ships {
 impl ShipCommandsPlugin {
     pub fn new(
         content: &CaveContent,
+        table: &SharedBlockTable,
         players: SharedPresence,
         movement: SharedMovement,
         docking: Docking,
@@ -140,7 +141,7 @@ impl ShipCommandsPlugin {
                 block_channel: content.block_channel(),
                 state_channel: content.state_channel(),
                 orientation_channel: content.orientation_channel(),
-                table: content.block_table(),
+                table: table.clone(),
             }),
         }
     }
@@ -157,7 +158,7 @@ pub(super) fn block_looked_at(
     world: &mut ServerWorld,
     presence: &Presence,
     client: ClientId,
-    table: &BlockTable,
+    table: &Arc<BlockTable>,
     channels: [ChannelIndex; 3],
     reach: f64,
 ) -> Result<world_view::RayHit, &'static str> {
@@ -169,7 +170,7 @@ pub(super) fn block_looked_at(
     let nowhere = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
     let direction = GridPose::new(nowhere, view).direction_to_world([0.0, 0.0, -1.0]);
     let collisions = BlockCollisions::new(
-        table.clone(),
+        Arc::clone(table),
         Some(crate::block_properties::passable(table)),
     );
     let solid = |world: &mut ServerWorld, grid: GridId, voxel: VoxelCoordinate| -> Option<bool> {
@@ -355,7 +356,7 @@ impl Ships {
                 world,
                 &presence,
                 client,
-                &self.table,
+                &self.table.current(),
                 [
                     self.block_channel,
                     self.state_channel,
@@ -369,9 +370,10 @@ impl Ships {
             Err(problem) => return problem.to_owned(),
         };
         let grid = hit.grid;
+        let table = self.table.current();
         let collisions = BlockCollisions::new(
-            self.table.clone(),
-            Some(crate::block_properties::passable(&self.table)),
+            Arc::clone(&table),
+            Some(crate::block_properties::passable(&table)),
         );
         let blocks = connected_blocks(hit.voxel, MAXIMUM_BLOCKS, |voxel| {
             self.solid(world, grid, &collisions, voxel) == Some(true)

@@ -71,7 +71,7 @@ const SAME_PLACE_VOXELS: f64 = 1e-3;
 /// What the plugin needs to know of a game's blocks.
 #[derive(Debug)]
 pub struct GridBodiesConfig {
-    pub table: BlockTable,
+    pub table: Arc<BlockTable>,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
     /// Where the game keeps the orientation of its blocks, if it has any.
@@ -689,7 +689,11 @@ impl Bodies {
         // (The table the faces are read by: the game's docking has one, and a game with joints and no docking uses the game's own.)
         let faces_by = match &self.config.docking {
             Some(docking) => Some(docking.table()),
-            None => self.config.joints.is_some().then_some(&self.config.table),
+            None => self
+                .config
+                .joints
+                .is_some()
+                .then_some(self.config.table.as_ref()),
         };
         let BrickScan {
             moments,

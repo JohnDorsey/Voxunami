@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::{BlockTable, PropertyHandle};
+use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use entities::{ComponentBag, Inventory, ItemStack};
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
@@ -57,7 +57,7 @@ pub struct ItemsPlugin {
     /// The blocks that exist only in creative: breaking one leaves no item.
     creative_only: Arc<Vec<NamespacedId>>,
     air: u32,
-    table: BlockTable,
+    table: SharedBlockTable,
     passable: PropertyHandle<bool>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
@@ -66,17 +66,16 @@ pub struct ItemsPlugin {
 }
 
 impl ItemsPlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
+    pub fn new(content: &CaveContent, table: &SharedBlockTable, players: SharedPresence) -> Self {
         let registries = content.registries();
         let blocks = registries[0].1;
         let block_names: HashMap<u32, NamespacedId> = (0..blocks.entry_count() as u32)
             .filter_map(|raw| Some((raw, blocks.identifier_of_raw(raw)?.clone())))
             .collect();
-        let table = content.block_table();
         Self {
             air: content.blocks.air,
-            passable: block_properties::passable(&table),
-            table,
+            passable: block_properties::passable(&table.current()),
+            table: table.clone(),
             placeable: Arc::new(placeable_blocks(&content.package_data())),
             creative_only: Arc::new(creative_only_blocks(&content.package_data())),
             block_names,
@@ -270,7 +269,7 @@ impl Plugin for ItemsPlugin {
         // Items fall, join and are picked up.
         let this = ItemsRun {
             air: self.air,
-            table: self.table.clone(),
+            table: self.table.current(),
             passable: self.passable,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
@@ -301,7 +300,7 @@ impl Plugin for ItemsPlugin {
 /// What the per-tick system needs.
 struct ItemsRun {
     air: u32,
-    table: BlockTable,
+    table: Arc<BlockTable>,
     passable: PropertyHandle<bool>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,

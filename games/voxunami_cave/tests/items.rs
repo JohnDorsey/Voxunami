@@ -201,6 +201,41 @@ fn in_survival_an_item_out_of_reach_of_the_player_lies_there_falls_and_joins_ano
 }
 
 #[test]
+fn an_item_falls_through_a_block_that_bodies_pass_through_and_is_held_up_by_one_they_do_not() {
+    // (Water of a great river is one of the two blocks that are passable, `base_blocks:passable`; the fire is the other, and burns out.) An item over a
+    // stone is held up by it, and over water it falls into the water and rests on what is under that.
+    for (block, rests_at_height) in [
+        ("base_blocks:stone", 2),
+        ("base_blocks:great_river_water", 1),
+    ] {
+        let mut rig = Rig::new();
+        let (mut player, ground) = hovering(&mut rig, 8.0);
+        let at = |height: i128| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
+        request_block(&mut player, at(1), block);
+        request_block(&mut player, at(2), "base_blocks:stone");
+        tick(&mut rig, &mut player, 3);
+        reply_to(&mut rig, &mut player, "/gamemode survival");
+        request_block(&mut player, at(2), "base_blocks:air");
+        tick(&mut rig, &mut player, 2);
+        // (Where it is after two ticks depends on which tick it is, since an item falls one voxel in some of them: there is the one item.)
+        assert_eq!(
+            on_the_ground(&rig).len(),
+            1,
+            "{block}: the block that is broken leaves its item"
+        );
+        tick(&mut rig, &mut player, FALL_INTERVAL_TICKS as usize * 3);
+        assert_eq!(
+            on_the_ground(&rig),
+            [(
+                at(rests_at_height),
+                ItemStack::new(id("base_blocks:stone"), 1)
+            )],
+            "{block}: where the item rests"
+        );
+    }
+}
+
+#[test]
 fn in_survival_placing_needs_the_item_and_uses_it_up() {
     let mut rig = Rig::new();
     let (mut player, ground) = hovering(&mut rig, 1.5);

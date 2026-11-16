@@ -3,8 +3,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::{BlockTable, PropertyHandle};
-use game_shell::GameContent;
+use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use plugin_host::{
@@ -25,7 +24,7 @@ use crate::multiscale_light::{self, LightModel, LightScheme, MultiScaleLighting}
 /// Which light a world has, and the rule that spreads it.
 #[derive(Debug)]
 struct LightState {
-    table: BlockTable,
+    table: Arc<BlockTable>,
     emission: PropertyHandle<u8>,
     channels: CaveChannels,
     /// The world's levels by identifier, in index order, for naming them in the saved light.
@@ -186,14 +185,14 @@ fn locked(state: &Mutex<LightState>) -> MutexGuard<'_, LightState> {
 #[derive(Debug)]
 pub struct LightPlugin {
     channels: CaveChannels,
-    table: BlockTable,
+    table: SharedBlockTable,
 }
 
 impl LightPlugin {
-    pub fn new(content: &CaveContent) -> Self {
+    pub fn new(content: &CaveContent, table: &SharedBlockTable) -> Self {
         Self {
             channels: CaveChannels::of(content),
-            table: content.block_table(),
+            table: table.clone(),
         }
     }
 }
@@ -221,8 +220,9 @@ impl Plugin for LightPlugin {
             LightModel::MultiScale(scheme) => scheme,
             LightModel::Classic => LightScheme::LEVELS_16,
         };
+        let table = self.table.current();
         let multiscale = MultiScaleLighting::with_pending(
-            self.table.clone(),
+            Arc::clone(&table),
             scheme,
             (0..scheme.scales())
                 .map(|scale| {
@@ -236,11 +236,11 @@ impl Plugin for LightPlugin {
                 .collect(),
         );
         let state = Arc::new(Mutex::new(LightState {
-            emission: crate::block_properties::emission(&self.table),
-            table: self.table.clone(),
+            emission: crate::block_properties::emission(&table),
+            table: Arc::clone(&table),
             channels: self.channels.clone(),
             level_ids,
-            lighting: Lighting::with_pending(self.table.clone(), pending),
+            lighting: Lighting::with_pending(table, pending),
             light_model,
             multiscale,
         }));

@@ -21,6 +21,8 @@
 //! starts again at 0 whenever a server starts: a world saved and loaded burns exactly as it would
 //! have burned if it had never stopped.
 
+use std::sync::Arc;
+
 use crate::block_properties;
 use base_blocks::FIRE_LIFETIME;
 use binary_codec::{ByteReader, ByteWriter};
@@ -63,7 +65,7 @@ pub trait FireWorld {
 /// The fire rule and the fires it has to look at.
 #[derive(Debug)]
 pub struct Fire {
-    table: BlockTable,
+    table: Arc<BlockTable>,
     flammability: PropertyHandle<u8>,
     fire_block: u32,
     air_block: u32,
@@ -77,13 +79,14 @@ impl Fire {
     /// The fire rule for a world with this seed. `clock` and `active` are the rule's clock and the
     /// fires to look at as they were when a world was saved, if it was: 0 and none for a new world.
     pub fn new(
-        table: BlockTable,
+        table: impl Into<Arc<BlockTable>>,
         fire_block: u32,
         air_block: u32,
         seed: u64,
         clock: u64,
         active: ActiveVoxels,
     ) -> Self {
+        let table = table.into();
         Self {
             flammability: block_properties::flammability(&table),
             table,

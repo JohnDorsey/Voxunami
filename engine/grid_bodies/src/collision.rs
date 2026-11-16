@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use block_models::{BlockTable, PropertyHandle};
 use physics::{BrickHint, Collision, CollisionSource};
@@ -15,16 +16,16 @@ use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 /// once needs only the one table.
 #[derive(Debug)]
 pub struct BlockCollisions {
-    table: BlockTable,
+    table: Arc<BlockTable>,
     passable: Option<PropertyHandle<bool>>,
     cache: RefCell<HashMap<u32, Collision>>,
 }
 
 impl BlockCollisions {
     /// `passable` is the property of the game that says a block can be passed through, if it has one.
-    pub fn new(table: BlockTable, passable: Option<PropertyHandle<bool>>) -> Self {
+    pub fn new(table: impl Into<Arc<BlockTable>>, passable: Option<PropertyHandle<bool>>) -> Self {
         Self {
-            table,
+            table: table.into(),
             passable,
             cache: RefCell::new(HashMap::new()),
         }

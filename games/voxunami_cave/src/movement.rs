@@ -16,6 +16,7 @@
 //! See [`crate::aboard`] for the two questions, and `docs/specs/moving-grids-spec.md`, 2.6.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::aboard::{Extent, has_left, in_voxels, stands_on};
 use crate::block_properties;
@@ -277,12 +278,13 @@ impl std::fmt::Debug for Movement {
 
 impl Movement {
     pub fn new(
-        table: BlockTable,
+        table: impl Into<Arc<BlockTable>>,
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
         orientation_channel: ChannelIndex,
         air: u32,
     ) -> Self {
+        let table = table.into();
         Self {
             bodies: BTreeMap::new(),
             blocks: Blocks {

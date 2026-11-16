@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use block_models::BlockTable;
+use block_models::SharedBlockTable;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
@@ -76,7 +76,7 @@ impl Event for BlockPlaced {
 pub struct BlockEditingPlugin {
     block_ids: HashMap<NamespacedId, u32>,
     air: u32,
-    table: BlockTable,
+    table: SharedBlockTable,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: ChannelIndex,
@@ -84,7 +84,7 @@ pub struct BlockEditingPlugin {
 }
 
 impl BlockEditingPlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
+    pub fn new(content: &CaveContent, table: &SharedBlockTable, players: SharedPresence) -> Self {
         let registries = content.registries();
         let blocks = registries[0].1;
         let block_ids = (0..blocks.entry_count() as u32)
@@ -93,7 +93,7 @@ impl BlockEditingPlugin {
         Self {
             block_ids,
             air: content.blocks.air,
-            table: content.block_table(),
+            table: table.clone(),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
             orientation_channel: content.orientation_channel(),
@@ -123,7 +123,7 @@ impl Plugin for BlockEditingPlugin {
         registrar.event::<BlockPlaced>();
         let air = self.air;
         let block_ids = self.block_ids.clone();
-        let table = self.table.clone();
+        let table = self.table.current();
         let (block_channel, state_channel) = (self.block_channel, self.state_channel);
         let orientation_channel = self.orientation_channel;
         let players = std::sync::Arc::clone(&self.players);

@@ -338,7 +338,7 @@ const PLANET_UNDOCK_BLOCKS: usize = 100_000;
 #[derive(Clone, Debug)]
 pub struct Docking {
     pub settings: DockingSettings,
-    table: BlockTable,
+    table: Arc<BlockTable>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: Option<ChannelIndex>,
@@ -351,12 +351,13 @@ impl Docking {
     /// Docking in a game whose blocks are in `table` (which declares the engine's properties, as every game's does).
     pub fn new(
         settings: DockingSettings,
-        table: BlockTable,
+        table: impl Into<Arc<BlockTable>>,
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
         orientation_channel: Option<ChannelIndex>,
         air: u32,
     ) -> Self {
+        let table = table.into();
         let density = table
             .handle(&block_models::engine::DENSITY)
             .expect("the engine declares engine:density in every game");
