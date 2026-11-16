@@ -22,7 +22,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 - `plan.md`: the build plan, what is proposed, what is open.
 - `future-goals.md`: owner wishes that are not scheduled, with what each would need.
 - `orbits-and-thrust-plan.md`: a plan for elliptical orbits and an investigation of ships kept on exact rails and of long burns with previews. **A proposal**; nothing is built.
-- `monty-step-budget-plan.md`: a plan for a deterministic step budget in the Monty fork, so a ship computer is cut off at the same instruction on every machine. **A proposal**; nothing is built.
+- `monty-step-budget-plan.md`: the plan for a deterministic step budget in the Monty fork, so a ship computer is cut off at the same instruction on every machine. **Built** (phases 0 to 6, 2026-11-16), and followed by a deterministic memory limit, `max_model_memory`, which the plan's "Not part of this plan" section records with its measurements (`history/spikes/scripting/monty_memory_results_2026-11-16.txt`). The fork's own `FORK.md` is the reference.
 - `planetary-mass-change.md`: the feature "a planet's mass changes", **held back: not in the first release** (owner, 2026-11-04); what is built, what it does to players, a flaw found, and Cave's ARGOS device.
 - `test-flakes.md`: tests that failed once and were not explained, kept together for a deep bug hunt (what failed, when, the reruns, what is believed and what was checked).
 - `ship-terrain-cost.md`: what a fast ship costs the server and the options to cut it, **held back** until ships of several grids are understood.
