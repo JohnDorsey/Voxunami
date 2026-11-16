@@ -1,6 +1,6 @@
 # Monty step budget: a plan
 
-**Status (2026-11-16): the owner approved the decisions below. Phases 0 to 3 are built and pushed in the fork (`JohnDorsey/monty`, branch `deterministic-math`, commit `aac99ca9`; `FORK.md` there lists what and the measured cost). Phase 4 (native operations) is built and pushed too (`0b0113fb`: the charges, 22 tests, Windows and Linux green). Phases 5 and 6 are not started, so a pool worker has no step budget yet.** Written 2026-11-16; it extends the Monty fork described in the section "Decision (2026-11-15): Monty" of `history/interoperability-survey.md`.
+**Status (2026-11-16): the owner approved the decisions below. Phases 0 to 3 are built and pushed in the fork (`JohnDorsey/monty`, branch `deterministic-math`, commit `aac99ca9`; `FORK.md` there lists what and the measured cost). Phase 4 (native operations) is built and pushed too (`0b0113fb`: the charges, 22 tests, Windows and Linux green). Phase 5 (the worker protocol) is built on the branch `catch-up-upstream-main`, which merges upstream `main` (36 commits ahead of v1.6.0 on 2026-11-16, no newer release); the owner has not yet chosen between that line and the pinned v1.6.0 line. Phase 6 is not started.** Written 2026-11-16; it extends the Monty fork described in the section "Decision (2026-11-15): Monty" of `history/interoperability-survey.md`.
 
 ## Why
 
@@ -39,6 +39,12 @@ Already bounded by Monty itself: int to string conversion over 4300 digits, `Dec
 The owner chose "linear charge plus big maths". Every charge is made before the work, from sizes known in constant time, in `crates/monty/src/native_work.rs` of the fork; sizes below a rate divide down to zero, so the golden counts of phase 3 did not move. Rates: text 1 step per 16 bytes; items copied or hashed 1 per item; items moved 1 per 16; big integers by 64-bit limbs (`*` and `**` `a*b/1024`, division quotient times divisor over 256, `gcd` over 8, `isqrt` over 128, modular `pow` `modulus_limbs^2/128` per exponent bit, shifts 1 per 16 limbs); `Decimal` `p^2*isqrt(p)/600` for `exp`, `ln`, `log10`, powers and `p^2/2000` for `sqrt`. Calibration check: the 20,000-digit Decimal power that took 15.6 s now charges 94 million steps (166 ns each), and with a budget it is refused before it starts.
 
 Hooks, few on purpose: `call_attr` (every method call), `binary_op`/`inplace_op`, `cmp_values`, the slice case of `BinarySubscr`, `ModuleFunctions::call` (text arguments of `hashlib`, `base64`, `binascii`, `unicodedata`, `re`, `json`, `fnmatch`, `tomllib`, `csv`), and the existing `check_*_size` helpers for big integers. Not fixed: `re.sub` is worse than linear on large strings (cause not found, probably upstream); a budget stops a loop of such calls but not one huge call. `in` on text charges the whole haystack, hit or miss.
+
+### Phase 5 as built (2026-11-16, branch `catch-up-upstream-main`, commit `78269eda`)
+
+`ResourceLimits` in `monty.proto` gains optional `max_feed_steps = 9` and `max_turn_steps = 10`; converted both ways; enforced by the worker alone (no client backstop, no echo, since a step budget is deterministic). `PROTOCOL_VERSION` is 10 because only the worker checks versions, and an old worker would otherwise ignore the fields and run the script with no budget; upstream main uses 9 for something else, so the number must be re-checked at every merge. Options added to the CLI, the Python limits dict and the JavaScript limits; the WebAssembly interface has none and the JS wasm transport throws instead of dropping a step limit. Tests: wire round trip, configured worker, restore keeps and tightens, and two real worker processes through `monty-pool` stopping a script at the identical step. The Python and JavaScript tests are written but were not run.
+
+Merging upstream `main`: three small conflicts, golden counts unchanged (the compiler did not change). Upstream's new shared table copy polls once per entry, so the dict and set copy charges of phase 4 were dropped on that branch to avoid counting twice.
 
 ## Phases (tests first, safest piece next, verify, continue)
 
