@@ -203,15 +203,16 @@ fn how_far_a_stone_moves_against_a_chain(at: [f64; 3]) -> f64 {
 fn a_stone_that_rests_against_a_chain_in_orbit_stays_there_whatever_the_pull_of_the_planet_is() {
     // Both fall round the planet together. Where each is in a frame of its own the other is pulled by the planet alone in it, and a stone that the frame of the chain did not fall
     // with would be pressed on the chain by the pull's whole size, if it lies on it along the pull (eight metres a second a second at this distance: it fell 0.01 voxels in a tick,
-    // and the stone is 0.004 above the last car; ran: 1.9 voxels away in three seconds with the pull of the planet left in what the ghost is told, 0.6 as it is).
+    // and the stone is 0.004 above the last car; ran: 1.9 voxels away in three seconds with the pull of the planet left in what the ghost is told, 0.6 without it, with the step the
+    // frame of the group had then).
     //
-    // **What is left is not the ghost's:** the frame of a group that is alone falls by one semi-implicit step a tick (`Follow::advance`: `v dt + g dt^2`) and the stone, in the
-    // frame everything is in, by the bodies' 24 steps of it (`v dt + g dt^2 (1 + 1/24) / 2`), so the two part by `g dt^2 (1 - 25/48)` a tick: 0.01 voxels at this pull, 0.6 in
-    // the three seconds (ran: 0.61, and 0.0065 with the group's step made `v dt + g dt^2 / 2`, which is why it is said here and not mended: that is the orbit of every group that is
-    // alone, `docs/decisions/joints-and-cars.md`, 4c-5-2).
+    // **What is left is not the ghost's:** the frame of a group that is alone falls by velocity Verlet (`Follow::advance`) and the stone, in the frame everything is in, by the
+    // bodies' 24 steps of it with the pull held over the tick, and the two are not the same step: they part by 0.012 voxels in the three seconds (ran: 0.0118). The frame of the
+    // group went by one semi-implicit step a tick until 2026-11-15 (`v dt + g dt^2`), and then it was 0.61 (the same chain and stone: it was 50 times as much); the step is
+    // measured in `docs/decisions/joints-and-cars.md`, 4c-5-2.
     let most = how_far_a_stone_moves_against_a_chain([15.0, 1.004, 0.0]);
     assert!(
-        most < 1.0,
+        most < 0.05,
         "the stone above the last car moved {most} voxels against the chain in three seconds"
     );
 }

@@ -9,8 +9,7 @@ mod common;
 
 use common::chains::{
     Setting, TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, centre_of, has_swung,
-    how_the_chain_turns, how_the_chain_turns_after, mass_of, minus, most_apart, origins_of,
-    pivot_gap, set_going,
+    how_the_chain_turns_after, mass_of, minus, most_apart, origins_of, pivot_gap, set_going,
 };
 use common::docking::{make_all_going, stones};
 use common::{Scene, circular_speed, length, pose_at, ship_id, ship_voxels};
@@ -20,8 +19,14 @@ fn what_a_mechanism_does_does_not_depend_on_where_an_alone_group_is_or_how_fast_
  {
     // The same chain, swung the same, at 70 and at 140 kilometres, free: alone, it is in a frame of its own with nothing but it in it, so the facing and the turn of each car are
     // those of the chain on a rail, to the ticks before it was alone. (In the frame everything is in they differ by millions of times as much: `group_on_a_rail.rs`.)
-    let near = how_the_chain_turns(70_016.0, Setting::Alone);
-    let far = how_the_chain_turns(140_000.0, Setting::Alone);
+    //
+    // **For the first hundred ticks**, before the swing turns back (see `how_the_chain_turns_after`). It was two hundred, and the two agreed to 5e-10; with the frame of the group
+    // stepped by velocity Verlet (2026-11-15) they differ by 0.19 at the two hundredth, and not because of the step: the impact where the swing turns back (the 135th tick) has two
+    // outcomes (a car's spin after it is 0.034 or 0.080) that rounding alone decides: ran, with the old step a change of 1e-13 in the speed of the frame took the chain at 140
+    // kilometres to the other outcome, and 1e-11 and 3e-10 did not. The agreement to the end was the luck of that rounding. Up to the hundredth tick the two agree to 1.6e-10
+    // with either step, which is the claim that a mechanism does not depend on where it is.
+    let near = how_the_chain_turns_after(70_016.0, Setting::Alone, 100);
+    let far = how_the_chain_turns_after(140_000.0, Setting::Alone, 100);
     let apart = most_apart(&near, &far);
     assert!(apart < 1e-7, "alone, the two differ by {apart}");
     // (They did swing.)

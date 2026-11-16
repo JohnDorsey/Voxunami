@@ -399,13 +399,32 @@ impl Follow {
     }
 
     /// Moves the follow of a frame that moves itself by a tick, after the bodies have stepped. The group was at rest at the point, and the frame went at `velocity`; in the step
-    /// the bodies moved its centre of mass `moved` and gave it the speed `sped` against the frame (a thrust or a push, or a blow, as a whole); the pull of the world at the point is
-    /// `gravity`. The group is then where it would be if it had gone at `velocity` for a tick, been pulled by `gravity` and moved as the bodies moved it, and goes at `velocity` and
-    /// what the bodies gave it and the pull over a tick: **a semi-implicit step, as the bodies take their own**. The bodies put the group back at the point and at rest in the frame
-    /// (`BodyWorld::shift_bodies` by `-moved` and `-sped`), which changes nothing of where the ships are in the world: places in the frame are the world's less the shift.
-    fn advance(&mut self, time_step: f64, gravity: [f64; 3], moved: [f64; 3], sped: [f64; 3]) {
+    /// the bodies moved its centre of mass `moved` and gave it the speed `sped` against the frame (a thrust or a push, or a blow, as a whole); `gravity_at` is the pull of the world
+    /// at a place. The group is then where it would be if it had gone at `velocity` for a tick, been pulled and moved as the bodies moved it, and goes at `velocity` and what the
+    /// bodies gave it and the pull over a tick: **velocity Verlet** (see `advanced`: the pull is asked for where the point is and where it has got to, and the frame gains the mean
+    /// of the two), which keeps an orbit's energy where the bodies' own step (24 semi-implicit steps with the pull held over the tick) does not. The bodies put the group back at the
+    /// point and at rest in the frame (`BodyWorld::shift_bodies` by `-moved` and `-sped`), which changes nothing of where the ships are in the world: places in the frame are the
+    /// world's less the shift. Nothing is done if the world cannot hold the point; the pull at the end is the pull at the start if it cannot hold that.
+    fn advance(
+        &mut self,
+        time_step: f64,
+        moved: [f64; 3],
+        sped: [f64; 3],
+        gravity_at: impl Fn(WorldPosition) -> [f64; 3],
+    ) {
+        let anchor = self.anchor;
+        if anchor.displaced(self.shift).is_none() {
+            return;
+        }
+        // (The last pull the world gave: the one at the start if it cannot hold the place at the end.)
+        let last_pull = std::cell::Cell::new([0.0; 3]);
         let (shift, velocity) =
-            advanced(self.shift, self.velocity, time_step, gravity, moved, sped);
+            advanced(self.shift, self.velocity, time_step, moved, sped, |shift| {
+                if let Some(point) = anchor.displaced(shift) {
+                    last_pull.set(gravity_at(point));
+                }
+                last_pull.get()
+            });
         self.shift = shift;
         self.velocity = velocity;
     }
@@ -458,21 +477,33 @@ fn shifted_by(shift: Displacement, delta: [f64; 3]) -> Displacement {
     Displacement { bricks, offset }
 }
 
-/// The shift and the velocity of a frame that moves itself after a tick (see [`Follow::advance`]): the shift moves by `velocity * time_step`, the pull for a tick on it and the
-/// bodies' own move of the group; the velocity gains what the bodies gave the group and the pull over the tick.
+/// The shift and the velocity of a frame that moves itself after a tick (see [`Follow::advance`]), by **velocity Verlet**: `gravity_at` is the pull of the world where the point is
+/// when it has gone by a shift. The shift moves by `velocity * time_step`, half the pull at the start for a tick squared and the bodies' own move of the group; the velocity gains
+/// what the bodies gave the group and **the mean of the pull at the start and at the end of the tick** (the end is where the move has taken the point). Measured, 2026-11-15
+/// (`docs/decisions/joints-and-cars.md`, 4c-5-2): over three orbits at 70 kilometres this is 0.01 voxels off its circle and 1.5e-5 off in energy, where one semi-implicit step
+/// (`v += g dt; x += v dt`, what this was) was 19 and 8.4e-2, and the step `v dt + g dt^2 / 2` with the pull at the start alone, 715 and 2,900.
 fn advanced(
     shift: Displacement,
     velocity: [f64; 3],
     time_step: f64,
-    gravity: [f64; 3],
     moved: [f64; 3],
     sped: [f64; 3],
+    gravity_at: impl Fn(Displacement) -> [f64; 3],
 ) -> (Displacement, [f64; 3]) {
-    let kick = gravity.map(|part| part * time_step);
-    let delta =
-        [0, 1, 2].map(|axis| velocity[axis] * time_step + kick[axis] * time_step + moved[axis]);
-    let faster = [0, 1, 2].map(|axis| velocity[axis] + sped[axis] + kick[axis]);
-    (shifted_by(shift, delta), faster)
+    let pull_at_the_start = gravity_at(shift);
+    let delta = [0, 1, 2].map(|axis| {
+        velocity[axis] * time_step
+            + 0.5 * pull_at_the_start[axis] * time_step * time_step
+            + moved[axis]
+    });
+    let after = shifted_by(shift, delta);
+    let pull_at_the_end = gravity_at(after);
+    let faster = [0, 1, 2].map(|axis| {
+        velocity[axis]
+            + sped[axis]
+            + 0.5 * (pull_at_the_start[axis] + pull_at_the_end[axis]) * time_step
+    });
+    (after, faster)
 }
 
 /// What a ship is to the solver. A ship that is held or frozen does not move; **neither does one that is on a rail**: it is where the clock puts it whatever the solver does, so it
@@ -1737,10 +1768,10 @@ impl Bodies {
             let level = frame.level;
             if let Some(follow) = frame.follow.as_mut()
                 && follow.followed.moves_itself()
-                && let Some(point) = follow.world(anchor)
             {
-                let gravity = world.gravity_at(level, point);
-                follow.advance(time_step, gravity, moved, sped);
+                follow.advance(time_step, moved, sped, |point| {
+                    world.gravity_at(level, point)
+                });
             }
         }
     }
@@ -2906,26 +2937,115 @@ mod tests {
             0.05,
             [0.0; 3],
             [0.0; 3],
-            [0.0; 3],
+            |_| [0.0; 3],
         );
         assert_eq!(voxels_of(shift), [5.0, 0.0, -2.5]);
         assert_eq!(velocity, [100.0, 0.0, -50.0]);
     }
 
     #[test]
-    fn the_pull_of_a_tick_speeds_the_frame_and_moves_it_as_a_semi_implicit_step_does() {
-        // A pull of 5 for a tick of 0.05: the speed is 0.25 more, and the frame has gone its speed and the pull's part of a tick: v dt + g dt^2.
+    fn a_pull_that_does_not_change_moves_the_frame_as_it_moves_a_body_that_falls_in_it() {
+        // A pull of 5 for a tick of 0.05: the speed is 0.25 less, and the frame has gone its speed and the pull's part of a tick: v dt + g dt^2 / 2 (a body that falls in a
+        // pull that does not change goes exactly there; the step that goes v dt + g dt^2 would be 0.00625 further).
         let (shift, velocity) = advanced(
             Displacement::NONE,
             [0.0, 10.0, 0.0],
             0.05,
-            [0.0, -5.0, 0.0],
             [0.0; 3],
             [0.0; 3],
+            |_| [0.0, -5.0, 0.0],
         );
         assert_eq!(velocity, [0.0, 9.75, 0.0]);
-        // The same as the world works it out: the speed after the pull, over the tick.
-        assert!((voxels_of(shift)[1] - 9.75 * 0.05).abs() < 1e-12);
+        assert!((voxels_of(shift)[1] - (10.0 * 0.05 - 5.0 * 0.05 * 0.05 / 2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_frame_gains_the_mean_of_the_pull_at_both_ends_of_the_tick_and_the_second_is_where_it_got_to()
+     {
+        // A pull that grows with the distance from a centre, as a spring does (g = -4 x), from x = 3 at rest. The frame moves g0 dt^2 / 2 = -12 * 0.0025 / 2 = -0.015 (to x = 2.985,
+        // where the pull is -11.94), and gains the mean of -12 and -11.94 for the tick: -0.5985. A step that took the pull at the start alone would have gained -0.6.
+        let (shift, velocity) = advanced(
+            Displacement::NONE,
+            [0.0; 3],
+            0.05,
+            [0.0; 3],
+            [0.0; 3],
+            |shift| [-4.0 * (3.0 + voxels_of(shift)[0]), 0.0, 0.0],
+        );
+        assert!((voxels_of(shift)[0] - -0.015).abs() < 1e-12, "{shift:?}");
+        assert!((velocity[0] - -0.5985).abs() < 1e-12, "{velocity:?}");
+    }
+
+    /// The softened pull of a planet at the origin that the game has (`Cave::gravity`: `gm / (r^2 + 1)` towards it), at a place in voxels.
+    fn softened_pull(gm: f64, place: [f64; 3]) -> [f64; 3] {
+        let squared: f64 = place.iter().map(|part| part * part).sum();
+        let strength = -gm / ((squared + 1.0) * libm::sqrt(squared));
+        place.map(|part| strength * part)
+    }
+
+    #[test]
+    fn a_frame_in_free_fall_goes_round_a_planet_on_its_orbit_for_three_orbits() {
+        // The orbit of a group that is alone, with nothing else near, so it has no rail to be exact on (the world puts a group on a rail after a second of quiet, so this is the group
+        // that has something near it, or that is being pushed). At 70 kilometres, a pull of 8.27 voxels a second a second (the planet of the game), 578 seconds to the orbit and 34,665
+        // ticks to three. Measured (ran, a numeric model of the same steps): one semi-implicit step a tick (`v += g dt; x += v dt`) is 19 voxels off the circle at the worst and
+        // 8.4e-2 off in energy; the step that goes `v dt + g dt^2` is 715 and 2,900; velocity Verlet (the pull at both ends of the tick) is 0.01 and 1.5e-5.
+        let distance = 70_016.0;
+        let gm = 8.27 * (distance * distance + 1.0);
+        let speed = libm::sqrt(gm * distance / (distance * distance + 1.0));
+        let ticks = (3.0 * 2.0 * std::f64::consts::PI * distance / speed / 0.05) as usize;
+        let place = |shift: Displacement| {
+            let moved = voxels_of(shift);
+            [distance + moved[0], moved[1], moved[2]]
+        };
+        let energy = |shift: Displacement, velocity: [f64; 3]| {
+            let radius = libm::sqrt(place(shift).iter().map(|part| part * part).sum());
+            0.5 * velocity.iter().map(|part| part * part).sum::<f64>() + gm * libm::atan(radius)
+        };
+        let (mut shift, mut velocity) = (Displacement::NONE, [0.0, 0.0, speed]);
+        let start_energy = energy(shift, velocity);
+        let (mut worst_radius, mut worst_energy) = (0.0f64, 0.0f64);
+        for tick in 1..=ticks {
+            (shift, velocity) = advanced(shift, velocity, 0.05, [0.0; 3], [0.0; 3], |shift| {
+                softened_pull(gm, place(shift))
+            });
+            if tick % 50 == 0 {
+                let radius = libm::sqrt(place(shift).iter().map(|part| part * part).sum());
+                worst_radius = worst_radius.max((radius - distance).abs());
+                worst_energy = worst_energy.max((energy(shift, velocity) - start_energy).abs());
+            }
+        }
+        assert!(
+            worst_radius < 0.1,
+            "the frame was {worst_radius} voxels off its circle at the worst"
+        );
+        assert!(
+            worst_energy < 1e-3,
+            "its energy was {worst_energy} off at the worst"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_moves_itself_asks_for_the_pull_where_it_is_and_where_it_has_got_to() {
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let mut follow = Follow {
+            followed: Followed::Group(GridId::new(7)),
+            anchor,
+            shift: Displacement::NONE,
+            velocity: [100.0, 0.0, 0.0],
+        };
+        let asked = std::cell::RefCell::new(Vec::new());
+        follow.advance(0.05, [0.0; 3], [0.0; 3], |point| {
+            asked.borrow_mut().push(point);
+            [0.0, -5.0, 0.0]
+        });
+        let asked = asked.into_inner();
+        assert_eq!(asked.len(), 2, "the pull at both ends of the tick");
+        assert_eq!(asked[0].relative_to(anchor), [0.0; 3]);
+        // The second place is where the frame is after the tick: 100 * 0.05 along x, and -5 * 0.05^2 / 2 along y.
+        let there = asked[1].relative_to(anchor);
+        assert!((there[0] - 5.0).abs() < 1e-12 && (there[1] - -0.00625).abs() < 1e-12);
+        assert_eq!(follow.velocity, [100.0, -0.25, 0.0]);
+        assert_eq!(follow.shift.in_voxels(), there);
     }
 
     #[test]
@@ -2935,9 +3055,9 @@ mod tests {
             Displacement::NONE,
             [100.0, 0.0, 0.0],
             0.05,
-            [0.0; 3],
             [0.01, 0.0, 0.0],
             [0.2, 0.0, 0.0],
+            |_| [0.0; 3],
         );
         assert!((voxels_of(shift)[0] - (5.0 + 0.01)).abs() < 1e-12);
         assert!((velocity[0] - 100.2).abs() < 1e-12);
@@ -2948,11 +3068,48 @@ mod tests {
             Displacement::NONE,
             [100.0, 0.0, 0.0],
             0.05,
-            [0.0; 3],
             [gained * 0.05, 0.0, 0.0],
             [gained, 0.0, 0.0],
+            |_| [0.0; 3],
         );
         assert!((voxels_of(shift)[0] - velocity[0] * 0.05).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_frame_at_the_edge_of_what_the_world_can_hold_takes_the_pull_it_had_or_does_nothing() {
+        let at_the_edge = |shift_bricks: [i128; 3]| Follow {
+            followed: Followed::Group(GridId::new(7)),
+            anchor: WorldPosition::new(
+                BrickCoordinate::new(voxel_space::BRICK_COORDINATE_MAXIMUM, 0, 0),
+                [1.0; 3],
+            ),
+            shift: Displacement {
+                bricks: shift_bricks,
+                offset: [0.0; 3],
+            },
+            velocity: [640.0, 0.0, 0.0],
+        };
+        // The end of the tick is a brick further (640 * 0.05 = 32 voxels) and the world cannot hold it: the pull at the start is the pull for the tick (a pull of nothing would gain
+        // half as much).
+        let mut follow = at_the_edge([0; 3]);
+        let asked = std::cell::Cell::new(0);
+        follow.advance(0.05, [0.0; 3], [0.0; 3], |_| {
+            asked.set(asked.get() + 1);
+            [0.0, -5.0, 0.0]
+        });
+        assert_eq!(
+            asked.get(),
+            1,
+            "the world was asked once, where it could hold"
+        );
+        assert_eq!(follow.velocity, [640.0, -0.25, 0.0]);
+        // The start itself is out of what the world can hold (the frame is a brick on): nothing is done and nothing is asked.
+        let mut follow = at_the_edge([1, 0, 0]);
+        follow.advance(0.05, [0.0; 3], [0.0; 3], |_| {
+            unreachable!("nothing is asked")
+        });
+        assert_eq!(follow.velocity, [640.0, 0.0, 0.0]);
+        assert_eq!(follow.shift.bricks, [1, 0, 0]);
     }
 
     #[test]

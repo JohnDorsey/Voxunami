@@ -54,6 +54,10 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   `adapter 1: 1 pixels differ, such as [(157, 68)]` (screen.rs:386), the same pixel as 3, 4 and 5. **Reruns: 5 alone and 5 as the whole binary, 0 failures in 10.** Nothing the branch changed is on this test's path, which is why it is recorded here as this entry's and not as the branch's.
 - **Occurrence 7: 2026-11-11**, the full gate of step 4c-4 (a frame of its own for a group that is alone: `server`, `grid_bodies`, new Cave tests; nothing that draws a form), `cargo test --workspace --no-fail-fast`
   on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel again**. **Reruns: 3 as the whole binary (5 tests), 0 failures in 3.**
+- **Occurrence 8: 2026-11-15**, the full gate of the velocity Verlet step of the frame of a group that is alone (`grid_bodies/src/plugin.rs`, two Cave test files; nothing that draws a form),
+  `cargo test --workspace --exclude renderer --no-fail-fast` on **Windows**: `adapter 3: 1 pixels differ, such as [(105, 107)]` (`screen.rs:386`): **a different adapter and a different pixel
+  from occurrences 3 to 7**. **Reruns: 3 alone and 2 as the whole binary (5 tests), 0 failures in 5.** (It is one more instance of a single pixel differing, which is what the "pixel left out by a first
+  frame" belief below predicts and "always (157, 68) on adapter 1" does not; nothing here was looked into further.)
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
   first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4, 5 and 6 are the same pixel, (157, 68), on the same adapter: a first

@@ -298,7 +298,9 @@ pub fn how_the_chain_turns(distance: f64, setting: Setting) -> Vec<(Orientation,
 }
 
 /// The same, `ticks` ticks after it is set swinging. (The swing of this chain turns back at about the 130th tick, a moment at which a difference of the rounding of a few ticks
-/// before is made large, so that two chains that were in different frames for a while agree to eight digits until then and not after.)
+/// before is made large, so that two chains that were in different frames for a while agree to eight digits until then and not after. **It is an impact with two outcomes that
+/// rounding alone decides** (a car's spin after it is 0.034 or 0.080): an alone chain at 70 and at 140 kilometres agreed to 5e-10 at the 200th tick with the old step of the frame
+/// and differ by 0.19 with velocity Verlet, and a change of 1e-13 in the speed of the frame flipped it with the old step too: `docs/decisions/joints-and-cars.md`, 4c-5-2.)
 pub fn how_the_chain_turns_after(
     distance: f64,
     setting: Setting,
