@@ -1,6 +1,6 @@
 # Monty step budget: a plan
 
-**Status: a proposal. Nothing is built.** Written 2026-11-16 for the owner's approval; it extends the Monty fork described in the section "Decision (2026-11-15): Monty" of `history/interoperability-survey.md`.
+**Status (2026-11-16): the owner approved the decisions below. Phases 0 to 3 are built and pushed in the fork (`JohnDorsey/monty`, branch `deterministic-math`, commit `aac99ca9`; `FORK.md` there lists what and the measured cost). Phase 4 (audit) is next; phases 5 and 6 are not started, so a pool worker has no step budget yet.** Written 2026-11-16; it extends the Monty fork described in the section "Decision (2026-11-15): Monty" of `history/interoperability-survey.md`.
 
 ## Why
 
