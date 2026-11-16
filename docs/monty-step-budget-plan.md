@@ -22,6 +22,18 @@ Evidence for the gap (read from the fork's source at `v1.6.0`, plus the in-proce
 3. **Counts are `u64` and survive a snapshot,** like the feed time does today.
 4. **Time limits stay.** A step budget does not replace them; it bounds the deterministic part.
 
+## Phase 4 findings (2026-11-16, measured)
+
+About 100 native operations were run, each charging steps against wall time (`history/spikes/scripting/monty_native_audit_results_2026-11-16.txt`, harness in `monty_native_audit/`). A plain loop costs 4.3 ns per step. Three groups:
+
+1. **Already fine (2 to 175 ns per step):** per-item loops (`sum`, `max`, `sorted`, `set`, `json`, `list(range)`, `itertools`, `random.shuffle`, slicing copies `l[:]`).
+2. **Linear work charged as almost nothing (1 to 35 million ns per step):** `str`/`bytes` repeat, `replace`, `upper`, `count`, `find`, `==`, `+`, `encode`, `center`, `repr`; `hashlib`, `base64`, `unicodedata`, `re.search`; and O(n) copies and moves behind one bytecode: `list.insert(0, x)` and `pop(0)` (25 to 90 microseconds per step at a million items), `l + l`, `dict.copy()`, `l.reverse()`. A loop of such calls costs 1000 to 100,000 times what its steps say, bounded only by memory.
+3. **Super-linear single calls, charged 7 to 10 steps (uninterruptible, even by the time limit):** big-integer `pow`, `*`, `//`, `math.gcd`, `math.isqrt`, `math.comb`, `pow(a, b, m)`, `Decimal` `**`/`sqrt`/`ln`, and `re.sub`. Examples: `Decimal('1.0001') ** 100000` at precision 20,000 ran 15.8 s; `math.gcd` of two 1.2M-bit numbers 3 s; `re.sub` on a 4 MB string 41 to 69 s (1 MB 2 s, 2 MB 8.5 s: worse than linear, independent of `max_memory`, so likely a `fancy-regex` or `captures_iter` cost per match; I have not found the cause).
+
+Catastrophic regexes (`(a+)+$`) and `fnmatch` did not hang in my cases (sub-millisecond); I did not find why, so I do not claim they are safe.
+
+Already bounded by Monty itself: int to string conversion over 4300 digits, `Decimal` coefficients over 4300 digits at creation, regex nesting depth, `json` nesting depth.
+
 ## Phases (tests first, safest piece next, verify, continue)
 
 **Phase 0: tests that fail now, and a baseline.** In `crates/monty/tests/step_budget.rs`:

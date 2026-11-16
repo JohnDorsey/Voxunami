@@ -1,0 +1,12 @@
+[package]
+name = "monty-native-audit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+monty = { git = "https://github.com/JohnDorsey/monty", branch = "deterministic-math" }
+monty-types = { git = "https://github.com/JohnDorsey/monty", branch = "deterministic-math" }
+
+[profile.release]
+debug = false

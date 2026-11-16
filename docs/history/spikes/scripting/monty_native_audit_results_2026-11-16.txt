@@ -1,0 +1,116 @@
+Monty native-operation audit, 2026-11-16 (phase 4 of docs/monty-step-budget-plan.md)
+Fork at aac99ca9 (step budget phases 0-3), release build, Windows 10, max_memory 2 GB unless noted.
+Each case runs in its own process; "steps" and "wall" cover only the operation (setup excluded).
+Reference: a plain bytecode loop costs 4.3 ns per step. A hole is an operation whose ns/step is far above that.
+Harness bugs (not Monty): case 32 (str.maketrans missing), 60 (del unsupported), 94 (io import is a host call),
+80 (Decimal of 10^6 digits refused: 4300-digit coefficient limit), 7/8 (int<->str 4300-digit limit, as CPython).
+Case 6 (pow(7, 3**100000, m)) did not finish in 90 s: sized wrongly by me, but it shows one operation can run for hours.
+Case 69 (re.sub on 12 MB) did not finish in 90 s: see the re sub rows (100-102), quadratic or worse.
+
+  0 control: loop                      steps     22000009  wall    95.0ms  ns/step          4.3  ok
+  1 int pow 2**3M                      steps            7  wall   459.4µs  ns/step      65628.6  ok
+  2 int pow 3**1M                      steps            7  wall    21.0ms  ns/step    2998428.6  ok
+  3 int pow big base                   steps            7  wall    66.2ms  ns/step    9463100.0  ok
+  4 int mul 3M bits                    steps            7  wall    60.3ms  ns/step    8620185.7  ok
+  5 int div 3M/1.5M bits               steps            7  wall    73.6ms  ns/step   10519457.1  ok
+6 (no output: timed out at 90 s or crashed)
+  7 str(big int) 480k digits           (stopped before the end of the setup or the op)  ERR ValueError: Exceeds the limit (4300 digits) for integer string convers
+  8 int(str) 200k digits               (stopped before the end of the setup or the op)  ERR ValueError: Exceeds the limit (4300 digits) for integer string convers
+  9 int shift 1<<10**8                 steps            7  wall     1.8ms  ns/step     258685.7  ok
+ 10 math.factorial(100000)             steps         4103  wall    37.0ms  ns/step       9016.0  ok
+ 11 math.comb(600000,300000)           steps       299976  wall      9.3s  ns/step      30886.7  ok
+ 12 math.gcd big                       steps            8  wall      3.0s  ns/step  368960900.0  ok
+ 13 math.isqrt big                     steps            7  wall   154.1ms  ns/step   22013657.1  ok
+ 14 int bit_length/hash big            steps            6  wall   211.3µs  ns/step      35216.7  ok
+ 15 int == compare big                 steps            7  wall    38.9µs  ns/step       5557.1  ok
+ 16 str repeat 10**8                   steps            7  wall    10.4ms  ns/step    1488400.0  ok
+ 17 bytes repeat 10**8                 steps            7  wall    12.4ms  ns/step    1771300.0  ok
+ 18 list repeat 2*10**7                steps     20000008  wall   179.1ms  ns/step          9.0  ok
+ 19 str replace grow                   steps            8  wall    36.0ms  ns/step    4495525.0  ok
+ 20 str upper 10**8                    steps            6  wall    15.6ms  ns/step    2606366.7  ok
+ 21 str count 10**8                    steps            7  wall   229.8ms  ns/step   32823114.3  ok
+ 22 str find missing 10**8             steps            7  wall    26.3ms  ns/step    3750671.4  ok
+ 23 str split 10**7                    steps      3000006  wall    66.1ms  ns/step         22.0  ok
+ 24 str join 10**7                     steps      5000007  wall   112.8ms  ns/step         22.6  ok
+ 25 str eq 10**8                       steps            7  wall     4.2ms  ns/step     601642.9  ok
+ 26 str concat 10**8                   steps            7  wall    19.7ms  ns/step    2819400.0  ok
+ 27 str encode 10**8                   steps            6  wall     9.1ms  ns/step    1522700.0  ok
+ 28 str center 10**8                   steps            7  wall   250.1ms  ns/step   35728685.7  ok
+ 29 str format width 10**8             steps     99999944  wall   230.8ms  ns/step          2.3  ok
+ 30 str %-format width                 steps        24391  wall    47.8ms  ns/step       1958.6  ok
+ 31 format float prec                  steps            7  wall   102.6µs  ns/step      14657.1  ok
+ 33 str splitlines 10**7               steps      5000006  wall    55.4ms  ns/step         11.1  ok
+ 34 repr big str                       steps            6  wall    81.6ms  ns/step   13597200.0  ok
+ 35 list.insert(0) x2000 on 10**6      steps        16007  wall   401.2ms  ns/step      25064.2  ok
+ 36 list.pop(0) x2000 on 10**6         steps        14007  wall      1.3s  ns/step      89476.8  ok
+ 37 list copy x200 of 10**6            steps    200002007  wall      9.6s  ns/step         47.8  ok
+ 38 list + list x100 of 10**6          steps          707  wall      4.2s  ns/step    5915636.9  ok
+ 39 list in (miss) x20 of 10**6        steps     20000167  wall      1.3s  ns/step         67.2  ok
+ 40 list.index(miss)                   steps      3000013  wall   165.6ms  ns/step         55.2  ok
+ 41 list.count 3*10**6                 steps      3000008  wall   171.1ms  ns/step         57.0  ok
+ 42 sum(list) 3*10**6                  steps      3000006  wall   181.1ms  ns/step         60.4  ok
+ 43 max(list) 3*10**6                  steps      3000006  wall   100.3ms  ns/step         33.4  ok
+ 44 list(range(10**7))                 steps     20000007  wall   446.6ms  ns/step         22.3  ok
+ 45 tuple(range(10**7))                steps     20000007  wall   335.9ms  ns/step         16.8  ok
+ 46 list.reverse x50 of 10**6          steps          307  wall    13.9ms  ns/step      45312.4  ok
+ 47 list == list 3*10**6               steps      3000007  wall    71.9ms  ns/step         24.0  ok
+ 48 sorted 10**6 ints (reversed)       steps      2000006  wall    29.8ms  ns/step         14.9  ok
+ 49 sorted 10**6 ints (shuffled)       steps      2000006  wall   161.4ms  ns/step         80.7  ok
+ 50 sorted 3*10**5 strings             steps      5511238  wall   156.2ms  ns/step         28.3  ok
+ 51 list.sort already sorted 3*10**6   steps            6  wall    17.7ms  ns/step    2951083.3  ok
+ 52 str(list 10**6)                    steps      1000006  wall    33.3ms  ns/step         33.3  ok
+ 53 set(range(2*10**6))                steps      2000007  wall   136.1ms  ns/step         68.0  ok
+ 54 set | set 10**6                    steps      1000007  wall   113.9ms  ns/step        113.9  ok
+ 55 set & set 10**6                    steps      1000007  wall    68.6ms  ns/step         68.6  ok
+ 56 dict.copy x20 of 10**6             steps          127  wall      1.2s  ns/step    9555803.1  ok
+ 57 dict | dict 10**6                  steps      1000007  wall   120.2ms  ns/step        120.2  ok
+ 58 sorted(dict) 10**6                 steps      2000006  wall    37.3ms  ns/step         18.7  ok
+ 59 list slice assign big              steps        97307  wall    52.6ms  ns/step        540.3  ok
+ 61 str += x 20000 on 10**6            steps       140007  wall   439.3ms  ns/step       3138.0  ok
+ 62 bytes(10**8)                       steps            6  wall    38.9µs  ns/step       6483.3  ok
+ 63 bytearray(10**8)                   (stopped before the end of the setup or the op)  ok
+ 64 re backtrack (a+)+$ n=24           steps           12  wall   458.9µs  ns/step      38241.7  ok
+ 65 re backtrack (a+)+$ n=28           steps           12  wall   320.2µs  ns/step      26683.3  ok
+ 66 re (a|aa)+$ n=30                   steps           12  wall   279.9µs  ns/step      23325.0  ok
+ 67 re lookaround backtrack            steps           10  wall   992.6µs  ns/step      99260.0  ok
+ 68 re findall big                     steps      3000008  wall   278.7ms  ns/step         92.9  ok
+69 (no output: timed out at 90 s or crashed)
+ 70 re search miss big                 steps            8  wall    36.0ms  ns/step    4503837.5  ok
+ 71 re compile big pattern             (stopped before the end of the setup or the op)  ERR re.PatternError: pattern too deeply nested at position 63
+ 72 re compile {1000}{1000}            (stopped before the end of the setup or the op)  ERR re.PatternError: Error compiling regex: Regex error: error building NF
+ 73 json dumps 10**6 list              steps      1000007  wall    26.1ms  ns/step         26.1  ok
+ 74 json loads 10**6 list              steps      1000007  wall    36.0ms  ns/step         36.0  ok
+ 75 json loads deep nest               (stopped before the end of the setup or the op)  ERR json.JSONDecodeError: recursion limit exceeded: line 1 column 201 (cha
+ 76 hashlib sha256 10**8               steps            8  wall    39.7ms  ns/step    4965487.5  ok
+ 77 hashlib sha512 10**8               steps            8  wall   118.2ms  ns/step   14776775.0  ok
+ 78 hashlib blake2b 10**8              steps            8  wall   101.4ms  ns/step   12679187.5  ok
+ 79 base64 10**8                       steps            7  wall    89.7ms  ns/step   12816228.6  ok
+ 81 decimal div prec 200k              steps           11  wall   218.4µs  ns/step      19854.5  ok
+ 82 decimal sqrt prec 50k              steps            8  wall    54.8ms  ns/step    6848575.0  ok
+ 83 decimal pow                        steps            9  wall     15.8s  ns/step 1761030311.1  ok
+ 84 decimal exp/ln prec 5k             steps            8  wall   151.8ms  ns/step   18981012.5  ok
+ 85 itertools.combinations 24C12       steps      5408267  wall   941.0ms  ns/step        174.0  ok
+ 86 itertools.product 10**7            steps      2000139  wall   197.4ms  ns/step         98.7  ok
+ 87 itertools.permutations 10P8        steps     10886413  wall   356.5ms  ns/step         32.7  ok
+ 88 random.shuffle 10**6               steps      1000007  wall    17.5ms  ns/step         17.5  ok
+ 89 random.sample 10**6                steps      1053387  wall    82.0ms  ns/step         77.9  ok
+ 90 random.randbytes 10**8             steps     25000007  wall   155.7ms  ns/step          6.2  ok
+ 91 random.getrandbits 10**8           steps      3124999  wall    11.6ms  ns/step          3.7  ok
+ 92 unicodedata.normalize 10**7        steps            8  wall    88.9ms  ns/step   11109875.0  ok
+ 93 fnmatch backtrack                  steps           12  wall    60.0µs  ns/step       5000.0  ok
+ 95 tomllib big                        steps            7  wall    75.4µs  ns/step      10771.4  ok
+ 96 bisect.insort x2000 on 10**6       steps        16007  wall   402.2ms  ns/step      25128.8  ok
+ 97 functools.reduce over range        steps      5100017  wall    47.3ms  ns/step          9.3  ok
+ 98 collections.deque rotate           steps          707  wall    12.9ms  ns/step      18202.5  ok
+ 99 len(list(range)) via slicing       steps           16  wall    37.7µs  ns/step       2356.2  ok
+
+Added rows (scaling checks):
+100 re sub 1MB                         steps            9  wall      7.5s  ns/step  838433055.6  ok
+101 re sub 2MB                         steps            9  wall     14.5s  ns/step 1615171522.2  ok
+102 re sub 4MB                         steps            9  wall     34.7s  ns/step 3858383322.2  ok
+103 modpow small exp                   steps           10  wall   642.7ms  ns/step   64274380.0  ok
+104 modpow 2x exp                      steps           10  wall      1.3s  ns/step  128155630.0  ok
+105 decimal pow prec 2000              steps            9  wall    40.7ms  ns/step    4520800.0  ok
+106 decimal pow prec 4000              steps            9  wall   238.9ms  ns/step   26540077.8  ok
+107 math.gcd 2x size                   steps            8  wall   258.4ms  ns/step   32300700.0  ok
+no max_memory: re sub 1MB 2.0 s, 4MB 41.7 s (so not caused by the memory check)
