@@ -100,6 +100,19 @@ while True:
 for i in range(40):
     s = s + s
 len(s)", ResourceLimits { max_feed_duration: Some(Duration::from_millis(300)), max_memory: Some(50_000_000), ..ResourceLimits::default() });
+    run_limited("append small lists forever, 400 ms + 50 MB", "x = []
+while True:
+    x.append([0])", ResourceLimits { max_feed_duration: Some(Duration::from_millis(400)), max_memory: Some(50_000_000), ..ResourceLimits::default() });
+    run_limited("dict of ints forever, 400 ms + 50 MB", "d = {}
+i = 0
+while True:
+    d[i] = i
+    i += 1", ResourceLimits { max_feed_duration: Some(Duration::from_millis(400)), max_memory: Some(50_000_000), ..ResourceLimits::default() });
+    run_limited("append short strings, 400 ms + 50 MB", "x = []
+i = 0
+while True:
+    x.append(str(i))
+    i += 1", ResourceLimits { max_feed_duration: Some(Duration::from_millis(400)), max_memory: Some(50_000_000), ..ResourceLimits::default() });
     run_limited("sum(x*x for x in range(10))", "sum(x*x for x in range(10))", ResourceLimits::default());
 
     println!("\n== frozen clock and seed (two fresh runs must agree)");
