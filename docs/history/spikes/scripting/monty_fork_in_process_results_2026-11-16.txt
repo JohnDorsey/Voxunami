@@ -1,0 +1,26 @@
+== pipeline setup, in process, 60 textures + 120 passes + 500 settings
+host calls per run: 180; first run 1.294ms; 200 runs: median 812.400µs, p99 1.071ms
+
+== limits
+while True: pass, 50 ms feed limit           ERROR  50.031ms  TimeoutError: feed time limit exceeded: 50.0121ms > 50ms
+same, no limit set -> skipped (would hang)   ok      5.600µs  1
+sum(range(10**9)), 50 ms feed limit          ERROR  50.014ms  TimeoutError: feed time limit exceeded: 50.0038ms > 50ms
+[0]*10**8, max_memory 50 MB (no monty-alloc) ERROR  37.400µs  MemoryError: memory limit exceeded: 1600000000 bytes > 50000000 bytes
+unbounded recursion, default depth 1000      ok    890.300µs  'caught'
+genexpr over range(10**12), 200 ms + 50 MB   ERROR 202.326ms  TimeoutError: feed time limit exceeded: 200.0105ms > 200ms
+generator function (yield)                   ERROR  53.800µs  NotImplementedError: The monty syntax parser does not yet support yield expressions
+append forever, 300 ms + 50 MB               ERROR 246.748ms  MemoryError: memory limit exceeded: 67108864 bytes > 50000000 bytes
+string doubling x40, 300 ms + 50 MB          ERROR   9.082ms  MemoryError: memory limit exceeded: 67108864 bytes > 50000000 bytes
+sum(x*x for x in range(10))                  ok     62.100µs  285
+
+== frozen clock and seed (two fresh runs must agree)
+run 0                                        ok     79.000µs  (1700000000.0, '2023-11-14 22:13:20', 0.5016930963015209, 0.9018654590720995)
+run 1                                        ok     14.600µs  (1700000000.0, '2023-11-14 22:13:20', 0.5016930963015209, 0.9018654590720995)
+
+== ambient authority
+open('/etc/passwd')                          ERROR  21.400µs  PermissionError: Permission denied: '/etc/passwd'
+import os; os.getenv('PATH')                 ERROR  20.300µs  RuntimeError: 'os.getenv' is not supported in this environment
+import socket                                ERROR   7.700µs  ModuleNotFoundError: No module named 'socket'
+import subprocess                            ERROR   2.700µs  ModuleNotFoundError: No module named 'subprocess'
+__import__('os').system                      ok     66.300µs  'suspended: FunctionCall(FunctionCall { function_name: "__imp'
+eval('1+1')                                  ok     19.000µs  2

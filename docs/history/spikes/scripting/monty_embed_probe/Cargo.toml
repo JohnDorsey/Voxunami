@@ -1,0 +1,9 @@
+[package]
+name = "monty-embed-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+monty = { git = "https://github.com/JohnDorsey/monty", branch = "deterministic-math" }
+monty-types = { git = "https://github.com/JohnDorsey/monty", branch = "deterministic-math" }
