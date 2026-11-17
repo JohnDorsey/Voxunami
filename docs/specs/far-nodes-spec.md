@@ -1,6 +1,6 @@
 # Far nodes for edited terrain and for ships (a plan, 2026-11-16)
 
-Status: **a plan, nothing built, no owner answers yet** (the questions are in section 7, each with what I would choose). It finishes what `lod-spec.md` left open: the server's correction of far
+Status: **a plan, nothing built; the owner answered on 2026-11-17 (section 7), and question 3 is reopened and worked out in section 8** (which changes F4 and F5). It finishes what `lod-spec.md` left open: the server's correction of far
 nodes after an edit (`world-and-sky.md`: "Not done"), step 38j (ships), and the planet's nodes (`planet-spec.md`, "Not done" (c)). Marks as in `lod-spec.md`: **[code]** is what I read in the code,
 **[run]** what I ran, **[belief]** what I did not check.
 
@@ -52,7 +52,7 @@ a client far from a ship gets only its coarse nodes and one that comes closer ge
 
 **3.4 A ship that is known by its nodes only (the wire).** `GridsSpawned` gets a **tier**: *near* (as now: all the bricks follow) and *far* (no bricks; the nodes arrive as `CoarseNodes`). A far ship is told of when it would be a few pixels
 across (`lod-spec.md` 3.7 is the rule; it was never built), and promoted to near by the bricks being sent when its bounds meet the region; the other way, demoted, by the bricks being dropped and the ship kept. It costs no brick of the
-budget (`maximum_ship_bricks`). Things to settle: whether the **entities aboard** a far ship are told of (the pilot of a far rocket: I would say yes, they are in `entity_messages` through `known_grids` already); the **protocol version** goes up
+budget (`maximum_ship_bricks`). Things to settle: whether the **entities aboard** a far ship are told of (the pilot of a far rocket: I would say yes, they are in `entity_messages` through `known_grids` already); the **protocol version** goes up (it is 11 today, so 12; an earlier draft of this plan said 9, which was wrong)
 (owner, before the first release: formats may break); a **recording** carries it unchanged (it is a message stream), and a test shows a replay of a far ship draws the same.
 
 **3.5 The client.** (a) The overrides belong to the **session**, not to a view: one store, keyed by grid, that a `LodView` reads (`set_override` now writes into the view). A view that is made again is given what the server has already sent.
@@ -92,11 +92,44 @@ F1 and F2 can be had in days of work; F4 and F5 are the bulk. F3 may turn out no
 - Send a ship's nodes to a client that already holds its bricks: it can make them itself from the bricks (`coarse_node_of_brick`); only the far tier needs the server's.
 - Turn the plugin on in the overworld: its nodes are not drawn there and the generator's cost is what stopped it.
 
-## 7. Questions for the owner (my choice first)
+## 7. The owner's answers (2026-11-17)
 
-1. **Order**: F1, F2, then F4, F5? (Planets' edits first because they are the player's main building site; ships' far view is the biggest and I would not hide it behind the others.)
-2. **The rate** (`bytes_per_second`): a Cave default and a player setting (`.detail`-style command), or a fixed one? I would take a default of 1 megabyte a second that a player can lower.
-3. **Which ships are known far away**: by the pixel rule of `lod-spec.md` 3.7 (a ship is known while a node of it would be a few pixels across), or by a fixed distance? I would take the pixel rule, with a minimum size so that a single dropped block is not told to everyone.
-4. **Entities aboard a far ship** are told of: yes, as they already are for any ship the client knows. (They are a few boxes; the cost is small.)
-5. **The largest detail level with an override** is 12 (cells of 4 km). A planet of 1% of the Earth's radius is 128 km across, so a base is still one cell at that level; a bigger planet would want a higher level. Keep 12 for now?
-6. **The protocol may break** for the far tier (version 9), as before the first release?
+1. **Order** F1, F2, then F4, F5: **yes.**
+2. **The rate**: a Cave default of 1 megabyte a second that a player can lower: **yes.**
+3. **Which ships are known far away**: **reopened**, section 8.
+4. **Entities aboard a far ship**: whether one is shown from far away depends on **data of the entity** (not a blanket rule). Entities may be used for multi-voxel blocks, which are then part of how a far ship looks. Open: which component carries it (8.6).
+5. **The largest detail level with an override** (12: cells of 4 km, a node of 128 km): the owner asked what it means; explained in the reply. I keep 12 unless told otherwise. A cell of that level is as small as three pixels only from about 1,000 km, so a bigger planet's edits are not visible at the levels above it anyway.
+6. **The protocol may break** (11 to 12) for the far tier: the owner asked what it means; explained in the reply (an old client and an old server cannot talk, and the golden recordings are made again). Before the first release the rule in `CLAUDE.md` allows it. Waiting for a yes.
+
+## 8. Ships far away (the owner's questions of 2026-11-17, answered from the code; reading, not runs, unless marked)
+
+**8.1 What "known" means.** A client *knows* a ship when the server has told it the ship exists (`GridsSpawned`) and sent its bricks; a ship the client does not know is not drawn at all. Today **[code]** a ship is known if its bricks
+meet the region watched (the view radius plus 2 or 4 bricks, about 450 to 500 voxels), or it is a planet, or the client's body is aboard it. The pixel rule of `lod-spec.md` 3.7 (known while a node of it would be a pixel across) was written and never built.
+At 1080 lines and a 70 degree view a pixel is 0.0013 radians, so under that rule **a ship 10 voxels long is known out to about 7.7 km and a 1 km ship to about 770 km** (arithmetic, not a run).
+
+**8.2 Is a ship ever simulated beyond the simulation distance?** The rule **[code: `grid_lifecycle::update`, `ShipSettings`]**: moving and edited within 1,024 voxels of the nearest brick of the ship (so already by the size of the ship: a ship's *near edge* counts, not its middle),
+frozen beyond (1,126 on the way out, a tenth more), **parked in a file and out of memory beyond the unload distance** (1,024 too by default, so a ship is parked as soon as it freezes). Only players in the same level count; a level with no player has nothing awake.
+The exceptions I found:
+- **A planet and a ship on a rail are never parked** and are brought in at once whatever the distance. They are *frozen* when no one is near, but **their rail goes on** (its place is a function of the clock, `apply_rails` for all of them every tick, with the hand-overs between bodies at their exact instants). A coasting ship becomes a rail ship, so a ship thrown into orbit moves at any distance. That is movement, not physics: nothing of its rules, collisions or edits runs.
+- **Ships coupled by joints are one group** kept by the nearest member: the far end of a long train is awake 1,000 or more voxels from every player; a ship in a file coupled to one on a rail comes in with it.
+- **The host's setting** (`everywhere`, tests use it too) turns distances off.
+- The other way: a ship that **waits for its pilot** is parked and is *not* brought in by a near player.
+- A saved world has all its ships in files at the start; they come in when a player is within 1,024 voxels (or at once, for rails and planets).
+- **Unpiloted ships** are simulated like any other within the distance (`players-and-ships.md`); the pilot does not matter.
+Not checked: whether any *plugin* ticks a frozen ship by itself (I read the lifecycle plugin and the docs, not every rule). What this means for far display: **a ship that is farther than 1,126 voxels from every player is, for most ships, not in memory at all**, so the server has nothing to make nodes from without reading its file. The 8.5 proposal answers that.
+
+**8.3 Are coarse nodes saved?** No, and nothing is planned yet that saves them **[code]**. Decision 16 ("never saved, rebuilt as needed") was made for terrain, where a generator can remake any node. For a ship **nothing can remake them but all of its bricks**. The ship file
+(`world_storage::ship_file`) is a container of sections (`engine:ship`, `engine:grid_flight`, `engine:grid_terrain`, `engine:rail`, and any other, which is **kept byte for byte** by a reader that does not know it), so a new section is possible without breaking anything. But a **separate file** next to the ship's is better, in my opinion (medium confidence):
+the ship's file is written whole when the ship is parked, and a sidecar can be written a cube at a time as the nodes are made; an external program that writes a huge ship can write the sidecar too, since it knows the shape; and a damaged or missing sidecar costs only the far view. It would be a **reversal of decision 16 for ships** only (the owner's word is the reversal; this is what the owner asked for).
+
+**8.4 A very large ship ("a Death Star").** What would happen today **[code]**: bringing the ship in reads the **whole** file into memory (`read_ship` gives a whole `MovingGrid`), the first tick after it comes in walks **every voxel of every brick** for the rules (`take_changes`), and a client is sent its bricks only up to 16,384 (`maximum_ship_bricks`). So a ship of millions of bricks cannot be brought in *at all*, never mind drawn; that is a separate limit from LOD and needs bricks paged in as a level's are (not planned anywhere that I found; I would call it a prerequisite and say so to the owner).
+What already exists: the **dirty-ancestor** machinery and the rate-limited remake of nodes after an edit (`coarse_streaming`, on the tick thread today); the bricks' own nodes are made by `voxel_meshing::coarse_node_of_brick` from a brick and its six neighbours. What is **not** built or planned: a worker that makes nodes (that was F3, "if needed"), nodes that are kept between runs, nodes made from a file without bringing the ship in.
+
+**8.5 The proposal (a far record).** (a) For every ship, parked or not, the server keeps a small **far record** in memory: its box, its pose or rail, its level, and its *coarsest nodes* (say the levels from 5 or 6 up: a few hundred cells for a ship of any size). The world already keeps the first three for a parked ship (`ParkedGrid`: bounds, pose, level, rail flag), so this is those plus the nodes.
+(b) The nodes come from the **sidecar file** (8.3), read when the world starts or the ship is first seen. (c) A **worker thread** keeps the sidecar up to date: it builds missing nodes from the ship's bricks at low priority, so a ship made by another program gets them as time allows, and remakes the ancestors of a changed brick **while players edit** (the dirty marks exist; the worker is F3). It does not have to be quick, as the owner said; what it must do is *never block the tick* and *keep up on average*. A far client gets what exists and the rest as it arrives; the ship is drawn from what is there. (d) A tool command (`launcher prepare-ship FILE`) can build a sidecar offline for a ship made outside.
+(e) **Parking distance by size.** I would keep the *simulation* distance at 1,024 voxels from the nearest brick (what moves and is edited is what a player can touch) and make the **unload distance grow with the size of the ship**, e.g. the larger of the setting and a multiple of the ship's longest side, because bringing a large ship back costs in proportion to its bricks and its far view should not flicker. This is an opinion (medium) and one number to choose with the owner; it needs the far record to be worth it, since a parked ship is drawn from the record.
+(f) Far display is then decided by the **pixel rule with a minimum size** (8.1), and it needs no loaded ship.
+
+**8.6 Entities (the owner's answer 4).** An entity kind is a set of components, each marked replicated or not (`EntityKindSpec::component`). A component such as *seen from afar* (the largest distance, or the smallest pixel size, at which it is told of and drawn) would let a kind decide, and a multi-voxel block made as an entity would set it from its size. For a far ship the server tells a client of the entities aboard that have the component and are near enough by their own rule. To decide: the component's name and unit, and whether a ship's far record keeps the list of such entities (it must, for a parked ship).
+
+**8.7 What changes in the phases.** F4 (ship nodes) and F5 (the wire) gain, in front of them: **F4a, the far record and the sidecar** (the format, the reading, the writing; tests that a parked ship's nodes come from the sidecar and a damaged one costs nothing but the far view), and **F3 (the worker)** is no longer "if needed": it is where nodes of ships are made. The paging in of the bricks of a huge ship is a separate piece of work, outside this plan.
