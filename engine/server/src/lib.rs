@@ -11,6 +11,7 @@
 
 mod command_line;
 mod config;
+mod far_ship_settings;
 mod game_logic;
 mod generated_cache;
 mod grid_replication;
@@ -28,6 +29,7 @@ pub mod test_support;
 
 pub use command_line::CommandLine;
 pub use config::ServerConfig;
+pub use far_ship_settings::{FarShipSettings, LEAVING_FRACTION};
 pub use game_logic::GameLogic;
 pub use grid_view::{GridView, ServerGrid};
 pub use merge::{MergeError, MergePlan, TurnValues};

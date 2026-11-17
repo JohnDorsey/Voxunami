@@ -15,6 +15,7 @@ use super::*;
 mod alone_groups;
 mod coasting_ships;
 mod exit_ships;
+mod far_ships;
 mod group_ships;
 mod hyperbola_ships;
 mod near_ships;
@@ -2844,7 +2845,10 @@ fn a_planet_is_told_of_with_its_generator_and_extent_and_sent_only_the_bricks_th
         &mut known,
         Some((LevelIndex::MAIN, region)),
         None,
-        1000,
+        crate::grid_replication::ShipLimits {
+            maximum_bricks: 1000,
+            far: None,
+        },
         &[],
     );
     let ServerMessage::GridsSpawned(states) = &messages[0] else {
@@ -2854,13 +2858,13 @@ fn a_planet_is_told_of_with_its_generator_and_extent_and_sent_only_the_bricks_th
     assert_eq!(states.len(), 2);
     assert_eq!(states[0].id, planet);
     assert_eq!(
-        states[0].terrain,
-        Some(protocol::GridTerrainState {
+        states[0].content,
+        protocol::GridContent::Generated(protocol::GridTerrainState {
             generator: terrain.generator.raw(),
             extent: terrain.extent
         })
     );
-    assert_eq!(states[1].terrain, None);
+    assert_eq!(states[1].content, protocol::GridContent::Bricks);
     // The bricks that follow are the ones that are stored, one for each ship, and not the planet's generated ones.
     let sent: Vec<(GridId, BrickCoordinate)> = messages
         .iter()
@@ -2898,7 +2902,10 @@ fn a_planet_is_told_of_to_a_client_watching_anywhere_in_its_level_and_an_ordinar
             &mut known,
             watched,
             None,
-            1000,
+            crate::grid_replication::ShipLimits {
+                maximum_bricks: 1000,
+                far: None,
+            },
             &[],
         );
         let ships: Vec<GridId> = match messages.first() {

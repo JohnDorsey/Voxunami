@@ -692,7 +692,10 @@ impl Server {
             known_grids,
             current,
             aboard,
-            self.config.maximum_ship_bricks,
+            grid_replication::ShipLimits {
+                maximum_bricks: self.config.maximum_ship_bricks,
+                far: self.config.far_ships,
+            },
             edited,
         ));
         messages.extend(entity_messages(

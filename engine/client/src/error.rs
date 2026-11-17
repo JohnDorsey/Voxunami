@@ -34,6 +34,8 @@ pub enum ClientError {
     GridAlreadyKnown(GridId),
     #[error("the server named {0}, which this client was not told of")]
     UnknownGrid(GridId),
+    #[error("the server sent a brick of {0}, which it told of as far away, a ship that has none")]
+    BrickOfAFarGrid(GridId),
     #[error("the server named {0}, which its world description does not have")]
     UnknownLevel(LevelIndex),
     #[error("the server told this client of {0}, which it already knew")]

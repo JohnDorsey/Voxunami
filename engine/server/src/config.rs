@@ -1,6 +1,7 @@
 use namespaced_id::NamespacedId;
 use voxel_space::GravitySettings;
 
+use crate::far_ship_settings::FarShipSettings;
 use crate::rail_settings::RailSettings;
 use crate::ship_settings::ShipSettings;
 
@@ -16,6 +17,9 @@ pub struct ServerConfig {
     /// The most bricks of ships that may be in one client's picture. A ship that would take it past this is not sent, and the
     /// client sees nothing of it (levels of detail will fill that gap).
     pub maximum_ship_bricks: u64,
+    /// Whether, and how, ships that are not in the region a client watches are told of as far away (no bricks, only nodes of the game's plugins). `None`: they are
+    /// not told of.
+    pub far_ships: Option<FarShipSettings>,
     /// A client that has connected but not finished logging in (the hello, then the proof of its identity)
     /// within this many ticks is dropped.
     pub handshake_timeout_ticks: u32,
@@ -46,6 +50,7 @@ impl ServerConfig {
             ticks_per_second: 20,
             maximum_watched_bricks: 33 * 33 * 33,
             maximum_ship_bricks: 16 * 1024,
+            far_ships: None,
             handshake_timeout_ticks: 200,
             challenge_seed: None,
             package: Vec::new(),

@@ -312,7 +312,9 @@ const PINNED_RECORDING_LENGTH: usize = 84_923;
 // The world's clock in the welcome (2026-10-28; protocol 10): 8 bytes more (84,915 to 84,923: a `u64`, predicted) and the version, so the checksum moved.
 // Positions are `f64` (2026-11-02; protocol 11): the checksum changed once, for the protocol version in the welcome (11, was 10); the length did not (this recording has no pose in it),
 // and with the version put back to 10 (and the wire to the `f32` form, which changes nothing here) the old checksum, 3_004_670_074, came back.
-const PINNED_RECORDING_CHECKSUM: u32 = 4_054_084_584;
+// A ship may be told of as far away (2026-11-17; protocol 12): the checksum changed once, for the protocol version in the welcome (12, was 11); the length did not (no ship is told of in
+// this recording), and with the version put back to 11 the old checksum, 4_054_084_584, came back.
+const PINNED_RECORDING_CHECKSUM: u32 = 3_889_045_335;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

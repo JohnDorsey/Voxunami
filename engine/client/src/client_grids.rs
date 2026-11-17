@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use protocol::{GridChange, GridState};
+use protocol::{GridChange, GridContent, GridState};
 use terrain::GeneratorId;
 use voxel_grid::{Brick, Grid};
 use voxel_space::{BrickBox, GridId, GridPose, LevelIndex};
@@ -24,6 +24,8 @@ pub struct ClientGrid {
     pub pose: GridPose,
     pub voxels: Grid,
     pub terrain: Option<ClientGridTerrain>,
+    /// For a ship that is told of as far (no brick is sent for it, only nodes): the bricks it occupies, in its own coordinates.
+    pub far: Option<BrickBox>,
 }
 
 /// The ships a client has been told of, built only from the stream.
@@ -61,15 +63,17 @@ impl ClientGrids {
             if self.grids.contains_key(&state.id) {
                 return Err(ClientError::GridAlreadyKnown(state.id));
             }
-            let terrain = state
-                .terrain
-                .map(|terrain| {
-                    Ok::<_, ClientError>(ClientGridTerrain {
+            let (terrain, far) = match state.content {
+                GridContent::Bricks => (None, None),
+                GridContent::Generated(terrain) => (
+                    Some(ClientGridTerrain {
                         generator: translate_generator(terrain.generator)?,
                         extent: terrain.extent,
-                    })
-                })
-                .transpose()?;
+                    }),
+                    None,
+                ),
+                GridContent::Far { bounds } => (None, Some(bounds)),
+            };
             self.grids.insert(
                 state.id,
                 ClientGrid {
@@ -77,6 +81,7 @@ impl ClientGrids {
                     pose: state.pose,
                     voxels: make_voxels(),
                     terrain,
+                    far,
                 },
             );
         }
@@ -131,12 +136,12 @@ mod tests {
         ))
     }
 
-    fn state(id: u64, terrain: Option<GridTerrainState>) -> GridState {
+    fn state(id: u64, content: GridContent) -> GridState {
         GridState {
             id: GridId::new(GridId::FIRST_ALLOCATED + id),
             level: LevelIndex::MAIN,
             pose: GridPose::identity(),
-            terrain,
+            content,
         }
     }
 
@@ -149,12 +154,12 @@ mod tests {
                 vec![
                     state(
                         0,
-                        Some(GridTerrainState {
+                        GridContent::Generated(GridTerrainState {
                             generator: 3,
                             extent,
                         }),
                     ),
-                    state(1, None),
+                    state(1, GridContent::Bricks),
                 ],
                 voxels,
                 // (This client numbers the generators ten higher than the server.)
@@ -179,12 +184,27 @@ mod tests {
     }
 
     #[test]
+    fn a_far_ship_is_known_by_its_box_and_has_no_generator_and_no_bricks() {
+        let bounds = BrickBox::around(BrickCoordinate::new(4, 0, 0), 2);
+        let mut grids = ClientGrids::default();
+        grids
+            .spawn(vec![state(0, GridContent::Far { bounds })], voxels, |_| {
+                panic!("a far ship has no generator")
+            })
+            .unwrap();
+        let ship = grids.get(GridId::new(GridId::FIRST_ALLOCATED)).unwrap();
+        assert_eq!(ship.far, Some(bounds));
+        assert_eq!(ship.terrain, None);
+        assert_eq!(ship.voxels.brick_count(), 0);
+    }
+
+    #[test]
     fn a_ship_whose_generator_cannot_be_numbered_is_not_added() {
         let mut grids = ClientGrids::default();
         let result = grids.spawn(
             vec![state(
                 0,
-                Some(GridTerrainState {
+                GridContent::Generated(GridTerrainState {
                     generator: 99,
                     extent: BrickBox::around(BrickCoordinate::ORIGIN, 1),
                 }),
