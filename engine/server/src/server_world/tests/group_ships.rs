@@ -286,7 +286,7 @@ fn a_rail_on_a_ship_of_a_group_that_is_not_its_anchor_is_not_placed_and_is_taken
 }
 
 #[test]
-fn the_ships_of_a_group_are_not_in_each_others_way_and_a_ship_near_one_of_them_is_in_the_way_of_the_group()
+fn the_ships_of_a_group_are_not_in_each_others_way_and_a_ship_near_one_of_them_is_not_either_but_a_planet_is()
  {
     let (mut world, _planet, ships, rail) = a_group_on_a_rail();
     // (The ships are 20 voxels apart: ships that were not coupled would have each other in the way, a margin of 64 voxels and the way they would go in a second.)
@@ -302,8 +302,12 @@ fn the_ships_of_a_group_are_not_in_each_others_way_and_a_ship_near_one_of_them_i
         [0.0, 0.0, circular_speed()],
     );
     world.update_coasting(TICKS);
-    assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, Some(rail));
-    // One near the last ship of the group takes the rail from the anchor, which is not near it.
+    assert_eq!(
+        world.data().grids().get(ships[0]).unwrap().rail,
+        Some(rail.clone())
+    );
+    // One near the last ship of the group does **not** take the rail (the rail's kick, 2026-11-17): what is near a group is the contact ghost's, which the bodies make, and a touch
+    // takes the rail (`take_group_off_its_rail`). A ship alone has the room it always had (`coasting_ships.rs`).
     world
         .set_grid_pose(
             far,
@@ -314,7 +318,49 @@ fn the_ships_of_a_group_are_not_in_each_others_way_and_a_ship_near_one_of_them_i
         )
         .unwrap();
     world.update_coasting(TICKS);
-    assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, None);
+    assert_eq!(
+        world.data().grids().get(ships[0]).unwrap().rail,
+        Some(rail.clone()),
+        "a stranger 10 voxels from the last ship, going as it goes, leaves the group its rail"
+    );
+    // Nor does one on a rail of its own, or one that closes on the group fast.
+    world
+        .set_grid_velocity(far, [0.0, 0.0, 2_000.0], [0.0; 3])
+        .unwrap();
+    world.update_coasting(TICKS);
+    assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, Some(rail));
+}
+
+#[test]
+fn a_planet_near_a_group_on_a_rail_takes_it_off_as_it_does_a_ship() {
+    // The ground of a planet is not the ghost's (a group keeps its own frame over it only until it touches it): a planet that is in the way takes the rail from a group as it
+    // always has, and a planet that is not does not.
+    let (mut world, _planet, ships, rail) = a_group_on_a_rail();
+    let moon = planet_on(&mut world, 20, 1.0e9, None);
+    let last = world.data().grids().get(ships[2]).unwrap().pose.position;
+    let place = |world: &mut ServerWorld, along: f64| {
+        world
+            .data_mut()
+            .grids_mut()
+            .get_mut(moon)
+            .unwrap()
+            .pose
+            .position = last.translated([0.0, 0.0, along]);
+    };
+    place(&mut world, 50_000.0);
+    world.update_coasting(TICKS);
+    assert_eq!(
+        world.data().grids().get(ships[0]).unwrap().rail,
+        Some(rail),
+        "a planet 50,000 voxels off is not in the way (the group goes eight thousand voxels a second against it)"
+    );
+    place(&mut world, 40.0);
+    world.update_coasting(TICKS);
+    assert_eq!(
+        world.data().grids().get(ships[0]).unwrap().rail,
+        None,
+        "a planet 40 voxels from the last ship is"
+    );
 }
 
 #[test]
@@ -667,7 +713,7 @@ fn a_touch_on_any_ship_of_a_group_makes_it_wait_a_second_again() {
 }
 
 #[test]
-fn a_group_is_not_put_on_a_rail_with_something_near_it_and_keeps_one_it_has_with_less_room() {
+fn a_group_is_not_put_on_a_rail_with_something_near_it_and_keeps_one_it_has_whatever_is_near() {
     let (mut world, _planet, ships) = a_group_in_a_circle();
     // A stranger 100 voxels from the last ship, going as the group does: it is nearer than twice the margin (128) that is needed to go on a rail, and farther than the margin
     // (64) that is needed to stay on one.
@@ -707,13 +753,92 @@ fn a_group_is_not_put_on_a_rail_with_something_near_it_and_keeps_one_it_has_with
         world.data().grids().get(ships[0]).unwrap().rail.is_some(),
         "100 voxels from a stranger it has the room to stay"
     );
-    // And at 50 it has not.
+    // And at 50 it keeps it as well: what is near a group on a rail is the contact ghost's and a touch takes the rail (the rail's kick, 2026-11-17). It was taken at half the room
+    // it needs to go on one before.
     let nearer = last_position(&world, ships[2]).translated([0.0, 0.0, 50.0]);
     world
         .set_grid_pose(stranger, GridPose::new(nearer, Orientation::IDENTITY))
         .unwrap();
     world.update_coasting(TICKS);
+    assert!(
+        world.data().grids().get(ships[0]).unwrap().rail.is_some(),
+        "50 voxels from a stranger it keeps the rail"
+    );
+}
+
+#[test]
+fn the_ships_near_a_group_on_a_rail_are_measured_with_the_group_a_tick_back() {
+    // The rails put a group at its place of the end of the tick when the tick begins, and a ship that is free is where it was at the start until the bodies step it: the two are
+    // a tick of the group's speed apart in the world's places (800 voxels in the world of these tests, 38 at orbital speed round Cave's planet). A ghost that the bodies make for the
+    // tick that is about to be asked is asked with the length of the tick, and puts the ships that the rails place back by it.
+    let (mut world, _planet, ships, _rail) = a_group_on_a_rail();
+    let hull =
+        HullBox::of_voxels([VoxelCoordinate::new(0, 0, 0), VoxelCoordinate::new(3, 3, 3)]).unwrap();
+    for ship in ships {
+        world.set_grid_hull(ship, Some(hull)).unwrap();
+    }
+    let rear = pose_of(&world, ships[0]).position;
+    let going = velocity_of(&world, ships[0]);
+    let speed = libm::sqrt(going.iter().map(|part| part * part).sum());
+    let way = going.map(|part| part / speed);
+    let tick = 1.0 / TICKS as f64;
+    let lag = speed * tick;
+    let radii = 2.0 * hull.radius();
+    let room = ContactRoom {
+        margin: 10.0,
+        seconds: 0.0,
+    };
+    // A stranger behind the group's rear ship, 5 voxels from where it was at the start of the tick and a tick of its speed more from where the rail has put it.
+    let behind = ship_at(
+        &mut world,
+        rear.translated(way.map(|part| -part * (lag + radii + 5.0)))
+            .in_voxels(),
+        going,
+    );
+    world.set_grid_hull(behind, Some(hull)).unwrap();
+    assert_eq!(
+        world.ships_near_group(ships[0], room),
+        [],
+        "as the world has them, it is far"
+    );
+    assert_eq!(
+        world.ships_near_group_lagging(ships[0], room, tick),
+        [behind],
+        "a tick back, it is 5 voxels from the hull"
+    );
+    // One ahead of the group's front ship, 5 voxels from where the rail has put it, is a tick of its speed farther than that from where it was at the start.
+    let front = pose_of(&world, ships[2]).position;
+    world
+        .set_grid_pose(
+            behind,
+            GridPose::new(
+                front.translated(way.map(|part| part * (radii + 5.0))),
+                Orientation::IDENTITY,
+            ),
+        )
+        .unwrap();
+    assert_eq!(world.ships_near_group(ships[0], room), [behind]);
+    assert_eq!(
+        world.ships_near_group_lagging(ships[0], room, tick),
+        [],
+        "a tick back, the ship ahead is a tick of the speed farther off"
+    );
+    assert!(
+        world.is_placed_by_a_rail(ships[2]),
+        "a ship of a group on a rail is"
+    );
+    assert!(!world.is_placed_by_a_rail(behind), "and a free ship is not");
+}
+
+#[test]
+fn a_group_on_a_rail_is_taken_off_it_by_the_bodies_for_a_hit_and_is_not_quiet() {
+    let (mut world, _planet, ships, rail) = a_group_on_a_rail();
+    world.update_coasting(TICKS);
+    assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, Some(rail));
+    // Any ship of it will do to ask, and the group is not quiet: it waits a second to be put on a rail again.
+    world.take_group_off_its_rail(ships[2]);
     assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, None);
+    assert_eq!(first_tick_on_a_rail(&mut world, ships[0], 10), None);
 }
 
 fn last_position(world: &ServerWorld, ship: GridId) -> WorldPosition {

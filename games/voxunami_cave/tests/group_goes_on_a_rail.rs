@@ -190,7 +190,7 @@ fn a_push_takes_a_riding_chain_off_its_rail_and_left_alone_again_it_is_put_on_an
 }
 
 #[test]
-fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_one_when_the_ship_has_gone()
+fn a_ship_that_comes_near_a_riding_chain_leaves_it_on_its_rail_and_one_that_is_near_when_it_is_quiet_does_not_put_it_on_one()
  {
     let (mut scene, report, ships, speed) = a_chain_left_alone();
     // A stranger of three blocks in the same orbit, 300 voxels along x from the chain: not near it (the room to go on a rail is 128).
@@ -201,11 +201,9 @@ fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_
     );
     let stranger = ship_id(4);
     scene.ticks(30);
-    assert!(
-        rail_of(&scene, ships[0]).is_some(),
-        "the chain is on a rail, the stranger far off"
-    );
-    // Brought to 20 voxels from the middle of the middle car (and going as it goes): the chain comes off its rail.
+    let rail = rail_of(&scene, ships[0]).expect("the chain is on a rail, the stranger far off");
+    // Brought to 20 voxels from the middle of the middle car (and going as it goes): **the chain keeps its rail** (the rail's kick, 2026-11-17: what is near a group on a rail is the
+    // contact ghost's, and a touch takes the rail: `group_on_a_rail_is_hit.rs`).
     let (place, going) = centre_of(&scene, &ships);
     scene.run(move |world| {
         let near = WorldPosition::from_voxels([place[0], place[1] + 20.0, place[2]]);
@@ -214,10 +212,14 @@ fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_
             .unwrap();
         world.set_grid_velocity(stranger, going, [0.0; 3]).unwrap();
     });
-    scene.ticks(2);
-    assert_eq!(rail_of(&scene, ships[0]), None, "the chain is off its rail");
+    scene.ticks(30);
+    assert_eq!(
+        rail_of(&scene, ships[0]),
+        Some(rail),
+        "the chain is on its rail, the stranger 20 voxels off"
+    );
     assert_eq!(report().couplings, 2, "and it is coupled still");
-    // The stranger goes away; the chain, left alone, is put on a rail again.
+    // The stranger goes away; nothing changes.
     let (place, going) = centre_of(&scene, &ships);
     scene.run(move |world| {
         let far = WorldPosition::from_voxels([place[0] + 5_000.0, place[1], place[2]]);
@@ -229,7 +231,7 @@ fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_
     scene.ticks(30);
     assert!(
         rail_of(&scene, ships[0]).is_some(),
-        "the chain is on a rail again"
+        "the chain is on a rail still"
     );
 }
 

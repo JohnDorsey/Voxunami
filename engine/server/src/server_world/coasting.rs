@@ -9,7 +9,10 @@
 //! - it is held, or its level has a pull of its own (a level with a ground); (it may turn: a rail holds a ship's place and not its turn, and the turn is the bodies');
 //! - something pushes it: a force or a torque, a docking, a program that puts it somewhere, anything that is not the bodies moving it;
 //! - it is near what it could touch (another ship, or a planet that is not the one it goes round), nearer than a margin and the way it would go in a second at the speed it
-//!   closes at, so that nothing meets it while it is on a rail; or it is in the sphere that a planet on a rail carries what is near it with;
+//!   closes at, so that nothing meets it while it is on a rail; or it is in the sphere that a planet on a rail carries what is near it with. **A group of ships coupled by their joint
+//!   ends is the exception for other ships** (the rail's kick, 2026-11-17, `docs/decisions/joints-and-cars.md`, 4c-5-4): what is near it is the contact ghost's, which the bodies make, and
+//!   it comes off its rail at a touch (the bodies tell the world: [`ServerWorld::take_group_off_its_rail`], with the kick of the hit in the speed of its ships) or for the ends of a
+//!   ship that pull on its own; planets, spheres and carriers are asked of it as of any ship;
 //! - the orbit does not lie round the planet in the way the rail needs: it comes lower than the planet's ground (a ship that is outside the planet's sphere of influence already,
 //!   where what the planet goes round pulls more, goes round that and not this).
 //!
@@ -947,6 +950,13 @@ impl ServerWorld {
             return false;
         };
         let members = self.data.grids().group_of(grid);
+        // (A group's ships are not in its way, and no other ship is either: the contact ghost has what is near it, and a touch takes it off its rail. A ship alone has the room it
+        // always had.)
+        let in_the_way = if members.len() > 1 {
+            self.ground_near_group(known, &members, Some(parent), 1.0)
+        } else {
+            self.near_group(known, &members, Some(parent), 1.0)
+        };
         members
             .iter()
             .any(|member| self.data.grids().get(*member).is_none_or(|ship| ship.held))
@@ -956,9 +966,55 @@ impl ServerWorld {
                 .unwrap_or(&self.gravity.base)
                 != &[0.0; 3]
             || self.data.grids().get(parent).is_none()
-            || self
-                .near_group(known, &members, Some(parent), 1.0)
-                .is_some()
+            || in_the_way.is_some()
+    }
+
+    /// As [`ServerWorld::near_group`], **but for the grids that are not ships**: a planet that is in the way of a ship of the group, a planet whose sphere of influence it is in, or a
+    /// planet on a rail that carries it. Other ships are not asked about (a group on a rail keeps it while a ship is near, and the bodies' contact ghost has the ship: see the head of
+    /// this module). Everything else is as for [`ServerWorld::near_with_group`].
+    fn ground_near_group(
+        &self,
+        known: Option<&Neighbours>,
+        members: &[GridId],
+        goes_round: Option<GridId>,
+        factor: f64,
+    ) -> Option<GridId> {
+        members.iter().find_map(|member| {
+            let ship = self.data.grids().get(*member)?;
+            let mut chain = goes_round.map_or_else(Vec::new, |parent| {
+                let mut chain = self.what_it_goes_round(parent);
+                chain.push(parent);
+                chain
+            });
+            chain.extend_from_slice(members);
+            let mine = known
+                .and_then(|known| known.bodies.get(member))
+                .copied()
+                .unwrap_or_else(|| Body::of(ship));
+            let among_planets = match known {
+                Some(known) => known
+                    .planets
+                    .iter()
+                    .find(|(id, other)| {
+                        !chain.contains(id)
+                            && other.level() == mine.level()
+                            && is_in_the_way(&mine, other, factor)
+                    })
+                    .map(|(id, _)| *id),
+                None => self
+                    .data
+                    .grids()
+                    .iter()
+                    .find(|(id, other)| {
+                        other.terrain.is_some()
+                            && !chain.contains(id)
+                            && other.level == mine.level()
+                            && is_in_the_way(&mine, &Body::of(other), factor)
+                    })
+                    .map(|(id, _)| id),
+            };
+            among_planets.or_else(|| self.sphere_or_carrier_in_the_way(known, ship, &chain, factor))
+        })
     }
 
     /// Answers a change of the mass of the planet a ship goes round, as the owner chose (2026-11-02): a ship that is on a rail made for another mass parameter than the planet has now
@@ -1107,6 +1163,13 @@ impl ServerWorld {
             self.quiet_since.remove(&member);
             self.take_a_coasting_rail_from(member);
         }
+    }
+
+    /// Takes a group of ships off the rail it is on, where it is, as the bodies have it: for **a hit** (the rail's kick: the bodies have written the group's new speed to its ships, the
+    /// exact change that the contact gave it, and from here the group goes on from where it is with that), and for **ends that pull** on each other (a coupling or a docking to be made
+    /// needs the one frame). It is not quiet from this tick, so it is put on a rail again after `QUIET_SECONDS` with nothing near it (`anchor` is any ship of the group).
+    pub fn take_group_off_its_rail(&mut self, anchor: GridId) {
+        self.disturb(anchor);
     }
 
     /// Takes the rail of this module from a ship, if it has one.

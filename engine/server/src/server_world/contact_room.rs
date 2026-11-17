@@ -34,14 +34,23 @@ struct HullSphere {
 impl HullSphere {
     /// What a ship is now; `None` for one that has no hull (a planet, a ship with no blocks or one that has not been weighed: nothing of it can touch) or whose hull the world
     /// cannot place.
-    fn of(ship: &MovingGrid) -> Option<HullSphere> {
+    ///
+    /// **`lag`** is the seconds that a ship on a rail is ahead of the ships that are not, in the world's places while the bodies are about to step: the rails put a ship at the
+    /// place of the end of the tick (`ServerWorld::apply_rails`, at the start of it) and a ship that is free is where it was at the start, which the step takes to the end. A ship
+    /// on a rail is put back by that many seconds of its speed, so that the two are measured at one instant (0 for the places as the world has them: at orbital speed a tick is 38
+    /// voxels, more than the room of a ghost).
+    fn of(ship: &MovingGrid, lag: f64) -> Option<HullSphere> {
+        // (`lag` is for a ship that is placed by a rail: 0 for one that is not.)
         if ship.terrain.is_some() {
             return None;
         }
         let hull = ship.hull?;
-        let centre = ship
+        let mut centre = ship
             .pose
             .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, hull.middle()))?;
+        if lag > 0.0 {
+            centre = centre.translated(ship.linear_velocity.map(|speed| -speed * lag));
+        }
         Some(HullSphere {
             centre,
             radius: hull.radius(),
@@ -71,6 +80,34 @@ impl ServerWorld {
     /// blocks to touch with, or is not weighed yet), nor a member without one, nor a planet (the ground is a matter of its own), and nothing is given for a ship that is not
     /// the anchor of a group of two ships or more. Every ship is looked at once, so the cost is the ships times the group's.
     pub fn ships_near_group(&self, anchor: GridId, room: ContactRoom) -> Vec<GridId> {
+        self.ships_near_group_lagging(anchor, room, 0.0)
+    }
+
+    /// Whether the rails place this ship: it has one, or it is a ship of a group whose anchor has one (`rail_group_of`). The world puts such a ship at its place of the end of the
+    /// tick at the start of it (`apply_rails`), and a ship that is free is at its place of the start until the bodies step it.
+    pub fn is_placed_by_a_rail(&self, ship: GridId) -> bool {
+        let grids = self.data.grids();
+        grids.get(ship).is_some_and(|grid| grid.rail.is_some())
+            || (grids.has_partners(ship) && self.rail_group_of(ship).is_some())
+    }
+
+    /// `lag` for a ship that the rails place, and 0 for one that is not.
+    fn lag_of(&self, ship: GridId, lag: f64) -> f64 {
+        if lag > 0.0 && self.is_placed_by_a_rail(ship) {
+            lag
+        } else {
+            0.0
+        }
+    }
+
+    /// As [`ServerWorld::ships_near_group`], with the places of the ships that are on a rail put back by `lag` seconds of their speed (see `HullSphere::of`): the bodies, which are
+    /// about to step a tick, ask it with the length of the tick, so that a group on a rail and a stranger that is free are measured at the same instant.
+    pub fn ships_near_group_lagging(
+        &self,
+        anchor: GridId,
+        room: ContactRoom,
+        lag: f64,
+    ) -> Vec<GridId> {
         let members = self.data.grids().group_of(anchor);
         if members.len() < 2 || members[0] != anchor {
             return Vec::new();
@@ -79,7 +116,7 @@ impl ServerWorld {
             .iter()
             .filter_map(|member| {
                 let ship = self.data.grids().get(*member)?;
-                Some((ship.level, HullSphere::of(ship)?))
+                Some((ship.level, HullSphere::of(ship, self.lag_of(*member, lag))?))
             })
             .collect();
         self.data
@@ -87,7 +124,7 @@ impl ServerWorld {
             .iter()
             .filter(|(id, _)| !members.contains(id))
             .filter_map(|(id, other)| {
-                let sphere = HullSphere::of(other)?;
+                let sphere = HullSphere::of(other, self.lag_of(id, lag))?;
                 group
                     .iter()
                     .any(|(level, member)| *level == other.level && member.is_near(&sphere, room))

@@ -3,7 +3,7 @@
 
 #![allow(dead_code)] // Each test file uses some of it.
 
-use super::docking::{Placed, make_all_going, stones};
+use super::docking::{PLAIN, Placed, make_all_going, stone, stones};
 use super::joints::{ball_end_toward, joint_block};
 use super::{Scene, length, pose_at, ship_id};
 use voxel_space::{FaceDirection, GridId, Orientation, WorldPosition};
@@ -454,4 +454,13 @@ pub fn most_apart(first: &[(Orientation, Vec3)], second: &[(Orientation, Vec3)])
         }
     }
     worst
+}
+
+/// A wall of stone, 13 by 13 voxels and one thick, its middle voxel at the origin of its ship: a stranger that a few metres of aim cannot make miss. (A ship at orbital speed in the
+/// frame everything is in climbs by the gain of energy that its steps are known to have, `future-goals.md`, "Forces over solver steps": twenty metres in the seven seconds that a
+/// stranger closing at 20 metres a second needs to cover a hundred and fifty voxels, which a single stone went over.)
+pub fn a_wall() -> Vec<Placed> {
+    (-6..=6)
+        .flat_map(|y| (-6..=6).map(move |z| ([0, y, z], stone(), PLAIN)))
+        .collect()
 }

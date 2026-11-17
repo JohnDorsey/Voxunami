@@ -141,6 +141,10 @@ pub struct BodiesReport {
     pub ghosts_made: u64,
     pub ghost_ticks: u64,
     pub ghost_corrections: u64,
+    /// Groups of ships on a rail that a stranger hit, in all: each was taken off its rail with the kick of the hit in its speed (the rail's kick, step 4c-5-4), and groups taken off a
+    /// rail for the ends of a ship that pull on its own.
+    pub rail_kicks: u64,
+    pub rails_left_for_ends: u64,
 }
 
 impl GridBodiesPlugin {
@@ -614,6 +618,20 @@ impl Follow {
     fn world(&self, local: WorldPosition) -> Option<WorldPosition> {
         local.displaced(self.shift)
     }
+
+    /// This frame as it is **at the start of the tick that is about to be stepped**. A frame that the world moves (a planet's, a ship's or group's on a rail) has its shift at the
+    /// end of the tick already (see [`Follow::local_at_the_end_of_the_tick`]) and the bodies in it go on with it through the tick, while a body of a frame that does not have moved
+    /// from its place at the start of the tick: to put the two in one place (the contact ghost does) the first is put back by one tick of its speed. A frame that moves itself has the
+    /// shift of the start of the tick, and is as it is.
+    fn at_the_start_of_the_tick(self, time_step: f64) -> Follow {
+        if self.followed.moves_itself() {
+            return self;
+        }
+        Follow {
+            shift: shifted_by(self.shift, self.velocity.map(|speed| -speed * time_step)),
+            ..self
+        }
+    }
 }
 
 /// Where a place of the world is in a frame that goes with `follow`, or in one that goes with nothing (where it is the same); `None` where the world cannot hold it.
@@ -868,6 +886,8 @@ struct Bodies {
     grounded: BTreeSet<GridId>,
     /// The contact ghosts of the groups that are alone, by the lowest anchor of the groups in each (`ghosts.rs`).
     ghosts: BTreeMap<GridId, MechanismGhost>,
+    /// The frames that a ghost corrected a body of in the last step: a hit on a group that is on a rail, where it is a kick (`hold_groups_at_their_points`).
+    corrected_frames: BTreeSet<FrameKey>,
     report: Arc<Mutex<BodiesReport>>,
 }
 
@@ -929,6 +949,7 @@ impl Bodies {
             alone: BTreeSet::new(),
             grounded: BTreeSet::new(),
             ghosts: BTreeMap::new(),
+            corrected_frames: BTreeSet::new(),
             report,
         }
     }
@@ -1324,7 +1345,13 @@ impl Bodies {
         }
         self.ghosts_after_the_step();
         self.note_the_groups_on_the_ground();
-        self.hold_groups_at_their_points(world);
+        let kicked = self.hold_groups_at_their_points(world);
+        for anchor in &kicked {
+            world.take_group_off_its_rail(*anchor);
+        }
+        if !kicked.is_empty() {
+            self.count(|report| report.rail_kicks += kicked.len() as u64);
+        }
         let frames = self.frames.len() as u64;
         let group_frames = self
             .frames
@@ -1354,6 +1381,8 @@ impl Bodies {
             report.group_ground_bricks = group_ground_bricks;
         });
         self.write_back(world);
+        // (After the step, where the world has every ship at the place of the end of the tick: a group taken off its rail before it would be stepped a second time in this tick.)
+        self.take_railed_groups_off_for_ends_that_pull(world);
     }
 
     /// Makes a ship's body and colliders, or brings them up to date with the ship.
@@ -2010,17 +2039,27 @@ impl Bodies {
     /// does. **For a group that is off a rail and alone nothing is the authority but the bodies and the pull of the world**: what the group did as a whole in the step (the move
     /// of its centre of mass and the speed it gained) goes into the follow of the frame, with the pull at the point (see [`Follow::advance`]), and the group is put back at the
     /// point and at rest in it, which changes nothing of where its ships are in the world; an edit that moves the centre of mass does not step the group.
-    fn hold_groups_at_their_points(&mut self, world: &ServerWorld) {
+    fn hold_groups_at_their_points(&mut self, world: &ServerWorld) -> Vec<GridId> {
         let time_step = self.config.settings.time_step;
-        for frame in self.frames.values_mut() {
+        let mut kicked = Vec::new();
+        for (key, frame) in &mut self.frames {
             let Some(Follow {
-                followed: Followed::RailGroup(_) | Followed::Group(_),
+                followed: followed @ (Followed::RailGroup(_) | Followed::Group(_)),
                 anchor,
                 ..
             }) = frame.follow
             else {
                 continue;
             };
+            // A group on a rail that a stranger hit (a ghost gave a body of it what the contact did): **the kick**. What the bodies did to the group as a whole is not discarded, as
+            // it is for a rail that the group's bodies do not move, but is the group's: its ships are written as the bodies have them, going as the rail goes and as the hit made
+            // them, and the world takes the group off its rail (the caller), to go on from there.
+            if let Followed::RailGroup(group) = followed
+                && self.corrected_frames.contains(key)
+            {
+                kicked.push(group);
+                continue;
+            }
             let (mut mass, mut apart, mut speed) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
             for (id, record) in &frame.ships {
                 if record.mass <= 0.0 || record.kind == BodyKind::Fixed {
@@ -2060,6 +2099,36 @@ impl Bodies {
                     pull_of_a_falling_frame(world, level, carrier, point)
                 });
             }
+        }
+        kicked
+    }
+
+    /// Takes a group that is on a rail off it when an end of a ship that is not of it pulls on an end of its own (a joint to be coupled, a docking port): the coupling and the docking
+    /// are made between ships of one frame, so the group has to be in the frame that ship is in, as it was when anything near took a group off its rail. **A stranger that does not pull
+    /// is no reason**: it is the contact ghost's, and a touch takes the rail (`hold_groups_at_their_points`). It is asked at the end of the step, where every ship is at the place of
+    /// the end of the tick (the group's rail is taken after the step, as `update_coasting` takes any rail, and not before: the group would be stepped again for this tick).
+    fn take_railed_groups_off_for_ends_that_pull(&mut self, world: &mut ServerWorld) {
+        let railed: Vec<GridId> = {
+            let grids = world.data().grids();
+            grids
+                .iter()
+                .filter(|(id, _)| {
+                    grids.has_partners(*id)
+                        && grids.group_of(*id).first() == Some(id)
+                        && world.rail_group_of(*id).is_some()
+                })
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let mut left = 0u64;
+        for anchor in railed {
+            if self.ends_pull_on_the_group(world, anchor, 1.0, 0.0) {
+                world.take_group_off_its_rail(anchor);
+                left += 1;
+            }
+        }
+        if left > 0 {
+            self.count(|report| report.rails_left_for_ends += left);
         }
     }
 

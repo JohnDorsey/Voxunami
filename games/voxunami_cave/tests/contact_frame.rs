@@ -8,10 +8,10 @@
 mod common;
 
 use common::chains::{
-    Setting, a_chain, a_chain_in_orbit, a_swing, centre_of, how_the_chain_turns_after, mass_of,
-    most_apart, origins_of, pivot_gap, set_going,
+    Setting, a_chain, a_chain_in_orbit, a_swing, a_wall, centre_of, how_the_chain_turns_after,
+    mass_of, most_apart, origins_of, pivot_gap, set_going,
 };
-use common::docking::{PLAIN, Placed, facing, make_all_going, port_block, stone, stones};
+use common::docking::{facing, make_all_going, port_block, stones};
 use common::{Scene, circular_speed, length, pose_at, ship_id};
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, Orientation, WorldPosition};
 
@@ -52,15 +52,6 @@ fn with_a_stranger_near_what_a_chain_does_does_not_depend_on_where_it_is_or_how_
         apart < THE_SAME,
         "with a stranger near, the chain at 70 and at 140 kilometres differs by {apart}"
     );
-}
-
-/// A wall of stone, 13 by 13 voxels and one thick, its middle voxel at the origin of its ship: a stranger that a few metres of aim cannot make miss. (A ship at orbital speed in the
-/// frame everything is in climbs by the gain of energy that its steps are known to have, `future-goals.md`, "Forces over solver steps": twenty metres in the seven seconds that a
-/// stranger closing at 20 metres a second needs to cover a hundred and fifty voxels, which a single stone went over.)
-fn a_wall() -> Vec<Placed> {
-    (-6..=6)
-        .flat_map(|y| (-6..=6).map(move |z| ([0, y, z], stone(), PLAIN)))
-        .collect()
 }
 
 /// What a stranger (the wall) that closed on the east end of a chain at `closing` metres a second, from a hundred and fifty voxels off along the chain, did in the ticks asked for.

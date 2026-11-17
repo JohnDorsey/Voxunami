@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use physics::{BodyId, BodyKind};
 use server::{ContactRoom, ServerWorld};
-use voxel_space::{BrickCoordinate, GridId};
+use voxel_space::{BrickCoordinate, GridId, GridPose};
 use world_storage::MovingGrid;
 
 use super::{Bodies, Followed};
@@ -46,7 +46,7 @@ impl Bodies {
             if world.group_is_alone_but_for_the_ground(id)
                 && (keeps_its_frame_over_the_ground
                     || !world.ground_is_in_the_way_of_group(id, room))
-                && !self.ends_pull_on_the_group(world, id, room)
+                && !self.ends_pull_on_the_group(world, id, room, self.config.settings.time_step)
             {
                 alone.insert(id);
             }
@@ -77,7 +77,14 @@ impl Bodies {
     /// Whether an end of a ship that is not of the group (a joint end or a docking port) is within the pull of an end of a ship of it (the range of the pull, times `room`): the
     /// two pull on each other, are coupled or docked, and need the one frame for it. The ends are those that [`Bodies::couple_joints`] and [`Bodies::dock`] would look at: a
     /// ship that is frozen has none, a pair of which neither can move is nothing, and a pair that was undocked and has not come apart, or could not be docked, is left alone.
-    fn ends_pull_on_the_group(&self, world: &ServerWorld, anchor: GridId, room: f64) -> bool {
+    /// `lag` is the seconds that the places of the ships that the rails place are ahead of the others' (a tick, before the bodies step; 0 after it): see `ServerWorld::ships_near_group_lagging`.
+    pub(super) fn ends_pull_on_the_group(
+        &self,
+        world: &ServerWorld,
+        anchor: GridId,
+        room: f64,
+        lag: f64,
+    ) -> bool {
         let joints = self.config.joints.map(|settings| JointSettings {
             range: settings.range * room,
             ..settings
@@ -95,12 +102,13 @@ impl Bodies {
             return false;
         }
         // (A pull is between the middles of two faces, which are on the boxes of the blocks: nearer than the hulls' spheres by what is not a sphere. A voxel more is the rounding.)
-        let near = world.ships_near_group(
+        let near = world.ships_near_group_lagging(
             anchor,
             ContactRoom {
                 margin: reach + 1.0,
                 seconds: 0.0,
             },
+            lag,
         );
         if near.is_empty() {
             return false;
@@ -118,6 +126,7 @@ impl Bodies {
             else {
                 continue;
             };
+            let other_pose = pose_at_the_start(world, stranger, other, lag);
             if other.frozen {
                 continue;
             }
@@ -127,14 +136,15 @@ impl Bodies {
                 else {
                     continue;
                 };
+                let pose = pose_at_the_start(world, *member, ship, lag);
                 if record.kind == BodyKind::Fixed && other_record.kind == BodyKind::Fixed {
                     continue;
                 }
                 let pair = (*member.min(&stranger), *member.max(&stranger));
                 if let Some(settings) = joints
                     && any_pull(
-                        (ship, &record.joint_ends),
-                        (other, &other_record.joint_ends),
+                        (&pose, &record.joint_ends),
+                        (&other_pose, &other_record.joint_ends),
                         |first, second, how| settings.pulls(first, second, how),
                     )
                 {
@@ -147,8 +157,8 @@ impl Bodies {
                         .get(&pair)
                         .is_some_and(|until| self.tick < *until)
                     && any_pull(
-                        (ship, &record.ports),
-                        (other, &other_record.ports),
+                        (&pose, &record.ports),
+                        (&other_pose, &other_record.ports),
                         |first, second, how| settings.pulls(first, second, how),
                     )
                 {
@@ -160,20 +170,35 @@ impl Bodies {
     }
 }
 
+/// Where a ship is at the start of the tick that is about to be stepped: the world has a ship that the rails place at its place of the end of it (`ServerWorld::is_placed_by_a_rail`),
+/// so it is put back by `lag` seconds of its speed, and a ship that is free is as it is.
+fn pose_at_the_start(world: &ServerWorld, id: GridId, ship: &MovingGrid, lag: f64) -> GridPose {
+    if lag > 0.0 && world.is_placed_by_a_rail(id) {
+        GridPose::new(
+            ship.pose
+                .position
+                .translated(ship.linear_velocity.map(|speed| -speed * lag)),
+            ship.pose.orientation,
+        )
+    } else {
+        ship.pose
+    }
+}
+
 /// The ends of a ship by the brick they are in (a ship's record keeps them so).
 type Ends = BTreeMap<BrickCoordinate, Vec<BlockFace>>;
 
 /// Whether an end of the first ship and an end of the second pull on each other by `pulls` (the rule of joints or of docking), both ships with the ends they have.
 fn any_pull(
-    first: (&MovingGrid, &Ends),
-    second: (&MovingGrid, &Ends),
+    first: (&GridPose, &Ends),
+    second: (&GridPose, &Ends),
     pulls: impl Fn(&BlockFaceView, &BlockFaceView, &Approach) -> bool,
 ) -> bool {
-    let from = first.0.pose.position;
+    let from = first.0.position;
     for first_end in first.1.values().flatten() {
-        let first_view = BlockFaceView::of(*first_end, &first.0.pose, from);
+        let first_view = BlockFaceView::of(*first_end, first.0, from);
         for second_end in second.1.values().flatten() {
-            let second_view = BlockFaceView::of(*second_end, &second.0.pose, from);
+            let second_view = BlockFaceView::of(*second_end, second.0, from);
             let how = approach(&first_view, &second_view);
             if pulls(&first_view, &second_view, &how) {
                 return true;

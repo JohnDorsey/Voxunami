@@ -8,15 +8,26 @@
 //! **Which ghosts.** A ghost is made for the groups that are alone and what is near them (`ServerWorld::ships_near_group`, with a room that is generous: a ghost must be there a
 //! step before anything can touch it, and one with nothing that could touch is not stepped). Groups that are near each other are one mechanism to the ghost, in **one**
 //! ghost: a contact between two bodies is worked out where both are, and once. Every ship that is near is in it with the ships it is coupled to, and its couplings. **Sides:** each
-//! group that is alone is a side, and everything else (what is in the frame everything is in, a group on a rail, ships coupled that are not alone) is one: bodies of one side meet
-//! in both worlds, so that nothing that is not a mechanism's is worked out twice, by two ghosts that have the two near them (and at most 31 mechanisms are in a ghost).
+//! group that has a frame of its own, off a rail (alone) or **on one** (the rail's kick, below), is a side, and everything else (what is in the frame everything is in, ships coupled
+//! that are not alone) is one: bodies of one side meet in both worlds, so that nothing that is not a mechanism's is worked out twice, by two ghosts that have the two near them (and
+//! at most 31 mechanisms are in a ghost).
+//!
+//! **The rail's kick** (2026-11-17, step 4c-5-4). A group on a rail keeps it while a stranger is near (`ServerWorld::has_to_leave_its_rail` does not ask about ships for a group), and is
+//! a mechanism of a ghost like a group that is alone. A touch is what takes the rail: a body of the group that the ghost corrected marks its frame (`corrected_frames`), and
+//! `Bodies::hold_groups_at_their_points` does not discard what the bodies did to the group as a whole, as it does for a rail the bodies do not move, so the ships are written at
+//! the speed the rail has and the hit gives them: the exact change that the contact made, in the group's momentum (the ghost's correction is a difference of two worlds, so the
+//! kick is the sum of the pairs' impulses) and the turn of each car, which stays in the frame. The world is told (`ServerWorld::take_group_off_its_rail`) and the group goes on from
+//! where it is, off its rail, as a group that is alone; a second after it is quiet it is fitted a rail again. **A frame that the world moves has its shift at the end of the tick**
+//! (a rail puts a group at its place of the end of the tick at the start of it) **and a free body is at its place of the start**: the ghost puts the first back by a tick of its speed
+//! (`Follow::at_the_start_of_the_tick`), and so does the search for what is near (`ServerWorld::ships_near_group_lagging`).
 //!
 //! **A frame that falls.** The frame of a group that is alone falls with it, in the pull of the world at its point (`Follow::advance`): nothing pulls on what is in it. What is in the
 //! frame everything is in is pulled by the whole of it. In the ghost, which is in the frame of the first group, the second is pulled by the difference only, which is what the pull
 //! on a body here is, less what is applied to it there, and less what the ghost's frame falls with (`apply_gravity` is what a body had applied; nothing that a ghost knows of).
 //!
-//! **Not done:** the ground in the ghost (a ghost has none: a group has the ground in its own frame until it touches it, 4c-5-3, and a stranger that rests on the ground rests in the frame everything is in), the kick that a hit gives a group on a rail, a coupling that is made
-//! or pulled by a ship in a ghost (a group is not alone when the ends of a ship pull on its own: `alone.rs`).
+//! **Not done:** the ground in the ghost (a ghost has none: a group has the ground in its own frame until it touches it, 4c-5-3, and a stranger that rests on the ground rests in the frame everything is in), a coupling that is made
+//! or pulled by a ship in a ghost (a group is not alone when the ends of a ship pull on its own: `alone.rs`, and a group on a rail comes off it for them: `Bodies::take_railed_groups_off_for_ends_that_pull`), a single ship on a rail
+//! that is hit (it leaves its rail when anything is near, as before), and a group that goes on a rail with a stranger near (it is not put on one then).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,7 +71,7 @@ impl Bodies {
             .frames
             .iter()
             .filter_map(|(key, frame)| match frame.follow?.followed {
-                Followed::Group(anchor) => Some((anchor, *key)),
+                Followed::Group(anchor) | Followed::RailGroup(anchor) => Some((anchor, *key)),
                 _ => None,
             })
             .collect();
@@ -70,7 +81,7 @@ impl Bodies {
             .keys()
             .map(|anchor| {
                 let ships: BTreeSet<GridId> = world
-                    .ships_near_group(*anchor, GHOST_ROOM)
+                    .ships_near_group_lagging(*anchor, GHOST_ROOM, self.config.settings.time_step)
                     .into_iter()
                     .flat_map(|ship| {
                         if grids.has_partners(ship) {
@@ -169,12 +180,20 @@ impl Bodies {
         if frame_key == reference_key {
             return Some(state);
         }
+        // (All at the start of the tick: the ghost is stepped for the tick that is about to be, and a frame that the world moves, as a rail moves a group's, has its shift at the end of
+        // it: a stranger that is at its place of the start of the tick would be a tick behind a group on a rail.)
+        let time_step = self.config.settings.time_step;
         let place = match frame.follow {
             None => state.position,
-            Some(follow) => follow.world(state.position)?,
+            Some(follow) => follow
+                .at_the_start_of_the_tick(time_step)
+                .world(state.position)?,
         };
         Some(BodyState {
-            position: local_in(reference, place)?,
+            position: local_in(
+                reference.map(|reference| reference.at_the_start_of_the_tick(time_step)),
+                place,
+            )?,
             linear_velocity: velocity_in(
                 reference,
                 velocity_from(frame.follow, state.linear_velocity),
@@ -233,7 +252,9 @@ impl Bodies {
         let ghost_frame_pull = world.gravity_at(reference_level, falls_with);
         // What the body is pulled by: the world's, at its place (a group that is alone is pulled as a whole, at its point, by what its frame falls with).
         let pull = match frame.follow {
-            Some(follow) if matches!(follow.followed, Followed::Group(_)) => {
+            Some(follow)
+                if matches!(follow.followed, Followed::Group(_) | Followed::RailGroup(_)) =>
+            {
                 world.gravity_at(frame.level, follow.world(follow.anchor)?)
             }
             _ => world.gravity_at(frame.level, there),
@@ -306,7 +327,7 @@ impl Bodies {
                 if matches!(
                     frame.follow,
                     Some(Follow {
-                        followed: Followed::Group(_),
+                        followed: Followed::Group(_) | Followed::RailGroup(_),
                         ..
                     })
                 ) {
@@ -332,6 +353,7 @@ impl Bodies {
 
     /// After the frames have stepped: what the contacts did to each body is added to what the body did in its own frame.
     pub(super) fn ghosts_after_the_step(&mut self) {
+        self.corrected_frames.clear();
         let mut corrected = 0u64;
         for mechanism in self.ghosts.values() {
             for (id, (frame_key, _)) in &mechanism.parts.bodies {
@@ -345,6 +367,7 @@ impl Bodies {
                         .is_ok()
                 {
                     corrected += 1;
+                    self.corrected_frames.insert(*frame_key);
                 }
             }
         }
