@@ -81,6 +81,21 @@ impl BrickCube {
         1 << self.level
     }
 
+    /// Whether any brick of the cube is in `region`.
+    pub fn meets(self, region: BrickBox) -> bool {
+        let last = i128::try_from(self.edge_length() - 1).unwrap_or(i128::MAX);
+        let far = |coordinate: i128| coordinate.saturating_add(last);
+        BrickBox::new(
+            self.origin,
+            BrickCoordinate::new(
+                far(self.origin.x()),
+                far(self.origin.y()),
+                far(self.origin.z()),
+            ),
+        )
+        .is_some_and(|whole| region.intersection(whole).is_some())
+    }
+
     /// Every cube of the given level that holds at least one brick of `region`, x varying fastest,
     /// then y, then z. Panics if `level > ROOT_LEVEL`.
     pub fn covering(region: BrickBox, level: u8) -> impl Iterator<Item = BrickCube> {
@@ -420,6 +435,28 @@ mod tests {
         let everything = BrickCube::containing(brick(0, 0, 0), ROOT_LEVEL);
         assert!(!tree.all_in_cube(everything, |value| *value == 0));
         assert!(tree.all_in_cube(everything, |value| *value <= 2));
+    }
+
+    #[test]
+    fn a_cube_meets_a_region_when_any_brick_of_it_is_in_the_region() {
+        let region = BrickBox::new(brick(0, 0, 0), brick(3, 3, 3)).unwrap();
+        // Inside, over a corner, over one brick, and beside it on every side.
+        assert!(cube(0, 0, 0, 2).meets(region));
+        assert!(cube(0, 0, 0, 5).meets(region));
+        assert!(
+            cube(-4, -4, -4, 2).meets(BrickBox::new(brick(-1, -1, -1), brick(0, 0, 0)).unwrap())
+        );
+        assert!(cube(3, 3, 3, 0).meets(region));
+        assert!(!cube(4, 0, 0, 0).meets(region));
+        assert!(!cube(0, 4, 0, 0).meets(region));
+        assert!(!cube(0, 0, -1, 0).meets(region));
+        assert!(!cube(4, 0, 0, 2).meets(region));
+        assert!(!cube(-4, 0, 0, 2).meets(region));
+        // The last brick of a cube counts, and the one after it does not.
+        let last_brick = BrickBox::new(brick(7, 7, 7), brick(7, 7, 7)).unwrap();
+        assert!(cube(4, 4, 4, 2).meets(last_brick));
+        assert!(cube(0, 0, 0, 3).meets(last_brick));
+        assert!(!cube(0, 0, 0, 3).meets(BrickBox::new(brick(8, 7, 7), brick(8, 7, 7)).unwrap()));
     }
 
     #[test]

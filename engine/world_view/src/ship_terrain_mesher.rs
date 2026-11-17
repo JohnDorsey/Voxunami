@@ -3,11 +3,12 @@
 //!
 //! It is a [`WorldMesher`] (or a [`LodView`] over one) reading from a ship instead of a level (see [`TerrainSource`] and [`CoarseTerrainSource`]), and saying what it
 //! draws as parts of the ship. A brick outside the extent of the generator is empty, and the face of a brick against it is drawn, so the edge of a planet that is cut
-//! off shows its side. The nodes of a planet are not corrected by the server (edits show in the bricks round the viewer, and not in the nodes farther away).
+//! off shows its side. The server corrects the nodes of a planet where it was edited (`ShipTerrainMesher::set_override`); the rest are the generator's.
 
 use std::sync::Arc;
 
 use block_models::BlockTable;
+use coarse_cells::CoarseNode;
 use region_octree::BrickCube;
 use terrain::{SolidBall, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
@@ -70,34 +71,22 @@ impl TerrainSource for ShipTerrainSource<'_> {
     }
 }
 
-/// Whether any brick of the cube is inside the extent.
-fn meets(extent: BrickBox, cube: BrickCube) -> bool {
-    let origin = cube.origin();
-    let last = i128::try_from(cube.edge_length() - 1).unwrap_or(i128::MAX);
-    let far = |coordinate: i128| coordinate.saturating_add(last);
-    BrickBox::new(
-        origin,
-        BrickCoordinate::new(far(origin.x()), far(origin.y()), far(origin.z())),
-    )
-    .is_some_and(|whole| extent.intersection(whole).is_some())
-}
-
 impl CoarseTerrainSource for ShipTerrainSource<'_> {
     /// (The generator and the extent of a planet do not change, so the answers never go stale.)
     fn version(&self) -> u64 {
         0
     }
 
-    /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (the server does not correct the nodes of a planet,
-    /// so no edit makes something to see where the generator would not).
+    /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (a node the server corrected is kept by the view whatever the
+    /// generator says: an edit can make something to see where the generator would not).
     fn may_show(&self, cube: BrickCube) -> bool {
         self.generator
             .as_ref()
-            .is_some_and(|generator| meets(self.extent, cube) && generator.may_show(cube))
+            .is_some_and(|generator| cube.meets(self.extent) && generator.may_show(cube))
     }
 
     fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
-        self.generator.clone().filter(|_| meets(self.extent, cube))
+        self.generator.clone().filter(|_| cube.meets(self.extent))
     }
 
     fn solid_core(&self) -> Option<SolidBall> {
@@ -191,6 +180,14 @@ impl ShipTerrainMesher {
     /// The ship this mesher makes the terrain of.
     pub fn grid(&self) -> GridId {
         self.grid
+    }
+
+    /// The node the server says is the node of a cube of the planet instead of the generator's (a `None` takes back what was said), see
+    /// [`LodView::set_override`]. A mesher of the bricks alone draws no nodes, so there is nothing to change.
+    pub fn set_override(&mut self, cube: BrickCube, node: Option<CoarseNode>) {
+        if let Drawn::Detailed { view, .. } = &mut self.drawn {
+            view.set_override(self.grid, cube, node);
+        }
     }
 
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.

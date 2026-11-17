@@ -203,8 +203,8 @@ pub trait GameDefinition: Sized + 'static {
         None
     }
 
-    /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (The server corrects the
-    /// nodes of a level where it was edited and the nodes of a planet it does not, so `bytes_per_second` means nothing here.)
+    /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (`bytes_per_second` is how fast the server may tell the player of its
+    /// corrections to the nodes of planets where they were edited, if the game has the plugin that makes them; 0 asks for none.)
     fn grid_detail() -> Option<CoarseDetail> {
         None
     }

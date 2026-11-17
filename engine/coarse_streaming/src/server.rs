@@ -6,8 +6,9 @@
 //! the cells the generator gives for the cube, with the cells under each edited brick made from the brick itself and the cells under each half that has an override
 //! made from that. The overrides are kept up by marking the cubes round an edit **dirty** and remaking a few of them each tick, finest first.
 //!
-//! Everything is keyed by the grid, though only the root grids of levels (terrain) are handled here: a ship's nodes are Phase 38j, and a ship with terrain
-//! generators of its own (Phase 39, `lod-spec.md` 3.8) is the same keyed by its grid.
+//! Everything is keyed by the grid. The grids handled are the root grids of levels (terrain) and **planets** (ships with terrain generators of their own, `lod-spec.md`
+//! 3.8): for a planet the cells the generator gives are patched with the exact cells of its stored bricks, in the planet's own coordinates. A ship nobody generates is
+//! not handled yet (the far-nodes plan, `docs/specs/far-nodes-spec.md`, F4).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -20,10 +21,11 @@ use plugin_host::{HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec}
 use protocol::{ClientId, Message};
 use region_octree::BrickCube;
 use server::Audience;
-use voxel_grid::{Brick, ChannelIndex, ChannelStorage};
+use terrain::TerrainGenerator;
+use voxel_grid::{Brick, ChannelIndex, ChannelStorage, Grid};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, coarse_node_of_brick};
 use voxel_space::{
-    BrickCoordinate, FaceDirection, GridId, LevelIndex, LevelOfDetail, WorldPosition,
+    BrickBox, BrickCoordinate, FaceDirection, GridId, LevelIndex, LevelOfDetail, WorldPosition,
 };
 use world_storage::{BrickSource, LevelData, WorldData};
 
@@ -77,6 +79,9 @@ pub struct CoarseConfig {
     pub view_distance: f64,
     /// How many dirty nodes are remade in a tick.
     pub nodes_per_tick: usize,
+    /// The levels whose own terrain has nodes kept (by their identifiers), or every level if `None`. A game leaves out a level it draws in bricks only, whose
+    /// generator may be slow to make a node of for nothing. (The planets in any level are kept.)
+    pub levels: Option<BTreeSet<NamespacedId>>,
     pub presence: SharedPresence,
 }
 
@@ -103,6 +108,7 @@ impl CoarseConfig {
             maximum_override_level: 12,
             view_distance: 1_048_576.0,
             nodes_per_tick: 8,
+            levels: None,
             presence,
         }
     }
@@ -119,8 +125,9 @@ struct Stored {
 
 struct ClientState {
     detail: SetDetail,
-    /// Where the selection was made from, and the cubes of it that have a detail level (not the bricks).
-    selected_from: Option<(LevelIndex, BrickCoordinate)>,
+    /// Where the selection was made from: the brick the client is in, in each grid that has nodes (the root grid of its level, and each planet in it), in the
+    /// grid's own coordinates.
+    selected_from: Option<Vec<(GridId, BrickCoordinate)>>,
     selected_for: Option<SetDetail>,
     leaves: Vec<(GridId, BrickCube)>,
     /// Which set of places with an override the leaves were last worked out for ([`State::edit_epoch`]).
@@ -166,7 +173,7 @@ impl State {
     /// Marks the cube of detail level 1 that holds `brick`, and those that hold the bricks that touch it (an edit at the edge of a brick changes the
     /// surface of the brick beside it), as to be remade.
     fn mark_brick(&mut self, grid: GridId, brick: BrickCoordinate, maximum_level: u8) {
-        if maximum_level == 0 || grid.root_level().is_none() {
+        if maximum_level == 0 {
             return;
         }
         self.dirty
@@ -218,20 +225,114 @@ impl Owned {
     }
 }
 
+/// Whether the plugin keeps nodes for the grid: the root grid of a level the configuration keeps, or a planet (a ship with terrain generators of its own).
+fn keeps_nodes_of(config: &CoarseConfig, data: &WorldData, grid: GridId) -> bool {
+    if let Some(level) = grid.root_level() {
+        return keeps_level(config, data, level);
+    }
+    data.grids()
+        .get(grid)
+        .is_some_and(|ship| ship.terrain.is_some())
+}
+
+/// Whether the configuration keeps the nodes of the terrain of a level.
+fn keeps_level(config: &CoarseConfig, data: &WorldData, level: LevelIndex) -> bool {
+    config.levels.as_ref().is_none_or(|kept| {
+        data.level_id(level)
+            .is_some_and(|identifier| kept.contains(identifier))
+    })
+}
+
+/// The bricks of a grid that has nodes: the ones that were stored (the edits), and what makes the ones nobody stored.
+enum GridBricks<'a> {
+    Level(&'a LevelData),
+    /// A planet: the bricks of the generator inside the extent, nothing outside it, and the stored bricks over both (as a client makes them,
+    /// `world_view::ShipTerrainSource`).
+    Planet {
+        voxels: &'a Grid,
+        generator: Arc<dyn TerrainGenerator>,
+        extent: BrickBox,
+    },
+}
+
+impl<'a> GridBricks<'a> {
+    /// `None` for a grid that has no nodes, or a planet whose generator this program lacks (a client cannot make its nodes either).
+    fn of(data: &'a WorldData, grid: GridId) -> Option<Self> {
+        if let Some(level) = grid.root_level() {
+            return data.level(level).map(Self::Level);
+        }
+        let ship = data.grids().get(grid)?;
+        let terrain = ship.terrain?;
+        let generator = data
+            .main()
+            .terrain
+            .generators()
+            .entry(terrain.generator)?
+            .content()
+            .cloned()?;
+        Some(Self::Planet {
+            voxels: &ship.voxels,
+            generator,
+            extent: terrain.extent,
+        })
+    }
+
+    /// The brick if it was stored.
+    fn stored(&self, at: BrickCoordinate) -> Option<&Arc<Brick>> {
+        match self {
+            Self::Level(level) => level.overrides.brick(at),
+            Self::Planet { voxels, .. } => voxels.brick(at),
+        }
+    }
+
+    /// The brick as the game sees it, stored or made.
+    fn effective(&self, at: BrickCoordinate) -> BrickSource {
+        match self {
+            Self::Level(level) => level.effective_brick(at),
+            Self::Planet {
+                voxels,
+                generator,
+                extent,
+            } => {
+                if let Some(stored) = voxels.brick(at) {
+                    BrickSource::Edited(Arc::clone(stored))
+                } else if extent.contains(at) {
+                    BrickSource::Generated(generator.generate_brick(voxels.layout(), at))
+                } else {
+                    BrickSource::Generated(Brick::new(voxels.layout()))
+                }
+            }
+        }
+    }
+
+    /// The node of the cube that the generator gives, which is what a client derives where nothing was edited.
+    fn generated_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+        match self {
+            Self::Level(level) => level.terrain.coarse_node(cube, unlit),
+            Self::Planet {
+                generator, extent, ..
+            } => cube
+                .meets(*extent)
+                .then(|| generator.coarse_node(cube, unlit))
+                .flatten(),
+        }
+    }
+}
+
 /// The cells of an edited brick, exactly: from the brick and from the six beside it as the game sees them (edited or generated; a region with no
 /// generator is air).
 fn summarize_edited_brick(
     config: &CoarseConfig,
-    level: &LevelData,
+    bricks: &GridBricks<'_>,
     at: BrickCoordinate,
 ) -> Option<CoarseNode> {
-    let center = Owned::new(Arc::clone(level.overrides.brick(at)?), config);
+    let center = Owned::new(Arc::clone(bricks.stored(at)?), config);
     let neighbours: Vec<Option<Owned>> = FaceDirection::ALL
         .iter()
         .map(|face| {
             let step = face.offset();
             let next = at.checked_offset(step[0], step[1], step[2])?;
-            match level.effective_brick(next) {
+            match bricks.effective(next) {
                 BrickSource::Edited(brick) => Some(Owned::new(brick, config)),
                 BrickSource::Generated(brick) => Some(Owned::new(Arc::new(brick), config)),
                 BrickSource::Unassigned | BrickSource::MissingGenerator(_) => None,
@@ -261,11 +362,10 @@ fn remake(
     grid: GridId,
     cube: BrickCube,
 ) -> Option<CoarseNode> {
-    let level_data = data.level(grid.root_level()?)?;
+    let bricks = GridBricks::of(data, grid)?;
     let parent_level = LevelOfDetail::new(cube.level())?;
-    let mut node = level_data
-        .terrain
-        .coarse_node(cube, config.unlit)
+    let mut node = bricks
+        .generated_node(cube, config.unlit)
         .unwrap_or_else(|| CoarseNode::uniform(CoarseCell::empty(config.air, config.unlit)));
     let half = (cube.edge_length() / 2) as i128;
     let origin = cube.origin();
@@ -282,7 +382,7 @@ fn remake(
             origin.z() + dz * half,
         );
         let child = if cube.level() == 1 {
-            summarize_edited_brick(config, level_data, child_origin)
+            summarize_edited_brick(config, &bricks, child_origin)
         } else {
             let child_cube =
                 BrickCube::new(child_origin, cube.level() - 1).expect("half of a cube is a cube");
@@ -362,10 +462,16 @@ impl State {
             state.selected_from = None;
             return;
         };
-        let from = (level, position.brick());
-        let moved = state.selected_from != Some(from) || state.selected_for != Some(state.detail);
+        let from = viewer_bricks(config, data, level, position);
+        let moved =
+            state.selected_from.as_ref() != Some(&from) || state.selected_for != Some(state.detail);
         if moved || state.selected_edit_epoch != self.edit_epoch {
-            state.leaves = select_leaves(config, &self.edited, level, position, &state.detail);
+            state.leaves = from
+                .iter()
+                .flat_map(|&(grid, brick)| {
+                    select_leaves(config, &self.edited, grid, brick, &state.detail)
+                })
+                .collect();
             state.selected_from = Some(from);
             state.selected_for = Some(state.detail);
             state.selected_edit_epoch = self.edit_epoch;
@@ -459,18 +565,38 @@ fn pending_updates(
         .collect()
 }
 
-/// The cubes of detail level 1 or more that a client at `position` in `level` is to draw and that have an override in them: the selection with the bricks it
+/// The brick a client at `position` in `level` is in, in the root grid of the level and in each planet of it (the grids that have nodes), in each grid's own
+/// coordinates. A planet that is turned or moves puts the client in another brick of it as it goes.
+fn viewer_bricks(
+    config: &CoarseConfig,
+    data: &WorldData,
+    level: LevelIndex,
+    position: WorldPosition,
+) -> Vec<(GridId, BrickCoordinate)> {
+    let mut bricks = Vec::new();
+    if keeps_level(config, data, level) {
+        bricks.push((GridId::root(level), position.brick()));
+    }
+    bricks.extend(data.grids().iter().filter_map(|(id, ship)| {
+        (ship.level == level && ship.terrain.is_some())
+            .then(|| ship.pose.world_to_local(position))
+            .flatten()
+            .map(|local| (id, local.brick()))
+    }));
+    bricks
+}
+
+/// The cubes of detail level 1 or more that a client in `brick` of `grid` is to draw and that have an override in them: the selection with the bricks it
 /// holds left as bricks, followed only to where there is an override. A cube without one is sent nothing, so whether the client draws it (it does not draw a
 /// cube that is empty or buried) does not matter here, and the terrain is not asked. What it does draw of these is the client's to work out: it adds the
 /// cubes of an override to those it keeps as it is told of them.
 fn select_leaves(
     config: &CoarseConfig,
     edited: &EditedCubes,
-    level: LevelIndex,
-    position: WorldPosition,
+    grid: GridId,
+    brick: BrickCoordinate,
     detail: &SetDetail,
 ) -> Vec<(GridId, BrickCube)> {
-    let grid = GridId::root(level);
     let view = ViewSelection {
         detail: detail.settings(),
         zoom: detail.zoom(),
@@ -478,7 +604,7 @@ fn select_leaves(
         maximum_distance: config.view_distance,
     };
     let may_hold = |cube: BrickCube| edited.holds(grid, cube);
-    select_around_brick(position.brick(), &view, &may_hold)
+    select_around_brick(brick, &view, &may_hold)
         .into_iter()
         .filter(|cube| cube.level() >= 1)
         .map(|cube| (grid, cube))
@@ -571,9 +697,20 @@ impl Plugin for CoarseServerPlugin {
         {
             let mut state = locked(&self.state);
             for (index, _, level) in registrar.world().levels() {
+                if !keeps_level(&config, registrar.world(), index) {
+                    continue;
+                }
                 let grid = GridId::root(index);
                 for (brick, _) in level.overrides.bricks() {
                     state.mark_brick(grid, brick, config.maximum_override_level);
+                }
+            }
+            // (A planet that is in a file is told of when it comes out, as a change of every voxel it holds.)
+            for (grid, ship) in registrar.world().grids().iter() {
+                if ship.terrain.is_some() {
+                    for (brick, _) in ship.voxels.bricks() {
+                        state.mark_brick(grid, brick, config.maximum_override_level);
+                    }
                 }
             }
         }
@@ -621,11 +758,15 @@ impl Plugin for CoarseServerPlugin {
                 .map(|brightness| brightness.channel),
         );
         let marking = Arc::clone(&self.state);
+        let marking_config = Arc::clone(&self.config);
         let maximum = config.maximum_override_level;
         registrar.on_channels(
             HandlerSpec::new("engine:coarse_streaming_mark"),
             &channels,
-            move |event, _| {
+            move |event, context| {
+                if !keeps_nodes_of(&marking_config, context.world().data(), event.grid) {
+                    return;
+                }
                 let mut state = locked(&marking);
                 for voxel in &event.voxels {
                     state.mark_brick(event.grid, voxel.split().0, maximum);
@@ -659,6 +800,7 @@ impl Plugin for CoarseServerPlugin {
 #[cfg(test)]
 mod tests {
     use block_models::BlockTable;
+    use world_storage::test_support::{ALL_PLUGINS, Game};
 
     use super::*;
 
@@ -888,14 +1030,14 @@ mod tests {
             zoom: None,
         };
         let mut edited = EditedCubes::new();
-        let none = select_leaves(&config, &edited, LevelIndex::MAIN, at(100), &detail);
+        let none = select_leaves(&config, &edited, GridId::MAIN, at(100).brick(), &detail);
         assert!(none.is_empty(), "no override, no leaf: {none:?}");
 
         // An override in the middle distance and one far off, and one in the ball of bricks the client holds.
         edited.add(GridId::MAIN, cube(160, 1));
         edited.add(GridId::MAIN, cube(5_000, 1));
         edited.add(GridId::MAIN, cube(100, 1));
-        let leaves = select_leaves(&config, &edited, LevelIndex::MAIN, at(100), &detail);
+        let leaves = select_leaves(&config, &edited, GridId::MAIN, at(100).brick(), &detail);
         assert!(
             leaves
                 .iter()
@@ -925,7 +1067,13 @@ mod tests {
         // The ones that are too far are not leaves: the distance limit of the configuration.
         let mut near_sighted = config.clone();
         near_sighted.view_distance = 1_000.0;
-        let near_leaves = select_leaves(&near_sighted, &edited, LevelIndex::MAIN, at(100), &detail);
+        let near_leaves = select_leaves(
+            &near_sighted,
+            &edited,
+            GridId::MAIN,
+            at(100).brick(),
+            &detail,
+        );
         assert!(
             near_leaves
                 .iter()
@@ -933,7 +1081,13 @@ mod tests {
         );
         assert!(near_leaves.len() < leaves.len());
         // And not in another level.
-        let other = select_leaves(&config, &edited, LevelIndex::new(1), at(100), &detail);
+        let other = select_leaves(
+            &config,
+            &edited,
+            GridId::root(LevelIndex::new(1)),
+            at(100).brick(),
+            &detail,
+        );
         assert!(other.is_empty());
     }
 
@@ -975,14 +1129,224 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_marked_when_there_are_no_overrides_to_keep_or_the_grid_is_not_a_levels_root() {
+    fn nothing_is_marked_when_there_are_no_overrides_to_keep() {
         let mut state = State::default();
         state.mark_brick(GridId::MAIN, BrickCoordinate::ORIGIN, 0);
         assert!(state.dirty.is_empty());
-        let ship = GridId::new(GridId::FIRST_ALLOCATED);
-        assert!(ship.root_level().is_none(), "a ship is not a root grid");
-        state.mark_brick(ship, BrickCoordinate::ORIGIN, 12);
-        assert!(state.dirty.is_empty());
+    }
+
+    #[test]
+    fn nodes_are_kept_for_the_root_grids_of_levels_and_for_planets_and_for_no_other_grid() {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_ship(&world, 0);
+        let ship = world.grids_mut().create(made);
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        assert!(keeps_nodes_of(&config(), &world, GridId::MAIN));
+        assert!(keeps_nodes_of(&config(), &world, planet));
+        assert!(
+            !keeps_nodes_of(&config(), &world, ship),
+            "a ship nobody generates has no nodes yet"
+        );
+        // (A grid that is not there has none.)
+        assert!(!keeps_nodes_of(
+            &config(),
+            &world,
+            GridId::new(GridId::FIRST_ALLOCATED + 100)
+        ));
+    }
+
+    #[test]
+    fn a_game_can_keep_the_nodes_of_some_levels_and_every_planet() {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        world
+            .add_level(
+                "test_content:second".parse().unwrap(),
+                game.new_level("base_terrain:flat_v1"),
+            )
+            .unwrap();
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        let mut config = config();
+        config.levels = Some(["test_content:second".parse().unwrap()].into());
+        let second = GridId::root(LevelIndex::new(1));
+        assert!(!keeps_nodes_of(&config, &world, GridId::MAIN));
+        assert!(keeps_nodes_of(&config, &world, second));
+        assert!(
+            keeps_nodes_of(&config, &world, planet),
+            "planets are kept in any case"
+        );
+        // A client in a level that is not kept is sent the nodes of its planets and of nothing else.
+        let viewer = WorldPosition::new(BrickCoordinate::new(3, 25, 4), [5.0; 3]);
+        let grids: Vec<GridId> = viewer_bricks(&config, &world, LevelIndex::MAIN, viewer)
+            .into_iter()
+            .map(|(grid, _)| grid)
+            .collect();
+        assert_eq!(grids, [planet]);
+    }
+
+    #[test]
+    fn a_client_is_in_a_brick_of_each_planet_of_its_level_in_the_planets_own_coordinates() {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let mut made = game.sample_planet(&world, 0);
+        made.pose = voxel_space::GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(0, 20, 0), [0.0; 3]),
+            voxel_space::Orientation::IDENTITY,
+        );
+        let planet = world.grids_mut().create(made);
+        let ship = game.sample_ship(&world, 0);
+        world.grids_mut().create(ship);
+        let mut elsewhere = game.sample_planet(&world, 0);
+        elsewhere.level = LevelIndex::new(1);
+        world.grids_mut().create(elsewhere);
+
+        let viewer = WorldPosition::new(BrickCoordinate::new(3, 25, 4), [5.0; 3]);
+        let bricks = viewer_bricks(&config(), &world, LevelIndex::MAIN, viewer);
+        // The root grid of the level, in the level's coordinates, and the one planet of the level, in its own (20 bricks lower); no ship, no planet of another level.
+        assert_eq!(
+            bricks,
+            [
+                (GridId::MAIN, BrickCoordinate::new(3, 25, 4)),
+                (planet, BrickCoordinate::new(3, 5, 4)),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_node_of_a_planet_is_what_its_generator_gives_with_the_cells_of_a_stored_brick_patched_in()
+     {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        let layout = Arc::clone(world.main().overrides.layout());
+        let block = layout
+            .channel_index(&"core:block".parse().unwrap())
+            .unwrap();
+        let air = game.raw_block("base_blocks:air");
+        let mut opaque = vec![true; 16];
+        opaque[air as usize] = false;
+        let config = CoarseConfig::new(
+            BlockTable::of_cubes(&opaque),
+            air,
+            block,
+            0,
+            20,
+            Arc::new(Mutex::new(player_presence::Presence::new())),
+        );
+        let ship = world.grids().get(planet).unwrap();
+        let (stored, _) = ship
+            .voxels
+            .bricks()
+            .next()
+            .expect("the sample planet has stored bricks");
+        let generator = Arc::clone(
+            world
+                .main()
+                .terrain
+                .generators()
+                .entry(ship.terrain.unwrap().generator)
+                .unwrap()
+                .content()
+                .unwrap(),
+        );
+
+        let cube = BrickCube::containing(stored, 1);
+        let node = remake(&config, &BTreeMap::new(), &world, planet, cube)
+            .expect("a cube with a stored brick has a node of its own");
+        let generated = generator
+            .coarse_node(cube, 0)
+            .expect("the generator makes nodes of its extent");
+        let (node, generated) = (node.without_exposure(), generated.without_exposure());
+        let (same, different) = node.cells().zip(generated.cells()).fold(
+            (0, 0),
+            |(same, different), (made, generated)| {
+                if made == generated {
+                    (same + 1, different)
+                } else {
+                    (same, different + 1)
+                }
+            },
+        );
+        // A stored brick is one eighth of the cube; the rest of the node is the generator's, exactly.
+        assert!(different > 0, "the stored brick is in the node");
+        let stored_in_the_cube = ship
+            .voxels
+            .bricks()
+            .filter(|(brick, _)| BrickCube::containing(*brick, 1) == cube)
+            .count();
+        assert!(
+            different <= stored_in_the_cube * 16 * 16 * 16,
+            "{different} cells differ, in more than the {stored_in_the_cube} stored bricks"
+        );
+        assert_eq!(same + different, 32 * 32 * 32);
+        // And a cube with no stored brick in it has none of its own.
+        let empty = BrickCube::containing(
+            BrickCoordinate::new(stored.x() + 40, stored.y(), stored.z()),
+            1,
+        );
+        assert!(remake(&config, &BTreeMap::new(), &world, planet, empty).is_none());
+    }
+
+    #[test]
+    fn the_bricks_of_a_planet_are_the_stored_ones_and_what_its_generator_makes_inside_its_extent_and_nothing_outside_it()
+     {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        let bricks = GridBricks::of(&world, planet).expect("the planet has a generator");
+        let extent = world.grids().get(planet).unwrap().terrain.unwrap().extent;
+        let inside = extent.min();
+        let outside =
+            BrickCoordinate::new(extent.max().x() + 1, extent.min().y(), extent.min().z());
+        let generator = Arc::clone(
+            world
+                .main()
+                .terrain
+                .generators()
+                .entry(
+                    world
+                        .grids()
+                        .get(planet)
+                        .unwrap()
+                        .terrain
+                        .unwrap()
+                        .generator,
+                )
+                .unwrap()
+                .content()
+                .unwrap(),
+        );
+        let layout = Arc::clone(world.grids().get(planet).unwrap().voxels.layout());
+        assert!(
+            matches!(bricks.effective(inside), BrickSource::Generated(brick) if brick == generator.generate_brick(&layout, inside)),
+            "inside the extent the bricks are the generator's"
+        );
+        assert!(
+            matches!(bricks.effective(outside), BrickSource::Generated(brick) if brick == Brick::new(&Arc::clone(world.grids().get(planet).unwrap().voxels.layout())))
+        );
+        // The sample planet has stored bricks (its edits): those are what the game sees where they are.
+        let stored: Vec<BrickCoordinate> = world
+            .grids()
+            .get(planet)
+            .unwrap()
+            .voxels
+            .bricks()
+            .map(|(brick, _)| brick)
+            .collect();
+        assert!(!stored.is_empty());
+        for brick in stored {
+            assert!(bricks.stored(brick).is_some());
+            assert!(matches!(bricks.effective(brick), BrickSource::Edited(_)));
+        }
+        // A ship nobody generates has no nodes, so no bricks to read them from.
+        let made = game.sample_ship(&world, 0);
+        let ship = world.grids_mut().create(made);
+        assert!(GridBricks::of(&world, ship).is_none());
     }
 
     #[test]

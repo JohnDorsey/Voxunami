@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use coarse_streaming::{CoarseConfig, CoarseServerPlugin};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
@@ -162,6 +163,15 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// A server that also corrects the nodes of the planet as it is edited and tells the players (`coarse_streaming`).
+    fn with_coarse_streaming() -> Self {
+        Self::build(true)
+    }
+
+    fn build(coarse_streaming: bool) -> Self {
         let content: ExampleContent = ExampleGame::new_content();
         let mut world = content.new_world(7);
         let block = content.view_channels().blocks;
@@ -176,11 +186,22 @@ impl Rig {
             grid: planet,
             asked: Arc::clone(&removal),
         };
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(PlayersPlugin::new(true)),
-            Box::new(digger),
-            Box::new(remover),
-        ];
+        let players = PlayersPlugin::new(true);
+        let presence = players.presence();
+        let mut plugins: Vec<Box<dyn Plugin>> = vec![Box::new(players)];
+        if coarse_streaming {
+            let config = CoarseConfig::new(
+                content.block_table(),
+                air,
+                block,
+                planet_detail(0.0).unlit,
+                ExampleGame::ticks_per_second(),
+                presence,
+            );
+            plugins.push(Box::new(CoarseServerPlugin::new(config)));
+        }
+        plugins.push(Box::new(digger));
+        plugins.push(Box::new(remover));
         let (server, connector) =
             build_server_with_plugins::<ExampleGame>(&content, world, 3, plugins).unwrap();
         Self {
@@ -571,6 +592,156 @@ fn a_recording_of_a_player_who_saw_a_planet_in_detail_shows_the_same_nodes() {
     replay_screen.apply(rig.planet, replay.settle(|| {}).unwrap());
 
     assert_eq!(replay_screen.planet, screen.planet);
+    assert_eq!(replay_screen.nodes, screen.nodes);
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Planets drawn out to `maximum_distance`, with a million bytes a second of the server's corrections of their nodes.
+fn streamed_planet_detail(maximum_distance: f64) -> CoarseDetail {
+    CoarseDetail {
+        bytes_per_second: 1_000_000,
+        ..planet_detail(maximum_distance)
+    }
+}
+
+/// Three kilometres over the planet, looking down: more than a hundred bricks from any of it, and far outside the region the player watches.
+const FAR_OVER_THE_PLANET: [f64; 3] = [5.5, 20.0 * 32.0 + 3000.0, 5.5];
+
+/// A crater 16 voxels square in the ground of the planet, in the planet's own coordinates.
+fn crater_in_the_planet() -> Vec<VoxelCoordinate> {
+    (0..16)
+        .flat_map(|x| {
+            (0..16).flat_map(move |z| (0..10).map(move |y| VoxelCoordinate::new(x, y, z)))
+        })
+        .collect()
+}
+
+/// Whether a node of the planet lies over the crater of `crater_in_the_planet`.
+fn is_over_the_crater(cube: BrickCube) -> bool {
+    let origin = cube.origin();
+    let edge = cube.edge_length() as i128 * 32;
+    let (x, y, z) = (origin.x() * 32, origin.y() * 32, origin.z() * 32);
+    x < 16 && x + edge > 0 && z < 16 && z + edge > 0 && y < 10 && y + edge > 0
+}
+
+#[test]
+fn an_edit_to_a_planet_shows_in_its_nodes_far_away_and_a_player_who_comes_later_sees_the_same() {
+    let mut rig = Rig::with_coarse_streaming();
+    let connection = rig.connection();
+    let mut watcher = rig.join_seeing_planets_in_detail(
+        connection,
+        1,
+        FAR_OVER_THE_PLANET,
+        -90.0,
+        streamed_planet_detail(5000.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    let before = screen.nodes.clone();
+    assert!(before.len() > 5, "{}", before.len());
+
+    rig.dig(&crater_in_the_planet());
+    rig.settle(&mut watcher, &mut screen);
+
+    // Some node over the crater is drawn differently, and none that is not over it.
+    let changed: Vec<BrickCube> = screen
+        .nodes
+        .iter()
+        .filter(|(cube, mesh)| before.get(*cube) != Some(*mesh))
+        .map(|(cube, _)| *cube)
+        .chain(
+            before
+                .keys()
+                .filter(|cube| !screen.nodes.contains_key(*cube))
+                .copied(),
+        )
+        .collect();
+    assert!(!changed.is_empty(), "the crater is not in the picture");
+    for cube in &changed {
+        assert!(
+            is_over_the_crater(*cube),
+            "{cube:?} changed and is not over the crater"
+        );
+    }
+
+    // A player who arrives later, where the watcher is, sees what the watcher sees.
+    let connection = rig.connection();
+    let mut late = rig.join_seeing_planets_in_detail(
+        connection,
+        2,
+        FAR_OVER_THE_PLANET,
+        -90.0,
+        streamed_planet_detail(5000.0),
+    );
+    let mut late_screen = Screen::default();
+    rig.settle(&mut late, &mut late_screen);
+    assert_eq!(late_screen.nodes, screen.nodes);
+}
+
+#[test]
+fn a_planet_that_is_drawn_again_keeps_the_nodes_the_server_corrected() {
+    let mut rig = Rig::with_coarse_streaming();
+    let connection = rig.connection();
+    let mut watcher = rig.join_seeing_planets_in_detail(
+        connection,
+        1,
+        FAR_OVER_THE_PLANET,
+        -90.0,
+        streamed_planet_detail(5000.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    let before = screen.nodes.clone();
+    rig.dig(&crater_in_the_planet());
+    rig.settle(&mut watcher, &mut screen);
+    let with_the_crater = screen.nodes.clone();
+    assert_ne!(with_the_crater, before, "the crater is in the picture");
+
+    // The planet's view is made again (as when the game asks for detail after the planet is drawn): the server does not say again what it said.
+    watcher.enable_grid_detail(streamed_planet_detail(5000.0));
+    rig.settle(&mut watcher, &mut screen);
+    assert_eq!(watcher.planet_count(), 1);
+    assert_eq!(screen.nodes, with_the_crater);
+}
+
+#[test]
+fn a_recording_of_a_player_who_saw_an_edit_to_a_planet_in_its_nodes_shows_the_same_nodes() {
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_planet_nodes_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("session.voxreplay");
+    let mut rig = Rig::with_coarse_streaming();
+    let recorded: Box<dyn Connection> =
+        record_connection(rig.connector.connect().unwrap(), &path).unwrap();
+    let mut watcher = rig.join_seeing_planets_in_detail(
+        recorded,
+        1,
+        FAR_OVER_THE_PLANET,
+        -90.0,
+        streamed_planet_detail(5000.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    let before = screen.nodes.clone();
+    rig.dig(&crater_in_the_planet());
+    rig.settle(&mut watcher, &mut screen);
+    assert_ne!(screen.nodes, before, "the crater is in the picture");
+    drop(watcher);
+
+    let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
+    let mut replay = Session::<_, ExampleGame>::connect(
+        connection,
+        &Identity::generate(),
+        Mode::Replaying,
+        3,
+        camera_at([0.0; 3], 0.0, 0.0),
+        || {},
+    )
+    .unwrap();
+    replay.enable_grid_detail(streamed_planet_detail(5000.0));
+    while replay.advance_one_tick().unwrap_or(false) {}
+    let mut replay_screen = Screen::default();
+    replay_screen.apply(rig.planet, replay.settle(|| {}).unwrap());
     assert_eq!(replay_screen.nodes, screen.nodes);
     std::fs::remove_dir_all(&directory).unwrap();
 }

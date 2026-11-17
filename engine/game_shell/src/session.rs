@@ -87,8 +87,6 @@ pub struct OccupancyReport {
 struct CoarseTerrain {
     view: LodView,
     detail: CoarseDetail,
-    /// What the server was last asked (or would have been, in a replay).
-    asked: Option<SetDetail>,
 }
 
 impl TerrainView {
@@ -157,6 +155,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     grid_detail: Option<CoarseDetail>,
     /// The nodes the server has told this session of, which it does not tell again: a view of the terrain that is made again is given them.
     coarse_overrides: CoarseOverrides,
+    /// What the server was last asked about how the terrain is drawn (or would have been, in a replay).
+    asked: Option<SetDetail>,
     /// Whether the meshers say which voxels of their bricks block the sun (`Session::enable_occupancy`).
     occupancy_wanted: bool,
     /// Whether the terrain follows what the game says for each level (`GameDefinition::level_detail`): coarse nodes in a level it draws so, bricks only in another.
@@ -274,6 +274,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             planets: BTreeMap::new(),
             grid_detail: None,
             coarse_overrides: CoarseOverrides::default(),
+            asked: None,
             occupancy_wanted: false,
             follows_level_detail: false,
             sent_poses: BTreeMap::new(),
@@ -475,15 +476,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 worker_count: self.view_settings.worker_count,
             },
         );
-        // (What the server said before this view was made: it says nothing twice.)
+        // (What the server said before this view was made, of the root grids of levels: it says nothing twice.)
         for (grid, cube, node) in self.coarse_overrides.in_order() {
-            view.set_override(grid, cube, Some(node.clone()));
+            if grid.root_level().is_some() {
+                view.set_override(grid, cube, Some(node.clone()));
+            }
         }
-        TerrainView::Coarse(Box::new(CoarseTerrain {
-            view,
-            detail,
-            asked: None,
-        }))
+        TerrainView::Coarse(Box::new(CoarseTerrain { view, detail }))
     }
 
     /// Makes the view of the terrain what the game says for this level, if it is not that: what the old one drew is taken down (the updates are returned).
@@ -659,10 +658,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     if let Ok(CoarseNodes(updates)) = CoarseNodes::decode(&payload) {
                         for update in updates {
                             self.coarse_overrides.apply(&update);
-                            if let TerrainView::Coarse(coarse) = &mut self.terrain {
-                                coarse
-                                    .view
-                                    .set_override(update.grid, update.cube, update.node);
+                            if update.grid.root_level().is_some() {
+                                if let TerrainView::Coarse(coarse) = &mut self.terrain {
+                                    coarse
+                                        .view
+                                        .set_override(update.grid, update.cube, update.node);
+                                }
+                            } else if let Some(planet) = self.planets.get_mut(&update.grid) {
+                                planet.set_override(update.cube, update.node);
                             }
                         }
                     }
@@ -856,7 +859,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             }
             (terrain, _) => updates.extend(terrain.mesher_mut().update(data, center)),
         }
-        if let Some(request) = request {
+        // What the server is asked is how the level is drawn if it is drawn in nodes, and otherwise how the planets are, if they are.
+        let planets = self.grid_detail.map(|detail| self.coarse_request(&detail));
+        if let Some(request) = request.or(planets) {
             self.ask_for_coarse_nodes(request);
         }
         updates.extend(self.ship_updates());
@@ -865,13 +870,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// Tells the server how the terrain is drawn, when that is not what it was told last. A replay asks for nothing.
     fn ask_for_coarse_nodes(&mut self, request: SetDetail) {
-        let TerrainView::Coarse(coarse) = &mut self.terrain else {
-            return;
-        };
-        if coarse.asked == Some(request) {
+        if self.asked == Some(request) {
             return;
         }
-        coarse.asked = Some(request);
+        self.asked = Some(request);
         if self.mode == Mode::Playing {
             self.send_game_message(SetDetail::kind(), request.encode());
         }
@@ -942,11 +944,18 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                         Arc::clone(&self.block_table),
                     ),
                 };
-                if self.occupancy_wanted {
+                let mut mesher = if self.occupancy_wanted {
                     mesher.with_occupancy()
                 } else {
                     mesher
+                };
+                // (What the server said of the planet before its mesher was made: it says nothing twice.)
+                for (grid, cube, node) in self.coarse_overrides.in_order() {
+                    if grid == id {
+                        mesher.set_override(cube, Some(node.clone()));
+                    }
                 }
+                mesher
             });
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);

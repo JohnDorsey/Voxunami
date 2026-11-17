@@ -11,6 +11,7 @@ mod light;
 mod movement;
 mod ships;
 
+use coarse_streaming::{Brightness, CoarseConfig, CoarseServerPlugin};
 use game_shell::{GameContent, GameDefinition};
 use grid_bodies::collision::BlockCollisions;
 use grid_bodies::{BodiesReport, Docking, DockingSettings, GridBodiesConfig, GridBodiesPlugin};
@@ -20,7 +21,7 @@ use player_presence::PlayersPlugin;
 use plugin_host::Plugin;
 use voxel_space::{BrickCoordinate, WorldPosition};
 
-use crate::content::CaveContent;
+use crate::content::{CaveContent, mini_cosmos_id};
 use crate::game::Cave;
 
 pub use block_editing::{BlockBroken, BlockEditRequested, BlockEditingPlugin, BlockPlaced};
@@ -80,6 +81,7 @@ pub fn cave_plugins_reporting(
     });
     let bodies = ships(content, docking);
     let report = bodies.report_handle();
+    let coarse = coarse_nodes(content, presence.clone());
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(players),
         Box::new(BlockEditingPlugin::new(content, presence.clone())),
@@ -87,11 +89,41 @@ pub fn cave_plugins_reporting(
         Box::new(movement),
         Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
+        Box::new(coarse),
         Box::new(bodies),
         Box::new(lifecycle),
         Box::new(commands),
     ];
     (plugins, report)
+}
+
+/// The plugin that corrects the far nodes of what players change: the planets, and the level of space (the overworld is drawn in bricks only, and its generator is slow to make
+/// a node of). It sends as fast as each player asks (`Cave::grid_detail` and `Cave::level_detail` say how fast). The light of an edited node is the plain light of the
+/// bricks (the scaled light is not summed in: far terrain is as dark as the generator's, and so is what is built on it, unless a lamp lights it).
+fn coarse_nodes(
+    content: &CaveContent,
+    presence: player_presence::SharedPresence,
+) -> CoarseServerPlugin {
+    let planets = Cave::grid_detail().expect("Cave draws planets in detail");
+    let space =
+        Cave::level_detail(&mini_cosmos_id()).expect("Cave draws the level of space in detail");
+    let mut config = CoarseConfig::new(
+        content.block_table(),
+        content.blocks.air,
+        content.block_channel(),
+        planets.unlit,
+        Cave::ticks_per_second(),
+        presence,
+    );
+    config.state_channel = Some(content.state_channel());
+    config.orientation_channel = Some(content.orientation_channel());
+    config.brightness = Some(Brightness {
+        channel: content.light_channel(),
+        brightness_of: std::sync::Arc::new(|light| light.min(255) as u8),
+    });
+    config.view_distance = planets.maximum_distance.max(space.maximum_distance);
+    config.levels = Some(std::collections::BTreeSet::from([mini_cosmos_id()]));
+    CoarseServerPlugin::new(config)
 }
 
 /// Where players start: the world's spawn.
