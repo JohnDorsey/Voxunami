@@ -1237,11 +1237,19 @@ impl ServerWorld {
         position: WorldPosition,
         left_out: &[GridId],
     ) -> [f64; 3] {
+        // Only a ship that weighs at least what pulls is looked at (`voxel_space::gravity_at` leaves out the others, so the sum is the same to the last bit), and with no such
+        // weight set nothing is: every ship of a level asks this once a tick, so looking at every ship for each would be the square of their number.
+        let threshold = self.gravity.pull_mass_threshold.unwrap_or(f64::INFINITY);
         let pulls = self
             .data
             .grids()
             .iter()
-            .filter(|(id, ship)| ship.level == level && ship.mass > 0.0 && !left_out.contains(id))
+            .filter(|(id, ship)| {
+                ship.mass >= threshold
+                    && ship.mass > 0.0
+                    && ship.level == level
+                    && !left_out.contains(id)
+            })
             .filter_map(|(_, ship)| {
                 let centre = WorldPosition::new(BrickCoordinate::ORIGIN, ship.centre_of_mass);
                 Some(MassPull {
