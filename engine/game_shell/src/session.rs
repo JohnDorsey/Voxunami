@@ -1246,6 +1246,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.settings.reload_requested.take()
     }
 
+    /// What `.paint` asked for since the last time this was called (see [`ClientSettings::paint_requested`]).
+    pub fn take_paint_request(&mut self) -> Option<crate::client_commands::PaintRequest> {
+        self.settings.paint_requested.take()
+    }
+
     /// Tells the session which shader packs the player has (`.shader` chooses among them), which is chosen to start with (`None`: the game's own), and what the player chose of
     /// the settings of each (read from the files next to them).
     pub fn offer_shader_packs(

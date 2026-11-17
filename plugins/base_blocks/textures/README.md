@@ -104,4 +104,9 @@ phases; what works so far:
 
 All of the planned features are built.
 
+- Painting in a program that shows the tiles: `python VirtualAtlas.py --bridge [PORT]` lets a program on this machine (a game, say) connect and say which tile its pointer is
+  over and where; VirtualAtlas then paints there with the tool, colours and sizes chosen here (a stroke that runs off one face onto the next wraps around the tile), and sends
+  each tile's pixels back as they change so that the program shows them at once. Nothing in it is about one program: the protocol is `tools/virtual_atlas/BRIDGE.md`. In
+  Voxunami: `.paint` in the game's command line (see `docs/world-painting-options.md`).
+
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.

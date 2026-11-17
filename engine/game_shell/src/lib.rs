@@ -24,6 +24,7 @@ pub mod package;
 mod package_data;
 mod package_reload;
 mod packs;
+pub mod paint_bridge;
 #[cfg(test)]
 mod planet_view_tests;
 mod player_identity;

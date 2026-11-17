@@ -20,6 +20,7 @@ drawing is plain logic that can be tested without a window (tools/virtual_atlas/
 
 from __future__ import annotations
 
+import argparse
 import base64
 import binascii
 import dataclasses
@@ -31,6 +32,7 @@ import math
 import os
 import random
 import re
+import socket
 import sys
 import tempfile
 from collections import deque
@@ -3737,22 +3739,61 @@ class EditorPanel:
                 self._press_on_canvas(button, position)
 
     def _press_on_canvas(self, button: int, position: tuple[int, int]) -> None:
+        if self.tool == "select":
+            if button == 1:
+                self._copy_offset = self._offset_of_copy(self.view.pixel_at(position))
+                self._press_select(self._selection_pixel(position))
+            return
+        self._press_pixel(button, self.view.pixel_at(position))
+
+    def _press_pixel(self, button: int, pixel: Coordinate) -> None:
+        """Start what the current tool does with a press of `button` on a canvas pixel: a stroke, or picking a color."""
         slot = "primary" if button == 1 else "secondary"
-        pixel = self.view.pixel_at(position)
         if self.tool == "eyedropper":
             color = pick_color(self.layout, pixel, self.wrap_assist)
             if color is not None:
                 self.colors.set_color(color, slot)
             self.color_drag = f"dropper_{slot}"
             return
-        if self.tool == "select":
-            if button == 1:
-                self._copy_offset = self._offset_of_copy(pixel)
-                self._press_select(self._selection_pixel(position))
-            return
         self.session = CanvasSession(
             self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist
         )
+
+    # A pointer from elsewhere -----------------------------------------------------------------------------
+    # A program that shows the tiles somewhere else (see "The bridge" below) says where its pointer is as a pixel of the
+    # canvas, and these do what the mouse does on the canvas: the tool, colors and sizes are the ones chosen here.
+
+    def external_press(self, button: int, pixel: Coordinate) -> bool:
+        """Press button 1 (primary color) or 3 (secondary) on a canvas pixel, which may be outside the canvas (with
+        wrap-assist it is a pixel of another copy). Only the drawing tools and the eye dropper work this way. False if
+        nothing started: no tile is shown, or the tool is the select tool."""
+        self.sync()
+        if self.layout is None or self.tool == "select" or button not in (1, 3):
+            return False
+        self._press_pixel(button, pixel)
+        return True
+
+    def external_move(self, pixel: Coordinate) -> None:
+        """Move the pointer, with the button still down, to a canvas pixel."""
+        if self.color_drag is not None and self.color_drag.startswith("dropper_") and self.layout is not None:
+            color = pick_color(self.layout, pixel, self.wrap_assist)
+            if color is not None:
+                self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
+        elif self.session is not None:
+            self.session.move(pixel)
+
+    def external_release(self, button: int, pixel: Coordinate) -> None:
+        """Let go of the button at a canvas pixel: the stroke ends and is one step of the history."""
+        if self.color_drag is not None and button in (1, 3):
+            self.color_drag = None
+        if self.session is not None and button in (1, 3):
+            self.session.move(pixel)
+            session, self.session = self.session, None
+            self._commit(session)
+
+    def external_active(self) -> bool:
+        """Whether a stroke (or an eye dropper press) from `external_press` is going on."""
+        return self.session is not None or self.color_drag is not None
 
     def _offset_of_copy(self, pixel: Coordinate) -> tuple[int, int]:
         """How far the copy of the canvas that holds `pixel` is from the canvas itself (0, 0 without wrap-assist)."""
@@ -4316,6 +4357,340 @@ class EditorPanel:
 
 
 # ----------------------------------------------------------------------------------------------------------
+# The bridge: painting on tiles that another program shows
+# ----------------------------------------------------------------------------------------------------------
+# A program that draws these tiles somewhere (a game, a viewer) can connect and say which tile its pointer is over and
+# where, and VirtualAtlas paints there with the tool, colors and sizes chosen here, then sends back the tile's pixels
+# as they change so that the program can show them at once. VirtualAtlas knows nothing of any one program: what a
+# message means is in tools/virtual_atlas/BRIDGE.md, and the only thing the program is asked to know is which of the
+# files here a tile of its own is (a list of names, so each program keeps its own naming).
+
+BRIDGE_PROTOCOL = 1
+DEFAULT_BRIDGE_PORT = 47625
+BRIDGE_ADDRESS = "127.0.0.1"
+MAXIMUM_BRIDGE_LINE_BYTES = 4 * 1024 * 1024
+BRIDGE_READ_BYTES = 65536
+
+
+class BridgeMessageError(ValueError):
+    """A line from the program that is not a message."""
+
+
+def encode_bridge_message(message: dict) -> bytes:
+    """One message as one line of JSON."""
+    return json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+class BridgeLineReader:
+    """Cuts a stream of bytes into lines and each line into a message (a JSON object).
+
+    `feed` returns, in order, a dict for each good line and a BridgeMessageError for each bad one. A line longer than
+    MAXIMUM_BRIDGE_LINE_BYTES is one error, and the rest of it is thrown away up to the next end of line."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+        self.skipping = False
+
+    def feed(self, data: bytes) -> list[object]:
+        found: list[object] = []
+        self.buffer.extend(data)
+        while True:
+            end = self.buffer.find(b"\n")
+            if end < 0:
+                if len(self.buffer) > MAXIMUM_BRIDGE_LINE_BYTES and not self.skipping:
+                    found.append(BridgeMessageError("a line is longer than the most the bridge takes"))
+                    self.skipping = True
+                if self.skipping:
+                    self.buffer.clear()
+                return found
+            line = bytes(self.buffer[:end])
+            del self.buffer[: end + 1]
+            if self.skipping:
+                self.skipping = False
+                continue
+            if len(line) > MAXIMUM_BRIDGE_LINE_BYTES:
+                found.append(BridgeMessageError("a line is longer than the most the bridge takes"))
+                continue
+            if not line.strip():
+                continue
+            try:
+                message = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as error:
+                found.append(BridgeMessageError(f"a line is not JSON: {error}"))
+                continue
+            if not isinstance(message, dict) or not isinstance(message.get("type"), str):
+                found.append(BridgeMessageError("a message is an object with a text \"type\""))
+                continue
+            found.append(message)
+
+
+@dataclasses.dataclass
+class BridgeTile:
+    """A tile of the program: what it calls it, the names of the files here that it may be (the first that exists), and its size."""
+
+    identifier: str
+    files: list[str]
+    size: int
+    group: Optional[str] = None
+
+
+def parse_bridge_tiles(message: dict) -> tuple[list[BridgeTile], list[str]]:
+    """The tiles of a "tiles" message that are good, and what is wrong with the others."""
+    tiles: list[BridgeTile] = []
+    problems: list[str] = []
+    entries = message.get("tiles")
+    if not isinstance(entries, list):
+        return [], ["\"tiles\" is a list"]
+    for entry in entries:
+        identifier = entry.get("id") if isinstance(entry, dict) else None
+        files = entry.get("files") if isinstance(entry, dict) else None
+        size = entry.get("size") if isinstance(entry, dict) else None
+        group = entry.get("group") if isinstance(entry, dict) else None
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or not isinstance(files, list)
+            or not files
+            or not all(isinstance(name, str) and name for name in files)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or not MINIMUM_TILE_SIZE <= size <= MAXIMUM_TILE_SIZE
+            or not (group is None or isinstance(group, str))
+        ):
+            problems.append(f"a tile that is not an id, a list of file names and a size: {str(entry)[:80]}")
+            continue
+        tiles.append(BridgeTile(identifier, list(files), size, group))
+    return tiles, problems
+
+
+class BridgeController:
+    """What the messages of a program do to the project and the editor, and what is to be told back. No sockets here:
+    `receive` takes a message, `take_outgoing` gives the messages to send (the pixels of every tile that changed)."""
+
+    def __init__(self, project: AtlasProject, editor: "EditorPanel", group: Optional[str] = None):
+        self.project = project
+        self.editor = editor
+        self.group = group
+        self.host_name: Optional[str] = None
+        self.tiles: dict[str, BridgeTile] = {}
+        self.outgoing: list[dict] = []
+        # The stroke from the program that is going on: (button, tile id, segment, last pixel).
+        self.active: Optional[tuple[int, str, int, Coordinate]] = None
+        # What each tile was when the program was last told (or already had it): the pixels as bytes.
+        self.told: dict[str, bytes] = {}
+
+    @property
+    def is_connected(self) -> bool:
+        return self.host_name is not None
+
+    # What comes in ----------------------------------------------------------------------------------------
+
+    def receive(self, message: dict) -> None:
+        kind = message.get("type")
+        if kind == "hello":
+            self._hello(message)
+        elif self.host_name is None:
+            self.outgoing.append({"type": "error", "text": "say hello first"})
+        elif kind == "tiles":
+            self._tiles(message)
+        elif kind == "pointer":
+            self._pointer(message)
+        # (A message of a kind this version does not know is ignored, so that a newer program can still be used.)
+
+    def lost_host(self) -> None:
+        """The program went away: a stroke it had begun ends where it was."""
+        self._end_stroke()
+        self.host_name = None
+        self.tiles = {}
+        self.told = {}
+        self.outgoing = []
+
+    def _hello(self, message: dict) -> None:
+        protocol = message.get("protocol")
+        name = message.get("host")
+        if protocol != BRIDGE_PROTOCOL:
+            self.outgoing.append({"type": "error", "text": f"this is protocol {BRIDGE_PROTOCOL}, not {protocol!r}"})
+            return
+        self.host_name = name if isinstance(name, str) and name else "a program"
+        self.outgoing.append({"type": "welcome", "protocol": BRIDGE_PROTOCOL, "tool": "VirtualAtlas", "tile_size": self.project.tile_size})
+
+    def _tiles(self, message: dict) -> None:
+        tiles, problems = parse_bridge_tiles(message)
+        self._end_stroke()
+        self.tiles = {tile.identifier: tile for tile in tiles}
+        self.told = {}
+        known = [identifier for identifier in self.tiles if self.resolve(identifier) is not None]
+        for identifier in known:
+            self.told[identifier] = self._pixels_of(self.resolve(identifier))
+        self.outgoing.append(
+            {"type": "known", "ids": known, "missing": [identifier for identifier in self.tiles if identifier not in known]}
+        )
+        if problems:
+            self.outgoing.append({"type": "error", "text": "; ".join(problems[:3])})
+
+    def _pointer(self, message: dict) -> None:
+        tile_id = message.get("tile")
+        x, y = message.get("x"), message.get("y")
+        segment = message.get("segment", 0)
+        if (
+            not (tile_id is None or isinstance(tile_id, str))
+            or isinstance(x, bool) or not isinstance(x, int)
+            or isinstance(y, bool) or not isinstance(y, int)
+            or isinstance(segment, bool) or not isinstance(segment, int)
+        ):
+            self.outgoing.append({"type": "error", "text": "a pointer has a tile (or null), whole numbers x and y, and a whole number segment"})
+            return
+        button = 1 if message.get("left") else 3 if message.get("right") else 0
+        coordinate = self.resolve(tile_id) if isinstance(tile_id, str) else None
+        if self.active is not None:
+            active_button, active_tile, active_segment, last = self.active
+            if coordinate is not None and (button, tile_id, segment) == (active_button, active_tile, active_segment):
+                self.editor.external_move((x, y))
+                self.active = (active_button, active_tile, active_segment, (x, y))
+                return
+            self._end_stroke()
+        if coordinate is None:
+            return
+        self._show(coordinate)
+        if button != 0 and self.editor.external_press(button, (x, y)):
+            self.active = (button, tile_id, segment, (x, y))
+
+    def _end_stroke(self) -> None:
+        if self.active is not None:
+            button, _, _, last = self.active
+            self.editor.external_release(button, last)
+            self.active = None
+
+    def _show(self, coordinate: Coordinate) -> None:
+        """Make the editor show this tile and no other, repeating (the tile is the same on every face that has it)."""
+        if self.project.selection != {coordinate}:
+            self.project.select_only(coordinate)
+        self.editor.sync()
+        if not self.editor.wrap_assist:
+            self.editor.toggle_wrap_assist()
+
+    # What goes out ----------------------------------------------------------------------------------------
+
+    def resolve(self, identifier: str) -> Optional[Coordinate]:
+        """The place in the atlas of the tile of the program, if the atlas has a file for it that can be drawn on."""
+        tile = self.tiles.get(identifier)
+        if tile is None or tile.size != self.project.tile_size:
+            return None
+        if self.group is not None and tile.group is not None and tile.group != self.group:
+            return None
+        for name in tile.files:
+            wanted = (name + TILE_FILE_EXTENSION).casefold()
+            for coordinate, record in self.project.tiles.items():
+                if record.name.casefold() == wanted:
+                    return coordinate if record.error is None else None
+        return None
+
+    def _pixels_of(self, coordinate: Coordinate) -> bytes:
+        """The pixels of a tile as they are now, as far as a stroke that is not finished has got."""
+        session = self.editor.session
+        if session is not None and coordinate in session.layout.tile_coordinates:
+            return extract_canvas_tiles(session.layout, session.pixels)[coordinate].tobytes()
+        return self.project.tiles[coordinate].pixels.tobytes()
+
+    def take_outgoing(self) -> list[dict]:
+        """Everything to tell the program: answers, and the pixels of each tile of its that changed since it was last told."""
+        if self.host_name is not None:
+            for identifier, tile in self.tiles.items():
+                coordinate = self.resolve(identifier)
+                if coordinate is None:
+                    continue
+                pixels = self._pixels_of(coordinate)
+                if self.told.get(identifier) != pixels:
+                    self.told[identifier] = pixels
+                    self.outgoing.append(
+                        {"type": "tile", "id": identifier, "size": tile.size, "pixels": base64.b64encode(pixels).decode("ascii")}
+                    )
+        outgoing, self.outgoing = self.outgoing, []
+        return outgoing
+
+
+class BridgeLink:
+    """The loopback socket the program connects to: one program at a time, nothing blocks. `poll` is called once a
+    frame; it takes what has arrived and sends what is waiting."""
+
+    def __init__(self, port: int = DEFAULT_BRIDGE_PORT, address: str = BRIDGE_ADDRESS):
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.listener.bind((address, port))
+            self.listener.listen(1)
+        except OSError:
+            self.listener.close()
+            raise
+        self.listener.setblocking(False)
+        self.port = self.listener.getsockname()[1]
+        self.connection: Optional[socket.socket] = None
+        self.reader = BridgeLineReader()
+        self.waiting = bytearray()
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connection is not None
+
+    def send(self, message: dict) -> None:
+        if self.connection is not None:
+            self.waiting.extend(encode_bridge_message(message))
+
+    def poll(self) -> list[tuple[str, object]]:
+        """What happened: ("connected", None), ("message", dict), ("bad", text) and ("disconnected", None), in order."""
+        events: list[tuple[str, object]] = []
+        try:
+            newcomer, _ = self.listener.accept()
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            pass
+        else:
+            if self.connection is None:
+                newcomer.setblocking(False)
+                self.connection = newcomer
+                self.reader = BridgeLineReader()
+                self.waiting.clear()
+                events.append(("connected", None))
+            else:
+                newcomer.close()  # one program at a time
+        if self.connection is not None:
+            lost = False
+            while True:
+                try:
+                    data = self.connection.recv(BRIDGE_READ_BYTES)
+                except (BlockingIOError, InterruptedError):
+                    break
+                except OSError:
+                    lost = True
+                    break
+                if not data:
+                    lost = True
+                    break
+                for found in self.reader.feed(data):
+                    events.append(("bad", str(found)) if isinstance(found, BridgeMessageError) else ("message", found))
+            if not lost and self.waiting:
+                try:
+                    sent = self.connection.send(bytes(self.waiting))
+                    del self.waiting[:sent]
+                except (BlockingIOError, InterruptedError):
+                    pass
+                except OSError:
+                    lost = True
+            if lost:
+                self.connection.close()
+                self.connection = None
+                self.waiting.clear()
+                events.append(("disconnected", None))
+        return events
+
+    def close(self) -> None:
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+        self.listener.close()
+
+
+# ----------------------------------------------------------------------------------------------------------
 # The window
 # ----------------------------------------------------------------------------------------------------------
 
@@ -4419,8 +4794,55 @@ class Application:
         self.purge_dialog: Optional[PurgeDialog] = None
         self.file_picker = SystemFilePicker()
         self.closing = False
+        self.bridge_link: Optional[BridgeLink] = None
+        self.bridge: Optional[BridgeController] = None
         self.layout = compute_layout(surface.get_size())
         self.update_layout()
+
+    # The bridge -------------------------------------------------------------------------------------------
+
+    def open_bridge(self, port: int = DEFAULT_BRIDGE_PORT, group: Optional[str] = None) -> BridgeLink:
+        """Let a program connect (to this machine only) and paint on the tiles it shows. Raises OSError if the port is taken."""
+        self.bridge_link = BridgeLink(port)
+        self.bridge = BridgeController(self.project, self.editor, group)
+        self.message = f"Bridge: waiting for a program on port {self.bridge_link.port}"
+        return self.bridge_link
+
+    def pump_bridge(self) -> None:
+        """Once a frame: take in what the program said, and tell it what changed."""
+        if self.bridge_link is None or self.bridge is None:
+            return
+        busy = any(dialog is not None for dialog in (self.quit_dialog, self.import_dialog, self.context_menu, self.purge_dialog))
+        events = self.bridge_link.poll()
+        for kind, content in events:
+            if kind == "message" and isinstance(content, dict):
+                if busy and content.get("type") == "pointer":
+                    continue  # a question is open: the pointer waits
+                self.bridge.receive(content)
+                if content.get("type") == "hello" and self.bridge.is_connected:
+                    self.message = f"Bridge: {self.bridge.host_name} is connected"
+            elif kind == "bad":
+                self.bridge.outgoing.append({"type": "error", "text": str(content)})
+            elif kind == "disconnected":
+                self.bridge.lost_host()
+                self.message = "Bridge: the program went away"
+            elif kind == "connected":
+                self.bridge.lost_host()
+        outgoing = self.bridge.take_outgoing()
+        for message in outgoing:
+            self.bridge_link.send(message)
+        if outgoing or events:
+            self.needs_redraw = True
+        if self.editor.message:
+            self.message, self.editor.message = self.editor.message, ""
+
+    def close_bridge(self) -> None:
+        if self.bridge is not None:
+            self.bridge.lost_host()
+        if self.bridge_link is not None:
+            self.bridge_link.close()
+        self.bridge_link = None
+        self.bridge = None
 
     # Layout -----------------------------------------------------------------------------------------------
 
@@ -5173,20 +5595,32 @@ def initialise_pygame() -> pygame.Surface:
     return pygame.display.set_mode((scaled(1280), scaled(800)), pygame.RESIZABLE)
 
 
-def run_application(project: AtlasProject, surface: Optional[pygame.Surface] = None) -> None:
+def run_application(
+    project: AtlasProject,
+    surface: Optional[pygame.Surface] = None,
+    bridge_port: Optional[int] = None,
+    bridge_group: Optional[str] = None,
+) -> None:
     surface = surface if surface is not None else initialise_pygame()
     pygame.display.set_caption(f"VirtualAtlas - {project.folder.name}")
     application = Application(project, surface)
+    if bridge_port is not None:
+        try:
+            application.open_bridge(bridge_port, bridge_group)
+        except OSError as error:
+            application.message = f"Bridge: port {bridge_port} cannot be used: {error}"
     clock = pygame.time.Clock()
     running = True
     while running:
         for event in pygame.event.get():
             if not application.handle_event(event):
                 running = False
+        application.pump_bridge()
         if application.wants_redraw():
             application.draw()
             pygame.display.flip()
         clock.tick(60)
+    application.close_bridge()
     pygame.quit()
 
 
@@ -5215,8 +5649,24 @@ def show_refusal_window(problems: list[str]) -> None:
     pygame.quit()
 
 
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Edit a folder of tile images as if they were one texture atlas.")
+    parser.add_argument(
+        "--bridge",
+        nargs="?",
+        const=DEFAULT_BRIDGE_PORT,
+        default=None,
+        type=int,
+        metavar="PORT",
+        help=f"let a program that shows these tiles connect (this machine only) and paint on them; the port is {DEFAULT_BRIDGE_PORT} unless given (docs: tools/virtual_atlas/BRIDGE.md)",
+    )
+    parser.add_argument("--group", default=None, help="with --bridge: only tiles of the program that say they are of this group are used")
+    return parser.parse_args(arguments)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    arguments = parse_arguments(sys.argv[1:])
     folder = Path(__file__).resolve().parent
     try:
         project = AtlasProject.open(folder)
@@ -5225,7 +5675,7 @@ def main() -> int:
             print(f"{ATLAS_FILE_NAME}: {problem}", file=sys.stderr)
         show_refusal_window(error.problems)
         return 1
-    run_application(project)
+    run_application(project, bridge_port=arguments.bridge, bridge_group=arguments.group)
     return 0
 
 

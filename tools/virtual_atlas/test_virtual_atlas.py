@@ -6422,5 +6422,515 @@ class WrapAssistEditorTests(EditorDriver):
         small.draw()
 
 
+class ExternalPointerTests(EditorDriver):
+    """A pointer that is not the mouse: the editor does what the mouse does on the canvas, at the pixels it is given."""
+
+    def test_a_stroke_from_an_outside_pointer_draws_as_the_mouse_does_and_is_one_step_of_the_history(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.assertTrue(self.editor.external_press(1, (1, 1)))
+        self.assertTrue(self.editor.external_active())
+        self.editor.external_move((5, 1))
+        self.editor.external_release(1, (5, 1))
+        self.assertFalse(self.editor.external_active())
+        for column in range(1, 6):
+            self.assertEqual(self.pixel((0, 0), column, 1), RED, column)
+        self.assertEqual(self.pixel((0, 0), 0, 1), BLUE)
+        self.assertEqual(self.pixel((0, 0), 6, 1), BLUE)
+        self.assertTrue(self.project.undo())
+        self.assertEqual(self.pixel((0, 0), 3, 1), BLUE, "one step undoes the whole stroke")
+
+    def test_letting_go_somewhere_else_ends_the_stroke_there_without_a_move_before_it(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.editor.external_press(1, (1, 1))
+        self.editor.external_release(1, (6, 1))
+        self.assertEqual([self.pixel((0, 0), column, 1) for column in range(8)], [BLUE, RED, RED, RED, RED, RED, RED, BLUE])
+
+    def test_the_right_button_draws_with_the_secondary_color(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.editor.colors.set_color(GREEN, "secondary")
+        self.editor.external_press(3, (2, 2))
+        self.editor.external_release(3, (2, 2))
+        self.assertEqual(self.pixel((0, 0), 2, 2), GREEN)
+
+    def test_with_wrap_assist_a_stroke_that_leaves_the_tile_comes_back_in_on_the_other_side(self):
+        self.select((0, 0))
+        self.editor.toggle_wrap_assist()
+        self.editor.colors.set_color(RED, "primary")
+        self.editor.external_press(1, (6, 2))
+        self.editor.external_move((9, 2))
+        self.editor.external_release(1, (9, 2))
+        self.assertEqual([self.pixel((0, 0), column, 2) for column in range(8)], [RED, RED, BLUE, BLUE, BLUE, BLUE, RED, RED])
+
+    def test_nothing_starts_with_no_tile_shown_with_the_select_tool_or_with_a_button_that_is_not_one(self):
+        self.assertFalse(self.editor.external_press(1, (1, 1)), "no tile is shown")
+        self.select((0, 0))
+        self.assertFalse(self.editor.external_press(2, (1, 1)), "the middle button is not drawing")
+        self.editor.choose_tool("select")
+        self.assertFalse(self.editor.external_press(1, (1, 1)))
+        self.assertFalse(self.editor.external_active())
+
+    def test_letting_go_with_nothing_pressed_does_nothing(self):
+        self.select((0, 0))
+        self.editor.external_release(1, (1, 1))
+        self.editor.external_move((2, 2))
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_the_eye_dropper_takes_the_color_under_the_pointer_and_follows_it(self):
+        self.project.tiles[(0, 0)].pixels[0, 0] = RED
+        self.project.tiles[(0, 0)].pixels[0, 1] = GREEN
+        self.select((0, 0))
+        self.editor.choose_tool("eyedropper")
+        self.assertTrue(self.editor.external_press(1, (0, 0)))
+        self.assertEqual(self.editor.colors.get("primary"), RED)
+        self.editor.external_move((1, 0))
+        self.assertEqual(self.editor.colors.get("primary"), GREEN)
+        self.editor.external_release(1, (1, 0))
+        self.assertFalse(self.editor.external_active())
+
+
+class BridgeLineReaderTests(unittest.TestCase):
+    def test_lines_are_messages_whatever_the_pieces_they_arrive_in(self):
+        reader = va.BridgeLineReader()
+        self.assertEqual(reader.feed(b'{"type":"a","n":1}\n{"type"'), [{"type": "a", "n": 1}])
+        self.assertEqual(reader.feed(b':"b"}\n'), [{"type": "b"}])
+        everything = b'{"type":"x"}\n\n{"type":"y"}\n'
+        self.assertEqual(reader.feed(everything), [{"type": "x"}, {"type": "y"}])
+        self.assertEqual(va.BridgeLineReader().feed(everything[:7]), [], "an unfinished line waits")
+        one_byte_at_a_time = va.BridgeLineReader()
+        found = [message for byte in everything for message in one_byte_at_a_time.feed(bytes([byte]))]
+        self.assertEqual(found, [{"type": "x"}, {"type": "y"}])
+
+    def test_a_bad_line_is_one_error_and_the_lines_after_it_still_come(self):
+        reader = va.BridgeLineReader()
+        found = reader.feed(b'not json\n[1,2]\n{"no":"type"}\n{"type":5}\n\xff\xfe\n{"type":"ok"}\n')
+        self.assertEqual([isinstance(item, va.BridgeMessageError) for item in found], [True, True, True, True, True, False])
+        self.assertEqual(found[-1], {"type": "ok"})
+
+    def test_a_line_that_is_too_long_is_one_error_and_what_follows_it_is_read(self):
+        reader = va.BridgeLineReader()
+        found = reader.feed(b"x" * (va.MAXIMUM_BRIDGE_LINE_BYTES + 1))
+        self.assertEqual(len(found), 1)
+        self.assertIsInstance(found[0], va.BridgeMessageError)
+        self.assertEqual(reader.feed(b"y" * 100), [], "the rest of the long line is thrown away")
+        self.assertEqual(reader.feed(b'\n{"type":"ok"}\n'), [{"type": "ok"}])
+        # A long line that arrives whole, with its end of line.
+        whole = va.BridgeLineReader().feed(b"z" * (va.MAXIMUM_BRIDGE_LINE_BYTES + 5) + b'\n{"type":"ok"}\n')
+        self.assertIsInstance(whole[0], va.BridgeMessageError)
+        self.assertEqual(whole[-1], {"type": "ok"})
+
+    def test_a_message_is_encoded_as_one_compact_line(self):
+        line = va.encode_bridge_message({"type": "welcome", "tile_size": 16})
+        self.assertEqual(line, b'{"type":"welcome","tile_size":16}\n')
+        self.assertEqual(va.BridgeLineReader().feed(line), [{"type": "welcome", "tile_size": 16}])
+
+
+class BridgeTilesParseTests(unittest.TestCase):
+    def test_good_tiles_are_kept_and_each_bad_one_is_told(self):
+        message = {
+            "type": "tiles",
+            "tiles": [
+                {"id": "a", "files": ["x", "y"], "size": 16, "group": "g"},
+                {"id": "b", "files": ["z"], "size": 8},
+                {"id": "", "files": ["z"], "size": 8},
+                {"id": "c", "files": [], "size": 8},
+                {"id": "d", "files": ["z"], "size": 0},
+                {"id": "e", "files": ["z"], "size": True},
+                {"id": "f", "files": ["z", 3], "size": 8},
+                {"id": "g", "files": ["z"], "size": 8, "group": 4},
+                "nonsense",
+            ],
+        }
+        tiles, problems = va.parse_bridge_tiles(message)
+        self.assertEqual([tile.identifier for tile in tiles], ["a", "b"])
+        self.assertEqual(tiles[0], va.BridgeTile("a", ["x", "y"], 16, "g"))
+        self.assertEqual(len(problems), 7)
+        self.assertEqual(va.parse_bridge_tiles({"type": "tiles", "tiles": 3})[0], [])
+
+
+class BridgeControllerTests(EditorDriver):
+    """What messages from a program do, with no socket: `receive` and `take_outgoing`."""
+
+    CATALOGUE = {
+        "type": "tiles",
+        "tiles": [
+            {"id": "first", "files": ["nothing_like_it", "a"], "size": 8, "group": "game"},
+            {"id": "second", "files": ["b"], "size": 8, "group": "game"},
+            {"id": "wrong size", "files": ["a"], "size": 16},
+            {"id": "no file", "files": ["zzz"], "size": 8},
+        ],
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.controller = va.BridgeController(self.project, self.editor)
+        self.editor.colors.set_color(RED, "primary")
+
+    def connect(self, controller=None):
+        controller = controller or self.controller
+        controller.receive({"type": "hello", "protocol": 1, "host": "A Game"})
+        controller.receive(self.CATALOGUE)
+        return controller.take_outgoing()
+
+    def point(self, tile, x, y, left=False, right=False, segment=0, controller=None):
+        (controller or self.controller).receive(
+            {"type": "pointer", "tile": tile, "x": x, "y": y, "left": left, "right": right, "segment": segment}
+        )
+
+    def test_hello_is_answered_and_a_program_that_speaks_another_protocol_is_refused(self):
+        self.controller.receive({"type": "hello", "protocol": 1, "host": "A Game"})
+        self.assertEqual(
+            self.controller.take_outgoing(), [{"type": "welcome", "protocol": 1, "tool": "VirtualAtlas", "tile_size": 8}]
+        )
+        self.assertTrue(self.controller.is_connected)
+        refused = va.BridgeController(self.project, self.editor)
+        refused.receive({"type": "hello", "protocol": 2, "host": "A Game"})
+        self.assertFalse(refused.is_connected)
+        self.assertEqual(refused.take_outgoing()[0]["type"], "error")
+
+    def test_nothing_is_done_before_hello_and_a_message_of_a_kind_not_known_is_ignored(self):
+        self.controller.receive(self.CATALOGUE)
+        self.assertEqual(self.controller.take_outgoing(), [{"type": "error", "text": "say hello first"}])
+        self.connect()
+        self.controller.receive({"type": "something from the future", "x": 1})
+        self.assertEqual(self.controller.take_outgoing(), [])
+
+    def test_the_tiles_of_the_program_are_answered_with_those_the_atlas_has_and_those_it_has_not(self):
+        outgoing = self.connect()
+        self.assertEqual(outgoing[0]["type"], "welcome")
+        self.assertEqual(
+            outgoing[1], {"type": "known", "ids": ["first", "second"], "missing": ["wrong size", "no file"]}
+        )
+        self.assertEqual(len(outgoing), 2, "nothing is sent for tiles that have not been painted on")
+        self.assertEqual(self.controller.resolve("first"), (0, 0), "the second file name it gave is the one that exists")
+        self.assertEqual(self.controller.resolve("second"), (1, 0))
+
+    def test_when_two_of_the_names_of_a_tile_are_files_the_first_is_the_tile(self):
+        self.connect()
+        self.controller.receive({"type": "tiles", "tiles": [
+            {"id": "both", "files": ["b", "a"], "size": 8},
+            {"id": "both the other way", "files": ["a", "b"], "size": 8},
+            {"id": "upper case", "files": ["B"], "size": 8},
+        ]})
+        self.assertEqual(self.controller.resolve("both"), (1, 0))
+        self.assertEqual(self.controller.resolve("both the other way"), (0, 0))
+        self.assertEqual(self.controller.resolve("upper case"), (1, 0), "a file name is not told from another by its case")
+
+    def test_a_group_the_tool_was_not_asked_for_is_not_used(self):
+        controller = va.BridgeController(self.project, self.editor, group="another")
+        self.connect(controller)
+        self.assertIsNone(controller.resolve("first"))
+        self.assertEqual(controller.resolve("wrong size"), None)
+        self.assertEqual(controller.resolve("no file"), None)
+
+    def test_pointing_at_a_tile_shows_it_alone_with_wrap_assist_and_paints_nothing(self):
+        self.connect()
+        self.select((0, 0), (1, 0))
+        self.point("second", 3, 3)
+        self.assertEqual(self.project.selection, {(1, 0)})
+        self.assertTrue(self.editor.wrap_assist)
+        self.assertFalse(self.project.tiles[(1, 0)].is_modified)
+        self.point(None, 0, 0)
+        self.assertEqual(self.project.selection, {(1, 0)}, "pointing at nothing leaves the tile that was shown")
+        self.point("no file", 0, 0)
+        self.assertEqual(self.project.selection, {(1, 0)})
+        self.assertEqual(self.controller.take_outgoing(), [])
+
+    def test_a_stroke_is_drawn_as_the_pointer_moves_told_back_while_it_goes_and_ends_when_the_button_does(self):
+        self.connect()
+        self.point("first", 1, 1, left=True)
+        self.point("first", 5, 1, left=True)
+        # The stroke is not finished and the tile is not yet changed, but the program is already told what it looks like.
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        told = self.controller.take_outgoing()
+        self.assertEqual([message["type"] for message in told], ["tile"])
+        self.assertEqual(told[0]["id"], "first")
+        self.assertEqual(told[0]["size"], 8)
+        pixels = numpy.frombuffer(base64.b64decode(told[0]["pixels"]), dtype=numpy.uint8).reshape(8, 8, 4)
+        self.assertEqual([tuple(int(v) for v in pixels[1, column]) for column in (0, 1, 3, 5, 6)], [BLUE, RED, RED, RED, BLUE])
+        self.assertEqual(self.controller.take_outgoing(), [], "nothing has changed since")
+        self.point("first", 5, 1, left=False)
+        self.assertEqual(self.pixel((0, 0), 3, 1), RED)
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+        self.assertEqual(self.controller.take_outgoing(), [], "the finished tile is what the program was told last")
+
+    def test_the_right_button_is_the_secondary_color_and_changing_button_ends_one_stroke_and_begins_another(self):
+        self.connect()
+        self.editor.colors.set_color(GREEN, "secondary")
+        self.point("first", 1, 1, left=True)
+        self.point("first", 2, 1, right=True)
+        self.point("first", 2, 2, right=True)
+        self.point("first", 2, 2)
+        self.assertEqual(self.pixel((0, 0), 1, 1), RED)
+        self.assertEqual(self.pixel((0, 0), 2, 1), GREEN)
+        self.assertEqual(self.pixel((0, 0), 2, 2), GREEN)
+
+    def test_a_new_segment_or_another_tile_or_no_tile_ends_the_stroke_where_it_was_and_a_held_button_begins_a_new_one(self):
+        self.connect()
+        self.point("first", 1, 1, left=True, segment=1)
+        self.point("first", 2, 1, left=True, segment=1)
+        # A jump to somewhere else on the same tile: a new segment, so no line is drawn between the two.
+        self.point("first", 6, 6, left=True, segment=2)
+        self.point("first", 6, 6)
+        self.assertEqual([self.pixel((0, 0), column, 1) for column in range(5)], [BLUE, RED, RED, BLUE, BLUE])
+        self.assertEqual(self.pixel((0, 0), 6, 6), RED)
+        self.assertEqual(self.pixel((0, 0), 4, 4), BLUE, "no line across")
+        # Another tile while the button is held: the first stroke ends on its tile and the second is on the other.
+        self.point("first", 0, 0, left=True, segment=3)
+        self.point("second", 4, 4, left=True, segment=3)
+        self.point("second", 4, 4)
+        self.assertEqual(self.pixel((0, 0), 0, 0), RED)
+        self.assertEqual(self.pixel((1, 0), 4, 4), RED)
+        # No tile at all while the button is held: the stroke ends, and the button going on draws nowhere; when a tile is under the pointer again it is a new press.
+        self.point("second", 7, 7, left=True, segment=4)
+        self.point(None, 0, 0, left=True, segment=4)
+        self.assertFalse(self.editor.external_active())
+        self.point("second", 0, 6, left=True, segment=5)
+        self.assertTrue(self.editor.external_active())
+        self.point("second", 0, 6)
+        self.assertEqual(self.pixel((1, 0), 7, 7), RED)
+        self.assertEqual(self.pixel((1, 0), 0, 6), RED)
+        self.assertEqual(self.pixel((1, 0), 3, 7), GREEN, "nothing was drawn between")
+
+    def test_each_stroke_is_one_step_of_the_history_of_its_tile(self):
+        self.connect()
+        self.point("first", 1, 1, left=True)
+        self.point("first", 3, 1, left=True)
+        self.point("first", 3, 1)
+        self.point("first", 1, 5, left=True)
+        self.point("first", 3, 5, left=True)
+        self.point("first", 3, 5)
+        self.assertEqual(self.pixel((0, 0), 2, 5), RED)
+        self.assertTrue(self.project.undo())
+        self.assertEqual(self.pixel((0, 0), 2, 5), BLUE)
+        self.assertEqual(self.pixel((0, 0), 2, 1), RED)
+        self.assertTrue(self.project.undo())
+        self.assertEqual(self.pixel((0, 0), 2, 1), BLUE)
+
+    def test_a_stroke_that_crosses_the_edge_of_the_tile_wraps_to_the_other_side(self):
+        self.connect()
+        self.point("first", 6, 3, left=True)
+        self.point("first", 10, 3, left=True)
+        self.point("first", 10, 3)
+        self.assertEqual([self.pixel((0, 0), column, 3) for column in range(8)], [RED, RED, RED, BLUE, BLUE, BLUE, RED, RED])
+        # (A pixel to the left of the tile and one far below it are pixels of other copies: this one is the tile's pixel in column 7, row 5.)
+        self.assertEqual(self.pixel((0, 0), 7, 5), BLUE)
+        self.point("first", -1, 21, left=True)
+        self.point("first", -1, 21)
+        self.assertEqual(self.pixel((0, 0), 7, 5), RED)
+        self.assertEqual(self.pixel((0, 0), 0, 5), BLUE)
+
+    def test_an_edit_made_in_the_window_is_told_too_and_so_are_undo_and_redo(self):
+        self.connect()
+        self.select((1, 0))
+        self.drag(self.position(1, 1), self.position(3, 1))
+        told = self.controller.take_outgoing()
+        self.assertEqual([message["id"] for message in told], ["second"])
+        self.assertTrue(self.project.undo())
+        self.assertEqual([message["id"] for message in self.controller.take_outgoing()], ["second"])
+        self.assertTrue(self.project.redo())
+        self.assertEqual([message["id"] for message in self.controller.take_outgoing()], ["second"])
+        self.assertEqual(self.controller.take_outgoing(), [])
+
+    def test_when_the_program_goes_away_a_stroke_it_began_ends_and_nothing_more_is_told(self):
+        self.connect()
+        self.point("first", 1, 1, left=True)
+        self.point("first", 4, 1, left=True)
+        self.controller.lost_host()
+        self.assertFalse(self.controller.is_connected)
+        self.assertFalse(self.editor.external_active())
+        self.assertEqual(self.pixel((0, 0), 3, 1), RED, "the stroke was kept")
+        self.assertEqual(self.controller.take_outgoing(), [])
+
+    def test_a_pointer_that_is_not_a_pointer_is_told_so_and_changes_nothing(self):
+        self.connect()
+        for message in (
+            {"type": "pointer", "tile": 5, "x": 1, "y": 1},
+            {"type": "pointer", "tile": "first", "x": 1.5, "y": 1},
+            {"type": "pointer", "tile": "first", "x": True, "y": 1},
+            {"type": "pointer", "tile": "first", "x": 1, "y": 1, "segment": "a"},
+            {"type": "pointer", "tile": "first", "x": 1},
+        ):
+            self.controller.receive(message)
+            self.assertEqual([item["type"] for item in self.controller.take_outgoing()], ["error"], message)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_a_new_catalogue_ends_a_stroke_and_is_answered_again(self):
+        self.connect()
+        self.point("first", 1, 1, left=True)
+        self.controller.receive({"type": "tiles", "tiles": [{"id": "only", "files": ["c"], "size": 8}]})
+        self.assertFalse(self.editor.external_active())
+        self.assertEqual(self.controller.take_outgoing(), [{"type": "known", "ids": ["only"], "missing": []}])
+        self.assertIsNone(self.controller.resolve("first"))
+
+
+class BridgeLinkTests(unittest.TestCase):
+    def setUp(self):
+        self.link = va.BridgeLink(0)
+        self.clients = []
+
+    def tearDown(self):
+        for client in self.clients:
+            client.close()
+        self.link.close()
+
+    def client(self):
+        import socket
+
+        client = socket.create_connection((va.BRIDGE_ADDRESS, self.link.port), timeout=5)
+        self.clients.append(client)
+        return client
+
+    def poll_until(self, wanted, attempts=200):
+        import time
+
+        events = []
+        for _ in range(attempts):
+            events += self.link.poll()
+            if wanted(events):
+                return events
+            time.sleep(0.01)
+        self.fail(f"what was waited for did not happen: {events}")
+
+    def test_it_listens_on_this_machine_only(self):
+        self.assertEqual(self.link.listener.getsockname()[0], "127.0.0.1")
+
+    def test_a_program_connects_talks_and_is_talked_to_in_lines(self):
+        client = self.client()
+        events = self.poll_until(lambda events: ("connected", None) in events)
+        client.sendall(b'{"type":"hello","protocol":1}\n{"type":"po')
+        events = self.poll_until(lambda events: any(kind == "message" for kind, _ in events))
+        self.assertEqual([content for kind, content in events if kind == "message"], [{"type": "hello", "protocol": 1}])
+        client.sendall(b'inter"}\n')
+        events = self.poll_until(lambda events: any(kind == "message" for kind, _ in events))
+        self.assertEqual([content for kind, content in events if kind == "message"], [{"type": "pointer"}])
+        self.link.send({"type": "welcome"})
+        self.link.send({"type": "known", "ids": []})
+        self.poll_until(lambda _: True)
+        received = b""
+        client.settimeout(5)
+        while received.count(b"\n") < 2:
+            received += client.recv(4096)
+            self.link.poll()
+        self.assertEqual(received, b'{"type":"welcome"}\n{"type":"known","ids":[]}\n')
+
+    def test_a_bad_line_is_an_event_and_the_good_ones_after_it_still_come(self):
+        client = self.client()
+        self.poll_until(lambda events: ("connected", None) in events)
+        client.sendall(b'garbage\n{"type":"ok"}\n')
+        events = self.poll_until(lambda events: any(kind == "message" for kind, _ in events))
+        self.assertEqual([kind for kind, _ in events if kind in ("bad", "message")], ["bad", "message"])
+
+    def test_a_second_program_is_turned_away_while_one_is_connected_and_welcome_after_it_leaves(self):
+        first = self.client()
+        self.poll_until(lambda events: ("connected", None) in events)
+        second = self.client()
+        self.poll_until(lambda _: True)
+        second.settimeout(5)
+        self.link.poll()
+        self.assertEqual(second.recv(10), b"", "the second connection was closed")
+        first.close()
+        self.poll_until(lambda events: ("disconnected", None) in events)
+        self.assertFalse(self.link.is_connected)
+        third = self.client()
+        self.poll_until(lambda events: ("connected", None) in events)
+        third.sendall(b'{"type":"hello"}\n')
+        self.poll_until(lambda events: any(kind == "message" for kind, _ in events))
+
+    def test_sending_with_nobody_connected_does_nothing(self):
+        self.link.send({"type": "welcome"})
+        self.assertEqual(self.link.poll(), [])
+        self.assertFalse(self.link.is_connected)
+
+
+class ApplicationBridgeTests(EditorDriver):
+    """The window, a real socket and a program that is a few lines of Python."""
+
+    def setUp(self):
+        super().setUp()
+        self.link = self.application.open_bridge(0)
+        import socket
+
+        self.client = socket.create_connection((va.BRIDGE_ADDRESS, self.link.port), timeout=5)
+        self.client.settimeout(0.05)
+        self.received = b""
+
+    def tearDown(self):
+        self.client.close()
+        self.application.close_bridge()
+        super().tearDown()
+
+    def say(self, message):
+        self.client.sendall(va.encode_bridge_message(message))
+
+    def pump(self, until, attempts=300):
+        import time
+
+        for _ in range(attempts):
+            self.application.pump_bridge()
+            try:
+                self.received += self.client.recv(65536)
+            except OSError:
+                pass
+            messages = [item for item in va.BridgeLineReader().feed(self.received) if isinstance(item, dict)]
+            if until(messages):
+                return messages
+            time.sleep(0.01)
+        self.fail(f"what was waited for did not happen: {self.received[:300]!r}")
+
+    def test_a_program_that_says_hello_points_and_presses_paints_in_the_window_and_is_told(self):
+        self.say({"type": "hello", "protocol": 1, "host": "Test Program"})
+        self.pump(lambda messages: any(message["type"] == "welcome" for message in messages))
+        self.assertIn("Test Program", self.application.message)
+        self.say({"type": "tiles", "tiles": [{"id": "t", "files": ["a"], "size": 8}]})
+        self.pump(lambda messages: any(message["type"] == "known" for message in messages))
+        self.editor.colors.set_color(RED, "primary")
+        for x in (1, 2, 3):
+            self.say({"type": "pointer", "tile": "t", "x": x, "y": 4, "left": True, "right": False, "segment": 0})
+        self.say({"type": "pointer", "tile": "t", "x": 3, "y": 4, "left": False, "right": False, "segment": 0})
+        messages = self.pump(lambda messages: self.pixel((0, 0), 3, 4) == RED and any(m["type"] == "tile" for m in messages))
+        self.assertEqual(self.project.selection, {(0, 0)}, "the editor shows the tile that is pointed at")
+        tile = [message for message in messages if message["type"] == "tile"][-1]
+        pixels = numpy.frombuffer(base64.b64decode(tile["pixels"]), dtype=numpy.uint8).reshape(8, 8, 4)
+        self.assertEqual(tuple(int(v) for v in pixels[4, 2]), RED)
+        self.assertTrue(self.application.needs_redraw)
+        self.application.draw()
+
+    def test_the_program_leaving_ends_its_stroke_and_the_window_says_so(self):
+        self.editor.colors.set_color(RED, "primary")
+        self.say({"type": "hello", "protocol": 1, "host": "Test Program"})
+        self.say({"type": "tiles", "tiles": [{"id": "t", "files": ["a"], "size": 8}]})
+        self.pump(lambda messages: any(message["type"] == "known" for message in messages))
+        self.say({"type": "pointer", "tile": "t", "x": 2, "y": 2, "left": True, "segment": 0})
+        self.pump(lambda messages: self.editor.external_active())
+        self.client.close()
+        for _ in range(300):
+            self.application.pump_bridge()
+            if not self.editor.external_active():
+                break
+        self.assertFalse(self.editor.external_active())
+        self.assertEqual(self.pixel((0, 0), 2, 2), RED, "the pixel it pressed on was kept")
+        self.assertIn("went away", self.application.message)
+
+    def test_while_a_question_is_open_the_pointer_waits_and_nothing_is_drawn(self):
+        self.say({"type": "hello", "protocol": 1, "host": "Test Program"})
+        self.say({"type": "tiles", "tiles": [{"id": "t", "files": ["a"], "size": 8}]})
+        self.pump(lambda messages: any(message["type"] == "known" for message in messages))
+        self.application.purge_dialog = va.PurgeDialog(self.project, [(0, 0)])
+        self.say({"type": "pointer", "tile": "t", "x": 2, "y": 2, "left": True, "segment": 0})
+        for _ in range(30):
+            self.application.pump_bridge()
+        self.assertFalse(self.editor.external_active())
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_the_arguments_choose_the_port_and_the_group(self):
+        self.assertIsNone(va.parse_arguments([]).bridge)
+        self.assertEqual(va.parse_arguments(["--bridge"]).bridge, va.DEFAULT_BRIDGE_PORT)
+        arguments = va.parse_arguments(["--bridge", "4000", "--group", "base_blocks"])
+        self.assertEqual((arguments.bridge, arguments.group), (4000, "base_blocks"))
+
+
 if __name__ == "__main__":
     unittest.main()

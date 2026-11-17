@@ -253,7 +253,7 @@ pub struct PicturesInUse {
     written: BTreeMap<PicturePlace, Tile>,
 }
 
-fn write_of(tile: &Tile) -> PictureWrite<'_> {
+pub(crate) fn write_of(tile: &Tile) -> PictureWrite<'_> {
     PictureWrite {
         rgba: tile.rgba(),
         specular: tile.specular(),

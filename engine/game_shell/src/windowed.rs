@@ -2,6 +2,7 @@
 //! window playing a recording back in real time.
 
 use std::collections::{BTreeMap, HashSet};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::client_commands::is_client_command;
+use crate::client_commands::{PaintRequest, is_client_command};
 use crate::client_plugin::MouseButton as GameButton;
 use crate::command_entry::{CommandEntry, opens_a_command};
 use crate::definition::GameDefinition;
@@ -27,6 +28,7 @@ use crate::files::{open_recording, open_world, record_connection, recorded_game,
 use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
+use crate::paint_bridge::{Buttons, Painter};
 use crate::reload::{DiskSource, DiskSources, Reloadable, Reloads, Watcher};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
@@ -197,6 +199,11 @@ struct Viewer<G: GameDefinition> {
     texture_pack: Option<std::path::PathBuf>,
     /// What can be reloaded while the game runs (`.reload`, `--watch`): taken out while it reloads, since a reload changes the viewer it belongs to.
     reloads: Option<Reloads<Viewer<G>>>,
+    /// Paint mode (`.paint`): a tool that paints on the pictures of the blocks, with the pointer of the window and the buttons of the mouse that are down. The middle button
+    /// turns the view while it is down.
+    painter: Option<Painter>,
+    paint_buttons: Buttons,
+    paint_looking: bool,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
@@ -319,6 +326,9 @@ impl<G: GameDefinition> Viewer<G> {
             pictures_in_use,
             texture_pack: view.texture_pack.clone(),
             reloads: Some(reloads),
+            painter: None,
+            paint_buttons: Buttons::default(),
+            paint_looking: false,
             session,
             keys: HashSet::new(),
             mouse_captured: false,
@@ -584,6 +594,95 @@ impl<G: GameDefinition> Viewer<G> {
         Ok(())
     }
 
+    /// Does what `.paint` asked, and in paint mode tells the tool where the pointer is and writes what the tool sends: the replies are told in the window and on the output.
+    fn run_paint(&mut self, now: Instant) {
+        let mut lines = Vec::new();
+        if let Some(request) = self.session.take_paint_request() {
+            let start = match request {
+                PaintRequest::Start(_) => true,
+                PaintRequest::Toggle(_) => self.painter.is_none(),
+                PaintRequest::Stop => false,
+            };
+            if !start {
+                lines.push(if self.painter.is_some() {
+                    self.stop_painting();
+                    "paint mode is off".to_owned()
+                } else {
+                    "paint mode was not on".to_owned()
+                });
+            } else {
+                let (PaintRequest::Start(port) | PaintRequest::Toggle(port)) = request else {
+                    unreachable!("only a request to start gets here");
+                };
+                let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+                match Painter::connect(address, G::title(), self.session.package()) {
+                    Ok(painter) => {
+                        self.painter = Some(painter);
+                        self.paint_buttons = Buttons::default();
+                        self.set_mouse_captured(false);
+                        self.renderer.set_crosshair(false);
+                        lines.push(format!("paint mode: talking to the tool at {address}; left and right buttons paint, middle button and drag turns the view, .paint off ends it"));
+                    }
+                    Err(error) => lines.push(format!(
+                        "paint mode: no tool at {address} ({error}); start VirtualAtlas with --bridge first"
+                    )),
+                }
+            }
+        }
+        if self.painter.is_some() {
+            let (width, height) = self.size();
+            let cursor = self.cursor;
+            let (x, y) = (
+                (cursor.0 / f64::from(width) * 2.0 - 1.0) as f32,
+                (1.0 - cursor.1 / f64::from(height) * 2.0) as f32,
+            );
+            let target = (x.abs() <= 1.0 && y.abs() <= 1.0)
+                .then(|| {
+                    let direction =
+                        self.session
+                            .camera
+                            .direction_through(x, y, width as f32 / height as f32);
+                    self.session
+                        .target_surface_toward(direction.to_array().map(f64::from))
+                })
+                .flatten();
+            if let Some(painter) = self.painter.as_mut() {
+                lines.extend(painter.step(
+                    self.session.package(),
+                    target.as_ref(),
+                    self.paint_buttons,
+                    &mut self.renderer,
+                ));
+                if !painter.is_connected() {
+                    self.stop_painting();
+                    lines.push("paint mode is off".to_owned());
+                }
+            }
+        }
+        for line in lines {
+            println!("{line}");
+            self.reply = Some((line, now));
+        }
+    }
+
+    fn stop_painting(&mut self) {
+        self.painter = None;
+        self.paint_buttons = Buttons::default();
+        self.paint_looking = false;
+        self.renderer
+            .set_crosshair(self.session.mode() == Mode::Playing && G::shows_crosshair());
+    }
+
+    /// A button of the mouse went down or up in paint mode.
+    fn paint_button(&mut self, button: MouseButton, down: bool) {
+        match button {
+            MouseButton::Left => self.paint_buttons.left = down,
+            MouseButton::Right => self.paint_buttons.right = down,
+            MouseButton::Middle => self.paint_looking = down,
+            _ => {}
+        }
+    }
+
     /// The server replaced the package: the palette and the pictures of the renderer are made from the new one, and the pictures of `--texture-pack` are written over them
     /// again (the textures were made again, and what was written over the old ones is gone with them).
     fn package_was_replaced(&mut self, now: Instant) {
@@ -608,6 +707,10 @@ impl<G: GameDefinition> Viewer<G> {
                     "the pictures of the folder were not written again: {error}"
                 )),
             }
+        }
+        // What the painting tool changed was lost with the textures too.
+        if let Some(painter) = self.painter.as_mut() {
+            told.extend(painter.package_replaced(self.session.package(), &mut self.renderer));
         }
         let line = told.join("; ");
         println!("{line}");
@@ -690,6 +793,7 @@ impl<G: GameDefinition> Viewer<G> {
         // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.
         light_the_scene(&mut self.renderer, &self.session);
         self.run_reloads(now);
+        self.run_paint(now);
         // The shader the player chose (`.shader`): at once if it is the one drawn with. A pack the graphics card refuses is taken off, and the player is told.
         if let Err(error) = apply_shader_pack(
             &mut self.renderer,
@@ -1010,6 +1114,10 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                     }
                 }
             }
+            // In paint mode the buttons are the tool's, and nothing else of the game hears them.
+            WindowEvent::MouseInput { state, button, .. } if viewer.painter.is_some() => {
+                viewer.paint_button(button, state == ElementState::Pressed);
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
@@ -1033,6 +1141,9 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 viewer.entry.cancel();
                 if !focused {
                     viewer.set_mouse_captured(false);
+                    // (A button let go of in another window is not heard here.)
+                    viewer.paint_buttons = Buttons::default();
+                    viewer.paint_looking = false;
                 }
             }
             WindowEvent::RedrawRequested => match viewer.frame() {
@@ -1065,7 +1176,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
             return;
         };
         if let DeviceEvent::MouseMotion { delta } = event
-            && viewer.mouse_captured
+            && (viewer.mouse_captured || viewer.paint_looking)
             && viewer.session.mode() == Mode::Playing
             && !G::server_sets_view()
         {

@@ -56,8 +56,7 @@ struct AimedGrid<'a> {
 impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// The grids the crosshair's ray can meet: the terrain of the level, then each ship of the level (and each planet, which is one), the ray turned into the grid's own
     /// coordinates.
-    fn aimed_grids(&self) -> impl Iterator<Item = AimedGrid<'_>> {
-        let forward = self.camera.forward().to_array().map(f64::from);
+    fn aimed_grids(&self, forward: [f64; 3]) -> impl Iterator<Item = AimedGrid<'_>> {
         let level = self.level();
         let terrain = AimedGrid {
             grid: GridId::root(level),
@@ -128,7 +127,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// The solid voxel under the crosshair, within the game's reach: of the terrain of the level, or of a ship, whichever the ray reaches first. A ship is aimed at by
     /// turning the ray into the ship's own coordinates.
     pub fn target(&self) -> Option<RayHit> {
-        self.aimed_grids()
+        self.aimed_grids(self.camera.forward().to_array().map(f64::from))
             .filter_map(|aimed| {
                 cast_ray(
                     aimed.grid,
@@ -145,8 +144,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// and meets the block behind it, and meets a stair's riser inside the voxel. The point is in the voxel's own coordinates, and the picture is the one the renderer draws
     /// on that face, with the place on it (it is where the true surface is, which with a relief (prisms or parallax) is not always the pixel the eye sees at a slant).
     pub fn target_surface(&self) -> Option<SurfaceTarget> {
+        self.target_surface_toward(self.camera.forward().to_array().map(f64::from))
+    }
+
+    /// As [`Session::target_surface`], along another ray from the camera: `direction` (in the world, not necessarily a unit vector) is where a pointer that is not the
+    /// crosshair looks (see [`renderer::Camera::direction_through`]).
+    pub fn target_surface_toward(&self, direction: [f64; 3]) -> Option<SurfaceTarget> {
         let hit = self
-            .aimed_grids()
+            .aimed_grids(direction)
             .filter_map(|aimed| {
                 cast_surface(
                     aimed.grid,

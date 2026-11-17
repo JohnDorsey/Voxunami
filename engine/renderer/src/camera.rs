@@ -101,6 +101,14 @@ impl Camera {
         );
         projection * Mat4::from_quat(self.rotation().inverse())
     }
+
+    /// Which way, in the world, the point of the picture at (`x`, `y`) looks: each is from -1 to 1, `x` from the left edge to the right and `y` from the bottom to the top
+    /// (the clip space of [`Camera::view_projection`]), in a picture whose width is `aspect_ratio` times its height. A unit vector; (0, 0) is [`Camera::forward`].
+    pub fn direction_through(&self, x: f32, y: f32, aspect_ratio: f32) -> Vec3 {
+        let half_height = libm::tanf(self.vertical_field_of_view * 0.5);
+        let towards = Vec3::new(x * half_height * aspect_ratio, y * half_height, -1.0);
+        (self.rotation() * towards).normalize()
+    }
 }
 
 /// The five planes bounding what a camera can see (left, right, bottom, top and near: there is no far one), for cheap visibility tests.
@@ -154,6 +162,32 @@ mod tests {
 
     fn close(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-5
+    }
+
+    #[test]
+    fn the_direction_through_a_point_of_the_picture_is_the_one_that_point_is_drawn_for_whatever_the_turn_and_the_shape_of_the_picture()
+     {
+        for (yaw, pitch, aspect) in [(0.0, 0.0, 1.0), (0.7, -0.4, 16.0 / 9.0), (-2.5, 1.1, 0.5)] {
+            let mut camera = camera_at_origin();
+            camera.yaw = yaw;
+            camera.pitch = pitch;
+            assert!(close(
+                camera.direction_through(0.0, 0.0, aspect),
+                camera.forward()
+            ));
+            for (x, y) in [(-1.0f32, -1.0f32), (0.3, 0.8), (1.0, -0.25), (-0.6, 0.0)] {
+                let direction = camera.direction_through(x, y, aspect);
+                assert!((direction.length() - 1.0).abs() < 1e-5);
+                // A point along that direction is drawn at (x, y) (clip space after the divide).
+                let clip = camera.view_projection(aspect) * (direction * 7.0).extend(1.0);
+                assert!(
+                    (clip.x / clip.w - x).abs() < 1e-4 && (clip.y / clip.w - y).abs() < 1e-4,
+                    "({x}, {y}) drew at ({}, {})",
+                    clip.x / clip.w,
+                    clip.y / clip.w
+                );
+            }
+        }
     }
 
     /// The depth a point straight ahead at this distance gets, and whether it is inside the view at all.
