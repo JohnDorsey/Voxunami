@@ -65,8 +65,10 @@ group, a file that is not in the atlas yet, a file that cannot be read). A host 
 
 **`tile`**: `{"type":"tile","id":"0:3","size":16,"pixels":"<base64>"}`: the tile's pixels as they are now, `size` by `size` pixels of four bytes each (red, green, blue, alpha), row by
 row from the top, base64 (RFC 4648, with padding). Sent **when a tile of the host's changed** since it was last sent (or since `known`, which counts as sent): while a stroke is
-going on (each time the pointer has moved, at most once a frame) and when it ends; after an undo or redo, or any edit made in VirtualAtlas's own window. A tile that has not been
-painted on is never sent, so the host's pictures are not replaced by the files until something is painted. The host writes the pixels where the tile is drawn, on its own screen.
+going on (each time the pointer has moved, at most once a frame) and when it ends; after an undo or redo, or any edit made in VirtualAtlas's own window (a stroke drawn there, a
+cut or a delete, a pasted picture once it is placed; one still floating, which Escape throws away, is not an edit yet). A tile that has not been painted on is never sent, so the
+host's pictures are not replaced by the files until something is painted. A tile that comes back to what the host already has (an undo of the only stroke) is sent like any other:
+the host writes every `tile` it hears. The host writes the pixels where the tile is drawn, on its own screen.
 
 **`error`**: `{"type":"error","text":"..."}`: a message was refused. The connection stays.
 

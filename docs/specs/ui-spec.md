@@ -57,7 +57,7 @@ driven by the stream, so a replay shows exactly what the player saw, and a clien
   updating (`ui_show` again) or closing. Forms are not saved, are dropped when the player leaves, and a closed form never answers. The
   tree is checked on both ends (a depth and size limit, text length, a button identifier is unique within a form) so a hostile server
   cannot make a client do unbounded work.
-- **Input:** a modal form releases the mouse (the window already captures it on a click and gives it back while Left Alt is held, and a modal form releases it on Esc), the player clicks a
+- **Input:** a modal form releases the mouse (the window already captures it on a click, gives it back while Left Alt is held, takes it again when the player comes back to the window with Left Alt up, and a modal form releases it on Esc), the player clicks a
   button or presses its number, and Esc dismisses it; the world stops taking mouse and movement keys while a modal is open. A
   replay shows the form and never answers.
 - **Replay and tests:** what is drawn is a function of the stream, local settings and the screen size. Tests render pictures headless and pin them,

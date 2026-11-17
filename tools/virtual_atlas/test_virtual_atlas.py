@@ -4432,6 +4432,17 @@ class EditorDriver(ProjectFixture):
     def pixel(self, coordinate, column, row):
         return tuple(int(v) for v in self.project.tiles[coordinate].pixels[row, column])
 
+    def region(self, coordinate, left, top, right, bottom):
+        return self.project.tiles[coordinate].pixels[top:bottom, left:right].copy()
+
+    def select_rectangle(self, first, second):
+        self.click_tool("select")
+        self.drag(self.position(*first), self.position(*second))
+
+    def paste_picture(self, image):
+        self.clipboard.image = image
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+
 
 class EditorTests(EditorDriver):
     """Checks the editor through mouse and key events."""
@@ -4754,17 +4765,6 @@ class EditorTests(EditorDriver):
 
 
     # Phase 4: the noise brush, the air brush and the rectangle selection -------------------------------------
-
-    def region(self, coordinate, left, top, right, bottom):
-        return self.project.tiles[coordinate].pixels[top:bottom, left:right].copy()
-
-    def select_rectangle(self, first, second):
-        self.click_tool("select")
-        self.drag(self.position(*first), self.position(*second))
-
-    def paste_picture(self, image):
-        self.clipboard.image = image
-        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
 
     def test_the_noise_brush_draws_with_the_chosen_color_and_leaves_the_rest(self):
         self.select((0, 0))
@@ -6845,8 +6845,8 @@ class BridgeLinkTests(unittest.TestCase):
         self.assertFalse(self.link.is_connected)
 
 
-class ApplicationBridgeTests(EditorDriver):
-    """The window, a real socket and a program that is a few lines of Python."""
+class ConnectedProgramDriver(EditorDriver):
+    """The window, a real socket and a program that is a few lines of Python; the tests are in the classes below."""
 
     def setUp(self):
         super().setUp()
@@ -6879,6 +6879,34 @@ class ApplicationBridgeTests(EditorDriver):
                 return messages
             time.sleep(0.01)
         self.fail(f"what was waited for did not happen: {self.received[:300]!r}")
+
+    def connect(self):
+        """The program says hello and that it shows tile "t", which is the file a.png."""
+        self.say({"type": "hello", "protocol": 1, "host": "Test Program"})
+        self.say({"type": "tiles", "tiles": [{"id": "t", "files": ["a"], "size": 8}]})
+        self.pump(lambda messages: any(message["type"] == "known" for message in messages))
+
+    def tiles_told(self):
+        return [item for item in va.BridgeLineReader().feed(self.received) if isinstance(item, dict) and item["type"] == "tile"]
+
+    def told_by(self, action):
+        """The pictures the window tells the program once `action` has been done, as arrays of pixels."""
+        mark = len(self.tiles_told())
+        action()
+        for _ in range(3):  # (one frame queues what is to be told, the next sends it)
+            self.application.pump_bridge()
+            try:
+                self.received += self.client.recv(65536)
+            except OSError:
+                pass
+        return [
+            numpy.frombuffer(base64.b64decode(message["pixels"]), dtype=numpy.uint8).reshape(8, 8, 4)
+            for message in self.tiles_told()[mark:]
+        ]
+
+
+class ApplicationBridgeTests(ConnectedProgramDriver):
+    """What a program does to the window, through a real socket."""
 
     def test_a_program_that_says_hello_points_and_presses_paints_in_the_window_and_is_told(self):
         self.say({"type": "hello", "protocol": 1, "host": "Test Program"})
@@ -6930,6 +6958,76 @@ class ApplicationBridgeTests(EditorDriver):
         self.assertEqual(va.parse_arguments(["--bridge"]).bridge, va.DEFAULT_BRIDGE_PORT)
         arguments = va.parse_arguments(["--bridge", "4000", "--group", "base_blocks"])
         self.assertEqual((arguments.bridge, arguments.group), (4000, "base_blocks"))
+
+
+class WhatIsDoneInTheWindowIsToldTests(ConnectedProgramDriver):
+    """The program shows what the window shows: an edit made in the window (with the mouse, the keys, undo and redo) is told to it, whoever made the edit before."""
+
+    def stroke_from_the_program(self):
+        """The program paints a red line on its tile from pixel 1 to pixel 3 of row 4, and it is finished and told."""
+        self.editor.colors.set_color(RED, "primary")
+        for x in (1, 2, 3):
+            self.say({"type": "pointer", "tile": "t", "x": x, "y": 4, "left": True, "right": False, "segment": 0})
+        self.say({"type": "pointer", "tile": "t", "x": 3, "y": 4, "left": False, "right": False, "segment": 0})
+        self.pump(lambda messages: self.pixel((0, 0), 3, 4) == RED and not self.editor.external_active())
+        self.told_by(lambda: None)
+
+    def test_undo_and_redo_pressed_in_the_window_are_told_to_the_program(self):
+        self.connect()
+        self.stroke_from_the_program()
+        stroke = self.project.tiles[(0, 0)].pixels.copy()
+        original = solid_tile(BLUE, 8)
+        self.assertEqual(tuple(int(v) for v in stroke[4, 2]), RED)
+        control, shift = va.pygame.KMOD_CTRL, va.pygame.KMOD_SHIFT
+        # Redo is Ctrl+Y, and it is Ctrl+Shift+Z; the same stroke is undone and done again with each.
+        for redo_key, redo_modifiers in ((va.pygame.K_y, control), (va.pygame.K_z, control | shift)):
+            told = self.told_by(lambda: self.key(va.pygame.K_z, control))
+            self.assertEqual(len(told), 1, "undo is told once")
+            self.assertTrue(numpy.array_equal(told[0], original), "and what is told is the tile as it was")
+            self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, original))
+            self.assertEqual(self.told_by(lambda: self.key(va.pygame.K_z, control)), [], "nothing is left to undo, so nothing is told")
+            told = self.told_by(lambda: self.key(redo_key, redo_modifiers))
+            self.assertEqual(len(told), 1, "redo is told once")
+            self.assertTrue(numpy.array_equal(told[0], stroke), "and what is told is the stroke again")
+            self.assertEqual(self.told_by(lambda: self.key(redo_key, redo_modifiers)), [], "nothing is left to redo")
+
+    def test_an_edit_made_with_the_mouse_is_told_as_it_is_drawn_and_not_again_when_it_is_finished(self):
+        self.connect()
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        told = self.told_by(lambda: (self.send("down", self.position(1, 1)), self.move(self.position(5, 1))))
+        self.assertGreaterEqual(len(told), 1)
+        self.assertEqual([tuple(int(v) for v in told[-1][1, column]) for column in range(7)], [BLUE, RED, RED, RED, RED, RED, BLUE])
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "the stroke is not finished")
+        self.assertEqual(self.told_by(lambda: self.send("up", self.position(5, 1))), [], "the finished tile is what it was told")
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+
+    def test_cutting_and_deleting_in_the_window_are_told(self):
+        self.connect()
+        self.select((0, 0))
+        self.select_rectangle((0, 0), (1, 1))
+        told = self.told_by(lambda: self.key(va.pygame.K_DELETE))
+        self.assertEqual(len(told), 1)
+        self.assertTrue(numpy.all(told[0][0:2, 0:2] == 0))
+        self.assertEqual(tuple(int(v) for v in told[0][2, 2]), BLUE)
+        told = self.told_by(lambda: self.key(va.pygame.K_z, va.pygame.KMOD_CTRL))
+        self.assertTrue(numpy.array_equal(told[0], solid_tile(BLUE, 8)), "and so is undoing the deletion")
+
+    def test_a_paste_that_is_still_floating_is_not_told_until_it_is_placed_and_never_if_it_is_thrown_away(self):
+        # (A floating paste is the window's own to move about; Escape throws it away, so the program is told only what is placed.)
+        self.connect()
+        self.select((0, 0))
+        picture = solid_tile(RED, 2)
+        paste = lambda: self.paste_picture(picture)  # noqa: E731
+        self.assertEqual(self.told_by(paste), [])
+        self.assertIsNotNone(self.editor.floating)
+        told = self.told_by(lambda: self.key(va.pygame.K_RETURN))
+        self.assertEqual(len(told), 1)
+        self.assertTrue(numpy.array_equal(told[0][0:2, 0:2], picture))
+        self.assertEqual(len(self.told_by(lambda: self.key(va.pygame.K_z, va.pygame.KMOD_CTRL))), 1, "the placed paste is undone, and told")
+        self.assertEqual(self.told_by(paste), [])
+        self.assertEqual(self.told_by(lambda: self.key(va.pygame.K_ESCAPE)), [])
+        self.assertIsNone(self.editor.floating)
 
 
 if __name__ == "__main__":

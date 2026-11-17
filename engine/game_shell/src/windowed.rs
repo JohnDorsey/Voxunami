@@ -204,7 +204,7 @@ struct Viewer<G: GameDefinition> {
     /// with the buttons of the mouse that are down.
     painter: Option<Painter>,
     paint_buttons: Buttons,
-    /// What Left Alt has done to the capture of the mouse.
+    /// What is owed to the capture of the mouse: Left Alt gave it back, or the window was left with it captured.
     pointer_hold: PointerHold,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
@@ -479,6 +479,13 @@ impl<G: GameDefinition> Viewer<G> {
         );
         if let Some(action) = screen.click(&laid, self.cursor.0 as i32, self.cursor.1 as i32) {
             self.session.apply_screen_action(action);
+        }
+    }
+
+    /// Captures the mouse again when the player is back in the window and Left Alt is up (see `PointerHold`), unless a form that takes the pointer is open.
+    fn follow_the_pointer_hold(&mut self) {
+        if self.pointer_hold.recapture_due(self.mouse_captured) && !self.modal_has_the_input() {
+            self.set_mouse_captured(true);
         }
     }
 
@@ -783,6 +790,7 @@ impl<G: GameDefinition> Viewer<G> {
             return Ok(false);
         }
 
+        self.follow_the_pointer_hold();
         self.follow_server(now, seconds)
             .map_err(|error| error.to_string())?;
         if self.session.take_package_replaced() {
@@ -1057,13 +1065,18 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 viewer.session.set_viewport_height(size.height);
             }
             // A press the system makes up when the window gains focus while a key is down belongs
-            // to whatever had the focus before; a release is harmless.
+            // to whatever had the focus before; a release is harmless. (That Left Alt is down is
+            // worth knowing, though: the mouse is not captured again until it comes up.)
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: true,
                 ..
-            } if event.state == ElementState::Pressed => {}
-            // Left Alt, held, gives the pointer back: the mouse moves the pointer and not the camera until it comes up.
+            } if event.state == ElementState::Pressed => {
+                if event.physical_key == PhysicalKey::Code(KeyCode::AltLeft) {
+                    viewer.pointer_hold.alt_found_down();
+                }
+            }
+            // Left Alt, held, gives the pointer back: the mouse moves the pointer and not the camera until it comes up (and the next frame captures it again).
             WindowEvent::KeyboardInput { event, .. }
                 if event.physical_key == PhysicalKey::Code(KeyCode::AltLeft) =>
             {
@@ -1073,11 +1086,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                             viewer.set_mouse_captured(false);
                         }
                     }
-                    ElementState::Released => {
-                        if viewer.pointer_hold.alt_released() {
-                            viewer.set_mouse_captured(true);
-                        }
-                    }
+                    ElementState::Released => viewer.pointer_hold.alt_released(),
                     ElementState::Pressed => {}
                 }
             }
@@ -1140,8 +1149,14 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 }
             }
             // In paint mode the buttons are the tool's, and nothing else of the game hears them.
+            // (A click on a window that is owed the mouse, back with Left Alt up, is the click that brought it back: it captures the mouse and paints nothing.)
             WindowEvent::MouseInput { state, button, .. } if viewer.painter.is_some() => {
-                viewer.paint_button(button, state == ElementState::Pressed);
+                let pressed = state == ElementState::Pressed;
+                if pressed && viewer.pointer_hold.recapture_due(viewer.mouse_captured) {
+                    viewer.set_mouse_captured(true);
+                } else {
+                    viewer.paint_button(button, pressed);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1164,11 +1179,14 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 // Keys held, and a command half typed, belong to the window that had the focus.
                 viewer.keys.clear();
                 viewer.entry.cancel();
-                if !focused {
+                if focused {
+                    viewer.pointer_hold.focus_gained();
+                } else {
+                    // The mouse is let go of, and owed back when the player is.
+                    viewer.pointer_hold.focus_lost(viewer.mouse_captured);
                     viewer.set_mouse_captured(false);
                     // (A button, or Left Alt, let go of in another window is not heard here.)
                     viewer.paint_buttons = Buttons::default();
-                    viewer.pointer_hold.focus_lost();
                 }
             }
             WindowEvent::RedrawRequested => match viewer.frame() {

@@ -379,6 +379,72 @@ fn step_until(
     notes
 }
 
+/// What an undo and a redo in the tool look like to the game: the tool sends the picture as it was before the stroke, and then as it was after it. Each is written, though the
+/// first is the picture the world already has (and the third is the one written before), and every one keeps the companions that the tool does not know.
+#[test]
+fn a_picture_the_tool_sends_again_as_it_was_is_written_again_so_that_undo_and_redo_in_the_tool_show_in_the_game()
+ {
+    let mut rig = Rig::new();
+    let player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    let (listener, address) = listen();
+    let mut painter = Painter::connect(address, "Cave under test", player.package()).unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    let mut tool = Tool {
+        stream,
+        heard: Vec::new(),
+    };
+    let mut applier = Writes::default();
+    // (What was queued at connecting goes out with the first frame; the tool waits for it, but not for ever.)
+    tool.stream
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    painter.step(player.package(), None, Buttons::default(), &mut applier);
+    let heard = tool.lines(2);
+    let dirt = heard[1]["tiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tile| {
+            tile["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|name| name == "dirt")
+        })
+        .expect("the dirt is a picture of the world");
+    let id = dirt["id"].as_str().unwrap();
+    let (class, layer) = id.split_once(':').unwrap();
+    let world = &player.package().tile_classes[class.parse::<usize>().unwrap()]
+        [layer.parse::<usize>().unwrap()];
+    assert!(
+        world.normal().is_some(),
+        "the dirt has a normal picture in the world"
+    );
+    let original = world.rgba().to_vec();
+    let stroke: Vec<u8> = (0..16 * 16).flat_map(|_| [255u8, 0, 0, 255]).collect();
+    assert_ne!(stroke, original);
+
+    for (count, picture) in [&stroke, &original, &stroke, &original]
+        .into_iter()
+        .enumerate()
+    {
+        tool.say(json!({"type": "tile", "id": id, "size": 16, "pixels": encode_base64(picture)}));
+        let notes = step_until(&mut painter, &player, &mut applier, |applier| {
+            applier.written.len() == count + 1
+        });
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    for (index, (_, _, rgba, specular, normal)) in applier.written.iter().enumerate() {
+        assert_eq!(
+            rgba,
+            if index % 2 == 0 { &stroke } else { &original },
+            "write {index}"
+        );
+        assert_eq!(normal.as_deref(), world.normal(), "write {index}");
+        assert_eq!(specular.as_deref(), world.specular(), "write {index}");
+    }
+}
+
 #[test]
 fn a_game_with_no_tool_listening_is_told_so() {
     let mut rig = Rig::new();
