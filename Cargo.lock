@@ -970,6 +970,7 @@ dependencies = [
  "binary_codec",
  "block_models",
  "client",
+ "coarse_cells",
  "coarse_streaming",
  "content_registry",
  "ctrlc",

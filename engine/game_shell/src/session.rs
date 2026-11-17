@@ -34,6 +34,7 @@ use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
     ClientContext, ClientHost, ClientPlugin, MouseButton, Outgoing, SessionView,
 };
+use crate::coarse_overrides::CoarseOverrides;
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
 use crate::package_data::{PackageData, PackageError, check_materials};
@@ -154,6 +155,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     planets: BTreeMap<GridId, ShipTerrainMesher>,
     /// How far, and how fine, the terrain of a planet is drawn beyond its bricks, if the game says.
     grid_detail: Option<CoarseDetail>,
+    /// The nodes the server has told this session of, which it does not tell again: a view of the terrain that is made again is given them.
+    coarse_overrides: CoarseOverrides,
     /// Whether the meshers say which voxels of their bricks block the sun (`Session::enable_occupancy`).
     occupancy_wanted: bool,
     /// Whether the terrain follows what the game says for each level (`GameDefinition::level_detail`): coarse nodes in a level it draws so, bricks only in another.
@@ -270,6 +273,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             grid_mesher,
             planets: BTreeMap::new(),
             grid_detail: None,
+            coarse_overrides: CoarseOverrides::default(),
             occupancy_wanted: false,
             follows_level_detail: false,
             sent_poses: BTreeMap::new(),
@@ -464,14 +468,19 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         if self.occupancy_wanted {
             mesher.enable_occupancy();
         }
+        let mut view = LodView::new(
+            mesher,
+            LodConfig {
+                unlit: detail.unlit,
+                worker_count: self.view_settings.worker_count,
+            },
+        );
+        // (What the server said before this view was made: it says nothing twice.)
+        for (grid, cube, node) in self.coarse_overrides.in_order() {
+            view.set_override(grid, cube, Some(node.clone()));
+        }
         TerrainView::Coarse(Box::new(CoarseTerrain {
-            view: LodView::new(
-                mesher,
-                LodConfig {
-                    unlit: detail.unlit,
-                    worker_count: self.view_settings.worker_count,
-                },
-            ),
+            view,
             detail,
             asked: None,
         }))
@@ -645,15 +654,16 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     }
                 }
                 ClientEvent::GameMessage { kind, payload } if kind == CoarseNodes::kind() => {
-                    // Nodes the server says differ from what the generators make. A message that cannot be read is dropped, as are the nodes of a game that
-                    // does not draw coarse nodes.
-                    if let (TerrainView::Coarse(coarse), Ok(CoarseNodes(updates))) =
-                        (&mut self.terrain, CoarseNodes::decode(&payload))
-                    {
+                    // Nodes the server says differ from what the generators make. A message that cannot be read is dropped. They are kept by the session, and given to
+                    // the view that draws them, now or when there is one: the server does not say them again.
+                    if let Ok(CoarseNodes(updates)) = CoarseNodes::decode(&payload) {
                         for update in updates {
-                            coarse
-                                .view
-                                .set_override(update.grid, update.cube, update.node);
+                            self.coarse_overrides.apply(&update);
+                            if let TerrainView::Coarse(coarse) = &mut self.terrain {
+                                coarse
+                                    .view
+                                    .set_override(update.grid, update.cube, update.node);
+                            }
                         }
                     }
                 }

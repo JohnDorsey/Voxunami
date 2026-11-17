@@ -9,6 +9,7 @@
 
 pub mod client_commands;
 pub mod client_plugin;
+mod coarse_overrides;
 #[cfg(test)]
 mod coarse_view_tests;
 mod command_entry;

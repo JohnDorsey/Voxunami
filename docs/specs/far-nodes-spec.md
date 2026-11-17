@@ -17,8 +17,9 @@ nodes after an edit (`world-and-sky.md`: "Not done"), step 38j (ships), and the 
   never given overrides. A **plain ship** has no nodes at all: `GridMesher` draws bricks only.
 - **[code]** **A ship is known to a client only if its bricks meet the watched region** (the view radius, 12 bricks by default, plus 2 or 4), or it is a planet, or the client's body is aboard it (`grid_replication::grid_messages`). A ship
   farther off is not in the picture: **a rocket 600 voxels away is not drawn** (read from the code; I have not flown it). The server sends all the bricks of a ship it tells of, up to 16,384 for a client.
-- **[code]** The client keeps the overrides it was sent in the `LodView` it has. The session makes a **new** `LodView` when the player goes to a level the game draws differently (`follow_level_detail`), and the server's record
-  of what it sent (`ClientState::sent`) stays. A game that installed the plugin and had both kinds of level would lose its overrides for good. **Not reachable in any game today; found by reading.**
+- **[run, fixed by F1, 2026-11-17]** The client used to keep the overrides it was sent only in the `LodView` it had. The session makes a **new** `LodView` when the player goes to a level the game draws differently (`follow_level_detail`), and the server's record
+  of what it sent (`ClientState::sent`) stays, and `SetDetail` does not clear it, so a game that installed the plugin and had both kinds of level lost its overrides for good. A test showed it (a crater dug in a coarse level was gone from the picture after a visit to a bricks-only level and back).
+  The session now keeps every `CoarseNodes` update (`game_shell::coarse_overrides`) and gives them to any view it makes. **Not reachable in any game today** (no game installs the plugin).
 
 ## 2. What matters in Cave, in my order (a belief about what the owner will see first, not a measurement)
 
@@ -68,7 +69,7 @@ Saved files do not change (coarse data is never saved, owner's decision 16). A s
 
 - **F0 Measure** (throwaway, no code kept): the time of `remake` for a planet cube at each level, for a plain ship of 100 and of 16,000 bricks, for the level of space; the bytes of an override at each level; the cost of reselecting a sphere's
   leaves as often as a planet on a rail or a fast ship makes it needed; the generator's node cost in the overworld now. Written in the build log. **What F3, F5 and the answer to question 5 depend on.**
-- **F1 The session keeps the overrides** (the client half of 3.5a). Test first: a game with a coarse level and a bricks-only level (Cave's `great_river`/overworld pair needs a server correction; the `game_shell` example rig with the plugin
+- **F1 The session keeps the overrides** (the client half of 3.5a). **Built 2026-11-17** (`game_shell::coarse_overrides`; the test is `coarse_view_tests::an_edit_the_server_told_of_is_still_drawn_far_away_after_a_visit_to_a_level_that_is_drawn_in_bricks_only`, which failed first and passes now; three mutants killed). Test first: a game with a coarse level and a bricks-only level (Cave's `great_river`/overworld pair needs a server correction; the `game_shell` example rig with the plugin
   does it: `coarse_view_tests.rs` gets a second level), go and come back, the far nodes are as the server meant. Fails on today's code. Small, safe, first.
 - **F2 Planets** (items 1 and 3 of section 2 in part): the plugin handles a ship with terrain (3.1), the session routes `CoarseNodes` to the planet's mesher, Cave installs the plugin and asks for a rate for planets. Tests: dig on the planet, the node
   over it changes from far away; a player who arrives later sees the same; a recording shows the same; the planet moving on its rail does not resend. Mutants: an override not routed, an override of the wrong grid, a version that does not change.
