@@ -29,6 +29,7 @@ use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turn
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::paint_bridge::{Buttons, Painter};
+use crate::pointer_hold::PointerHold;
 use crate::reload::{DiskSource, DiskSources, Reloadable, Reloads, Watcher};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
@@ -199,11 +200,12 @@ struct Viewer<G: GameDefinition> {
     texture_pack: Option<std::path::PathBuf>,
     /// What can be reloaded while the game runs (`.reload`, `--watch`): taken out while it reloads, since a reload changes the viewer it belongs to.
     reloads: Option<Reloads<Viewer<G>>>,
-    /// Paint mode (`.paint`): a tool that paints on the pictures of the blocks, with the pointer of the window and the buttons of the mouse that are down. The middle button
-    /// turns the view while it is down.
+    /// Paint mode (`.paint`): a tool that paints on the pictures of the blocks, at the crosshair while the mouse is captured and at the pointer while Left Alt holds it free,
+    /// with the buttons of the mouse that are down.
     painter: Option<Painter>,
     paint_buttons: Buttons,
-    paint_looking: bool,
+    /// What Left Alt has done to the capture of the mouse.
+    pointer_hold: PointerHold,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
@@ -328,7 +330,7 @@ impl<G: GameDefinition> Viewer<G> {
             reloads: Some(reloads),
             painter: None,
             paint_buttons: Buttons::default(),
-            paint_looking: false,
+            pointer_hold: PointerHold::default(),
             session,
             keys: HashSet::new(),
             mouse_captured: false,
@@ -619,9 +621,8 @@ impl<G: GameDefinition> Viewer<G> {
                     Ok(painter) => {
                         self.painter = Some(painter);
                         self.paint_buttons = Buttons::default();
-                        self.set_mouse_captured(false);
-                        self.renderer.set_crosshair(false);
-                        lines.push(format!("paint mode: talking to the tool at {address}; left and right buttons paint, middle button and drag turns the view, .paint off ends it"));
+                        self.set_mouse_captured(true);
+                        lines.push(format!("paint mode: talking to the tool at {address}; left and right buttons paint at the crosshair, Left Alt held gives you the pointer to paint with instead, .paint off ends it"));
                     }
                     Err(error) => lines.push(format!(
                         "paint mode: no tool at {address} ({error}); start VirtualAtlas with --bridge first"
@@ -632,9 +633,17 @@ impl<G: GameDefinition> Viewer<G> {
         if self.painter.is_some() {
             let (width, height) = self.size();
             let cursor = self.cursor;
-            let (x, y) = (
-                (cursor.0 / f64::from(width) * 2.0 - 1.0) as f32,
-                (1.0 - cursor.1 / f64::from(height) * 2.0) as f32,
+            // The brush is at the crosshair, in the middle of the picture, while the mouse turns the camera, and where the pointer is while it does not.
+            let (x, y) = if self.mouse_captured {
+                (0.0, 0.0)
+            } else {
+                (
+                    (cursor.0 / f64::from(width) * 2.0 - 1.0) as f32,
+                    (1.0 - cursor.1 / f64::from(height) * 2.0) as f32,
+                )
+            };
+            self.renderer.set_crosshair(
+                self.mouse_captured && self.session.mode() == Mode::Playing && G::shows_crosshair(),
             );
             let target = (x.abs() <= 1.0 && y.abs() <= 1.0)
                 .then(|| {
@@ -668,7 +677,6 @@ impl<G: GameDefinition> Viewer<G> {
     fn stop_painting(&mut self) {
         self.painter = None;
         self.paint_buttons = Buttons::default();
-        self.paint_looking = false;
         self.renderer
             .set_crosshair(self.session.mode() == Mode::Playing && G::shows_crosshair());
     }
@@ -678,7 +686,6 @@ impl<G: GameDefinition> Viewer<G> {
         match button {
             MouseButton::Left => self.paint_buttons.left = down,
             MouseButton::Right => self.paint_buttons.right = down,
-            MouseButton::Middle => self.paint_looking = down,
             _ => {}
         }
     }
@@ -1056,6 +1063,24 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 is_synthetic: true,
                 ..
             } if event.state == ElementState::Pressed => {}
+            // Left Alt, held, gives the pointer back: the mouse moves the pointer and not the camera until it comes up.
+            WindowEvent::KeyboardInput { event, .. }
+                if event.physical_key == PhysicalKey::Code(KeyCode::AltLeft) =>
+            {
+                match event.state {
+                    ElementState::Pressed if !event.repeat => {
+                        if viewer.pointer_hold.alt_pressed(viewer.mouse_captured) {
+                            viewer.set_mouse_captured(false);
+                        }
+                    }
+                    ElementState::Released => {
+                        if viewer.pointer_hold.alt_released() {
+                            viewer.set_mouse_captured(true);
+                        }
+                    }
+                    ElementState::Pressed => {}
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
@@ -1099,7 +1124,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                                 viewer.entry.begin(first);
                                 println!("command line open: Enter sends it, Esc drops it");
                             } else if code == KeyCode::Escape {
-                                viewer.set_mouse_captured(false);
+                                // (Left Alt gives the pointer back; Escape is not for that.)
                                 viewer.keys.insert(code);
                             } else {
                                 if !viewer.keys.contains(&code) {
@@ -1141,9 +1166,9 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 viewer.entry.cancel();
                 if !focused {
                     viewer.set_mouse_captured(false);
-                    // (A button let go of in another window is not heard here.)
+                    // (A button, or Left Alt, let go of in another window is not heard here.)
                     viewer.paint_buttons = Buttons::default();
-                    viewer.paint_looking = false;
+                    viewer.pointer_hold.focus_lost();
                 }
             }
             WindowEvent::RedrawRequested => match viewer.frame() {
@@ -1176,7 +1201,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
             return;
         };
         if let DeviceEvent::MouseMotion { delta } = event
-            && (viewer.mouse_captured || viewer.paint_looking)
+            && viewer.mouse_captured
             && viewer.session.mode() == Mode::Playing
             && !G::server_sets_view()
         {

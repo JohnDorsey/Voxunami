@@ -28,6 +28,7 @@ pub mod paint_bridge;
 #[cfg(test)]
 mod planet_view_tests;
 mod player_identity;
+mod pointer_hold;
 pub mod reload;
 pub mod screen;
 pub mod serve;

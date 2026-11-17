@@ -49,7 +49,7 @@ Usage: voxunami {command} [options]
   --exit-after SECONDS            close the window after this long
   --help                          show this text
 
-Controls: click the window to capture the mouse (Esc releases it). / starts typing a command for
+Controls: click the window to capture the mouse (hold Left Alt to use the pointer). / starts typing a command for
 the server and . one for the window, which the server never sees (Enter sends it, Esc drops it):
 .ambient 0-255 sets how bright a face is that no light reaches (0 is black), .help lists them.
 {controls}",

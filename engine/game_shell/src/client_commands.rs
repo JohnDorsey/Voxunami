@@ -372,7 +372,7 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
     registrar.command(
         CommandSpec::new(
             "paint",
-            "paint mode: the cursor is free, and a painting tool on this machine (VirtualAtlas started with --bridge) paints on the picture of the block face under it with the mouse's buttons, and you see it at once on this window only; middle button and drag turns the view. .paint connects (or stops, if it is on), .paint PORT connects to a tool at that port, .paint off stops",
+            "paint mode: a painting tool on this machine (VirtualAtlas started with --bridge) paints on the picture of the block face at the crosshair with the mouse's buttons, and you see it at once on this window only; hold Left Alt to paint with the pointer instead of the crosshair. .paint connects (or stops, if it is on), .paint PORT connects to a tool at that port, .paint off stops",
         )
         .with_prefix('.')
         .argument(Argument::word("port").optional()),
