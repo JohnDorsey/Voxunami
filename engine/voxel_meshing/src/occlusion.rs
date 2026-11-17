@@ -33,6 +33,17 @@ impl CornerOcclusion {
         Self(bits)
     }
 
+    /// The levels as the GPU reads them: two bits each, corner 0 in the lowest bits.
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The levels from [`CornerOcclusion::bits`]. Panics if a bit above the eighth is set (the rest of a packed word is not used).
+    pub fn from_bits(bits: u32) -> Self {
+        assert!(bits <= 0xFF, "occlusion bits {bits:#x} are more than eight");
+        Self(bits as u8)
+    }
+
     pub fn levels(self) -> [u8; 4] {
         std::array::from_fn(|corner| self.0 >> (2 * corner) & 3)
     }

@@ -1178,7 +1178,13 @@ fn mesh_of_blocks(
         ),
         table,
     );
-    mesh.pack()
+    // Drawn without the shade of the corners: the tests that mesh blocks through here measure the sun's light and its shadows, and the shade cuts the ambient light the shadow is
+    // compared with (the shade has tests of its own, which mesh their own bricks).
+    let mut packed = mesh.pack();
+    for quad in &mut packed.quads {
+        quad.shade = 0;
+    }
+    packed
 }
 
 #[test]
@@ -1336,6 +1342,179 @@ fn a_face_is_as_bright_as_its_light_says() {
             "{name}: half light is {ratio} of full, in the light the colours stand for"
         );
         assert_eq!(brightness(dark), 0, "{name}: no light is black");
+    }
+}
+
+/// The lone cube's face that looks at the camera, with `levels` for its corners in the quad's own order, drawn from `camera`; the picture of the middle row of pixels and of
+/// the middle column, as linear brightnesses, from the face's first red pixel to its last. (The cube is at 16, 16, 16 and the camera in front of its +z face, which spans x
+/// along its first axis and y along its second: so corner 0 is the bottom left, 1 the bottom right, 2 the top left and 3 the top right of what is seen.)
+fn shaded_face(renderer: &mut VoxelRenderer, levels: [u8; 4]) -> (Vec<f64>, Vec<f64>) {
+    let mut mesh = mesh_of(&CUBE);
+    for quad in &mut mesh.quads {
+        if (quad.geometry >> 25) & 7 == u32::from(FaceDirection::PositiveZ.index()) {
+            quad.shade = u32::from(voxel_meshing::CornerOcclusion::from_levels(levels).bits());
+        }
+    }
+    renderer.upload_brick(ORIGIN_BRICK, &mesh);
+    let image = render(renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]));
+    let red_run = |at: &dyn Fn(u32) -> [u8; 4]| -> Vec<f64> {
+        (0..SIZE)
+            .map(at)
+            .filter(|&pixel| is_red(pixel))
+            .map(linear_brightness)
+            .collect()
+    };
+    (
+        red_run(&|x| pixel(&image, x, SIZE / 2)),
+        red_run(&|y| pixel(&image, SIZE / 2, y)),
+    )
+}
+
+#[test]
+fn the_shade_of_a_quads_corners_darkens_it_by_a_blend_of_the_four_across_the_face() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let (open_row, open_column) = shaded_face(&mut renderer, [0; 4]);
+        assert!(
+            open_row.len() >= 8 && open_column.len() >= 8,
+            "{name}: the face is seen"
+        );
+        let open_middle = open_row[open_row.len() / 2];
+
+        // Level 3 all over: 0.4 of the brightness, in the light the colours stand for.
+        let (row, column) = shaded_face(&mut renderer, [3; 4]);
+        assert_eq!(
+            (row.len(), column.len()),
+            (open_row.len(), open_column.len()),
+            "{name}: the same face is drawn"
+        );
+        for (shaded, open) in row
+            .iter()
+            .chain(&column)
+            .zip(open_row.iter().chain(&open_column))
+        {
+            let ratio = shaded / open;
+            assert!(
+                (0.38..0.42).contains(&ratio),
+                "{name}: level 3 is {ratio} of the open brightness"
+            );
+        }
+
+        // The corners at the top (2 and 3) at level 3 and the bottom ones at 0: the column (listed from the top of the picture down) brightens down the face, and the row does not change.
+        let (row, column) = shaded_face(&mut renderer, [0, 0, 3, 3]);
+        for pair in column.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "{name}: the shade deepens toward the top: {column:?}"
+            );
+        }
+        let top = column[0] / open_column[0];
+        let bottom = column[column.len() - 1] / open_column[open_column.len() - 1];
+        assert!(
+            top < 0.55 && bottom > 0.95,
+            "{name}: top {top}, bottom {bottom}"
+        );
+        let middle = row[row.len() / 2] / open_middle;
+        assert!(
+            (0.66..0.74).contains(&middle),
+            "{name}: halfway up is level 1.5, 0.7 of the open brightness; it is {middle}"
+        );
+        assert!(
+            row.iter()
+                .zip(&open_row)
+                .all(|(shaded, open)| ((shaded / open) - middle).abs() < 0.03),
+            "{name}: across the face the same height is shaded the same"
+        );
+
+        // One dark corner (the top right, 3): the level is 3 times the share across times the share up, so the middle row ends (halfway up, all the way across) at level 1.5 and
+        // the column at the middle starts (all the way up, halfway across) at level 1.5 too, both 0.7 of the open brightness; the left end of the row is level 0. The same at
+        // the two ends whichever way the quad's two triangles lie, which is what the blend is for.
+        let (row, column) = shaded_face(&mut renderer, [0, 0, 0, 3]);
+        let right_end = row[row.len() - 1] / open_row[open_row.len() - 1];
+        let left_end = row[0] / open_row[0];
+        let column_top = column[0] / open_column[0];
+        assert!(
+            left_end > 0.97,
+            "{name}: the left end of the middle row is open: {left_end}"
+        );
+        assert!(
+            (0.66..0.76).contains(&right_end),
+            "{name}: the right end of the middle row is level 1.5: {right_end}"
+        );
+        assert!(
+            (0.66..0.76).contains(&column_top),
+            "{name}: the top of the middle column is level 1.5: {column_top}"
+        );
+    }
+}
+
+#[test]
+fn a_block_on_a_floor_darkens_the_four_diagonal_floor_squares_alike_and_the_four_beside_it_alike() {
+    // The owner's first bug with the shade of Minecraft: of the floor squares that touch a block only at a corner, two opposite ones were dark over half their area and
+    // the other two over all of it, because of how the quad's two triangles lie. The shade is blended across the quad now, so they are the same.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        // Stone up to y = 15 over the whole brick and one stone block at (16, 16, 16), meshed with the neighbourhood of a brick of stone and sky.
+        let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+        for voxel in LocalVoxelIndex::all() {
+            if voxel.y() < 16 || (voxel.x(), voxel.y(), voxel.z()) == (16, 16, 16) {
+                values[voxel.index()] = RED;
+            }
+        }
+        let storage = ChannelStorage::from_values(&values);
+        let mut opaque = vec![true; 256];
+        opaque[0] = false;
+        let mesh = mesh_brick(
+            &BrickNeighbourhood::with_face_neighbours(
+                BrickChannels::blocks_only(&storage),
+                [None; 6],
+            ),
+            &BlockTable::of_cubes(&opaque),
+        );
+        renderer.upload_brick(ORIGIN_BRICK, &mesh.pack());
+        let mut camera = camera_at(ORIGIN_BRICK, [16.5, 24.0, 16.5]);
+        camera.pitch = -Camera::MAXIMUM_PITCH;
+        let image = render(&mut renderer, &camera);
+        save_image("ambient_occlusion_block_on_floor", &name, &image);
+        // Four places on the floor's top (y = 16) at the same quarter of the way from the corner of the block, one in each of the four diagonal squares, and the same
+        // for the four squares beside the block (at the middle of the edge it shares).
+        let at = |x: f32, z: f32| {
+            let relative = [f64::from(x) - 16.5, 16.0 - 24.0, f64::from(z) - 16.5];
+            let (px, py) = pixel_of(&camera, relative).expect("the place is in the picture");
+            linear_brightness(pixel(&image, px, py))
+        };
+        let diagonals = [
+            at(15.75, 15.75),
+            at(17.25, 15.75),
+            at(15.75, 17.25),
+            at(17.25, 17.25),
+        ];
+        let sides = [
+            at(15.75, 16.5),
+            at(17.25, 16.5),
+            at(16.5, 15.75),
+            at(16.5, 17.25),
+        ];
+        let open = at(12.0, 12.0);
+        for group in [diagonals, sides] {
+            let (lowest, highest) = group
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+            // (Within 5 percent: a place is rounded to a pixel, and the shade changes by 2 percent in a pixel here; the two triangles of the old cut made the squares
+            // differ by tens of percent.)
+            assert!(
+                (highest - lowest) / highest < 0.05,
+                "{name}: the four are as dark as each other: {group:?}"
+            );
+            assert!(
+                highest < open * 0.95,
+                "{name}: and darker than open floor ({open}): {group:?}"
+            );
+        }
+        // A quarter of the way across a side square is darker than a quarter of the way across a diagonal one: level 1 against a quarter of one.
+        assert!(sides[0] < diagonals[0], "{name}: {sides:?} {diagonals:?}");
     }
 }
 

@@ -24,7 +24,7 @@ Light, levels of detail, planets, orbits, the great rivers, `/tp`, the sun and i
   uniform light. Rounding light to fewer bands in the mesher is the lever if a scene gets heavy (not built); a light
   texture is the later route to smooth shading and would not change storage or the protocol.
 
-- **Shade of block faces at their corners (ambient occlusion), owner's request 2026-11-17; built so far: the rule, the neighbourhood, and the mesher that computes the levels per quad; not yet packed or drawn.** Branch `graphics-smooth-lighting`.
+- **Shade of block faces at their corners (ambient occlusion), owner's request 2026-11-17; built: the rule, the neighbourhood, the mesher, the packing and the shader (phases 1 to 4); per-material strengths, reverse AO and shade for detailed quads (slabs, stairs) are not.** Branch `graphics-smooth-lighting`.
   Each whole-cube quad is to carry four corner levels (0 to 3, two bits each; `voxel_meshing::corner_occlusion`): a corner's level is the number of cubes that occlude among the two cells
   beside the cell the face looks at and the cell diagonal to it (the 2 by 2 cells of the layer in front that meet at the corner), and 3 when both side cells are, whatever the diagonal is. The level
   belongs to the corner, not to the face, so two faces on a plane agree about a corner they share and there is no seam. It is **blended bilinearly over the quad in the fragment shader**, not by
@@ -40,6 +40,12 @@ Light, levels of detail, planets, orbits, the great rivers, `/tp`, the sun and i
   **The mesher computes the levels (phase 3).** `Quad` has `occlusion`; a 34-cube table of which cells shade (the brick and the layer round it) is made once per brick, and a face reads 12 cells of it. Faces merge along `u` only
   if their levels are constant along `u` (and likewise `v`) and equal; a coarse node's faces are unshaded. The quad packed for the GPU does not carry the levels yet (unpacking gives none). **Measured** (release, this machine, one run
   each, a noise-free brick of hash terrain, against the commit before): quads 37 to 174 on gentle hills, 2461 to 4632 on rough ground, 29088 to 40408 in noise caves; meshing 2.0 to 2.4 ms, 2.1 to 2.8 ms, 3.0 to 6.4 ms per brick.
+  **Packed and drawn (phase 4).** A packed quad is 12 bytes: a third word, `shade`, holds the four levels in its low 8 bits (the rest are free for reverse AO). The vertex shader passes the levels flat and the position
+  across the quad (0 to 1 on each axis), and the fragment shader blends them bilinearly, so the shade does not depend on how the quad is cut into triangles. It reaches the pack through `Surface::ambient_occlusion`
+  (the picture's own occlusion times one minus 0.2 per level, `SHADE_PER_LEVEL` in `voxel.wgsl`, an untuned guess): **it cuts the lamps', the ambient and the sky's light and not the sun's**, which is the pack's to
+  decide and keeps a pack's colour its own (a first version multiplied after the pack and broke the shader-pack tests). Under a strong sun a lit face therefore shows less of it than Minecraft's does (its AO dims
+  everything); dimming the sun's term too is a decision for the owner, and it is a one-line change. Tests: the packed layout, a GPU test of the blend (a ratio of 0.4 at level 3, 0.7 at level 1.5, and the same at
+  each end whichever way the triangles lie), and one of the owner's first bug (the four diagonal floor squares round a block are equally dark). The shadow tests mesh without shade (`mesh_of_blocks`).
   The quad counts are the cost of the merge rule and will decide whether the 12-byte quad is affordable; the time can be cut further (the table is made even for a brick with few faces).
 
 ## Decided (levels of detail; Phase 38, owner 2026-10-23; specified in `lod-spec.md`)

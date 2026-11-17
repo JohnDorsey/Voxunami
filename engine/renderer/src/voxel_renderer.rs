@@ -1412,7 +1412,7 @@ impl VoxelRenderer {
                 "quads",
                 quads
                     .iter()
-                    .flat_map(|quad| [quad.geometry, quad.material])
+                    .flat_map(|quad| [quad.geometry, quad.material, quad.shade])
                     .collect(),
             ),
             quad_count: quads.len() as u32,
@@ -3548,7 +3548,7 @@ pub(crate) fn voxel_pipelines(
         wgpu::VertexBufferLayout {
             array_stride: size_of::<PackedQuad>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
+            attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32, 2 => Uint32],
         },
     );
     let detailed = make_pipeline(

@@ -28,7 +28,7 @@ pub struct Quad {
     /// How bright the faces are, from the light of the voxel in front of them.
     pub light: u8,
     /// How much the cubes beside the faces shade each corner of the rectangle. Every face of the rectangle has these levels, which is why a run of faces is one quad only along
-    /// a direction in which they are constant ([`CornerOcclusion::is_constant_along_u`]). It is not in [`PackedQuad`] yet: a packed quad is unshaded.
+    /// a direction in which they are constant ([`CornerOcclusion::is_constant_along_u`]).
     pub occlusion: CornerOcclusion,
 }
 
@@ -40,15 +40,17 @@ pub fn quad_axes(face: FaceDirection) -> (usize, usize) {
     ((axis + 1) % 3, (axis + 2) % 3)
 }
 
-/// A [`Quad`] in 8 bytes, the layout the GPU reads (two `u32`s per instance).
+/// A [`Quad`] in 12 bytes, the layout the GPU reads (three `u32`s per instance).
 ///
 /// `geometry` bits: 0-4 origin x, 5-9 origin y, 10-14 origin z, 15-19 width minus one, 20-24
-/// height minus one, 25-27 face index. `material` bits: 0-23 the block id, 24-31 the light.
+/// height minus one, 25-27 face index. `material` bits: 0-23 the block id, 24-31 the light. `shade` bits: 0-7 the corner levels (two bits each, corner 0 lowest, see
+/// [`CornerOcclusion`]); the rest are not used yet and are zero.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PackedQuad {
     pub geometry: u32,
     pub material: u32,
+    pub shade: u32,
 }
 
 impl Quad {
@@ -77,6 +79,7 @@ impl Quad {
         PackedQuad {
             geometry,
             material: self.material | u32::from(self.light) << 24,
+            shade: u32::from(self.occlusion.bits()),
         }
     }
 }
@@ -93,7 +96,7 @@ impl PackedQuad {
                 .expect("packed quad has a valid face index"),
             material: self.material & MAXIMUM_MATERIAL,
             light: (self.material >> 24) as u8,
-            occlusion: CornerOcclusion::NONE,
+            occlusion: CornerOcclusion::from_bits(self.shade),
         }
     }
 }
@@ -249,6 +252,57 @@ mod tests {
     }
 
     #[test]
+    fn the_corner_levels_are_the_low_eight_bits_of_the_shade_word_two_bits_a_corner() {
+        let packed = Quad {
+            occlusion: CornerOcclusion::from_levels([1, 2, 3, 0]),
+            ..quad([0, 0, 0], 1, 1, FaceDirection::PositiveY)
+        }
+        .pack();
+        assert_eq!(packed.shade, 0b00_11_10_01);
+        // Nothing else of the word is used, and the other two words do not hold the levels.
+        assert_eq!(
+            Quad {
+                occlusion: CornerOcclusion::NONE,
+                ..quad([0, 0, 0], 1, 1, FaceDirection::PositiveY)
+            }
+            .pack()
+            .shade,
+            0
+        );
+        assert_eq!(
+            packed.geometry,
+            quad([0, 0, 0], 1, 1, FaceDirection::PositiveY)
+                .pack()
+                .geometry
+        );
+        assert_eq!(
+            packed.material,
+            quad([0, 0, 0], 1, 1, FaceDirection::PositiveY)
+                .pack()
+                .material
+        );
+    }
+
+    #[test]
+    fn every_set_of_corner_levels_round_trips_through_a_packed_quad() {
+        for bits in 0..=255u32 {
+            let occlusion = CornerOcclusion::from_bits(bits);
+            let quad = Quad {
+                occlusion,
+                ..quad([3, 4, 5], 6, 7, FaceDirection::NegativeZ)
+            };
+            assert_eq!(quad.pack().unpack(), quad);
+            assert_eq!(u32::from(occlusion.bits()), bits);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "more than eight")]
+    fn bits_beyond_the_eighth_are_not_corner_levels() {
+        CornerOcclusion::from_bits(0x100);
+    }
+
+    #[test]
     fn every_extreme_round_trips() {
         for face in FaceDirection::ALL {
             for (origin, width, height) in [
@@ -273,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn a_packed_quad_is_eight_bytes_and_a_detailed_one_sixteen() {
-        assert_eq!(size_of::<PackedQuad>(), 8);
+    fn a_packed_quad_is_twelve_bytes_and_a_detailed_one_sixteen() {
+        assert_eq!(size_of::<PackedQuad>(), 12);
         assert_eq!(size_of::<PackedDetailedQuad>(), 16);
     }
 
