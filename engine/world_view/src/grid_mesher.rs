@@ -292,6 +292,46 @@ mod tests {
     }
 
     #[test]
+    fn a_face_at_the_edge_of_a_brick_of_a_ship_is_shaded_by_a_block_in_the_brick_that_touches_it_only_along_an_edge()
+     {
+        let top_quads = |fixture: &mut Fixture| {
+            let updates = fixture.update(100);
+            let MeshUpdate::UploadGridBrick { mesh, .. } = updates
+                .iter()
+                .find(|update| matches!(update, MeshUpdate::UploadGridBrick { coordinate, .. } if *coordinate == BrickCoordinate::ORIGIN))
+                .expect("the brick of the floor is drawn")
+            else {
+                unreachable!()
+            };
+            mesh.quads
+                .iter()
+                .map(|quad| quad.unpack())
+                .filter(|quad| quad.face == FaceDirection::PositiveY && quad.origin[1] == 15)
+                .collect::<Vec<_>>()
+        };
+        let mut fixture = fixture();
+        for x in 0..32 {
+            for z in 0..32 {
+                fixture.set([x, 15, z], 1);
+            }
+        }
+        // A bare floor is one quad.
+        let bare = top_quads(&mut fixture);
+        assert_eq!(bare.len(), 1);
+        assert_eq!((bare[0].width, bare[0].height), (32, 32));
+        // A block on the floor beyond its corner, in the brick (1, 0, 1) that touches the floor's brick only along an edge, shades the corner voxel of the floor, whose face is
+        // a quad of its own.
+        fixture.set([32, 16, 32], 1);
+        let shaded = top_quads(&mut fixture);
+        assert!(
+            shaded
+                .iter()
+                .any(|quad| quad.origin == [31, 15, 31] && (quad.width, quad.height) == (1, 1)),
+            "{shaded:?}"
+        );
+    }
+
+    #[test]
     fn at_most_the_budget_is_meshed_at_a_time_in_order_and_the_rest_waits() {
         let mut fixture = fixture();
         for x in 0..5 {

@@ -1,3 +1,4 @@
+use crate::occlusion::CornerOcclusion;
 use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection};
 
 /// The brightness of a face that nothing dims: the light value of games that have no lighting. It is the one number the coarse cells and the mesher both mean by it, so it is
@@ -26,6 +27,9 @@ pub struct Quad {
     pub material: u32,
     /// How bright the faces are, from the light of the voxel in front of them.
     pub light: u8,
+    /// How much the cubes beside the faces shade each corner of the rectangle. Every face of the rectangle has these levels, which is why a run of faces is one quad only along
+    /// a direction in which they are constant ([`CornerOcclusion::is_constant_along_u`]). It is not in [`PackedQuad`] yet: a packed quad is unshaded.
+    pub occlusion: CornerOcclusion,
 }
 
 /// The two axes a quad on `face` spans: `(u, v)`.
@@ -89,6 +93,7 @@ impl PackedQuad {
                 .expect("packed quad has a valid face index"),
             material: self.material & MAXIMUM_MATERIAL,
             light: (self.material >> 24) as u8,
+            occlusion: CornerOcclusion::NONE,
         }
     }
 }
@@ -219,6 +224,7 @@ mod tests {
             face,
             material: 0,
             light: FULL_LIGHT,
+            occlusion: CornerOcclusion::NONE,
         }
     }
 
@@ -231,6 +237,7 @@ mod tests {
             face: FaceDirection::PositiveY,
             material: 0xAB_CDEF,
             light: 0x7E,
+            occlusion: CornerOcclusion::NONE,
         }
         .pack();
         assert_eq!(
@@ -257,6 +264,7 @@ mod tests {
                         face,
                         material,
                         light,
+                        occlusion: CornerOcclusion::NONE,
                     };
                     assert_eq!(quad.pack().unpack(), quad);
                 }

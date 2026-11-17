@@ -118,3 +118,59 @@ fn a_change_in_a_brick_draws_it_and_every_brick_that_touches_it_again() {
         .collect();
     assert_eq!(again, expected);
 }
+
+/// The quads that look up from the top voxel layer (y = 9) of the ground brick `coordinate`, as the mesher of the world last drew them.
+fn top_quads(updates: Vec<MeshUpdate>, coordinate: BrickCoordinate) -> Vec<voxel_meshing::Quad> {
+    let mut last = None;
+    for update in updates {
+        if let MeshUpdate::Upload {
+            coordinate: uploaded,
+            mesh,
+        } = update
+            && uploaded == coordinate
+        {
+            last = Some(mesh);
+        }
+    }
+    last.expect("the brick was drawn")
+        .quads
+        .iter()
+        .map(|quad| quad.unpack())
+        .filter(|quad| quad.face == voxel_space::FaceDirection::PositiveY && quad.origin[1] == 9)
+        .collect()
+}
+
+#[test]
+fn a_block_in_a_brick_that_touches_only_at_an_edge_shapes_the_faces_of_the_ground_beside_it() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 8);
+    let mut mesher: WorldMesher = scene.mesher(3);
+    let before = top_quads(
+        mesher.settle(scene.world.main(), brick(0, 0, 0)),
+        brick(0, 0, 0),
+    );
+    // Bare ground is one quad, with nothing shading it.
+    assert_eq!(before.len(), 1);
+    assert_eq!((before[0].width, before[0].height), (32, 32));
+
+    // A stone block on the ground just across the corner of the brick, in the brick at x = 1, z = 1 (which touches this one along an edge of it). The ground voxel at the
+    // corner is shaded at one corner by it, so it can no longer be part of a bigger quad.
+    let edited = scene.edit([32, 10, 32], "base_blocks:stone");
+    assert_eq!(edited, brick(1, 0, 1));
+    mesher.brick_changed(edited);
+    let after = top_quads(
+        mesher.settle(scene.world.main(), brick(0, 0, 0)),
+        brick(0, 0, 0),
+    );
+    assert!(
+        after
+            .iter()
+            .any(|quad| quad.origin == [31, 9, 31] && (quad.width, quad.height) == (1, 1)),
+        "{after:?}"
+    );
+    let covered: u32 = after
+        .iter()
+        .map(|quad| u32::from(quad.width) * u32::from(quad.height))
+        .sum();
+    assert_eq!(covered, 32 * 32);
+}

@@ -7,7 +7,7 @@ use block_models::{BlockTable, ModelId, SUBDIVISIONS};
 use coarse_cells::{CELLS_PER_NODE, CoarseCell, CoarseNode, FULL_LIGHT};
 use voxel_space::{FaceDirection, LocalVoxelIndex};
 
-use crate::mesher::{BrickChannels, EDGE, merge_slice, uniform_model};
+use crate::mesher::{BrickChannels, EDGE, FaceKey, merge_slice, uniform_model};
 use crate::neighbourhood::BrickNeighbourhood;
 use crate::quad::{BrickMesh, quad_axes};
 
@@ -196,7 +196,7 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
         let axis = face.axis();
         let (u_axis, v_axis) = quad_axes(face);
         let step = face.offset();
-        let mut mask: Vec<Option<(u32, u8)>> = vec![None; EDGE * EDGE];
+        let mut mask: Vec<Option<FaceKey>> = vec![None; EDGE * EDGE];
         for slice in 0..EDGE {
             let mut any = false;
             for v in 0..EDGE {
@@ -229,7 +229,7 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
                                 })
                             };
                         if !beside {
-                            key = Some((cell.block, cell.light));
+                            key = Some(FaceKey::unshaded(cell.block, cell.light));
                         }
                     }
                     any |= key.is_some();
@@ -259,7 +259,7 @@ fn mesh_uniform_cube(cell: CoarseCell, neighbours: &[Option<&CoarseNode>; 6]) ->
         } else {
             (0, EDGE - 1)
         };
-        let mut mask: Vec<Option<(u32, u8)>> = vec![None; EDGE * EDGE];
+        let mut mask: Vec<Option<FaceKey>> = vec![None; EDGE * EDGE];
         let mut any = false;
         for v in 0..EDGE {
             for u in 0..EDGE {
@@ -273,7 +273,7 @@ fn mesh_uniform_cube(cell: CoarseCell, neighbours: &[Option<&CoarseNode>; 6]) ->
                         .is_drawn()
                 });
                 if !beside {
-                    mask[v * EDGE + u] = Some((cell.block, cell.light));
+                    mask[v * EDGE + u] = Some(FaceKey::unshaded(cell.block, cell.light));
                     any = true;
                 }
             }

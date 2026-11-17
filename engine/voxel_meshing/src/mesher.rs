@@ -3,6 +3,7 @@ use voxel_grid::ChannelStorage;
 use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
 
 use crate::neighbourhood::BrickNeighbourhood;
+use crate::occlusion::{CornerOcclusion, corner_occlusion};
 use crate::quad::{BrickMesh, DetailedQuad, FULL_LIGHT, Quad, quad_axes};
 
 pub(crate) const EDGE: usize = BRICK_EDGE_LENGTH;
@@ -136,6 +137,9 @@ impl Layer {
 /// A brick's voxels, looked at the way meshing needs.
 struct MeshedBrick<'a> {
     table: &'a BlockTable,
+    /// Whether each cell of the brick and of the layer round it is a cube that shades the faces beside it, indexed by [`shade_index`]. A cell in a brick that is not there is
+    /// not.
+    shading: Vec<bool>,
     /// What each voxel is drawn as: its block, or for a block with colours for its states, the
     /// colour of its state (see [`BlockTable::material_of`]).
     materials: Vec<u32>,
@@ -161,7 +165,7 @@ impl<'a> MeshedBrick<'a> {
                 .as_ref()
                 .map_or(0, |orientations| orientations[index])
         };
-        let models = blocks
+        let models: Vec<ModelId> = blocks
             .iter()
             .enumerate()
             .map(|(index, &block)| table.model_of(block, state_of(index), orientation_of(index)))
@@ -182,8 +186,10 @@ impl<'a> MeshedBrick<'a> {
             Some(light) => light.iter().map(|value| value.min(255) as u8).collect(),
             None => vec![FULL_LIGHT; blocks.len()],
         };
+        let shading = shading_of(input, &models, table);
         Self {
             table,
+            shading,
             materials,
             face_materials,
             models,
@@ -201,6 +207,16 @@ impl<'a> MeshedBrick<'a> {
             Some(materials) => materials[usize::from(face.index())],
             None => self.materials[index],
         }
+    }
+
+    /// Whether the cell at `place` (in voxels from the brick's lowest corner, up to one outside it) is a cube that shades the faces beside it.
+    fn occludes(&self, place: [i64; 3]) -> bool {
+        self.shading[shade_index(place)]
+    }
+
+    /// How much the cubes round the face of the voxel at `p` that looks `face` shade its corners.
+    fn occlusion_of(&self, p: [usize; 3], face: FaceDirection) -> CornerOcclusion {
+        corner_occlusion(|place| self.occludes(place), p.map(|c| c as i64), face)
     }
 
     /// What is in the voxel `face` of the one at `p`, and how bright it is. `None` where there is no
@@ -240,7 +256,7 @@ impl<'a> MeshedBrick<'a> {
     fn mesh_whole_faces(&self, face: FaceDirection, quads: &mut Vec<Quad>) {
         let axis = face.axis();
         let (u_axis, v_axis) = quad_axes(face);
-        let mut mask: Vec<Option<(u32, u8)>> = vec![None; EDGE * EDGE];
+        let mut mask: Vec<Option<FaceKey>> = vec![None; EDGE * EDGE];
         for slice in 0..EDGE {
             let mut any = false;
             for v in 0..EDGE {
@@ -255,7 +271,11 @@ impl<'a> MeshedBrick<'a> {
                     if self.table.is_opaque_cube(model) {
                         let (front, light) = self.in_front(p, face);
                         if self.hidden_by(model, front, face) != u64::MAX {
-                            key = Some((self.material_of_face(index, face), light));
+                            key = Some(FaceKey {
+                                material: self.material_of_face(index, face),
+                                light,
+                                occlusion: self.occlusion_of(p, face),
+                            });
                         }
                     }
                     any |= key.is_some();
@@ -353,12 +373,75 @@ impl<'a> MeshedBrick<'a> {
     }
 }
 
-/// Covers the set cells of `mask` with maximal rectangles of equal material and brightness, clearing
-/// it as it goes.
+/// The side of the cube of cells that shade a face: the brick and the layer round it.
+const SHADED_EDGE: usize = EDGE + 2;
+
+/// Where the cell at `place` (in voxels from the brick's lowest corner, from -1 to the brick's edge length) is in [`MeshedBrick::shading`]. Panics beyond that.
+fn shade_index(place: [i64; 3]) -> usize {
+    let [x, y, z] = place.map(|component| {
+        assert!(
+            (-1..=EDGE as i64).contains(&component),
+            "a cell beside a face is within one of the brick: {place:?}"
+        );
+        (component + 1) as usize
+    });
+    (z * SHADED_EDGE + y) * SHADED_EDGE + x
+}
+
+/// Which of the cells of the brick and of the layer round it are cubes that shade the faces beside them: made once for a brick, so that looking at the cells round a face
+/// is a lookup in a list and not a search through the neighbourhood. `models` is what the voxels of the brick are.
+fn shading_of(input: &BrickNeighbourhood<'_>, models: &[ModelId], table: &BlockTable) -> Vec<bool> {
+    let mut shading = vec![false; SHADED_EDGE * SHADED_EDGE * SHADED_EDGE];
+    for z in -1..=EDGE as i64 {
+        for y in -1..=EDGE as i64 {
+            for x in -1..=EDGE as i64 {
+                let inside = [x, y, z].iter().all(|c| (0..EDGE as i64).contains(c));
+                shading[shade_index([x, y, z])] = if inside {
+                    table
+                        .is_opaque_cube(models[local([x as usize, y as usize, z as usize]).index()])
+                } else {
+                    input.voxel_at([x as i32, y as i32, z as i32]).is_some_and(
+                        |(channels, voxel)| {
+                            table.is_opaque_cube(table.model_of(
+                                channels.blocks.get(voxel),
+                                channels.state_at(voxel),
+                                channels.orientation_at(voxel),
+                            ))
+                        },
+                    )
+                };
+            }
+        }
+    }
+    shading
+}
+
+/// What the faces of a rectangle have in common: they merge only when it is the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FaceKey {
+    pub material: u32,
+    pub light: u8,
+    pub occlusion: CornerOcclusion,
+}
+
+impl FaceKey {
+    /// The key of a face that nothing shades, which is every face of a coarse node (its cells are too far away to shade).
+    pub(crate) fn unshaded(material: u32, light: u8) -> Self {
+        Self {
+            material,
+            light,
+            occlusion: CornerOcclusion::NONE,
+        }
+    }
+}
+
+/// Covers the set cells of `mask` with maximal rectangles of equal material, brightness and shade, clearing it as it goes. A run of faces along `u` is one rectangle only if
+/// the shade is the same at both ends of each of its faces along `u`, so that the blend across the rectangle is what it is across each face (and the same along `v`); a face
+/// shaded differently at its corners along both is a quad of its own.
 pub(crate) fn merge_slice(
     face: FaceDirection,
     slice: usize,
-    mask: &mut [Option<(u32, u8)>],
+    mask: &mut [Option<FaceKey>],
     quads: &mut Vec<Quad>,
 ) {
     let axis = face.axis();
@@ -371,11 +454,13 @@ pub(crate) fn merge_slice(
                 continue;
             };
             let mut width = 1;
-            while u0 + width < EDGE && mask[v0 * EDGE + u0 + width] == Some(key) {
-                width += 1;
+            if key.occlusion.is_constant_along_u() {
+                while u0 + width < EDGE && mask[v0 * EDGE + u0 + width] == Some(key) {
+                    width += 1;
+                }
             }
             let mut height = 1;
-            'grow: while v0 + height < EDGE {
+            'grow: while key.occlusion.is_constant_along_v() && v0 + height < EDGE {
                 for u in u0..u0 + width {
                     if mask[(v0 + height) * EDGE + u] != Some(key) {
                         break 'grow;
@@ -397,8 +482,9 @@ pub(crate) fn merge_slice(
                 width: width as u8,
                 height: height as u8,
                 face,
-                material: key.0,
-                light: key.1,
+                material: key.material,
+                light: key.light,
+                occlusion: key.occlusion,
             });
             u0 += width;
         }
@@ -545,7 +631,65 @@ mod tests {
             face,
             material,
             light: FULL_LIGHT,
+            occlusion: CornerOcclusion::NONE,
         }
+    }
+
+    /// A slice of `FaceKey`s: the cells at the places of `cells` (u, v) have `occlusion`, the rest of the slice is empty.
+    fn merged(cells: &[(usize, usize)], occlusion: CornerOcclusion) -> Vec<(u8, u8, u8, u8)> {
+        let mut mask: Vec<Option<FaceKey>> = vec![None; EDGE * EDGE];
+        for &(u, v) in cells {
+            mask[v * EDGE + u] = Some(FaceKey {
+                material: STONE,
+                light: FULL_LIGHT,
+                occlusion,
+            });
+        }
+        let mut quads = Vec::new();
+        merge_slice(FaceDirection::PositiveY, 0, &mut mask, &mut quads);
+        assert!(mask.iter().all(Option::is_none), "the mask is cleared");
+        // A y face spans z (u) and x (v): report each quad as (u, v, width, height).
+        quads
+            .iter()
+            .map(|quad| (quad.origin[2], quad.origin[0], quad.width, quad.height))
+            .collect()
+    }
+
+    #[test]
+    fn faces_shaded_alike_along_a_direction_merge_along_it_and_only_along_it() {
+        let two_by_two = [(4, 6), (5, 6), (4, 7), (5, 7)];
+        // Unshaded: one rectangle.
+        assert_eq!(merged(&two_by_two, CornerOcclusion::NONE), [(4, 6, 2, 2)]);
+        // Shaded the same at both ends along u (the corners at the high end of v are darker): runs along u merge, rows do not stack.
+        let along_u = CornerOcclusion::from_levels([0, 0, 1, 1]);
+        assert!(along_u.is_constant_along_u() && !along_u.is_constant_along_v());
+        assert_eq!(merged(&two_by_two, along_u), [(4, 6, 2, 1), (4, 7, 2, 1)]);
+        // Shaded the same along v: columns stack, cells do not join along u.
+        let along_v = CornerOcclusion::from_levels([0, 1, 0, 1]);
+        assert!(along_v.is_constant_along_v() && !along_v.is_constant_along_u());
+        assert_eq!(merged(&two_by_two, along_v), [(4, 6, 1, 2), (5, 6, 1, 2)]);
+        // Shaded differently at corners along both directions: every face is a quad of its own.
+        let corner = CornerOcclusion::from_levels([0, 0, 0, 1]);
+        assert_eq!(
+            merged(&two_by_two, corner),
+            [(4, 6, 1, 1), (5, 6, 1, 1), (4, 7, 1, 1), (5, 7, 1, 1)]
+        );
+    }
+
+    #[test]
+    fn faces_that_differ_only_in_shade_do_not_merge() {
+        let mut mask: Vec<Option<FaceKey>> = vec![None; EDGE * EDGE];
+        for (u, level) in [(3, 0), (4, 1)] {
+            mask[u] = Some(FaceKey {
+                material: STONE,
+                light: FULL_LIGHT,
+                occlusion: CornerOcclusion::from_levels([level; 4]),
+            });
+        }
+        let mut quads = Vec::new();
+        merge_slice(FaceDirection::PositiveY, 0, &mut mask, &mut quads);
+        assert_eq!(quads.len(), 2);
+        assert_ne!(quads[0].occlusion, quads[1].occlusion);
     }
 
     #[test]
