@@ -409,39 +409,68 @@ impl BodyWorld {
         let mut wanted: Rows = Box::new([0; EDGE * EDGE]);
         let mut boxes: Vec<(Pose, SharedShape)> = Vec::new();
         if hint != BrickHint::Empty {
-            for z in 0..EDGE {
-                for y in 0..EDGE {
-                    for x in 0..EDGE {
-                        let voxel = VoxelCoordinate::new(
-                            first.x() + x as i128,
-                            first.y() + y as i128,
-                            first.z() + z as i128,
-                        );
-                        match if hint == BrickHint::Solid {
-                            Collision::Full
-                        } else {
-                            source.collision_at(voxel)
-                        } {
-                            Collision::Empty => {}
-                            Collision::Full => wanted[z * EDGE + y] |= 1 << x,
-                            Collision::Partial(parts) => {
-                                for part in parts.iter() {
-                                    let eighths = |value: u8| Real::from(value) / 8.0;
-                                    let min = part.min.map(eighths);
-                                    let max = part.max.map(eighths);
-                                    boxes.push((
-                                        Pose::from_translation(Vector::new(
-                                            x as Real + (min[0] + max[0]) / 2.0,
-                                            y as Real + (min[1] + max[1]) / 2.0,
-                                            z as Real + (min[2] + max[2]) / 2.0,
-                                        )),
-                                        SharedShape::cuboid(
-                                            (max[0] - min[0]) / 2.0,
-                                            (max[1] - min[1]) / 2.0,
-                                            (max[2] - min[2]) / 2.0,
-                                        ),
-                                    ));
-                                }
+            // A source that knows which voxels of the brick may collide is asked about those, in the order the loops go in (so that the boxes are made in the same order).
+            let listed = if hint == BrickHint::Unknown {
+                source.voxels_that_may_collide(brick)
+            } else {
+                None
+            };
+            let mut consider = |x: usize, y: usize, z: usize| {
+                let voxel = VoxelCoordinate::new(
+                    first.x() + x as i128,
+                    first.y() + y as i128,
+                    first.z() + z as i128,
+                );
+                match if hint == BrickHint::Solid {
+                    Collision::Full
+                } else {
+                    source.collision_at(voxel)
+                } {
+                    Collision::Empty => {}
+                    Collision::Full => wanted[z * EDGE + y] |= 1 << x,
+                    Collision::Partial(parts) => {
+                        for part in parts.iter() {
+                            let eighths = |value: u8| Real::from(value) / 8.0;
+                            let min = part.min.map(eighths);
+                            let max = part.max.map(eighths);
+                            boxes.push((
+                                Pose::from_translation(Vector::new(
+                                    x as Real + (min[0] + max[0]) / 2.0,
+                                    y as Real + (min[1] + max[1]) / 2.0,
+                                    z as Real + (min[2] + max[2]) / 2.0,
+                                )),
+                                SharedShape::cuboid(
+                                    (max[0] - min[0]) / 2.0,
+                                    (max[1] - min[1]) / 2.0,
+                                    (max[2] - min[2]) / 2.0,
+                                ),
+                            ));
+                        }
+                    }
+                }
+            };
+            match listed {
+                Some(listed) => {
+                    for voxel in listed {
+                        let place = |value: i128, origin: i128| {
+                            usize::try_from(value - origin)
+                                .ok()
+                                .filter(|&offset| offset < EDGE)
+                        };
+                        if let (Some(x), Some(y), Some(z)) = (
+                            place(voxel.x(), first.x()),
+                            place(voxel.y(), first.y()),
+                            place(voxel.z(), first.z()),
+                        ) {
+                            consider(x, y, z);
+                        }
+                    }
+                }
+                None => {
+                    for z in 0..EDGE {
+                        for y in 0..EDGE {
+                            for x in 0..EDGE {
+                                consider(x, y, z);
                             }
                         }
                     }
@@ -450,14 +479,18 @@ impl BodyWorld {
         }
         let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
         let before = body.filled.remove(&brick);
-        let changes = |x: usize, y: usize, z: usize| -> Option<bool> {
-            let bit = 1u32 << x;
-            let was = before
-                .as_ref()
-                .is_some_and(|rows| rows[z * EDGE + y] & bit != 0);
-            let is = wanted[z * EDGE + y] & bit != 0;
-            (was != is).then_some(is)
-        };
+        // The voxels that are not what they were, in order of z, then y, then x, and whether each is now filled: a row of 32 is compared as one word, and only a row that
+        // differs is looked into.
+        let changes: Vec<(usize, usize, usize, bool)> = (0..EDGE * EDGE)
+            .flat_map(|row| {
+                let was = before.as_ref().map_or(0, |rows| rows[row]);
+                let is = wanted[row];
+                let differing = was ^ is;
+                (0..EDGE)
+                    .filter(move |x| differing & (1 << x) != 0)
+                    .map(move |x| (x, row % EDGE, row / EDGE, is & (1 << x) != 0))
+            })
+            .collect();
         // The voxel collider: edited in place if it exists, or made from the voxels of the first brick that has any.
         match body.voxels {
             Some(handle) => {
@@ -466,26 +499,16 @@ impl BodyWorld {
                     .get_mut(handle)
                     .and_then(|collider| collider.shape_mut().as_voxels_mut())
                 {
-                    for z in 0..EDGE {
-                        for y in 0..EDGE {
-                            for x in 0..EDGE {
-                                if let Some(filled) = changes(x, y, z) {
-                                    voxels.set_voxel(key(x, y, z)?, filled);
-                                }
-                            }
-                        }
+                    for &(x, y, z, filled) in &changes {
+                        voxels.set_voxel(key(x, y, z)?, filled);
                     }
                 }
             }
             None => {
                 let mut keys = Vec::new();
-                for z in 0..EDGE {
-                    for y in 0..EDGE {
-                        for x in 0..EDGE {
-                            if changes(x, y, z) == Some(true) {
-                                keys.push(key(x, y, z)?);
-                            }
-                        }
+                for &(x, y, z, filled) in &changes {
+                    if filled {
+                        keys.push(key(x, y, z)?);
                     }
                 }
                 if !keys.is_empty() {

@@ -12,6 +12,7 @@ use plugin_host::{
 };
 use protocol::{ClientId, Message};
 use server::{Audience, GridView, ServerWorld};
+use voxel_grid::{Brick, ChannelIndex};
 use voxel_space::{GridId, LocalVoxelIndex, VoxelCoordinate};
 
 use super::adapters::{CaveChannels, WorldLight, WorldScaledLight};
@@ -114,19 +115,26 @@ impl LightState {
             .chain(data.grids().iter().map(|(id, ship)| (id, &ship.voxels)));
         for (grid, voxels) in grids {
             for (brick, contents) in voxels.bricks() {
-                for local in LocalVoxelIndex::all() {
-                    let voxel = brick.voxel_at(local);
-                    let block = contents.get(self.channels.block, local);
-                    let state = contents.get(self.channels.state, local);
-                    if self.table.get_of(self.emission, block, state) > 0 {
-                        emitters.push((grid, voxel));
-                    }
-                    for &channel in &channels {
-                        if contents.get(channel, local) != 0 {
-                            lit.push((grid, channel, voxel));
-                        }
-                    }
-                }
+                let found = light_in_brick(
+                    contents,
+                    self.channels.block,
+                    self.channels.state,
+                    &channels,
+                    &self.table,
+                    self.emission,
+                );
+                emitters.extend(
+                    found
+                        .emitters
+                        .into_iter()
+                        .map(|local| (grid, brick.voxel_at(local))),
+                );
+                lit.extend(
+                    found
+                        .lit
+                        .into_iter()
+                        .map(|(local, channel)| (grid, channel, brick.voxel_at(local))),
+                );
             }
         }
         for (grid, channel, voxel) in lit {
@@ -333,5 +341,184 @@ impl Plugin for LightPlugin {
         registrar.save_section(SaveScope::PerGrid { movable: true }, move || {
             locked(&state).saved_sections()
         });
+    }
+}
+
+/// What one brick holds that the light needs to know of when it is made again: the voxels whose block gives off light in their state, and the voxels that have any light in
+/// a channel (with the channel), the voxels in index order and for one voxel the channels in the order given. Found from the palettes of the channels and not by looking at
+/// each of the 32,768 voxels, so that a brick that is a few blocks in air costs a pass over its packed indices.
+struct LightInBrick {
+    emitters: Vec<LocalVoxelIndex>,
+    lit: Vec<(LocalVoxelIndex, ChannelIndex)>,
+}
+
+fn light_in_brick(
+    contents: &Brick,
+    block_channel: ChannelIndex,
+    state_channel: ChannelIndex,
+    light_channels: &[ChannelIndex],
+    table: &BlockTable,
+    emission: PropertyHandle<u8>,
+) -> LightInBrick {
+    // A block can only be where light comes from if it gives off some in a state it has (a state it lacks is its first).
+    let may_emit = |block: u32| {
+        (0..table.state_count(block)).any(|state| table.get_of(emission, block, state) > 0)
+    };
+    let emitters = contents
+        .channel(block_channel)
+        .indices_where(may_emit)
+        .into_iter()
+        .filter(|&local| {
+            let block = contents.get(block_channel, local);
+            let state = contents.get(state_channel, local);
+            table.get_of(emission, block, state) > 0
+        })
+        .collect();
+    let mut lit: Vec<(LocalVoxelIndex, usize, ChannelIndex)> = light_channels
+        .iter()
+        .enumerate()
+        .flat_map(|(position, &channel)| {
+            contents
+                .channel(channel)
+                .indices_where(|value| value != 0)
+                .into_iter()
+                .map(move |local| (local, position, channel))
+        })
+        .collect();
+    lit.sort_by_key(|&(local, position, _)| (local.index(), position));
+    LightInBrick {
+        emitters,
+        lit: lit
+            .into_iter()
+            .map(|(local, _, channel)| (local, channel))
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use voxel_grid::{ChannelDefinition, GridLayout};
+
+    use super::*;
+
+    /// What it was before the palettes were asked: every voxel of the brick, one after another.
+    fn every_voxel(
+        contents: &Brick,
+        block_channel: ChannelIndex,
+        state_channel: ChannelIndex,
+        light_channels: &[ChannelIndex],
+        table: &BlockTable,
+        emission: PropertyHandle<u8>,
+    ) -> (Vec<LocalVoxelIndex>, Vec<(LocalVoxelIndex, ChannelIndex)>) {
+        let (mut emitters, mut lit) = (Vec::new(), Vec::new());
+        for local in LocalVoxelIndex::all() {
+            let block = contents.get(block_channel, local);
+            let state = contents.get(state_channel, local);
+            if table.get_of(emission, block, state) > 0 {
+                emitters.push(local);
+            }
+            for &channel in light_channels {
+                if contents.get(channel, local) != 0 {
+                    lit.push((local, channel));
+                }
+            }
+        }
+        (emitters, lit)
+    }
+
+    #[test]
+    fn the_emitters_and_the_lit_voxels_found_from_the_palettes_are_those_every_voxel_gives_in_the_same_order()
+     {
+        let content = CaveContent::new();
+        let table = game_shell::GameContent::block_table(&content);
+        let emission = table
+            .handle(&base_blocks::EMISSION)
+            .expect("Cave declares what a block gives off");
+        compare_with_every_voxel(&table, emission);
+    }
+
+    #[test]
+    fn a_block_that_gives_off_light_in_one_of_its_states_is_an_emitter_only_in_that_state() {
+        let mut schema = block_models::PropertySchema::new();
+        schema.declare(base_blocks::EMISSION.declaration()).unwrap();
+        let air = block_models::BlockDefinition::air();
+        // A lamp that is lit in its second state and dark in its first, and a block that never gives any.
+        let lamp = block_models::BlockDefinition::cube([0.5; 3])
+            .with_shapes(vec![
+                block_models::Shape::full(),
+                block_models::Shape::full(),
+            ])
+            .with_state_property(1, &base_blocks::EMISSION, 10);
+        let stone = block_models::BlockDefinition::cube([0.5; 3]);
+        let table =
+            BlockTable::try_from_definitions(&schema, &[Some(&air), Some(&lamp), Some(&stone)])
+                .unwrap();
+        let emission = table.handle(&base_blocks::EMISSION).unwrap();
+        compare_with_every_voxel(&table, emission);
+    }
+
+    /// Bricks of every sparseness, of the blocks of `table` in its states, with light here and there: what is found is what a look at every voxel finds.
+    fn compare_with_every_voxel(table: &BlockTable, emission: PropertyHandle<u8>) {
+        let layout = GridLayout::new(vec![
+            ChannelDefinition::number("test:block".parse().unwrap(), 0),
+            ChannelDefinition::number("test:state".parse().unwrap(), 0),
+            ChannelDefinition::number("test:light".parse().unwrap(), 0),
+            ChannelDefinition::number("test:scale_one".parse().unwrap(), 0),
+            ChannelDefinition::number("test:scale_two".parse().unwrap(), 0),
+        ])
+        .unwrap();
+        let channels: Vec<ChannelIndex> = layout.channel_indices().collect();
+        let block_count = table.block_count() as u32;
+        for (count, seed) in [
+            (0usize, 1u64),
+            (1, 2),
+            (27, 3),
+            (500, 4),
+            (9_000, 5),
+            (30_000, 6),
+        ] {
+            let mut brick = Brick::new(&layout);
+            let mut random = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut next = move || {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                random
+            };
+            for _ in 0..count {
+                let local = LocalVoxelIndex::from_index((next() % 32_768) as usize).unwrap();
+                brick.set(channels[0], local, (next() % u64::from(block_count)) as u32);
+                brick.set(channels[1], local, (next() % 8) as u32);
+                for &channel in &channels[2..] {
+                    if next() % 3 == 0 {
+                        brick.set(channel, local, 1 + (next() % 15) as u32);
+                    }
+                }
+            }
+            let found = light_in_brick(
+                &brick,
+                channels[0],
+                channels[1],
+                &channels[2..],
+                table,
+                emission,
+            );
+            let (emitters, lit) = every_voxel(
+                &brick,
+                channels[0],
+                channels[1],
+                &channels[2..],
+                table,
+                emission,
+            );
+            assert_eq!(found.emitters, emitters, "{count} voxels: the emitters");
+            assert_eq!(found.lit, lit, "{count} voxels: the lit voxels");
+            if count >= 500 {
+                assert!(
+                    !emitters.is_empty() && !lit.is_empty(),
+                    "{count}: the brick has both"
+                );
+            }
+        }
     }
 }

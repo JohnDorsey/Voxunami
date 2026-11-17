@@ -36,6 +36,13 @@ pub trait CollisionSource {
     fn brick_hint(&mut self, _brick: BrickCoordinate) -> BrickHint {
         BrickHint::Unknown
     }
+
+    /// For a brick whose hint is [`BrickHint::Unknown`]: the voxels of it that may collide, **in order of z, then y, then x**, and every voxel that is not among them is
+    /// [`Collision::Empty`] (more than those that do is fine: each is asked about). `None`, the default, is not knowing, and every voxel is asked. A brick of a ship that is a few
+    /// blocks in a space of 32,768 places is made from the few, and not from a look at every place.
+    fn voxels_that_may_collide(&mut self, _brick: BrickCoordinate) -> Option<Vec<VoxelCoordinate>> {
+        None
+    }
 }
 
 const EDGE: usize = BRICK_EDGE_LENGTH;

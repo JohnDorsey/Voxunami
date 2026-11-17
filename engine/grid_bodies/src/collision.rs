@@ -81,6 +81,13 @@ impl BlockCollisions {
             .clone()
     }
 
+    /// Whether the block is nothing to a body in every state it has (air, a block with no shape, a block that bodies pass through): a voxel of it can be left out of a look at
+    /// what a brick holds. A block that the table does not know is a whole cube, and so is not. (Whether a shape is empty does not depend on how the block is turned.)
+    pub fn is_always_empty(&self, block: u32) -> bool {
+        let states = self.table().state_count(block);
+        (0..states).all(|state| self.of(block, state, 0) == Collision::Empty)
+    }
+
     /// Forgets what was worked out if the table was replaced since. (One atomic read when it was not: this is asked of every voxel.)
     fn keep_up(&self, worked: &mut Worked) {
         if self.shared.version() != worked.version {
@@ -244,6 +251,13 @@ impl CollisionSource for ShipSource<'_> {
             Self::Generated(hull) => hull.brick_hint(brick),
         }
     }
+
+    fn voxels_that_may_collide(&mut self, brick: BrickCoordinate) -> Option<Vec<VoxelCoordinate>> {
+        match self {
+            Self::Stored(hull) => hull.voxels_that_may_collide(brick),
+            Self::Generated(hull) => hull.voxels_that_may_collide(brick),
+        }
+    }
 }
 
 /// Whether a place in a source's own coordinates, in voxels, is inside a block that something can stand on or bump into: the whole of a cube, or one of the
@@ -297,6 +311,21 @@ impl CollisionSource for ShipHull<'_> {
         } else {
             BrickHint::Unknown
         }
+    }
+
+    /// The voxels of the brick whose block is something to a body in some state, found from the palette of the block channel (a ship's brick is a few blocks in a space of
+    /// 32,768 places, and asking a grid for the block, the state and the orientation at each took 2 milliseconds).
+    fn voxels_that_may_collide(&mut self, brick: BrickCoordinate) -> Option<Vec<VoxelCoordinate>> {
+        let contents = self.voxels.brick(brick)?;
+        let collisions = self.collisions;
+        Some(
+            contents
+                .channel(self.block_channel)
+                .indices_where(|block| !collisions.is_always_empty(block))
+                .into_iter()
+                .map(|local| brick.voxel_at(local))
+                .collect(),
+        )
     }
 }
 
@@ -389,6 +418,171 @@ mod tests {
             .with_shapes(vec![Shape::half(FaceDirection::NegativeY)]);
         let mist = BlockDefinition::cube([0.5; 3]);
         BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&mist)])
+    }
+
+    #[test]
+    fn a_block_that_is_nothing_in_every_state_is_always_empty_and_one_that_is_something_in_any_state_is_not()
+     {
+        let collisions = collisions();
+        assert!(collisions.is_always_empty(AIR));
+        assert!(collisions.is_always_empty(MIST));
+        assert!(!collisions.is_always_empty(STONE));
+        // Not in one state of two is not always.
+        let air = BlockDefinition::air();
+        let flickering =
+            BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::empty(), Shape::full()]);
+        let ghost =
+            BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::empty(), Shape::empty()]);
+        let shared = SharedBlockTable::new(BlockTable::from_definitions(&[
+            Some(&air),
+            Some(&flickering),
+            Some(&ghost),
+        ]));
+        let following = BlockCollisions::following(&shared, None);
+        assert!(!following.is_always_empty(1));
+        assert!(following.is_always_empty(2));
+        // A block the table does not know is a whole cube.
+        assert!(!following.is_always_empty(77));
+        // And it follows the table when that is replaced: what was worked out is forgotten.
+        shared
+            .replace(BlockTable::from_definitions(&[
+                Some(&air),
+                Some(&ghost),
+                Some(&flickering),
+            ]))
+            .unwrap();
+        assert!(following.is_always_empty(1));
+        assert!(!following.is_always_empty(2));
+    }
+
+    /// A brick with some blocks in it at places that the loops of x, y and z do not find in order: whole and part stones, mist, and air.
+    fn scattered() -> (Grid, ChannelIndex, ChannelIndex, ChannelIndex) {
+        let (block, state, orientation) = channels();
+        let layout = Arc::new(
+            GridLayout::new(vec![
+                ChannelDefinition::number("test:block".parse().unwrap(), AIR),
+                ChannelDefinition::number("test:state".parse().unwrap(), 0),
+                ChannelDefinition::number("test:orientation".parse().unwrap(), 0),
+            ])
+            .unwrap(),
+        );
+        let mut voxels = Grid::new(layout);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        for _ in 0..600 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let at = VoxelCoordinate::new(
+                (seed % 32) as i128,
+                ((seed >> 8) % 32) as i128,
+                ((seed >> 16) % 32) as i128,
+            );
+            voxels.set(block, at, [STONE, MIST, AIR][((seed >> 24) % 3) as usize]);
+            voxels.set(state, at, ((seed >> 32) % 4) as u32);
+            voxels.set(orientation, at, ((seed >> 40) % 24) as u32);
+        }
+        (voxels, block, state, orientation)
+    }
+
+    #[test]
+    fn the_voxels_a_hull_lists_are_those_that_can_collide_in_the_order_the_bricks_are_made_in_and_all_of_them()
+     {
+        let collisions = collisions();
+        let (voxels, block, state, orientation) = scattered();
+        let mut hull = ShipHull {
+            voxels: &voxels,
+            block_channel: block,
+            state_channel: state,
+            orientation_channel: Some(orientation),
+            collisions: &collisions,
+        };
+        let brick = BrickCoordinate::ORIGIN;
+        assert_eq!(hull.brick_hint(brick), BrickHint::Unknown);
+        let listed = hull
+            .voxels_that_may_collide(brick)
+            .expect("a hull says which voxels may collide");
+        let order = |voxel: &VoxelCoordinate| (voxel.z(), voxel.y(), voxel.x());
+        assert!(
+            listed
+                .windows(2)
+                .all(|pair| order(&pair[0]) < order(&pair[1])),
+            "in order of z, then y, then x, and none twice"
+        );
+        // Every voxel of the brick that is something to a body is listed: none that is not is the only way to be left out.
+        let mut something = 0;
+        for z in 0..32 {
+            for y in 0..32 {
+                for x in 0..32 {
+                    let voxel = VoxelCoordinate::new(x, y, z);
+                    if hull.collision_at(voxel) != Collision::Empty {
+                        something += 1;
+                        assert!(
+                            listed.contains(&voxel),
+                            "{voxel:?} collides and is not listed"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(something > 50, "the brick has things in it: {something}");
+        // Mist is not listed (nothing of it is ever anything to a body), so what is listed is the stone and no more.
+        assert_eq!(listed.len(), something);
+    }
+
+    /// A hull that does not say which of its voxels may collide, so that every one is asked.
+    struct Plain<'a, 'b>(&'a mut ShipHull<'b>);
+
+    impl CollisionSource for Plain<'_, '_> {
+        fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+            self.0.collision_at(voxel)
+        }
+
+        fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
+            self.0.brick_hint(brick)
+        }
+    }
+
+    #[test]
+    fn a_body_made_from_the_voxels_a_hull_lists_is_the_body_made_from_all_of_them_to_the_bit() {
+        use physics::{BodyId, BodyKind, BodySettings, BodyState, BodyWorld};
+        use voxel_space::{Orientation, WorldPosition};
+
+        let collisions = collisions();
+        let (voxels, block, state, orientation) = scattered();
+        let mut hull = ShipHull {
+            voxels: &voxels,
+            block_channel: block,
+            state_channel: state,
+            orientation_channel: Some(orientation),
+            collisions: &collisions,
+        };
+        let mut body = |listed: bool| {
+            let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+            let at = BodyState {
+                position: WorldPosition::from_voxels([0.0, 40.0, 0.0]),
+                orientation: Orientation::IDENTITY,
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+            };
+            world.add_body(BodyId(1), at, BodyKind::Dynamic).unwrap();
+            if listed {
+                world
+                    .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut hull)
+                    .unwrap();
+            } else {
+                world
+                    .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut Plain(&mut hull))
+                    .unwrap();
+            }
+            world
+        };
+        let (mut listed, mut every) = (body(true), body(false));
+        assert_eq!(listed.state_hash(), every.state_hash());
+        for _ in 0..30 {
+            listed.step();
+            every.step();
+        }
+        assert_eq!(listed.state_hash(), every.state_hash());
     }
 
     #[test]

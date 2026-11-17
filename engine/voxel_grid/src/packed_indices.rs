@@ -58,6 +58,11 @@ impl PackedIndices {
         self.words.iter().all(|&word| word == pattern)
     }
 
+    /// A word whose every slot holds `value`.
+    pub(crate) fn repeated(&self, value: usize) -> u64 {
+        value as u64 * (u64::MAX / self.mask())
+    }
+
     pub(crate) fn words(&self) -> &[u64] {
         &self.words
     }
