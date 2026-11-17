@@ -18,6 +18,7 @@ mod shape;
 mod shared;
 #[cfg(feature = "test-support")]
 pub mod snapshot;
+mod surface;
 mod table;
 mod transparency;
 
@@ -31,6 +32,7 @@ pub use property::{
 };
 pub use shape::{FaceConnections, SUBDIVISIONS, Shape, ShapeBox, SubRect, face_axes};
 pub use shared::{PropertiesChanged, SharedBlockTable};
+pub use surface::{PicturePlace, SurfaceHit};
 pub use table::{
     BlockTable, FacePicture, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement,
 };

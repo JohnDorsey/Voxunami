@@ -780,6 +780,23 @@ impl BlockTable {
             .chain(self.picture_palette.iter().map(|(_, word)| *word))
             .collect()
     }
+
+    /// The picture on a face of a voxel (`face` is of the grid the voxel is in; the picture is turned with the voxel's `orientation`): the one the renderer draws there, or
+    /// `None` for a face that is a flat colour. It is what [`BlockTable::palette_pictures`] has at [`BlockTable::material_of_face`], without making the list.
+    pub fn face_picture(
+        &self,
+        block: u32,
+        state: u32,
+        orientation: u32,
+        face: FaceDirection,
+    ) -> Option<FacePicture> {
+        let material = self.material_of_face(block, state, orientation, face) as usize;
+        let first_picture = self.entries.len() + self.state_palette.len();
+        let (_, word) = self
+            .picture_palette
+            .get(material.checked_sub(first_picture)?)?;
+        FacePicture::from_word(*word)
+    }
 }
 
 /// Where the column of a property is, if the schema declares it.
@@ -1558,6 +1575,27 @@ mod tests {
                 },
                 "{face:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_picture_of_a_face_is_the_one_the_palette_has_for_it_in_every_orientation_and_none_where_there_is_a_colour()
+     {
+        // (A block with colours for its states puts entries between the blocks' and the pictures': the pictures are found after them.)
+        let flat =
+            BlockDefinition::cube([0.25; 3]).with_state_colors(vec![[0.1; 3], [0.2; 3], [0.3; 3]]);
+        let table = BlockTable::from_definitions(&[Some(&pictured()), Some(&flat)]);
+        for orientation in 0..ORIENTATION_COUNT as u32 {
+            for face in FaceDirection::ALL {
+                assert_eq!(
+                    table.face_picture(0, 0, orientation, face),
+                    Some(picture_on(&table, 0, orientation, face)),
+                    "orientation {orientation}, {face:?}"
+                );
+                assert_eq!(table.face_picture(1, 0, orientation, face), None);
+                // A block the table does not know is drawn as a flat colour too.
+                assert_eq!(table.face_picture(77, 0, orientation, face), None);
+            }
         }
     }
 

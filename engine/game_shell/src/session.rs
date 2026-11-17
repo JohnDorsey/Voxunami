@@ -27,8 +27,10 @@ use winit::keyboard::KeyCode;
 use world_view::{
     GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange, OccupancyStatistics,
     RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, WorldMesher,
-    cast_ray,
 };
+
+mod surface;
+pub use surface::{PictureTarget, SurfaceTarget, VoxelContent};
 
 use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
@@ -1170,41 +1172,6 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 .send_game_message(PoseReport::kind(), PoseReport(pose).encode());
             self.last_pose_sent = Some(pose);
         }
-    }
-
-    /// The solid voxel under the crosshair, within the game's reach: of the terrain of the level, or of a ship, whichever the ray
-    /// reaches first. A ship is aimed at by turning the ray into the ship's own coordinates.
-    pub fn target(&self) -> Option<RayHit> {
-        let forward = self.camera.forward().to_array().map(f64::from);
-        let terrain = cast_ray(
-            GridId::root(self.level()),
-            self.camera.position,
-            forward,
-            G::reach(),
-            |voxel| self.mesher().is_solid_at(voxel),
-        );
-        let level = self.level();
-        let ships = self
-            .client
-            .world()
-            .grids()
-            .iter()
-            .filter(|(_, ship)| ship.level == level)
-            .filter_map(|(id, ship)| {
-                let start = ship.pose.world_to_local(self.camera.position)?;
-                let direction = ship.pose.direction_to_local(forward);
-                cast_ray(id, start, direction, G::reach(), |voxel| {
-                    match self.planets.get(&id) {
-                        // A planet is what its generator makes where the server has not stored a brick, which the mesher around the camera has.
-                        Some(planet) => planet.is_solid_at(voxel),
-                        None => Some(self.ship_voxel_is_solid(&ship.voxels, voxel)),
-                    }
-                })
-            });
-        terrain
-            .into_iter()
-            .chain(ships)
-            .min_by(|first, second| first.distance.total_cmp(&second.distance))
     }
 
     /// Whether a voxel of a ship holds anything that fills any part of it. What was not sent is empty.

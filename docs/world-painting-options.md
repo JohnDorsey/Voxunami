@@ -1,6 +1,6 @@
 # Painting on a block in the game: options for VirtualAtlas and the game
 
-**A proposal; nothing here is built.** Written 2026-11-15 on the branch `graphics-world-painting`. The owner asked to plan and explore, not to build. Claims are marked: **[read]** I read it in the code or a document, **[believed]** my reasoning, not run, **[not checked]** a question I did not look into.
+**A proposal; of its steps, 1 (the picture override) and 2 (the CPU surface hit and its mapping, with the oracle) are built; see "Built so far" at the end.** Written 2026-11-15 on the branch `graphics-world-painting`. The owner asked to plan and explore, not to build. Claims are marked: **[read]** I read it in the code or a document, **[believed]** my reasoning, not run, **[measured]** run, **[not checked]** a question I did not look into.
 
 ## The goal, in the owner's terms
 
@@ -120,3 +120,17 @@ The owner does not need this soon (2026-11-15). The painting tool's own steps ar
 1. One window for the game and one for VA (A1), or VA owning the window (A3/A4) from the start?
 2. Edits live in the client only (C2), so on a joined server only the painter sees them; a change becomes everyone's only when its PNG reaches the pack. Is that right?
 3. Should the first version paint the companions (`_n` height, `_s`) too, or only the colour picture?
+
+## Built so far (2026-11-16/17)
+
+**Step 1, the picture override**: built as step 3 of `hot-reload-plan.md` (`VoxelRenderer::set_picture`, `--texture-pack`).
+
+**Step 2, the CPU surface hit and its mapping, with the oracle (P1 + P3).** Built, tested, not yet used by any plugin. [run: every claim below]
+
+- `block_models`: `Shape::first_surface(origin, direction, longest) -> Option<SurfaceHit { face, distance, point }>` walks the 8 by 8 by 8 sub-cells of a voxel and stops at the first filled one it enters (a ray over a bottom slab goes on; a stair's riser is met inside the voxel). Plain `f64`, no graphics card, so a server can use it (the tractor beam). `BlockTable::face_picture(block, state, orientation, face)` is the picture the renderer draws there. `FacePicture::place_of(point) -> PicturePlace { across, down }` (shares of the picture from the left and the top) and `PicturePlace::pixel(size)` map a point on a face to a pixel.
+- `world_view`: `cast_surface(grid, start, direction, range, shape_of)` is `cast_ray` for partial blocks. Both now run on one `VoxelWalk`, so they cannot drift apart (the old `cast_ray` tests pass unchanged).
+- `game_shell`: `Session::target_surface() -> Option<SurfaceTarget { hit, content (block, state, orientation), picture: Option<{ picture, place }> }>` over terrain, planets and ships. `Session::target` and `target_surface` share one `aimed_grids` (moved to `session/surface.rs`; the tests that use `target` pass unchanged).
+- **The oracle (P3), on the GPU** (`renderer/tests/gpu_rendering/picture_places.rs`, run on both adapters of the dev machine, RTX 3090 and AMD integrated): a picture whose 64 pixels each have a colour of their own, shining by itself (so no light changes a colour), is put on all six faces of a block in all 24 orientations; where the card is aimed (at the middle of an eighth of a face, from a slant) the pixel it draws is the pixel `place_of` names, 1,152 probes a run. What a colour is is read off the screen (a head-on view of the unturned +z face, where red grows to the right and green downward), not from the code under test.
+- **Mutation:** 17 deliberate breaks (the row, the negative way, across read as up, the face hit, the range, the point put on its plane, the order of the walk, a start inside counted, the far edge, a far voxel's start, the range of the surface walk, a hit with no ray, the picture list start, a ship's ray not turned, the farthest surface winning, orientation read as none for terrain and for a ship), each caught. The first run left four alive (the three place mutants were caught by the unit tests before the GPU test ran, so its bite was not shown until it was run first; the farthest-surface and both orientation mutants had no test; the picture-list start needed a block with state colours); tests were added and all are caught.
+
+**What it does not do (yet):** (1) it does not look at a pixel's alpha, so the ray stops at a leaf's clear pixel where the eye sees through it (it needs the picture's pixels on the CPU: the client has them in the package); (2) a ray that starts inside a partial voxel ignores that voxel, as `cast_ray` does; (3) with a relief (prisms, parallax) the answer is the true surface's pixel, a pixel or two off the eye's at a slant (P2 `relief flat` removes it); (4) the surface hit is on `Session`; the client plugin's context (`ClientContext`) does not give it yet, which is step 3 (the bridge); (5) nothing measures its cost: it is one ray a call.

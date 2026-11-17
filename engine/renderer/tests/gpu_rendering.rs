@@ -52,6 +52,8 @@ mod occlusion;
 mod pack_settings;
 #[path = "gpu_rendering/parallax_occlusion.rs"]
 mod parallax_occlusion;
+#[path = "gpu_rendering/picture_places.rs"]
+mod picture_places;
 #[path = "gpu_rendering/picture_writes.rs"]
 mod picture_writes;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
