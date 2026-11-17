@@ -5,6 +5,7 @@ use block_models::{BlockTable, PropertyHandle};
 use namespaced_id::NamespacedId;
 use physics::{
     BodyColliders, BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments,
+    bricks_whose_colliders_read,
 };
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
 use server::{MergePlan, ServerWorld, SplitPart};
@@ -661,14 +662,18 @@ impl Bodies {
             .map(|(key, _)| *key)
     }
 
+    /// Notes that a voxel changed. The colliders of its brick are made again, and so are those of the brick across each face of it that the voxel is on (they are made
+    /// from the voxels across that face: a box with nothing open touching it has none, and one beside solid terrain reaches into it).
     fn changed(&mut self, grid: GridId, voxel: VoxelCoordinate) {
-        let brick = voxel.split().0;
+        let bricks = bricks_whose_colliders_read(voxel);
         match grid.root_level() {
             Some(level) => {
-                self.changed_terrain_bricks.insert((level, brick));
+                self.changed_terrain_bricks
+                    .extend(bricks.into_iter().map(|brick| (level, brick)));
             }
             None => {
-                self.changed_ship_bricks.insert((grid, brick));
+                self.changed_ship_bricks
+                    .extend(bricks.into_iter().map(|brick| (grid, brick)));
                 self.changed_ship_voxels
                     .entry(grid)
                     .or_default()

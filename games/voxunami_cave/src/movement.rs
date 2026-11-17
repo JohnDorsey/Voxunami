@@ -444,9 +444,14 @@ impl Movement {
             .map(|player| player.body.eye_position())
     }
 
-    /// Tells the bodies that the blocks in a brick of a grid (a level's root grid or a ship) changed.
-    pub fn brick_changed(&mut self, grid: GridId, brick: BrickCoordinate) {
-        self.changed.insert((grid, brick));
+    /// Tells the bodies that the block in a voxel of a grid (a level's root grid or a ship) changed: the colliders of its brick are made again, and so are those of
+    /// the brick across each face of it that the voxel is on (they are made from the voxels across that face).
+    pub fn voxel_changed(&mut self, grid: GridId, voxel: voxel_space::VoxelCoordinate) {
+        self.changed.extend(
+            physics::bricks_whose_colliders_read(voxel)
+                .into_iter()
+                .map(|brick| (grid, brick)),
+        );
     }
 
     /// One tick: every body takes its steps, in the order of the players' ids, in the frame the player's record says they are in now

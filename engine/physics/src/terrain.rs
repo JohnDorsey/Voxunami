@@ -44,6 +44,28 @@ const EDGE: usize = BRICK_EDGE_LENGTH;
 /// sides of the seam.
 const SEAM_OVERLAP: Real = 0.05;
 
+/// The bricks whose colliders are made from a voxel, and so are made again when it changes: its own, and the one across each face of its brick that the voxel is
+/// on. A brick's colliders leave out the boxes that are buried in solid terrain, and reach into a brick that is solid beside them, and both are found by looking at
+/// the voxels just across the face of the brick, which are in the brick beside it.
+pub fn bricks_whose_colliders_read(voxel: VoxelCoordinate) -> Vec<BrickCoordinate> {
+    let (brick, _) = voxel.split();
+    let edge = EDGE as i128;
+    let place = [voxel.x(), voxel.y(), voxel.z()];
+    let mut bricks = vec![brick];
+    for face in FaceDirection::ALL {
+        let along = place[face.axis()].rem_euclid(edge);
+        let on_the_face = if face.is_positive() {
+            along == edge - 1
+        } else {
+            along == 0
+        };
+        if on_the_face && let Some(beside) = brick.neighbour(face) {
+            bricks.push(beside);
+        }
+    }
+    bricks
+}
+
 /// The colliders of one brick of terrain, in a frame whose origin is the corner of `origin`.
 pub(crate) struct BrickColliders {
     /// Every box of the brick, as one compound.
