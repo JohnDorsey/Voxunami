@@ -12,6 +12,7 @@ test-support = []
 
 [dependencies]
 binary_codec.workspace = true
+coarse_cells.workspace = true
 content_registry.workspace = true
 entities.workspace = true
 libm = "0.2"

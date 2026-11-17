@@ -7,12 +7,14 @@
 //! Which nodes of a grid to draw for a viewer, finer near and coarser far, is [`select_nodes`].
 //!
 //! Cells are made from stored voxels by `voxel_meshing` (which knows what a face is) and from a density field by `terrain` (which knows what the
-//! ground is). They are for drawing only: nothing in the simulation reads them, and they are never saved.
+//! ground is). They are for drawing only: nothing in the simulation reads them. The nodes of a ship that nothing can generate are kept in a file of their own
+//! beside the ship's (`world_storage::far_nodes`), written with [`node_codec`] and the names of the blocks, never their numbers.
 
 mod cell;
 mod edited;
 mod fine_region;
 mod node;
+pub mod node_codec;
 mod selection;
 mod swap;
 

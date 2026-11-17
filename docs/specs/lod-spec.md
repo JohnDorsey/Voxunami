@@ -123,7 +123,7 @@ with a small cap has very many nodes; the cap is the owner's to set, and a plane
   for the moment between the edit and the message.
 - **Ships**: nothing generates them, so the server sends the nodes (computed exactly from the ship's bricks). Small ships, wholly within full-detail
   range, send nothing new. A ship with a generator is a later case (planets, 3.8).
-- **Never saved**, rebuilt as needed (owner's decision 16).
+- **Never saved**, rebuilt as needed (owner's decision 16), **except the nodes of a ship that no generator makes**: those are kept in a file beside the ship's (`far-nodes-spec.md` section 8, `world_storage::far_nodes`; the owner agreed 2026-11-17).
 
 ### 3.5 Protocol (as built in 38i: no version bump; version 7 is the orientation change in 38a)
 

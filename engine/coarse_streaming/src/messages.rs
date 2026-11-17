@@ -6,7 +6,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use coarse_cells::{
-    CELLS_PER_NODE, CoarseCell, CoarseNode, DetailSettings, MAXIMUM_DETAIL_LEVEL, Zoom,
+    CELLS_PER_NODE, CoarseCell, CoarseNode, DetailSettings, MAXIMUM_DETAIL_LEVEL, Zoom, node_codec,
 };
 use namespaced_id::NamespacedId;
 use protocol::{Message, read_brick_coordinate, write_brick_coordinate};
@@ -223,8 +223,6 @@ pub struct CoarseNodes(pub Vec<CoarseNodeUpdate>);
 pub const MAXIMUM_UPDATES: usize = 256;
 
 const NO_NODE: u8 = 0;
-const UNIFORM: u8 = 1;
-const RUNS: u8 = 2;
 
 fn write_cell(writer: &mut ByteWriter, cell: CoarseCell) {
     writer.write_varint(u64::from(cell.block));
@@ -243,54 +241,21 @@ fn read_cell(reader: &mut ByteReader<'_>) -> Result<CoarseCell, DecodeError> {
     })
 }
 
-/// The bytes of a node: one cell if they are all the same, else runs of equal cells (a length, then the cell), whose lengths add up to the whole node.
+/// The bytes of a node, whose cells are written without their exposure (so that two cells that differ only in it are one run).
 fn write_node(writer: &mut ByteWriter, node: &CoarseNode) {
-    if let Some(cell) = node.uniform_cell() {
-        writer.write_u8(UNIFORM);
-        write_cell(writer, cell);
-        return;
-    }
-    let mut runs: Vec<(u64, CoarseCell)> = Vec::new();
-    for cell in node.cells() {
-        let cell = CoarseCell {
+    node_codec::write_node(
+        writer,
+        node,
+        |cell| CoarseCell {
             exposure: 0,
             ..cell
-        };
-        match runs.last_mut() {
-            Some((length, last)) if *last == cell => *length += 1,
-            _ => runs.push((1, cell)),
-        }
-    }
-    writer.write_u8(RUNS);
-    writer.write_varint(runs.len() as u64);
-    for (length, cell) in runs {
-        writer.write_varint(length);
-        write_cell(writer, cell);
-    }
+        },
+        write_cell,
+    );
 }
 
 fn read_node(reader: &mut ByteReader<'_>, tag: u8) -> Result<CoarseNode, DecodeError> {
-    match tag {
-        UNIFORM => Ok(CoarseNode::uniform(read_cell(reader)?)),
-        RUNS => {
-            // A run is a length of at least one byte and a cell of at least three.
-            let count = reader.read_count(4)?;
-            let mut cells = Vec::with_capacity(CELLS_PER_NODE);
-            for _ in 0..count {
-                let length = reader.read_varint()?;
-                let cell = read_cell(reader)?;
-                if length == 0 || length > (CELLS_PER_NODE - cells.len()) as u64 {
-                    return Err(DecodeError::Invalid("a run of cells is empty or too long"));
-                }
-                cells.extend(std::iter::repeat_n(cell, length as usize));
-            }
-            if cells.len() != CELLS_PER_NODE {
-                return Err(DecodeError::Invalid("the runs of a node do not fill it"));
-            }
-            Ok(CoarseNode::from_cells(cells))
-        }
-        _ => Err(DecodeError::Invalid("a node has an unknown form")),
-    }
+    node_codec::read_node(reader, tag, read_cell)
 }
 
 impl Message for CoarseNodes {
@@ -581,7 +546,7 @@ mod tests {
         let runs = |lengths: &[u64]| {
             build(&|w| {
                 cube(w, 0, 2);
-                w.write_u8(RUNS);
+                w.write_u8(node_codec::RUNS);
                 w.write_varint(lengths.len() as u64);
                 for &length in lengths {
                     w.write_varint(length);
