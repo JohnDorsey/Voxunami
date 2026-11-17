@@ -9,8 +9,10 @@
 //!
 //! Each scene has the wanderer (`common::moving_planet`: ground 10,000 voxels from its middle, hills 20 high, a pull of 8 at its surface) on a rail round the home planet that
 //! stands still (a period of 10^15 seconds), goes round at 125.7 voxels a second (the usual), or at 1,257. The same ship is made in each, at the same place from the planet and
-//! going the same way against the ground, and what each tick cost is asked of all three: **the same bricks and the same steps, tick for tick.** (The ship is a free ship that
-//! the planet carries; a group with a frame of its own over the ground of such a planet needs the world not to carry it, and has a scene here when it can be there.)
+//! going the same way against the ground, and what each tick cost is asked of all three: **the same bricks, the same steps and the same frames of groups, tick for tick.** A ship
+//! is a free ship that the planet carries (it is in the frame of the planet); **a chain of three cars coupled by joints is a group that is alone, with a frame of its own in free
+//! fall, and the planet carries it as well** (2026-11-16): its frame goes with the planet's displacement and with its own motion, once each, and the ground comes at it at the speed
+//! they close at, which is the group's own and not a difference of two speeds of the world.
 //!
 //! **What is not compared, and why.** The two ticks in which a scene makes its ship (`raft_over` makes it in one tick, at the place the planet was, and puts it in the next, where
 //! the planet is: a planet that goes 63 voxels a tick has gone) are not counted: the plugin sees the ship in the wrong place for a tick, and makes bricks there, in each world a
@@ -22,9 +24,11 @@
 
 mod common;
 
+use common::chains::chain_over;
 use common::moving_planet::{WANDERER, orbit_with_period, reporting_scene_with, wanderer_pack};
 use common::{Scene, minus, raft_over, ship_over, ship_voxels, top_of_the_ground};
 use grid_bodies::BodiesReport;
+use voxel_space::GridId;
 
 /// The periods of the wanderer's rail, in seconds, and what each is: standing still, 125.7 voxels a second, 1,257.
 const PERIODS: [(&str, f64); 3] = [
@@ -36,8 +40,8 @@ const PERIODS: [(&str, f64); 3] = [
 /// How far two worlds may put the ship apart at the end (see the head of the file): half a voxel.
 const ABOUT_THE_SAME: f64 = 0.5;
 
-/// What a tick cost: the bricks of terrain that got colliders in it, and the solver steps it was cut into.
-type Cost = (u64, u64);
+/// What a tick cost: the bricks of terrain that got colliders in it, the solver steps it was cut into, and the frames of groups that were alone and had one of their own.
+type Cost = (u64, u64, u64);
 
 struct Wanderer {
     scene: Scene,
@@ -77,6 +81,7 @@ impl Wanderer {
                 (
                     report.terrain_bricks_made_last_tick,
                     report.solver_steps_last_tick,
+                    report.group_frames,
                 )
             })
             .collect()
@@ -129,7 +134,7 @@ fn the_same_in_all<'a>(outcomes: &'a [(&'static str, Outcome)]) -> &'a Outcome {
         assert_eq!(
             outcome.costs,
             reference.costs,
-            "the cost of each tick (bricks of the ground made, solver steps), {name}, is not what it was {still}, from tick {first_apart:?} on: {} bricks and {} steps in all, against {} and {}",
+            "the cost of each tick (bricks of the ground made, solver steps, group frames), {name}, is not what it was {still}, from tick {first_apart:?} on: {} bricks and {} steps in all, against {} and {}",
             bricks_in_all(outcome),
             steps_in_all(outcome),
             bricks_in_all(reference),
@@ -240,5 +245,76 @@ fn a_big_ship_at_rest_on_the_ground_costs_the_same_whatever_the_planet_does() {
         first.height > 0.0 && first.height < 12.0,
         "the ship is {} voxels over the ground",
         first.height
+    );
+}
+
+/// A chain of three cars made `up` voxels over the ground, going `against` it as said; the first car is the one that is watched, for `ticks` ticks.
+fn a_chain_over_the_ground(
+    up: f64,
+    against: [f64; 3],
+    ticks: usize,
+) -> impl Fn(&mut Wanderer) -> Outcome {
+    move |world| {
+        let cars = chain_over(
+            &mut world.scene,
+            WANDERER,
+            [0.0, world.surface + up, 0.0],
+            against,
+        );
+        // (`watch` takes the number a test gives a ship, which `ship_id` turns into the grid's id.)
+        world.watch(cars[0].get() - GridId::FIRST_ALLOCATED, ticks)
+    }
+}
+
+/// The ticks in which a group had a frame of its own.
+fn ticks_in_a_frame_of_its_own(outcome: &Outcome) -> usize {
+    outcome.costs.iter().filter(|cost| cost.2 > 0).count()
+}
+
+#[test]
+fn a_chain_that_hangs_over_the_ground_in_a_frame_of_its_own_costs_the_same_whatever_the_planet_does()
+ {
+    // 1,200 voxels over the ground at rest against it, for 60 ticks (three seconds: it falls 36 voxels at 8 a second a second): the ground is in the chain's frame as a body that
+    // comes at it, at the speed they close at (0 and growing), and the planet's own speed is in none of it. (It has to be over the reach of the ground, 10,880 voxels from the middle
+    // of the wanderer, and the room the world keeps for it, to be alone and have a frame of its own at all: nearer than that a chain is in the frame of the planet. 1,200 over the
+    // top of the ground is 11,208 from the middle.)
+    let outcomes = in_the_three_worlds(a_chain_over_the_ground(1_200.0, [0.0; 3], 60));
+    let first = the_same_in_all(&outcomes);
+    assert!(
+        ticks_in_a_frame_of_its_own(first) > 40,
+        "(the chain had a frame of its own in {} of 60 ticks)",
+        ticks_in_a_frame_of_its_own(first)
+    );
+    assert!(
+        first.height > 1_100.0 && first.height < 1_200.0,
+        "(it fell and is {} voxels over the ground)",
+        first.height
+    );
+    // It falls straight down to the ground it is over: the pull that moves a frame of its own whose group a planet carries is the free fall of the planet (everything's but what
+    // the planet goes round: the home planet, which pulls the wanderer along its rail and the chain with it). Pulled by that too, it would be left behind by 0.21 voxels a second
+    // a second, about a voxel in three seconds.
+    assert!(
+        first.along.abs() < 0.3,
+        "(it went {} voxels along the ground while it fell)",
+        first.along
+    );
+}
+
+#[test]
+fn a_chain_that_comes_down_to_the_ground_fast_costs_the_same_whatever_the_planet_does() {
+    // 1,500 voxels over the ground going down at 300 against it (a chain that goes down at 300 from 1,200 is already in the way of the ground, and has no frame of its own to
+    // begin with): it has its frame of its own while it comes down, with the ground coming at it at 300 and more, and leaves it when it touches the ground (it is then in the frame of
+    // the planet, which carries it).
+    let outcomes = in_the_three_worlds(a_chain_over_the_ground(1_500.0, [0.0, -300.0, 0.0], 110));
+    let first = the_same_in_all(&outcomes);
+    assert!(
+        ticks_in_a_frame_of_its_own(first) > 10,
+        "(the chain had a frame of its own in {} ticks)",
+        ticks_in_a_frame_of_its_own(first)
+    );
+    assert!(
+        first.lowest > -5.0 && first.lowest < 5.0,
+        "the first car was {} voxels over the ground at the lowest: it came down to it and did not go through",
+        first.lowest
     );
 }

@@ -278,7 +278,8 @@ struct Frame {
 /// the same: no pull, no planets, no terrain, nothing else. The bodies hold the centre of mass of the group at the frame's point (see `Bodies::hold_groups_at_their_points`).
 /// For the centre of mass of a group that is **off a rail and alone** (`ServerWorld::group_is_alone`): the same frame, but the point is nobody's rail: it is the group's own, and
 /// the frame is in free fall, so the bodies carry it on from tick to tick (the pull of the world at the point and whatever the group does as a whole, a thrust or a push, are
-/// taken from the bodies' step into the follow and the group put back at the point: see [`Follow::advance`]).
+/// taken from the bodies' step into the follow and the group put back at the point: see [`Follow::advance`]). **A planet on a rail may carry such a group** (the world moves it by the
+/// planet's displacement every tick, whole, by its anchor): the follow then has a [`Carrying`], and the frame goes by the planet's displacement and by its own motion, once each.
 #[derive(Clone, Copy, Debug)]
 struct Follow {
     followed: Followed,
@@ -288,6 +289,35 @@ struct Follow {
     shift: Displacement,
     /// How fast it goes in the world, as of this tick.
     velocity: [f64; 3],
+    /// The planet that carries the group of a frame that moves itself, while the world does (see [`Carrying`]); always `None` for any other frame.
+    carrying: Option<Carrying>,
+}
+
+/// What the world says of a planet on a rail that carries a group, as of this tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CarrierNow {
+    planet: GridId,
+    position: WorldPosition,
+    velocity: [f64; 3],
+}
+
+/// A frame that moves itself (a group that is alone) **while a planet on a rail carries the group** (2026-11-16, the owner: "continue carrying everything with the planet, leaving
+/// more physics frames centred on ships or groups that basically don't know they're moving through space"). The world moves the group by the planet's displacement every tick
+/// (`ServerWorld::apply_rails`, whole, by its anchor) and the frame is the group's all the same: it has its own motion and the planet's displacement, and is moved by the two
+/// **once each**. So the frame's own numbers are the group's against the planet (the speed it goes against it, the pull that is left when the planet's own fall is taken out: the
+/// free fall of the planet, as in the frame of a planet), and the planet's speed is in none of them: **the ground comes at the group at the speed they close at, exactly** (`-velocity_against`
+/// and not the difference of two speeds of the world, which is rounded at the size of the larger).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Carrying {
+    planet: GridId,
+    /// Where the planet was when the frame began to go with it: the planet's displacement since is `planet_at_the_start.displacement_to(now)`.
+    planet_at_the_start: WorldPosition,
+    /// The frame's shift without the planet's displacement since `planet_at_the_start`: where the group went by its own motion (and by whatever carried it before).
+    own_shift: Displacement,
+    /// How fast the group goes against the planet, as of this tick.
+    velocity_against: [f64; 3],
+    /// How fast the planet goes in the world, as of this tick.
+    planet_velocity: [f64; 3],
 }
 
 /// The point a frame goes with, and what the world says of it. Everything that is particular to what is followed is here (which ships belong in the frame, where the point is
@@ -307,7 +337,9 @@ enum Followed {
     /// The centre of mass of a group of ships coupled by their joint ends that is off a rail and alone, named by its anchor, the ship of it with the lowest number. As a
     /// [`Followed::RailGroup`] frame it has nothing in it but the group and nothing pulls on the bodies in it; unlike it, no rail holds the point: the follow is moved by the
     /// bodies each tick from what the world's pull is at the point and from what the group did as a whole (see [`Follow::advance`]), and the world does not move the group but the
-    /// frame does. The frame is made where the group is, so its numbers are the group's own, small and relative, however far it goes and however fast.
+    /// frame does, **except for what a planet on a rail carries it by while one does: the world moves it by the planet's displacement and the frame by its own motion** (see
+    /// [`Carrying`]). The frame is made where the group is, so its numbers are the group's own, small and relative, however far it goes and however fast, and while a planet carries it
+    /// they are against the planet.
     Group(GridId),
 }
 
@@ -366,16 +398,22 @@ impl Followed {
         ship: &MovingGrid,
         alone: &BTreeSet<GridId>,
     ) -> Option<Self> {
-        if let Some(planet) = world.carrier_of(id) {
-            return Some(Self::Planet(planet));
-        }
         if world.data().grids().has_partners(id) {
             if let Some(group) = world.rail_group_of(id) {
                 return Some(Self::RailGroup(group.anchor));
             }
-            // (A group off a rail that is alone, `Bodies::alone_groups`: the ship of it with the lowest number speaks for it.)
+            // (A group off a rail that is alone, `Bodies::alone_groups`: the ship of it with the lowest number speaks for it. **Whether a planet carries it is not asked**: the world
+            // carries it and its frame goes with the planet's displacement as well as its own motion, see [`Carrying`].)
             let anchor = *world.data().grids().group_of(id).first()?;
-            return alone.contains(&anchor).then_some(Self::Group(anchor));
+            if alone.contains(&anchor) {
+                return Some(Self::Group(anchor));
+            }
+        }
+        if let Some(planet) = world.carrier_of(id) {
+            return Some(Self::Planet(planet));
+        }
+        if world.data().grids().has_partners(id) {
+            return None;
         }
         let turns_on_a_rail = !ship.held
             && !ship.frozen
@@ -389,16 +427,27 @@ impl Follow {
     /// A frame made now for the point `followed`; `None` if the world has nothing of it.
     fn begin(followed: Followed, world: &ServerWorld) -> Option<Follow> {
         let (anchor, velocity) = followed.state(world)?;
-        Some(Follow {
+        let mut follow = Follow {
             followed,
             anchor,
             shift: Displacement::NONE,
             velocity,
-        })
+            carrying: None,
+        };
+        if let Followed::Group(group) = followed {
+            follow.follow_the_carrier(carrier_now(world, group), || Some((anchor, velocity)));
+        }
+        Some(follow)
     }
 
-    /// Where the point has gone since the frame was made, and how fast it goes, as of this tick (both stay as they were if the world has nothing of it).
+    /// Where the point has gone since the frame was made, and how fast it goes, as of this tick (both stay as they were if the world has nothing of it). A frame that moves itself
+    /// is moved by the bodies, and by the planet that carries its group while one does (see [`Carrying`]).
     fn update(&mut self, world: &ServerWorld) {
+        if let Followed::Group(group) = self.followed {
+            let followed = self.followed;
+            self.follow_the_carrier(carrier_now(world, group), || followed.state(world));
+            return;
+        }
         if self.followed.moves_itself() {
             return;
         }
@@ -406,6 +455,63 @@ impl Follow {
             self.shift = self.anchor.displacement_to(position);
             self.velocity = velocity;
         }
+    }
+
+    /// Takes the planet that carries the group of a frame that moves itself into the frame, as of this tick (`group` says where the world has the group and how fast it goes, and
+    /// is asked only when the carrying begins or changes hands).
+    /// * **A planet that carries it as it did**: the frame's shift is where the group went by its own motion and the planet's displacement since the carrying began (the planet's
+    ///   place now, not a sum of ticks: the rounding of an hour of ticks does not add up), and the frame goes at the planet's speed and the group's against it. Asking again in the
+    ///   same tick changes nothing.
+    /// * **A planet that begins to carry it** (or a second planet that takes over from the first): the world has just moved the group by the planet's displacement of this tick, so
+    ///   the frame's shift is taken from where the world has the group, and the speed against the planet is the group's less the planet's.
+    /// * **No planet any more**: the shift and the speed stay as they are (they are the world's, and the frame goes on with them).
+    fn follow_the_carrier(
+        &mut self,
+        carrier: Option<CarrierNow>,
+        group: impl FnOnce() -> Option<(WorldPosition, [f64; 3])>,
+    ) {
+        match (self.carrying, carrier) {
+            (None, None) => {}
+            (Some(_), None) => self.carrying = None,
+            (Some(carrying), Some(now)) if carrying.planet == now.planet => {
+                self.shift = plus(
+                    carrying.own_shift,
+                    carrying.planet_at_the_start.displacement_to(now.position),
+                );
+                self.velocity =
+                    [0, 1, 2].map(|axis| now.velocity[axis] + carrying.velocity_against[axis]);
+                self.carrying = Some(Carrying {
+                    planet_velocity: now.velocity,
+                    ..carrying
+                });
+            }
+            (_, Some(now)) => {
+                let Some((point, velocity)) = group() else {
+                    return;
+                };
+                self.shift = self.anchor.displacement_to(point);
+                self.velocity = velocity;
+                self.carrying = Some(Carrying {
+                    planet: now.planet,
+                    planet_at_the_start: now.position,
+                    own_shift: self.shift,
+                    velocity_against: [0, 1, 2].map(|axis| velocity[axis] - now.velocity[axis]),
+                    planet_velocity: now.velocity,
+                });
+            }
+        }
+    }
+
+    /// How fast the frame goes for the frame's own motion: against the planet that carries its group, or in the world.
+    fn own_velocity(&self) -> [f64; 3] {
+        self.carrying
+            .map_or(self.velocity, |carrying| carrying.velocity_against)
+    }
+
+    /// The pull that moves the point of a frame that falls with its group, at a place of the world: the pull of everything there is, or **if a planet carries the group, the free
+    /// fall of the planet** (everything's but what the planet goes round), as in the frame of a planet, since the planet's own fall is the world's carrying of the group.
+    fn pull_at(&self, world: &ServerWorld, level: LevelIndex, there: WorldPosition) -> [f64; 3] {
+        pull_of_a_falling_frame(world, level, self.carrying.map(|c| c.planet), there)
     }
 
     /// Moves the follow of a frame that moves itself by a tick, after the bodies have stepped. The group was at rest at the point, and the frame went at `velocity`; in the step
@@ -428,15 +534,42 @@ impl Follow {
         }
         // (The last pull the world gave: the one at the start if it cannot hold the place at the end.)
         let last_pull = std::cell::Cell::new([0.0; 3]);
-        let (shift, velocity) =
-            advanced(self.shift, self.velocity, time_step, moved, sped, |shift| {
-                if let Some(point) = anchor.displaced(shift) {
+        let Some(carrying) = self.carrying else {
+            let (shift, velocity) =
+                advanced(self.shift, self.velocity, time_step, moved, sped, |shift| {
+                    if let Some(point) = anchor.displaced(shift) {
+                        last_pull.set(gravity_at(point));
+                    }
+                    last_pull.get()
+                });
+            self.shift = shift;
+            self.velocity = velocity;
+            return;
+        };
+        // A frame whose group a planet carries goes by its own motion and the planet's displacement is the world's, already in the shift of this tick: the own part moves, with the
+        // pull at the place the whole shift gives, and the whole is the own part and the planet's displacement as it was.
+        let planet_part = plus(self.shift, carrying.own_shift.negated());
+        let (own_shift, velocity_against) = advanced(
+            carrying.own_shift,
+            carrying.velocity_against,
+            time_step,
+            moved,
+            sped,
+            |own| {
+                if let Some(point) = anchor.displaced(plus(own, planet_part)) {
                     last_pull.set(gravity_at(point));
                 }
                 last_pull.get()
-            });
-        self.shift = shift;
-        self.velocity = velocity;
+            },
+        );
+        self.shift = plus(own_shift, planet_part);
+        self.velocity =
+            [0, 1, 2].map(|axis| carrying.planet_velocity[axis] + velocity_against[axis]);
+        self.carrying = Some(Carrying {
+            own_shift,
+            velocity_against,
+            ..carrying
+        });
     }
 
     fn local(&self, world: WorldPosition) -> Option<WorldPosition> {
@@ -458,11 +591,11 @@ impl Follow {
         if !self.followed.moves_itself() {
             return self.local(world);
         }
+        // (A group that a planet carries goes by its own motion in the tick: the planet's displacement is in the shift already.)
+        let own = self.own_velocity();
         let by = shifted_by(
             self.shift,
-            [0, 1, 2].map(|axis| {
-                self.velocity[axis] * time_step + 0.5 * pull[axis] * time_step * time_step
-            }),
+            [0, 1, 2].map(|axis| own[axis] * time_step + 0.5 * pull[axis] * time_step * time_step),
         );
         world.displaced(by.negated())
     }
@@ -505,6 +638,42 @@ fn velocity_from(follow: Option<Follow>, local: [f64; 3]) -> [f64; 3] {
         None => local,
         Some(follow) => [0, 1, 2].map(|axis| local[axis] + follow.velocity[axis]),
     }
+}
+
+/// What the world says of the planet on a rail that carries the group `group` as of this tick, if one does (`ServerWorld::carrier_of`).
+fn carrier_now(world: &ServerWorld, group: GridId) -> Option<CarrierNow> {
+    let planet = world.carrier_of(group)?;
+    let grid = world.data().grids().get(planet)?;
+    Some(CarrierNow {
+        planet,
+        position: grid.pose.position,
+        velocity: grid.linear_velocity,
+    })
+}
+
+/// The pull that moves a frame that falls with its group at a place of the world: everything's, or if a planet carries the group (`carrier`), the free fall of the planet.
+fn pull_of_a_falling_frame(
+    world: &ServerWorld,
+    level: LevelIndex,
+    carrier: Option<GridId>,
+    there: WorldPosition,
+) -> [f64; 3] {
+    match carrier {
+        Some(planet) => world.gravity_in_the_free_fall_of(planet, there),
+        None => world.gravity_at(level, there),
+    }
+}
+
+/// The sum of two displacements, as whole bricks and a rest in `[0, 32)` (see [`shifted_by`]).
+fn plus(first: Displacement, second: Displacement) -> Displacement {
+    let bricks = [0, 1, 2].map(|axis| first.bricks[axis] + second.bricks[axis]);
+    shifted_by(
+        Displacement {
+            bricks,
+            offset: [0.0; 3],
+        },
+        [0, 1, 2].map(|axis| first.offset[axis] + second.offset[axis]),
+    )
 }
 
 /// A displacement moved by `delta` voxels, kept as whole bricks and a rest in `[0, 32)`, so that it is exact however far a frame has gone (an offset that was added to for hours
@@ -622,12 +791,14 @@ fn state_before(state: BodyState, time_step: f64) -> BodyState {
 /// The state a planet's body is given before the step of a tick, from the pose and velocities the world has the planet at (the end of the tick): a planet that moves,
 /// set as it was at the start of the step (see [`state_before`]), and one that stands still, as it is. In the frame it is in: its place there, and its velocities
 /// against the frame; `pull` is the pull of the world at the point of a frame that moves itself (the planet comes at the group as the group falls in it). `None` where the world cannot give it a place there.
+/// **The planet that carries the group of the frame** (`Carrying`) comes at it at **exactly** the speed the group goes against it and the pull of the tick, not at the difference of
+/// two speeds of the world: it has the planet's speed in both, and the difference is rounded at the size of the planet's.
 fn planet_state(
     follow: Option<Follow>,
+    planet: GridId,
     moves: bool,
     pose: GridPose,
-    linear_velocity: [f64; 3],
-    angular_velocity: [f64; 3],
+    (linear_velocity, angular_velocity): ([f64; 3], [f64; 3]),
     time_step: f64,
     pull: [f64; 3],
 ) -> Option<BodyState> {
@@ -639,10 +810,14 @@ fn planet_state(
         orientation: pose.orientation,
         linear_velocity: match follow {
             None => linear_velocity,
-            Some(follow) => {
-                let frame = follow.velocity_at_the_end_of_the_tick(time_step, pull);
-                [0, 1, 2].map(|axis| linear_velocity[axis] - frame[axis])
-            }
+            Some(follow) => match follow.carrying.filter(|carrying| carrying.planet == planet) {
+                Some(carrying) => [0, 1, 2]
+                    .map(|axis| -(carrying.velocity_against[axis] + pull[axis] * time_step)),
+                None => {
+                    let frame = follow.velocity_at_the_end_of_the_tick(time_step, pull);
+                    [0, 1, 2].map(|axis| linear_velocity[axis] - frame[axis])
+                }
+            },
         },
         angular_velocity,
     };
@@ -1426,8 +1601,12 @@ impl Bodies {
             // (The pull at the point of a frame that falls: the planets come at what is in it as it falls.)
             let pull = follow
                 .filter(|follow| follow.followed.moves_itself())
-                .and_then(|follow| follow.world(follow.anchor))
-                .map_or([0.0; 3], |point| world.gravity_at(level, point));
+                .and_then(|follow| {
+                    follow
+                        .world(follow.anchor)
+                        .map(|point| follow.pull_at(world, level, point))
+                })
+                .unwrap_or([0.0; 3]);
             let gone: Vec<GridId> = frame
                 .planets
                 .keys()
@@ -1453,10 +1632,10 @@ impl Bodies {
                 };
                 let Some(state) = planet_state(
                     follow,
+                    id,
                     moves,
                     planet.pose,
-                    planet.linear_velocity,
-                    planet.angular_velocity,
+                    (planet.linear_velocity, planet.angular_velocity),
                     time_step,
                     pull,
                 ) else {
@@ -1876,8 +2055,9 @@ impl Bodies {
             if let Some(follow) = frame.follow.as_mut()
                 && follow.followed.moves_itself()
             {
+                let carrier = follow.carrying.map(|carrying| carrying.planet);
                 follow.advance(time_step, moved, sped, |point| {
-                    world.gravity_at(level, point)
+                    pull_of_a_falling_frame(world, level, carrier, point)
                 });
             }
         }
@@ -2576,6 +2756,7 @@ mod tests {
                 offset: shift_offset,
             },
             velocity,
+            carrying: None,
         }
     }
 
@@ -2749,6 +2930,7 @@ mod tests {
             anchor,
             shift: Displacement::NONE,
             velocity: [761.0, 0.0, 0.0],
+            carrying: None,
         };
         for tick in 1..=5 {
             let tick = f64::from(tick);
@@ -2786,14 +2968,32 @@ mod tests {
             turn_about([0.0, 1.0, 0.0], 0.3),
         );
         let (linear, angular) = ([0.0, 0.0, -100.0], [0.0, 2.0, 0.0]);
-        let standing = planet_state(None, false, pose, linear, angular, 0.05, [0.0; 3]).unwrap();
+        let standing = planet_state(
+            None,
+            GridId::new(9),
+            false,
+            pose,
+            (linear, angular),
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
         assert_eq!(standing.position, pose.position);
         assert_eq!(standing.orientation, pose.orientation);
         assert_eq!(
             (standing.linear_velocity, standing.angular_velocity),
             (linear, angular)
         );
-        let moving = planet_state(None, true, pose, linear, angular, 0.05, [0.0; 3]).unwrap();
+        let moving = planet_state(
+            None,
+            GridId::new(9),
+            true,
+            pose,
+            (linear, angular),
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
         // Five voxels back along its way (a twentieth of a second at a hundred), and a tenth of a radian back about its axis; with the velocities it has.
         let back = moving.position.displacement_to(pose.position).in_voxels();
         assert!(
@@ -2821,10 +3021,10 @@ mod tests {
         );
         let this = planet_state(
             Some(frame),
+            GridId::new(9),
             true,
             pose,
-            [100.0, 0.0, -50.0],
-            [0.0; 3],
+            ([100.0, 0.0, -50.0], [0.0; 3]),
             0.05,
             [0.0; 3],
         )
@@ -2836,8 +3036,16 @@ mod tests {
         );
         // Another planet that stands still in the world goes against the frame at minus the frame's velocity, (-100, 0, 50), and was a tick of that before: it is five
         // voxels along x and two and a half back along z of where it was put, so the place it was put is (-5, 0, 2.5) from it.
-        let other =
-            planet_state(Some(frame), true, pose, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).unwrap();
+        let other = planet_state(
+            Some(frame),
+            GridId::new(9),
+            true,
+            pose,
+            ([0.0; 3], [0.0; 3]),
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
         assert_eq!(other.linear_velocity, [-100.0, 0.0, 50.0]);
         let back = other.position.displacement_to(this.position).in_voxels();
         assert!(
@@ -2858,13 +3066,22 @@ mod tests {
             anchor,
             shift: Displacement::NONE,
             velocity: [0.0, -100.0, 0.0],
+            carrying: None,
         };
         let pose = GridPose::new(
             anchor.translated([0.0, -1_000.0, 0.0]),
             Orientation::IDENTITY,
         );
-        let state =
-            planet_state(Some(group), true, pose, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).unwrap();
+        let state = planet_state(
+            Some(group),
+            GridId::new(9),
+            true,
+            pose,
+            ([0.0; 3], [0.0; 3]),
+            0.05,
+            [0.0; 3],
+        )
+        .unwrap();
         assert_eq!(state.linear_velocity, [0.0, 100.0, 0.0]);
         let from_the_group = state.position.relative_to(anchor);
         assert!(
@@ -2881,10 +3098,10 @@ mod tests {
         };
         let state = planet_state(
             Some(carried),
+            GridId::new(9),
             true,
             pose,
-            [0.0; 3],
-            [0.0; 3],
+            ([0.0; 3], [0.0; 3]),
             0.05,
             [0.0; 3],
         )
@@ -2908,13 +3125,23 @@ mod tests {
             anchor,
             shift: Displacement::NONE,
             velocity: [0.0, -100.0, 0.0],
+            carrying: None,
         };
         let pose = GridPose::new(
             anchor.translated([0.0, -1_000.0, 0.0]),
             Orientation::IDENTITY,
         );
         let pull = [0.0, -10.0, 0.0];
-        let state = planet_state(Some(group), true, pose, [0.0; 3], [0.0; 3], 0.05, pull).unwrap();
+        let state = planet_state(
+            Some(group),
+            GridId::new(9),
+            true,
+            pose,
+            ([0.0; 3], [0.0; 3]),
+            0.05,
+            pull,
+        )
+        .unwrap();
         // It comes at the group at the speed the frame will have at the end of the tick (100.5), and ends the tick where the frame will be (994.9875 under it), so it was
         // put 1,000.0125 under it: a group that rests on it is then given the speed of the ground at the end of the tick, which is what the pull of the tick took from it.
         assert!((state.linear_velocity[1] - 100.5).abs() < 1e-9);
@@ -2928,13 +3155,22 @@ mod tests {
             followed: Followed::Planet(GridId::new(7)),
             ..group
         };
-        let with = planet_state(Some(carried), true, pose, [0.0; 3], [0.0; 3], 0.05, pull).unwrap();
-        let without = planet_state(
+        let with = planet_state(
             Some(carried),
+            GridId::new(9),
             true,
             pose,
-            [0.0; 3],
-            [0.0; 3],
+            ([0.0; 3], [0.0; 3]),
+            0.05,
+            pull,
+        )
+        .unwrap();
+        let without = planet_state(
+            Some(carried),
+            GridId::new(9),
+            true,
+            pose,
+            ([0.0; 3], [0.0; 3]),
             0.05,
             [0.0; 3],
         )
@@ -2955,9 +3191,29 @@ mod tests {
             Orientation::IDENTITY,
         );
         assert!(
-            planet_state(Some(frame), false, last, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).is_none()
+            planet_state(
+                Some(frame),
+                GridId::new(9),
+                false,
+                last,
+                ([0.0; 3], [0.0; 3]),
+                0.05,
+                [0.0; 3]
+            )
+            .is_none()
         );
-        assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05, [0.0; 3]).is_some());
+        assert!(
+            planet_state(
+                None,
+                GridId::new(9),
+                false,
+                last,
+                ([0.0; 3], [0.0; 3]),
+                0.05,
+                [0.0; 3]
+            )
+            .is_some()
+        );
     }
 
     /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every region: the meaning `wanted_rings` must keep.
@@ -3247,6 +3503,7 @@ mod tests {
             anchor,
             shift: Displacement::NONE,
             velocity: [100.0, 0.0, 0.0],
+            carrying: None,
         };
         let asked = std::cell::RefCell::new(Vec::new());
         follow.advance(0.05, [0.0; 3], [0.0; 3], |point| {
@@ -3303,6 +3560,7 @@ mod tests {
                 offset: [0.0; 3],
             },
             velocity: [640.0, 0.0, 0.0],
+            carrying: None,
         };
         // The end of the tick is a brick further (640 * 0.05 = 32 voxels) and the world cannot hold it: the pull at the start is the pull for the tick (a pull of nothing would gain
         // half as much).
@@ -3325,6 +3583,246 @@ mod tests {
         });
         assert_eq!(follow.velocity, [640.0, 0.0, 0.0]);
         assert_eq!(follow.shift.bricks, [1, 0, 0]);
+    }
+
+    // ---- A frame that moves itself while a planet on a rail carries its group ------------------------------------------------------------------------------------------------
+
+    const MOON: u64 = 31;
+
+    /// The planet at `ticks` ticks of 0.05 seconds along its way: it starts 5,000 voxels from the anchor along -x and goes at `speed` along +z.
+    fn moon_after(anchor: WorldPosition, speed: f64, ticks: u32) -> CarrierNow {
+        CarrierNow {
+            planet: GridId::new(MOON),
+            position: anchor.translated([-5_000.0, 0.0, speed * 0.05 * f64::from(ticks)]),
+            velocity: [0.0, 0.0, speed],
+        }
+    }
+
+    /// A frame for a group that goes 100 voxels a second along -y against a planet that goes at `speed` along +z, begun in the tick the planet is at its start.
+    fn carried_frame(anchor: WorldPosition, speed: f64) -> Follow {
+        carried_frame_going(anchor, moon_after(anchor, speed, 0), [0.0, -100.0, 0.0])
+    }
+
+    /// A frame for a group that goes `against` as said, begun in the tick the planet is as `moon` says.
+    fn carried_frame_going(anchor: WorldPosition, moon: CarrierNow, against: [f64; 3]) -> Follow {
+        let velocity = [0, 1, 2].map(|axis| moon.velocity[axis] + against[axis]);
+        let mut follow = Follow {
+            followed: Followed::Group(GridId::new(7)),
+            anchor,
+            shift: Displacement::NONE,
+            velocity,
+            carrying: None,
+        };
+        follow.follow_the_carrier(Some(moon), || Some((anchor, velocity)));
+        follow
+    }
+
+    #[test]
+    fn a_frame_whose_group_a_planet_carries_goes_by_the_planets_displacement_and_by_its_own_motion_once_each()
+     {
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let speed = 1_257.0;
+        let mut follow = carried_frame(anchor, speed);
+        let carrying = follow.carrying.expect("carried from the start");
+        assert_eq!(carrying.velocity_against, [0.0, -100.0, 0.0]);
+        assert_eq!(follow.velocity, [0.0, -100.0, speed]);
+        for tick in 1..=40u32 {
+            // The world moves the planet (and the group with it: it is the world's) and tells the frame; the bodies step; the frame moves by what the group did.
+            let now = moon_after(anchor, speed, tick);
+            follow.follow_the_carrier(Some(now), || {
+                panic!("the same planet carries it: nothing asked")
+            });
+            follow.advance(0.05, [0.0; 3], [0.0; 3], |_| [0.0; 3]);
+            let here = voxels_of(follow.shift);
+            let ticks = f64::from(tick);
+            // The planet's 62.85 voxels a tick along z, once (it has gone `tick` ticks when the frame is told), and the group's own 5 voxels a tick along -y, once.
+            assert!(
+                here[0].abs() < 1e-9
+                    && (here[1] - (-5.0 * ticks)).abs() < 1e-9
+                    && (here[2] - 62.85 * ticks).abs() < 1e-8,
+                "tick {tick}: the frame has gone {here:?}"
+            );
+            assert_eq!(follow.own_velocity(), [0.0, -100.0, 0.0], "tick {tick}");
+        }
+        // The frame goes at the world's speed for the writing back of the ships: the planet's and the group's against it.
+        assert_eq!(follow.velocity, [0.0, -100.0, speed]);
+        // (The planet's displacement of the next tick is the world's to say, and is added once more, and the own part is not.)
+        let again = moon_after(anchor, speed, 41);
+        follow.follow_the_carrier(Some(again), || panic!("nothing asked"));
+        let here = voxels_of(follow.shift);
+        assert!(
+            (here[2] - 62.85 * 41.0).abs() < 1e-8 && (here[1] - -200.0).abs() < 1e-9,
+            "{here:?}"
+        );
+    }
+
+    #[test]
+    fn asking_again_in_the_same_tick_changes_nothing_of_a_frame_whose_group_a_planet_carries() {
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let mut follow = carried_frame(anchor, 1_257.0);
+        follow.follow_the_carrier(Some(moon_after(anchor, 1_257.0, 3)), || None);
+        follow.advance(0.05, [0.0; 3], [0.0; 3], |_| [0.0, -3.0, 0.0]);
+        let once = follow;
+        follow.follow_the_carrier(Some(moon_after(anchor, 1_257.0, 4)), || None);
+        let twice = follow;
+        follow.follow_the_carrier(Some(moon_after(anchor, 1_257.0, 4)), || None);
+        assert_eq!(follow.shift, twice.shift, "the same planet place twice");
+        assert_ne!(once.shift, twice.shift, "(a new place does move it)");
+    }
+
+    #[test]
+    fn the_planet_that_carries_a_group_comes_at_it_at_exactly_the_speed_they_close_at_and_from_the_same_place_whatever_it_goes_at()
+     {
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let pull = [0.0, -10.0, 0.0];
+        // (The planet goes in all three axes, and the group goes against it in all three: a planet that goes along one axis and a group along another would subtract exactly, whatever
+        // they were subtracted with, and show nothing of the rounding that the speed of the planet puts in a difference of speeds of the world.)
+        let against = [0.3, -100.0, 0.7];
+        let mut reference = None;
+        for speed in [0.0, 125.7, 1_257.0, 12_570.0, 125_700.0] {
+            let moon = |ticks: u32| CarrierNow {
+                velocity: [0.6 * speed, 0.3 * speed, speed],
+                ..moon_after(anchor, speed, ticks)
+            };
+            let mut follow = carried_frame_going(anchor, moon(0), against);
+            // (At the hand-in the speed against the planet is the group's speed in the world less the planet's, two numbers of the size of the planet's speed, and is rounded at that
+            // size whatever is done: it is given to every frame as it is meant to be, so that what is asked is what the frame does with it afterwards.)
+            follow.carrying = follow.carrying.map(|carrying| Carrying {
+                velocity_against: against,
+                ..carrying
+            });
+            for tick in 1..=10u32 {
+                follow.follow_the_carrier(Some(moon(tick)), || None);
+                follow.advance(0.05, [0.0; 3], [0.0; 3], |_| pull);
+            }
+            let now = moon(11);
+            follow.follow_the_carrier(Some(now), || None);
+            let pose = GridPose::new(now.position, Orientation::IDENTITY);
+            let state = planet_state(
+                Some(follow),
+                now.planet,
+                true,
+                pose,
+                (now.velocity, [0.0; 3]),
+                0.05,
+                pull,
+            )
+            .unwrap();
+            // Against the frame it goes at the speed of the group against it and the pull of the tick: the group has fallen ten ticks at 0.5 from 100 (105), and the tick that is
+            // about to be stepped takes 0.5 more, so the planet comes at 105.5, up, and at minus the group's 0.3 and 0.7 along x and z, **the same bits at every speed of the
+            // planet**.
+            assert!(
+                (state.linear_velocity[1] - 105.5).abs() < 1e-12
+                    && (state.linear_velocity[0] - -0.3).abs() < 1e-12
+                    && (state.linear_velocity[2] - -0.7).abs() < 1e-12,
+                "a planet going at {speed}: {:?}",
+                state.linear_velocity
+            );
+            let from_the_anchor = state.position.relative_to(anchor);
+            match reference {
+                None => reference = Some((from_the_anchor, state.linear_velocity)),
+                Some((first, first_velocity)) => {
+                    assert_eq!(
+                        state.linear_velocity.map(f64::to_bits),
+                        first_velocity.map(f64::to_bits),
+                        "a planet going at {speed} and one that stands still"
+                    );
+                    for axis in 0..3 {
+                        assert!(
+                            (from_the_anchor[axis] - first[axis]).abs() < 1e-8,
+                            "a planet going at {speed} is put {from_the_anchor:?} from the anchor, and one that stands still {first:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_planet_that_begins_to_carry_a_group_is_taken_from_where_the_world_put_the_group_and_one_that_lets_go_of_it_leaves_it_as_it_is()
+     {
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        // A group that was alone, going at (0, -100, 1,257) in the world and 3 voxels down from where its frame was made.
+        let mut follow = Follow {
+            followed: Followed::Group(GridId::new(7)),
+            anchor,
+            shift: Displacement {
+                bricks: [0, 0, 0],
+                offset: [0.0, -3.0, 0.0],
+            },
+            velocity: [0.0, -100.0, 1_257.0],
+            carrying: None,
+        };
+        // The planet begins to carry it: the world moved it 62.85 along z in the tick.
+        let moved_to = anchor.translated([0.0, -3.0, 62.85]);
+        let now = moon_after(anchor, 1_257.0, 1);
+        follow.follow_the_carrier(Some(now), || Some((moved_to, [0.0, -100.0, 1_257.0])));
+        let carrying = follow.carrying.expect("carried");
+        assert_eq!(carrying.planet, now.planet);
+        assert_eq!(carrying.velocity_against, [0.0, -100.0, 0.0]);
+        assert!(
+            voxels_of(follow.shift)
+                .iter()
+                .zip([0.0, -3.0, 62.85])
+                .all(|(found, expected)| (found - expected).abs() < 1e-9),
+            "{:?}",
+            voxels_of(follow.shift)
+        );
+        assert_eq!(follow.velocity, [0.0, -100.0, 1_257.0]);
+        // A tick later the planet has gone on by 62.85 voxels along z, and the frame with it, from where the world put the group when the carrying began (and not from where the frame
+        // was before: that is the group's own motion, which is all that is in the shift of the frame without the planet's).
+        let next = moon_after(anchor, 1_257.0, 2);
+        follow.follow_the_carrier(Some(next), || panic!("the same planet: nothing asked"));
+        assert!(
+            voxels_of(follow.shift)
+                .iter()
+                .zip([0.0, -3.0, 62.85 * 2.0])
+                .all(|(found, expected)| (found - expected).abs() < 1e-9),
+            "{:?}",
+            voxels_of(follow.shift)
+        );
+        // The planet lets go of it: where it is and how fast it goes in the world stay as they are.
+        let (shift, velocity) = (follow.shift, follow.velocity);
+        follow.follow_the_carrier(None, || panic!("nothing asked"));
+        assert_eq!(follow.carrying, None);
+        assert_eq!((follow.shift, follow.velocity), (shift, velocity));
+        // A second planet that takes over from a first: the speed against it is the group's less the second's.
+        let mut follow = carried_frame(anchor, 1_257.0);
+        let other = CarrierNow {
+            planet: GridId::new(MOON + 1),
+            position: anchor.translated([3_000.0, 0.0, 0.0]),
+            velocity: [10.0, 0.0, 0.0],
+        };
+        follow.follow_the_carrier(Some(other), || Some((anchor, [0.0, -100.0, 1_257.0])));
+        let carrying = follow.carrying.expect("carried by the second planet");
+        assert_eq!(carrying.planet, other.planet);
+        assert_eq!(carrying.velocity_against, [-10.0, -100.0, 1_257.0]);
+    }
+
+    #[test]
+    fn a_carried_frame_asks_for_the_pull_where_the_whole_shift_puts_it_and_moves_by_the_own_part_only()
+     {
+        let anchor = WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]);
+        let mut follow = carried_frame(anchor, 1_257.0);
+        follow.follow_the_carrier(Some(moon_after(anchor, 1_257.0, 20)), || None);
+        let asked = std::cell::RefCell::new(Vec::new());
+        follow.advance(0.05, [0.0; 3], [0.0; 3], |point| {
+            asked.borrow_mut().push(point);
+            [0.0, 0.0, 0.0]
+        });
+        let asked = asked.into_inner();
+        assert_eq!(asked.len(), 2);
+        // The planet has gone 20 ticks, 1,257 voxels along z: the first place is that far along; the second is the group's own 5 voxels down from it, and not the planet's 62.85 again.
+        let first = asked[0].relative_to(anchor);
+        let second = asked[1].relative_to(anchor);
+        assert!(
+            (first[2] - 1_257.0).abs() < 1e-8 && first[1].abs() < 1e-9,
+            "{first:?}"
+        );
+        assert!(
+            (second[2] - 1_257.0).abs() < 1e-8 && (second[1] - -5.0).abs() < 1e-9,
+            "{second:?}"
+        );
     }
 
     #[test]

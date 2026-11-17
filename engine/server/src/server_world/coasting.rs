@@ -418,18 +418,18 @@ impl ServerWorld {
 
     /// Whether the group of ships coupled by their joint ends that `anchor` (the ship of it with the lowest number) speaks for could be **alone**, so that the bodies may give it a
     /// frame of its own, centred on its centre of mass and in free fall (step 4c-4 of `docs/decisions/joints-and-cars.md`), **whatever the ground of a planet is near it**: it is two
-    /// ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed, and no planet on a rail carries it. **Other ships are no
+    /// ships or more, in a level with no pull of its own, free (not held, not frozen, no rail of its own) and weighed. **Other ships are no
     /// part of the rule** (step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame whatever is near; the bodies add that a ship with joint ends or
     /// docking ports that pull on its own takes it out of its frame, which the world does not know).
     ///
-    /// **A planet carries a group exactly as it carries any ship** (`apply_rails`, through `pick_carrier`: what is within its sphere of what it carries, and what it carried a quarter
-    /// farther out), because a group that the world carries has the frame of the planet and is moved by the planet's displacement every tick, which a frame of its own would
-    /// move again. That is the whole of the rule about planets. **The sphere of influence of a planet is not part of it** (which planet a rail goes round is nothing to a group off a
-    /// rail, which is pulled by every planet's pull at its point: `gravity_at`), **and there is no room**: the ring between what a planet carries and a quarter beyond it is the
-    /// world's to keep what it carried in, and is nothing to a group that it did not carry (a room of 2 used to count that ring as carried, and a group made in it, or come to it
-    /// from far, was in the frame everything is in, with bits that differ from a group's in its own, 4.5e-4 against 4e-10). Blocks built into the level itself are not looked at, as
-    /// for a frame that goes with a planet. **The ground of a planet is not asked about here** (step 4c-5-3: [`ServerWorld::ground_is_in_the_way_of_group`], and the bodies decide what
-    /// it means: a group that comes down to the ground keeps its frame, with the ground in it, until it touches it).
+    /// **Whether a planet carries the group is no part of it** (2026-11-16, the owner: continue carrying everything with the planet, and leave frames centred on groups that do not
+    /// know they are moving through space). A planet carries a group as it carries any ship, whole and by its anchor (`apply_rails`, through `pick_carrier`: what is within its reach
+    /// of what it carries, and what it carried a quarter farther out; see [`ServerWorld::carrier_of`]), and the group's frame goes with the planet's displacement as well as with
+    /// its own motion while the world carries it (`grid_bodies`: the follow of a frame of its own has a carrier), so that the planet's speed is in none of the numbers of what the
+    /// group does. **The sphere of influence of a planet is not part of the rule either** (which planet a rail goes round is nothing to a group off a rail, which is pulled by every
+    /// planet's pull at its point: `gravity_at`), **and there is no room**. Blocks built into the level itself are not looked at, as for a frame that goes with a planet. **The ground
+    /// of a planet is not asked about here** (step 4c-5-3: [`ServerWorld::ground_is_in_the_way_of_group`], and the bodies decide what it means: a group that comes down to the
+    /// ground keeps its frame, with the ground in it, until it touches it).
     pub fn group_is_alone_but_for_the_ground(&self, anchor: GridId) -> bool {
         let members = self.data.grids().group_of(anchor);
         if members.len() < 2 || members[0] != anchor {
@@ -458,19 +458,8 @@ impl ServerWorld {
         if self.level_pulls(level) {
             return false;
         }
-        // (**Other ships are not asked about**: what is near a group is the ghost's.)
-        let carriers = self.carriers();
-        members.iter().all(|member| {
-            self.data.grids().get(*member).is_some_and(|ship| {
-                pick_carrier(
-                    &carriers,
-                    ship.level,
-                    ship.pose.position,
-                    self.carried_ships.get(member).copied(),
-                )
-                .is_none()
-            })
-        })
+        // (**Other ships are not asked about**: what is near a group is the ghost's. **Nor is the carrying**: see above.)
+        true
     }
 
     /// Whether the ground of a planet is within the lookahead of the terrain of a ship of the group (`ground_in_the_way`: a margin and a quarter of a second of the speed they close at,

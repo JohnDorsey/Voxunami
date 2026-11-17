@@ -1497,11 +1497,26 @@ impl ServerWorld {
             if ship.terrain.is_some() || ship.rail.is_some() || self.rail_group_of(id).is_some() {
                 continue;
             }
+            // A group of ships coupled by their joint ends goes **whole, by its anchor** (the ship of it with the lowest number): ship by ship a planet would carry the ships of a
+            // group that are within its reach and leave the others, and tear the group in two by its displacement of a tick. (A ship that is no group is its own anchor.)
+            let speaker = if self.data.grids().has_partners(id) {
+                self.data
+                    .grids()
+                    .group_of(id)
+                    .first()
+                    .copied()
+                    .unwrap_or(id)
+            } else {
+                id
+            };
+            let Some(spoken_for) = self.data.grids().get(speaker) else {
+                continue;
+            };
             if let Some(planet) = pick_carrier(
                 &carriers,
-                ship.level,
-                ship.pose.position,
-                self.carried_ships.get(&id).copied(),
+                spoken_for.level,
+                spoken_for.pose.position,
+                self.carried_ships.get(&speaker).copied(),
             ) {
                 carried_ships.push((id, planet));
             }

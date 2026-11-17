@@ -42,6 +42,103 @@ pub fn a_chain() -> Vec<(Vec<Placed>, f64)> {
     vec![car(false, 6, true), car(true, 4, true), car(true, 5, false)]
 }
 
+/// A chain of three cars (`a_chain`) end to end along x, its first car's origin `offset` voxels (in the world's axes) from the middle of ship `planet`, going `against` the
+/// ground as said and at the speed of the ground there (the planet's and the turn of the planet about its middle); made in one tick and given two ticks, in
+/// which the bodies couple the cars, and then **put where `offset` says from the planet as it is by then, and given the speed it has by then and `against`** (the planet goes on in
+/// the two ticks and turns its speed, and a chain made where it was is a little off the place and the speed that were asked: 0.07 voxels and 0.4 a second at 1,257 voxels a second).
+/// The cars' ids, the first is the one that is at the place `offset` says.
+pub fn chain_over(
+    scene: &mut Scene,
+    planet: u64,
+    offset: [f64; 3],
+    against: [f64; 3],
+) -> Vec<GridId> {
+    let first = scene.rig.server.world().grids().iter().count() as u64;
+    let places: Vec<([f64; 3], Vec<Placed>)> = {
+        let mut along = 0.0;
+        a_chain()
+            .into_iter()
+            .map(|(blocks, length)| {
+                let place = [offset[0] + along, offset[1], offset[2]];
+                along += length;
+                (place, blocks)
+            })
+            .collect()
+    };
+    let relative: Vec<[f64; 3]> = places.iter().map(|(place, _)| *place).collect();
+    let middle = super::ship_voxels(scene, planet);
+    let speed = planet_speed(scene, planet);
+    let made = places
+        .into_iter()
+        .map(|(place, blocks)| {
+            (
+                pose_at(
+                    middle[0] + place[0],
+                    middle[1] + place[1],
+                    middle[2] + place[2],
+                ),
+                blocks,
+            )
+        })
+        .collect::<Vec<_>>();
+    let count = made.len() as u64;
+    make_all_going(
+        scene,
+        made,
+        [0, 1, 2].map(|axis| speed[axis] + against[axis]),
+    );
+    scene.ticks(2);
+    let cars: Vec<GridId> = (first..first + count).map(ship_id).collect();
+    let given = cars.clone();
+    // (The planet is read in the tick that puts the cars, where it is in that tick: the world has moved it before anything of the tick runs.)
+    scene.run(move |world| {
+        let planet = world
+            .data()
+            .grids()
+            .get(ship_id(planet))
+            .expect("the planet is there");
+        let (middle, speed, turn) = (
+            planet.pose.position,
+            planet.linear_velocity,
+            planet.angular_velocity.map(f64::from),
+        );
+        for (car, place) in given.into_iter().zip(relative) {
+            // The ground goes at the planet's velocity and the turn of the planet about its middle: omega cross the place of the car from the middle.
+            let round = [
+                turn[1] * place[2] - turn[2] * place[1],
+                turn[2] * place[0] - turn[0] * place[2],
+                turn[0] * place[1] - turn[1] * place[0],
+            ];
+            world
+                .set_grid_pose(
+                    car,
+                    super::GridPose::new(middle.translated(place), Orientation::IDENTITY),
+                )
+                .unwrap();
+            world
+                .set_grid_velocity(
+                    car,
+                    [0, 1, 2].map(|axis| speed[axis] + round[axis] + against[axis]),
+                    [0.0; 3],
+                )
+                .unwrap();
+        }
+    });
+    cars
+}
+
+/// How fast ship `planet` goes in the world, as the world has it.
+fn planet_speed(scene: &Scene, planet: u64) -> [f64; 3] {
+    scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(planet))
+        .expect("the planet is there")
+        .linear_velocity
+}
+
 /// Makes the cars of a chain end to end along x, from the origin, `distance` from the middle of the planet along y, going at `speed` along z, in a scene that has the planet (the
 /// ship before them), all in one tick. Their numbers are 1, 2 and so on. Two ticks after, the bodies have coupled them.
 pub fn a_chain_in_orbit(

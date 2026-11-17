@@ -2,10 +2,10 @@
 //! centred on its centre of mass and in free fall, in which nothing but the group is, so the question the world answers is whether anything could touch the group. These are the
 //! rules (`ServerWorld::group_is_alone_but_for_the_ground`); what the bodies do with a group that is alone is tested with them (`games/voxunami_cave/tests/group_off_a_rail.rs`).
 //!
-//! A group is alone when it is in a level with no pull of its own, every ship of it is free (not held, not frozen, not on a rail of its own) and weighed; and no planet on a rail carries it
-//! (it is then in the frame of the planet). **A planet carries a group as it carries a ship** (`apply_rails`: what is within its sphere of what it carries, and what it carried a quarter
-//! farther out), and that is all the planets are to the rule: **their spheres of influence are not, and there is no room** to be alone and to stay so (the plugin asks the ground its room,
-//! apart). **The ground of a planet is asked apart** (step 4c-5-3: `ground_is_in_the_way_of_group`; the frame holds it until the group touches it). **Other ships are not part of the
+//! A group is alone when it is in a level with no pull of its own and every ship of it is free (not held, not frozen, not on a rail of its own) and weighed. **A planet carries a group as
+//! it carries a ship, whole and by its anchor** (`apply_rails`: what is within its reach of what it carries, and what it carried a quarter farther out), **and that is nothing to
+//! whether the group is alone** (2026-11-16: the bodies' frame for it goes with the planet's displacement as well as its own motion): **the planets' spheres of influence are not part of
+//! the rule either, and there is no room** to be alone and to stay so (the plugin asks the ground its room, apart). **The ground of a planet is asked apart** (step 4c-5-3: `ground_is_in_the_way_of_group`; the frame holds it until the group touches it). **Other ships are not part of the
 //! rule** (step 4c-5-2): what is near a group is the contact ghost's, and the group keeps its frame and its bits whatever is near. (The world does not know the joint ends and the docking
 //! ports that would make a group leave it for a coupling or a docking: the bodies add that rule, `grid_bodies`.)
 
@@ -206,16 +206,58 @@ fn move_the_group_beside_the_moon(
 }
 
 #[test]
-fn a_group_that_a_planet_on_a_rail_carries_is_not_alone() {
-    // A moon on a rail carries what is within its sphere (960 voxels: 1.5 times the 640 its ground reaches); the group has a frame that goes with the moon (the frame of a planet),
-    // and not one of its own. It is 800 from the moon, clear of the ground, so that it is the carrying and nothing else that makes it not alone.
+fn a_group_that_a_planet_on_a_rail_carries_is_alone_all_the_same_and_the_world_carries_it_whole() {
+    // A moon on a rail carries what is within its sphere (960 voxels: 1.5 times the 640 its ground reaches). **The carrying is the world's, and the group's frame is the bodies'**
+    // (2026-11-16, the owner: "continue carrying everything with the planet, leaving more physics frames centred on ships or groups that basically don't know they're moving through
+    // space"): the world moves a group by the planet's displacement every tick and says so (`carrier_of`), and the group is alone all the same, so that its frame is its own and
+    // goes with the planet's displacement as well as its own motion. It is 800 from the moon, clear of the ground.
     let (world, moon, ships) = a_group_beside_a_moon(800.0);
+    for ship in ships {
+        assert_eq!(
+            world.carrier_of(ship),
+            Some(moon),
+            "the premise: the moon carries them"
+        );
+    }
+    assert!(alone(&world, ships[0], 1.0));
+}
+
+#[test]
+fn a_group_is_carried_whole_by_the_place_of_its_anchor_and_not_a_ship_at_a_time() {
+    // The moon carries what is within 960 voxels of its middle. The anchor (the ship of the group with the lowest number) is 959.9 away and the others, 20 and 40 voxels along z, are
+    // 960.1 and 960.7: ship by ship the moon would carry the anchor and leave the rest, which tears the group in two by the moon's whole displacement of a tick. The group goes by
+    // its anchor, as a group on a rail does: all of it or none of it.
+    // (Made at 1,300, where the moon does not carry them: what it carried is kept a quarter farther out, which would carry the others in any case.)
+    let (mut world, moon, ships) = a_group_beside_a_moon(1_300.0);
     assert_eq!(
         world.carrier_of(ships[0]),
-        Some(moon),
-        "the premise: the moon carries them"
+        None,
+        "the premise: not carried at 1,300"
     );
-    assert!(!alone(&world, ships[0], 1.0));
+    move_the_group_beside_the_moon(&mut world, moon, ships, 959.9);
+    for ship in ships {
+        assert_eq!(
+            world.carrier_of(ship),
+            Some(moon),
+            "an anchor in and the others out: all carried"
+        );
+    }
+    // And the other way: the anchor 960.7 from the middle (40 along z), the others in.
+    let (mut world, moon, ships) = a_group_beside_a_moon(1_300.0);
+    for (ship, along) in ships.into_iter().zip([40.0, 20.0, 0.0]) {
+        let at = voxels_from(&world, moon, [959.9, 0.0, along]);
+        world
+            .set_grid_pose(ship, GridPose::new(at, Orientation::IDENTITY))
+            .unwrap();
+    }
+    world.apply_rails(TICKS);
+    for ship in ships {
+        assert_eq!(
+            world.carrier_of(ship),
+            None,
+            "an anchor out and the others in: none carried"
+        );
+    }
 }
 
 #[test]
@@ -238,9 +280,11 @@ fn what_a_planet_does_not_carry_is_alone_up_to_the_edge_of_what_it_carries_with_
 }
 
 #[test]
-fn a_group_that_a_planet_carried_is_not_alone_until_the_planet_lets_go_of_it() {
-    // The world carries what it carried a quarter farther out (`planet_carrying`), and a group that the world carries has the frame of the planet: it is alone from the tick the
-    // world lets go of it, and not before. (The room to stay alone used to count the plain 960 and called a carried group at 1,100 alone.)
+fn a_group_that_a_planet_carried_is_carried_until_the_planet_lets_go_of_it_and_is_alone_throughout()
+{
+    // The world carries what it carried a quarter farther out (`planet_carrying`), and the world lets go of a group at that edge and not before. The group is alone at every
+    // distance: whether the world carries it is not part of the rule (the bodies' frame for it takes the planet's displacement while the world carries it, and goes on from there
+    // when it does not).
     let (mut world, moon, ships) = a_group_beside_a_moon(800.0);
     assert_eq!(
         world.carrier_of(ships[0]),
@@ -254,8 +298,8 @@ fn a_group_that_a_planet_carried_is_not_alone_until_the_planet_lets_go_of_it() {
         "the premise: still carried at 1,100 (a quarter beyond 960 is 1,200)"
     );
     assert!(
-        !world.group_is_alone_but_for_the_ground(ships[0]),
-        "a group that the moon carries is alone"
+        world.group_is_alone_but_for_the_ground(ships[0]),
+        "a group that the moon carries is alone all the same"
     );
     move_the_group_beside_the_moon(&mut world, moon, ships, 1_300.0);
     assert_eq!(
@@ -265,7 +309,7 @@ fn a_group_that_a_planet_carried_is_not_alone_until_the_planet_lets_go_of_it() {
     );
     assert!(
         world.group_is_alone_but_for_the_ground(ships[0]),
-        "a group 1,300 from the moon is not alone"
+        "a group 1,300 from the moon is alone"
     );
 }
 

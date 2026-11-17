@@ -1,7 +1,7 @@
 //! Which groups of ships coupled by their joint ends are **alone**, and so have a frame of their own off a rail (step 4c-4 of `docs/decisions/joints-and-cars.md`), as the bodies
 //! decide it.
 //!
-//! The world says the part that it knows (`ServerWorld::group_is_alone_but_for_the_ground`: the level, the ships' own state, what carries them; and where the ground of a planet is). **Other ships are no part of
+//! The world says the part that it knows (`ServerWorld::group_is_alone_but_for_the_ground`: the level and the ships' own state; and where the ground of a planet is). **Other ships are no part of
 //! it** since step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame and its bits whatever is near (`ghosts.rs`). What the bodies add is the one
 //! thing that needs a shared frame: **ends that pull on each other**. Joints are made and pulled, and ships are docked, between ships of one frame (`couple_and_pull_in`,
 //! `port_pairs`), so a group that has an end within the range of a pull of the end of a ship that is not of it (a coupling or a docking that is about to be made, not a touch)
@@ -21,8 +21,8 @@ use crate::joints::JointSettings;
 impl Bodies {
     /// The groups of ships coupled by their joint ends that are off a rail and alone (`ServerWorld::group_is_alone_but_for_the_ground`, no ends of another ship that pull on theirs,
     /// and the ground, below), by their anchors. A group that has a frame of its own keeps it while it has the room of 1 and one that has not needs the room of 2 to get it, as for
-    /// a rail, so that it does not go in and out of it at the edge. (The room counts for the ground and for the ends that pull; **what a planet carries has none**: the world carries a
-    /// group and lets it go by its own rule, `ServerWorld::group_is_alone_but_for_the_ground`.)
+    /// a rail, so that it does not go in and out of it at the edge. (The room counts for the ground and for the ends that pull; **whether a planet carries the group is no part of
+    /// it**: the world carries a group whole, by its anchor, and lets it go by its own rule, and the frame of the group goes with the planet's displacement while it does: `Carrying`.)
     ///
     /// **The ground of a planet** (step 4c-5-3): a group that has its frame keeps it however near the ground comes, with the ground in it as a body that comes at the group, until
     /// the group touches it (`grounded`). Then it is in the frame everything is in, where a group at rest on the ground is as exact as a ship's, and it is alone again when the
