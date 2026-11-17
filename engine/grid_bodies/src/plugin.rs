@@ -622,13 +622,22 @@ impl Follow {
     /// This frame as it is **at the start of the tick that is about to be stepped**. A frame that the world moves (a planet's, a ship's or group's on a rail) has its shift at the
     /// end of the tick already (see [`Follow::local_at_the_end_of_the_tick`]) and the bodies in it go on with it through the tick, while a body of a frame that does not have moved
     /// from its place at the start of the tick: to put the two in one place (the contact ghost does) the first is put back by one tick of its speed. A frame that moves itself has the
-    /// shift of the start of the tick, and is as it is.
+    /// shift of the start of the tick, and is as it is, **except while a planet carries its group**: the world has moved the group by the planet's displacement at the start of the
+    /// tick, as it has what is in the planet's own frame, so it is put back by the planet's speed (`group_hit_beside_a_planet_on_a_rail.rs`).
     fn at_the_start_of_the_tick(self, time_step: f64) -> Follow {
-        if self.followed.moves_itself() {
-            return self;
-        }
+        // (A frame that moves itself is as it is, **but for the planet that carries it**: the world has moved what a planet carries by the planet's displacement of this tick, at
+        // the start of it, and the frame's shift has it. A group that a planet carries and a ship in the planet's own frame are at the planet's place of the end of the tick, both,
+        // and are put back by the planet's speed, both; one that went back and one that did not would be a tick of the planet's speed apart, 63 voxels at 1,257 a second.)
+        let moved_by_the_world = match self.carrying {
+            Some(carrying) => carrying.planet_velocity,
+            None if self.followed.moves_itself() => return self,
+            None => self.velocity,
+        };
         Follow {
-            shift: shifted_by(self.shift, self.velocity.map(|speed| -speed * time_step)),
+            shift: shifted_by(
+                self.shift,
+                moved_by_the_world.map(|speed| -speed * time_step),
+            ),
             ..self
         }
     }
