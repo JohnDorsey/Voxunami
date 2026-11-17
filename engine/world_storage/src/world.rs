@@ -177,6 +177,11 @@ impl WorldSave {
                 }
             }
         }
+        // (The far nodes of a ship file that is gone are of a state nobody can come to again. A file that cannot be removed stays for the next save.)
+        let _ = crate::far_nodes::remove_far_files_without_ship_file(
+            files.far_files_mut(),
+            &self.named_ship_files,
+        );
         Ok(())
     }
 

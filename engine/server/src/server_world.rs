@@ -218,6 +218,8 @@ pub struct ServerWorld {
     ships: Option<ShipStorage>,
     /// The ships that were brought into memory since the rules were told of their voxels (see [`ServerWorld::take_changes`]).
     pub(crate) woken: Vec<GridId>,
+    /// The ships that were put into files since the plugins were told (see [`ServerWorld::take_parked_ships`]).
+    parked: Vec<GridId>,
     /// What the splits, merges, docks and detaches of the tick did, in order, until they are taken (see [`ServerWorld::take_structure_changes`]).
     pub(crate) structure_changes: Vec<StructureChange>,
     ship_settings: ShipSettings,
@@ -290,6 +292,7 @@ impl ServerWorld {
             level_gravity: BTreeMap::new(),
             ships: None,
             woken: Vec::new(),
+            parked: Vec::new(),
             structure_changes: Vec::new(),
             ship_settings: ShipSettings::default(),
             disconnects: Vec::new(),
@@ -378,7 +381,9 @@ impl ServerWorld {
         self.ships = Some(ShipStorage { format, files });
     }
 
-    pub(crate) fn ship_format(&self) -> Option<&ShipFormat> {
+    /// How ships are written and read, if the world has somewhere to keep them: what numbers its blocks, for whoever writes something about a ship that
+    /// has to hold names.
+    pub fn ship_format(&self) -> Option<&ShipFormat> {
         self.ships.as_ref().map(|ships| &ships.format)
     }
 
@@ -428,7 +433,15 @@ impl ServerWorld {
             &mut *ships.files,
             &ships.format,
         )?;
+        self.parked.push(grid);
         Ok(())
+    }
+
+    /// The ships that were put into files since the last call, in the order they were (a ship put away twice is in it twice). The plugin host tells the plugins of them
+    /// (the `ShipParked` event of the plugin host): a ship that is in a file has nothing in memory, so whatever a plugin keeps of it for the file is written then. Only a ship that
+    /// was put away is in it: one that could not be (the file could not be written) is where it was.
+    pub fn take_parked_ships(&mut self) -> Vec<GridId> {
+        std::mem::take(&mut self.parked)
     }
 
     /// Says which channels to log changes of, in the order they happen. Nothing is logged for any

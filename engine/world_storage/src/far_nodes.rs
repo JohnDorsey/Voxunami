@@ -439,6 +439,13 @@ impl MemoryFarFiles {
         Self::default()
     }
 
+    /// A copy that does not share with this one.
+    pub fn duplicate(&self) -> Self {
+        Self {
+            files: Arc::new(Mutex::new(self.files().clone())),
+        }
+    }
+
     fn files(&self) -> MutexGuard<'_, BTreeMap<FarFileName, Vec<u8>>> {
         self.files
             .lock()

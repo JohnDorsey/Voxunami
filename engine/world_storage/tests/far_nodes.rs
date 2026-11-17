@@ -6,13 +6,13 @@ use std::collections::BTreeSet;
 use coarse_cells::{CELLS_PER_NODE, CoarseCell, CoarseNode};
 use namespaced_id::NamespacedId;
 use region_octree::BrickCube;
-use voxel_space::BrickCoordinate;
+use voxel_space::{BrickCoordinate, GridId};
 use world_storage::far_nodes::{
     FarFileName, FarFiles, FarNodes, FarNodesError, FarNodesRead, MemoryFarFiles, read_far_nodes,
     remove_far_files_without_ship_file,
 };
 use world_storage::test_support::{ALL_PLUGINS, Game, sample_world};
-use world_storage::{MemoryShipFiles, WorldData};
+use world_storage::{MemoryShipFiles, ShipFiles, WorldData};
 
 fn name_of(number: u32) -> Option<NamespacedId> {
     ["base_blocks:air", "base_blocks:stone"]
@@ -166,5 +166,68 @@ fn a_ship_put_away_again_has_a_file_of_its_own_and_the_nodes_of_the_old_one_are_
     assert_eq!(
         remove_far_files_without_ship_file(&mut far, &named).unwrap(),
         0
+    );
+}
+
+#[test]
+fn a_save_cleans_away_the_far_nodes_of_ship_files_it_no_longer_names_and_keeps_those_of_the_ships_in_files()
+ {
+    let (game, mut world, mut files, parked) = world_with_a_ship_in_a_file();
+    let kept = FarFileName::of(&parked.file);
+    // The nodes of an earlier file of the same ship, and of a ship that is gone: nothing names their ship files.
+    let earlier = FarFileName::new(parked.file.grid, parked.file.serial + 100);
+    let gone = FarFileName::new(GridId::new(GridId::FIRST_ALLOCATED + 900), 3);
+    for name in [kept, earlier, gone] {
+        files
+            .far_files_mut()
+            .write(&name, &nodes().encode(parked.checksum, name_of).unwrap())
+            .unwrap();
+    }
+    let ship_files_before = files.names().unwrap();
+
+    let save = game.save_with_ships(&mut world);
+    save.write_with(&mut files, |_| Ok(())).unwrap();
+
+    assert_eq!(files.far_files_mut().names().unwrap(), [kept]);
+    // (The ship files were cleaned as before, and the far nodes files did not take their place in the listing.)
+    assert_eq!(files.names().unwrap(), ship_files_before);
+}
+
+#[test]
+fn the_numbers_of_blocks_and_their_names_are_the_formats_both_ways_for_the_channels_that_hold_content_only()
+ {
+    let (game, world, _, _) = world_with_a_ship_in_a_file();
+    let format = game.ship_format(&world);
+    let layout = format.layout();
+    let block = layout
+        .channel_index(&"core:block".parse().unwrap())
+        .unwrap();
+    for name in ["base_blocks:air", "base_blocks:stone"] {
+        let id: NamespacedId = name.parse().unwrap();
+        let number = game.raw_block(name);
+        assert_eq!(format.content_identifier(block, number), Some(id.clone()));
+        assert_eq!(format.content_number(block, &id), Some(number));
+    }
+    let unknown: NamespacedId = "base_blocks:not_a_block".parse().unwrap();
+    assert_eq!(format.content_number(block, &unknown), None);
+    assert_eq!(format.content_identifier(block, u32::MAX), None);
+    // A channel that holds plain numbers (a temperature) has no names.
+    let plain = layout
+        .channels()
+        .iter()
+        .position(|channel| {
+            !matches!(
+                channel.value_kind,
+                voxel_grid::ChannelValueKind::Content { .. }
+            )
+        })
+        .expect("the sample layout has a channel of plain numbers");
+    let plain = layout
+        .channel_index(&layout.channels()[plain].identifier)
+        .unwrap();
+    assert_eq!(format.content_identifier(plain, 0), None);
+    assert_eq!(
+        format.content_number(plain, &"base_blocks:air".parse().unwrap()),
+        None
     );
 }

@@ -1,9 +1,11 @@
 //! The server half of coarse levels of detail, run by the plugin host on a real server with the pretend game of `world_storage::test_support`:
 //! which overrides it keeps, who is sent them, in what order and how fast.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use block_models::BlockTable;
+use coarse_cells::{CoarseCell, CoarseNode};
 use coarse_streaming::{
     Brightness, CoarseConfig, CoarseHandle, CoarseNodeUpdate, CoarseNodes, CoarseServerPlugin,
     SetDetail, ZoomRequest,
@@ -22,8 +24,9 @@ use voxel_space::{
     BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate,
     WorldPosition,
 };
-use world_storage::WorldData;
+use world_storage::far_nodes::{FarFileName, FarNodes, FarNodesRead, read_far_nodes};
 use world_storage::test_support::{Game, Plugin as FixturePlugin, id, sample_world};
+use world_storage::{MemoryShipFiles, ShipFiles, ShipFormat, WorldData};
 
 /// The numbers of `base_blocks:air` and `base_blocks:stone`, the first blocks the pretend game registers.
 const AIR: u32 = 0;
@@ -39,6 +42,10 @@ struct Editor {
     /// How many ships to make (each with a few voxels of stone) in the next tick, and the ones made.
     ships_to_make: Arc<Mutex<usize>>,
     ships_made: Arc<Mutex<Vec<GridId>>>,
+    /// Whether a ship made is put into its file in the tick it is made, and the ships to put into their files in the next tick (after the edits).
+    park_new_ships: Arc<AtomicBool>,
+    ships_to_park: Arc<Mutex<Vec<GridId>>>,
+    ships_to_load: Arc<Mutex<Vec<GridId>>>,
 }
 
 impl Plugin for Editor {
@@ -53,6 +60,11 @@ impl Plugin for Editor {
             Arc::clone(&self.ships_made),
         );
         let block = self.channels[0];
+        let (park_new_ships, ships_to_park, ships_to_load) = (
+            Arc::clone(&self.park_new_ships),
+            Arc::clone(&self.ships_to_park),
+            Arc::clone(&self.ships_to_load),
+        );
         registrar.system(
             SystemSpec::new("test:editor", Phase::Rules).writes(&self.channels),
             move |context| {
@@ -72,6 +84,9 @@ impl Plugin for Editor {
                             .set(block, VoxelCoordinate::new(x, 1, 1), STONE)
                             .unwrap();
                     }
+                    if park_new_ships.load(Ordering::SeqCst) {
+                        context.world().park_ship(ship, false).unwrap();
+                    }
                 }
                 let queued = std::mem::take(&mut *edits.lock().unwrap());
                 for (grid, channel, voxel, value) in queued {
@@ -80,6 +95,12 @@ impl Plugin for Editor {
                         .unwrap()
                         .set(channel, voxel, value)
                         .unwrap();
+                }
+                for ship in std::mem::take(&mut *ships_to_park.lock().unwrap()) {
+                    context.world().park_ship(ship, false).unwrap();
+                }
+                for ship in std::mem::take(&mut *ships_to_load.lock().unwrap()) {
+                    context.world().load_ship(ship).unwrap();
                 }
             },
         );
@@ -139,6 +160,12 @@ struct Rig {
     edits: Edits,
     ships_to_make: Arc<Mutex<usize>>,
     ships_made: Arc<Mutex<Vec<GridId>>>,
+    park_new_ships: Arc<AtomicBool>,
+    ships_to_park: Arc<Mutex<Vec<GridId>>>,
+    ships_to_load: Arc<Mutex<Vec<GridId>>>,
+    /// The files of the server's ships (clones share them), and how the world writes ships.
+    files: MemoryShipFiles,
+    format: ShipFormat,
     block: ChannelIndex,
     temperature: ChannelIndex,
 }
@@ -187,6 +214,17 @@ fn rig_over(
     world: WorldData,
     configure: impl FnOnce(&mut CoarseConfig, ChannelIndex),
 ) -> Rig {
+    rig_over_files(game, world, MemoryShipFiles::new(), configure)
+}
+
+/// Like [`rig_over`], with the files of the ships that are in files already (a server that starts again).
+fn rig_over_files(
+    game: &Game,
+    world: WorldData,
+    files: MemoryShipFiles,
+    configure: impl FnOnce(&mut CoarseConfig, ChannelIndex),
+) -> Rig {
+    let format = game.ship_format(&world);
     let block = world
         .main()
         .overrides
@@ -215,11 +253,17 @@ fn rig_over(
     let edits: Edits = Arc::default();
     let ships_to_make: Arc<Mutex<usize>> = Arc::default();
     let ships_made: Arc<Mutex<Vec<GridId>>> = Arc::default();
+    let park_new_ships: Arc<AtomicBool> = Arc::default();
+    let ships_to_park: Arc<Mutex<Vec<GridId>>> = Arc::default();
+    let ships_to_load: Arc<Mutex<Vec<GridId>>> = Arc::default();
     let editor = Editor {
         channels: vec![block, temperature],
         edits: Arc::clone(&edits),
         ships_to_make: Arc::clone(&ships_to_make),
         ships_made: Arc::clone(&ships_made),
+        park_new_ships: Arc::clone(&park_new_ships),
+        ships_to_park: Arc::clone(&ships_to_park),
+        ships_to_load: Arc::clone(&ships_to_load),
     };
     let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(players), Box::new(coarse), Box::new(editor)];
     let host = PluginHost::new(plugins, &world).unwrap();
@@ -231,7 +275,8 @@ fn rig_over(
         Box::new(host),
         Box::new(listener),
     )
-    .unwrap();
+    .unwrap()
+    .with_ship_files(Box::new(files.clone()));
     let mut client = Client {
         connection: connector.connect().unwrap(),
     };
@@ -248,6 +293,11 @@ fn rig_over(
         edits,
         ships_to_make,
         ships_made,
+        park_new_ships,
+        ships_to_park,
+        ships_to_load,
+        files,
+        format,
         block,
         temperature,
     }
@@ -875,4 +925,234 @@ fn a_ship_made_while_the_server_runs_has_nodes_too() {
             "level {level}"
         );
     }
+}
+
+// ---------------------------------------------------------------- the far nodes of ships that are put away
+
+/// The nodes of a ship, as the plugin keeps them, coarsest first (the order of a far nodes file).
+fn nodes_kept_of(rig: &Rig, ship: GridId) -> FarNodes {
+    let mut kept = FarNodes::new();
+    for (cube, node) in rig.handle.overrides_of(ship) {
+        kept.insert(cube, node);
+    }
+    kept
+}
+
+/// What is in the far nodes file made for the ship file that `ship` is in, read as a server that starts again reads it.
+fn far_nodes_read(rig: &mut Rig, ship: GridId) -> FarNodesRead {
+    let parked = rig.server.world().grids().get_parked(ship).unwrap().clone();
+    let (format, block) = (rig.format.clone(), rig.block);
+    read_far_nodes(
+        rig.files.far_files_mut(),
+        &FarFileName::of(&parked.file),
+        parked.checksum,
+        |identifier| format.content_number(block, identifier),
+    )
+}
+
+/// A rig over a world with one ship whose nodes are made, and then the ship is put into its file. Also the nodes it had.
+fn rig_with_a_ship_put_away() -> (Rig, GridId, FarNodes) {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    let before = nodes_kept_of(&rig, ship);
+    assert!(before.len() >= 12, "a node at each of 12 levels at least");
+    rig.ships_to_park.lock().unwrap().push(ship);
+    rig.step(1);
+    assert!(rig.server.world().grids().get(ship).is_none());
+    (rig, ship, before)
+}
+
+#[test]
+fn the_nodes_of_a_ship_that_is_put_away_are_written_beside_its_file_as_they_were() {
+    let (mut rig, ship, before) = rig_with_a_ship_put_away();
+    match far_nodes_read(&mut rig, ship) {
+        FarNodesRead::Found(found) => assert_eq!(found, before),
+        other => panic!("{other:?}"),
+    }
+    // The ship being in a file does not take its nodes from the plugin.
+    assert_eq!(nodes_kept_of(&rig, ship), before);
+}
+
+#[test]
+fn a_ship_put_away_with_nodes_still_to_be_made_has_no_nodes_file_and_keeps_no_nodes() {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    // A block is put in the ship in one tick, and the ship is put away in the next, when the nodes over the block are not all made again (the levels go one
+    // at a time).
+    rig.set_channel_in(ship, [8, 8, 8], [9, 9, 9], rig.block, STONE);
+    rig.step(1);
+    assert!(rig.handle.counts().1 > 0, "nodes are still to be made");
+    rig.ships_to_park.lock().unwrap().push(ship);
+    rig.step(1);
+    assert!(rig.server.world().grids().get_parked(ship).is_some());
+    assert!(matches!(
+        far_nodes_read(&mut rig, ship),
+        FarNodesRead::Absent
+    ));
+    assert!(
+        nodes_kept_of(&rig, ship).is_empty(),
+        "nodes of a state the file does not have are not kept"
+    );
+    // What the worker was making for it when it was put away is not kept either.
+    rig.step(3);
+    assert!(
+        nodes_kept_of(&rig, ship).is_empty(),
+        "nodes the worker made"
+    );
+    assert_eq!(rig.handle.counts(), (0, 0));
+}
+
+#[test]
+fn a_planet_put_away_has_no_nodes_file_for_its_generator_makes_its_nodes() {
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let mut world = game.new_world();
+    let made = game.sample_planet(&world, 0);
+    let planet = world.grids_mut().create(made);
+    let mut rig = rig_over(&game, world, |_, _| {});
+    rig.settle();
+    rig.ships_to_park.lock().unwrap().push(planet);
+    rig.step(2);
+    let parked = rig.server.world().grids().get_parked(planet).unwrap();
+    assert!(parked.has_terrain);
+    assert_eq!(rig.files.far_files_mut().names().unwrap(), []);
+
+    // And a file of nodes that is there for a planet all the same is not read: a planet's nodes are its generator's.
+    let name = FarFileName::of(&parked.file);
+    let checksum = parked.checksum;
+    let mut nodes = FarNodes::new();
+    nodes.insert(
+        BrickCube::containing(BrickCoordinate::ORIGIN, 1),
+        CoarseNode::uniform(CoarseCell {
+            block: STONE,
+            fill: 255,
+            light: 0,
+            exposure: 0,
+        }),
+    );
+    let (format, block) = (rig.format.clone(), rig.block);
+    let bytes = nodes
+        .encode(checksum, |number| format.content_identifier(block, number))
+        .unwrap();
+    let mut again = restarted(&mut rig, |files| {
+        files.far_files_mut().write(&name, &bytes).unwrap();
+    });
+    again.step(1);
+    assert!(again.server.world().grids().get_parked(planet).is_some());
+    assert!(
+        nodes_kept_of(&again, planet).is_empty(),
+        "{:?}",
+        again
+            .server
+            .world()
+            .grids()
+            .parked()
+            .map(|(id, parked)| (id, parked.has_terrain, parked.file))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_ship_made_and_put_away_in_one_tick_has_no_nodes_file_and_not_the_nodes_of_nothing() {
+    let mut rig = rig();
+    rig.park_new_ships.store(true, Ordering::SeqCst);
+    *rig.ships_to_make.lock().unwrap() = 1;
+    rig.step(3);
+    let ship = rig.ships_made.lock().unwrap()[0];
+    assert!(rig.server.world().grids().get_parked(ship).is_some());
+    // (Its voxels were heard of when it was not in memory: nothing is known of what it holds, and a file that said it holds nothing would be false.)
+    assert!(matches!(
+        far_nodes_read(&mut rig, ship),
+        FarNodesRead::Absent
+    ));
+    assert!(nodes_kept_of(&rig, ship).is_empty());
+}
+
+/// A server made as a game that is started again makes it: from the world file the first one saved and its ship files, where `change` has changed the files
+/// first (to see what a damaged or lost file does).
+fn restarted(rig: &mut Rig, change: impl FnOnce(&mut MemoryShipFiles)) -> Rig {
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let save = rig.server.save(&game.registries()).unwrap();
+    let mut world_file = Vec::new();
+    save.write_with(&mut rig.files, |bytes| {
+        world_file = bytes.to_vec();
+        Ok(())
+    })
+    .unwrap();
+    let mut files = rig.files.duplicate();
+    change(&mut files);
+    let mut again = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let (reloaded, _) = again.load(&world_file).unwrap();
+    rig_over_files(&again, reloaded, files, |config, _| {
+        let mut opaque = vec![true; 16];
+        opaque[AIR as usize] = false;
+        config.table = BlockTable::of_cubes(&opaque);
+    })
+}
+
+#[test]
+fn a_server_that_starts_again_has_the_nodes_of_a_ship_in_its_file_without_bringing_the_ship_in() {
+    let (mut rig, ship, before) = rig_with_a_ship_put_away();
+    let mut again = restarted(&mut rig, |_| {});
+    assert!(again.server.world().grids().get(ship).is_none());
+    again.step(1);
+    assert!(again.server.world().grids().get_parked(ship).is_some());
+    assert!(again.server.world().grids().get(ship).is_none());
+    assert_eq!(nodes_kept_of(&again, ship), before);
+    // Each is a version no client has been sent.
+    for (cube, _) in before.iter() {
+        assert!(again.handle.override_of(ship, cube).unwrap().1 > 0);
+    }
+    // They are read once: what the plugin makes of them later is its own.
+    again.step(5);
+    assert_eq!(nodes_kept_of(&again, ship), before);
+}
+
+#[test]
+fn nodes_files_that_are_damaged_or_of_another_state_or_missing_cost_the_far_view_of_the_ship_and_nothing_else()
+ {
+    let (mut rig, ship, before) = rig_with_a_ship_put_away();
+    let parked = rig.server.world().grids().get_parked(ship).unwrap().clone();
+    let name = FarFileName::of(&parked.file);
+    let good = rig.files.far_files_mut().read(&name).unwrap();
+    let (format, block) = (rig.format.clone(), rig.block);
+    let another_state = before
+        .encode(parked.checksum ^ 1, |number| {
+            format.content_identifier(block, number)
+        })
+        .unwrap();
+    let mut damaged = good.clone();
+    damaged[good.len() / 2] ^= 0x10;
+    for (what, bytes) in [
+        ("damaged", damaged),
+        ("cut short", good[..good.len() - 3].to_vec()),
+        ("not a file of nodes", b"VOXUNAMI".to_vec()),
+        ("another state", another_state),
+    ] {
+        let mut broken = restarted(&mut rig, |files| {
+            files.far_files_mut().write(&name, &bytes).unwrap();
+        });
+        broken.step(1);
+        assert!(
+            broken.server.world().grids().get_parked(ship).is_some(),
+            "{what}"
+        );
+        assert!(nodes_kept_of(&broken, ship).is_empty(), "{what}");
+    }
+    let mut lost = restarted(&mut rig, |files| {
+        files.far_files_mut().remove(&name).unwrap();
+    });
+    lost.step(1);
+    assert!(lost.server.world().grids().get_parked(ship).is_some());
+    assert!(nodes_kept_of(&lost, ship).is_empty());
+}
+
+#[test]
+fn a_ship_that_comes_back_has_its_nodes_made_again_from_its_bricks_and_is_the_same() {
+    let (mut rig, ship, before) = rig_with_a_ship_put_away();
+    let mut again = restarted(&mut rig, |_| {});
+    again.step(1);
+    again.ships_to_load.lock().unwrap().push(ship);
+    again.settle();
+    assert!(again.server.world().grids().get(ship).is_some());
+    assert_eq!(nodes_kept_of(&again, ship), before);
 }

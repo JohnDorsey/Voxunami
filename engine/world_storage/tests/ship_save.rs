@@ -625,6 +625,10 @@ impl ShipFiles for Flaky {
         self.call()?;
         self.inner.names()
     }
+
+    fn far_files_mut(&mut self) -> &mut dyn world_storage::far_nodes::FarFiles {
+        self.inner.far_files_mut()
+    }
 }
 
 /// Every ship the world file names can be read, from these files, and the world is whole.

@@ -684,6 +684,9 @@ impl ShipFiles for FlakyFiles {
     fn names(&self) -> io::Result<Vec<ShipFileName>> {
         self.inner.names()
     }
+    fn far_files_mut(&mut self) -> &mut dyn world_storage::far_nodes::FarFiles {
+        self.inner.far_files_mut()
+    }
 }
 
 /// The id of the ship made `number`th (counting from 0) in a world with no ships before.

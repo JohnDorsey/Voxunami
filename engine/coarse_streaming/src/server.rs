@@ -19,10 +19,10 @@ use block_models::BlockTable;
 use coarse_cells::{CoarseCell, CoarseNode, EditedCubes, ViewSelection, select_around_brick};
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
-use plugin_host::{HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec};
+use plugin_host::{HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, ShipParked, SystemSpec};
 use protocol::{ClientId, Message};
 use region_octree::BrickCube;
-use server::Audience;
+use server::{Audience, ServerWorld};
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, ChannelIndex, ChannelStorage, Grid, GridLayout};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, coarse_node_of_brick};
@@ -31,6 +31,7 @@ use voxel_space::{
 };
 #[cfg(test)]
 use world_storage::BrickSource;
+use world_storage::far_nodes::{FarFileName, FarNodes, FarNodesRead, read_far_nodes};
 use world_storage::{LevelData, WorldData};
 
 use crate::messages::{CoarseNodeUpdate, CoarseNodes, MAXIMUM_UPDATES, SetDetail};
@@ -164,6 +165,13 @@ struct State {
     worker: Option<Worker>,
     /// Ticks since the nodes of ships that are gone were last swept away.
     ticks_since_sweep: u32,
+    /// Ships whose voxels were heard of while they were in a file (they were made or changed in the tick they were put away): what is kept of them is not known to be
+    /// what the file holds.
+    heard_in_a_file: BTreeSet<GridId>,
+    /// Nodes that were with the worker when their ship was put away with nodes that were not final: what the worker made of them is not kept.
+    discarded: BTreeSet<Key>,
+    /// Whether the nodes that the files of ships hold have been read (once, in the first tick).
+    far_nodes_read: bool,
 }
 
 /// How often (in ticks) the nodes of ships that are no more are looked for: every few seconds, so that a world of many ships does not pay for it in every tick.
@@ -614,17 +622,113 @@ impl State {
             })
             .collect();
         for grid in gone {
-            let keys: Vec<Key> = self
-                .overrides
-                .keys()
-                .filter(|key| key.1 == grid)
-                .copied()
-                .collect();
-            for key in keys {
-                self.forget(key);
-                self.dirty.remove(&key);
+            self.forget_the_nodes_of(grid);
+        }
+    }
+
+    /// Takes back every node kept for a ship, and the nodes of it that are to be made.
+    fn forget_the_nodes_of(&mut self, grid: GridId) {
+        let keys: Vec<Key> = self
+            .overrides
+            .keys()
+            .filter(|key| key.1 == grid)
+            .copied()
+            .collect();
+        for key in keys {
+            self.forget(key);
+        }
+        self.dirty.retain(|key| key.1 != grid);
+        self.epoch += 1;
+    }
+
+    /// Whether a node of the ship is to be made or being made.
+    fn waits_for_a_node_of(&self, grid: GridId) -> bool {
+        self.dirty
+            .iter()
+            .chain(self.in_flight.iter())
+            .any(|key| key.1 == grid)
+    }
+
+    /// The nodes kept for a ship, as a far nodes file holds them.
+    fn far_nodes_of(&self, grid: GridId) -> FarNodes {
+        let mut nodes = FarNodes::new();
+        for (key, stored) in &self.overrides {
+            if key.1 == grid {
+                nodes.insert(cube_of(*key), stored.node.clone());
             }
-            self.epoch += 1;
+        }
+        nodes
+    }
+
+    /// A ship was put into a file (see [`ShipParked`]): the nodes kept for it are written beside the file, to be read when the world is started again, and the ship
+    /// has them without being in memory. **Only nodes that are known to be of what the file holds are written**: the bricks are not in memory any more to make
+    /// the rest, so a ship that was put away with nodes still to be made (an edit a moment before), or one that was changed in the tick it was put away (what was
+    /// heard of it was heard when it was not in memory) has none written and none kept, and its far view is missing until it comes back and its nodes are made
+    /// again. Nothing here can fail the ship: a file that cannot be written is a ship without its far view.
+    fn put_away(&mut self, config: &CoarseConfig, world: &mut ServerWorld, grid: GridId) {
+        let heard_in_a_file = self.heard_in_a_file.remove(&grid);
+        let Some(parked) = world.data().grids().get_parked(grid) else {
+            return;
+        };
+        // (A planet's nodes are its generator's, and a planet is never left in a file.)
+        if parked.has_terrain {
+            return;
+        }
+        let (name, checksum) = (FarFileName::of(&parked.file), parked.checksum);
+        if heard_in_a_file || self.waits_for_a_node_of(grid) {
+            self.discarded
+                .extend(self.in_flight.iter().filter(|key| key.1 == grid).copied());
+            self.forget_the_nodes_of(grid);
+            return;
+        }
+        let Some(format) = world.ship_format() else {
+            return;
+        };
+        let Ok(bytes) = self.far_nodes_of(grid).encode(checksum, |number| {
+            format.content_identifier(config.block_channel, number)
+        }) else {
+            return;
+        };
+        if let Some(files) = world.ship_files_mut() {
+            let _ = files.far_files_mut().write(&name, &bytes);
+        }
+    }
+
+    /// Keeps the nodes that the files of the ships that are in files hold, so that a ship that is not in memory has its far view. Done once, in the first tick (the
+    /// files are the server's, which the plugin cannot see when it is registered). A file that is missing, damaged or of another state of the ship gives nothing.
+    fn read_far_nodes_of_ships_in_files(&mut self, config: &CoarseConfig, world: &mut ServerWorld) {
+        self.far_nodes_read = true;
+        let ships: Vec<(GridId, FarFileName, u32)> = world
+            .data()
+            .grids()
+            .parked()
+            .filter(|(_, parked)| !parked.has_terrain)
+            .map(|(grid, parked)| (grid, FarFileName::of(&parked.file), parked.checksum))
+            .collect();
+        let Some(format) = world.ship_format().cloned() else {
+            return;
+        };
+        let Some(files) = world.ship_files_mut() else {
+            return;
+        };
+        for (grid, name, checksum) in ships {
+            let read = read_far_nodes(files.far_files_mut(), &name, checksum, |identifier| {
+                format.content_number(config.block_channel, identifier)
+            });
+            if let FarNodesRead::Found(nodes) = read {
+                for (cube, node) in nodes.iter() {
+                    self.next_version += 1;
+                    let version = self.next_version;
+                    self.store(
+                        key_of(grid, cube),
+                        Stored {
+                            node: node.clone(),
+                            version,
+                        },
+                    );
+                }
+                self.epoch += 1;
+            }
         }
     }
 
@@ -645,6 +749,10 @@ impl State {
         }
         for (key, node) in finished {
             self.in_flight.remove(&key);
+            // (Made for a ship that was put away since: the node is of a state the ship's file does not have.)
+            if self.discarded.remove(&key) {
+                continue;
+            }
             self.keep(maximum_level, key, node);
         }
     }
@@ -969,6 +1077,15 @@ impl CoarseHandle {
         locked(&self.state).next_version
     }
 
+    /// The nodes kept for a ship (or a grid), coarsest first: what a far nodes file of it holds.
+    pub fn overrides_of(&self, grid: GridId) -> Vec<(BrickCube, CoarseNode)> {
+        let nodes = locked(&self.state).far_nodes_of(grid);
+        nodes
+            .iter()
+            .map(|(cube, node)| (cube, node.clone()))
+            .collect()
+    }
+
     /// The override of a node, if it has one, with its version.
     pub fn override_of(&self, grid: GridId, cube: BrickCube) -> Option<(CoarseNode, u64)> {
         locked(&self.state)
@@ -1081,6 +1198,17 @@ impl Plugin for CoarseServerPlugin {
             &channels,
             move |event, context| {
                 if !keeps_nodes_of(&marking_config, context.world().data(), event.grid) {
+                    // A ship that was put into a file in the tick it was changed in is heard of here, and its nodes are not what it holds.
+                    if event.grid.root_level().is_none()
+                        && context
+                            .world()
+                            .data()
+                            .grids()
+                            .get_parked(event.grid)
+                            .is_some()
+                    {
+                        locked(&marking).heard_in_a_file.insert(event.grid);
+                    }
                     return;
                 }
                 let mut state = locked(&marking);
@@ -1090,11 +1218,23 @@ impl Plugin for CoarseServerPlugin {
             },
         );
 
+        let parking = Arc::clone(&self.state);
+        let parking_config = Arc::clone(&self.config);
+        registrar.on::<ShipParked>(
+            HandlerSpec::new("engine:coarse_streaming_far_nodes"),
+            move |event, context| {
+                locked(&parking).put_away(&parking_config, context.world(), event.grid);
+            },
+        );
+
         let working = Arc::clone(&self.state);
         registrar.system(
             SystemSpec::new("engine:coarse_streaming", Phase::Rules),
             move |context| {
                 let mut state = locked(&working);
+                if !state.far_nodes_read {
+                    state.read_far_nodes_of_ships_in_files(&config, context.world());
+                }
                 state.work(&config, context.world().data());
                 let clients: Vec<ClientId> = state.clients.keys().copied().collect();
                 let mut outgoing: Vec<(ClientId, Vec<u8>)> = Vec::new();

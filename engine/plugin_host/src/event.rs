@@ -93,6 +93,21 @@ impl Event for UiResponded {
     }
 }
 
+/// A ship was put into a file and is no longer in memory (`ServerWorld::park_ship`, however it came about: the rules of a game put ships away, and the server does when
+/// nobody is near). Sent once for each time, in the order they were put away, with the ship in its file (`world.data().grids().get_parked(grid)` has its file and the checksum of
+/// it) and out of memory. A plugin that keeps something of a ship that has to stay with its file (the far nodes of a ship, which are kept in a file named for the
+/// ship's) writes it now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShipParked {
+    pub grid: GridId,
+}
+
+impl Event for ShipParked {
+    fn id() -> NamespacedId {
+        parse_id("engine:ship_parked")
+    }
+}
+
 /// An entity was made. Sent when it is made, so a handler runs with the entity in the world.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySpawned {
