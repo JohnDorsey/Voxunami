@@ -239,14 +239,14 @@ fn summarize_edited_brick(
         })
         .collect();
     Some(coarse_node_of_brick(
-        &BrickNeighbourhood {
-            center: center.channels(config),
-            neighbours: std::array::from_fn(|index| {
+        &BrickNeighbourhood::with_face_neighbours(
+            center.channels(config),
+            std::array::from_fn(|index| {
                 neighbours[index]
                     .as_ref()
                     .map(|owned| owned.channels(config))
             }),
-        },
+        ),
         &config.table,
         config.air,
     ))

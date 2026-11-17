@@ -24,6 +24,20 @@ Light, levels of detail, planets, orbits, the great rivers, `/tp`, the sun and i
   uniform light. Rounding light to fewer bands in the mesher is the lever if a scene gets heavy (not built); a light
   texture is the later route to smooth shading and would not change storage or the protocol.
 
+- **Shade of block faces at their corners (ambient occlusion), owner's request 2026-11-17; built so far: the rule and the neighbourhood, not yet drawn.** Branch `graphics-smooth-lighting`.
+  Each whole-cube quad is to carry four corner levels (0 to 3, two bits each; `voxel_meshing::corner_occlusion`): a corner's level is the number of cubes that occlude among the two cells
+  beside the cell the face looks at and the cell diagonal to it (the 2 by 2 cells of the layer in front that meet at the corner), and 3 when both side cells are, whatever the diagonal is. The level
+  belongs to the corner, not to the face, so two faces on a plane agree about a corner they share and there is no seam. It is **blended bilinearly over the quad in the fragment shader**, not by
+  splitting the quad into two triangles: measured on Minecraft's rule in a probe (2026-11-17), a split along a fixed diagonal darkens the whole of the faces diagonal to a block placed on a flat
+  floor on one pair and half of them on the other (100 and 49 percent of the area), flipping the diagonal makes them alike but leaves rays along the diagonals, and the wall of a staircase one cell
+  wide and three tall has a saddle (two opposite corners dark) in its middle row that no split shades right (0.2 of the brightness); bilinear has none of these. Light has a similar seam in
+  Minecraft's rule (a cell with no light counts as the front cell's, so two faces on a plane disagree about a corner they share); the rule for light, when built, averages only the cells that are air.
+  Quads merge only along a direction in which the corner levels are constant (`CornerOcclusion::is_constant_along_u` and `_along_v`).
+  **Consequence built in phase 2: a brick is meshed from the layer of voxels all round it, so the mesher waits for the twenty-six bricks that touch it (`BrickNeighbourhood` has 26 slots, the first six
+  the faces), loads a ball two bricks larger than it draws (four when the display is held back) and keeps one more, and an edit remeshes the brick and the twenty-six.** The bricks loaded for a view
+  radius of 4, 8, 12 and 16 were 515, 3071, 9171 and 20,479 and are 925, 4169, 11,513 and 24,405 (counted from the offsets, not measured in a running game); an edit remeshes 27 bricks where it remeshed 7.
+  Cutting that for edits (only the neighbours that touch the changed voxel) needs the voxel, which `brick_changed` is not given. Slabs, stairs and other detailed quads get no shade yet.
+
 ## Decided (levels of detail; Phase 38, owner 2026-10-23; specified in `lod-spec.md`)
 - One level-of-detail system for terrain and every grid, ships included, so that the ground can one day be a ship (a planet: a rough sphere of cubes in ordinary
   space, no curved grids). It must scale to planets of 10^8 m and more; the maximum detail level is **116** (a cell of 2^116 voxels; it was 40 until the coordinates were 128 bits, see "Coarse levels go to the root"). Detail levels are counted in voxels; a game has one voxel size.

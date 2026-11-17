@@ -70,12 +70,10 @@ impl Exact {
             })
             .collect();
         let node = coarse_node_of_brick(
-            &BrickNeighbourhood {
-                center: BrickChannels::blocks_only(&center),
-                neighbours: std::array::from_fn(|index| {
-                    Some(BrickChannels::blocks_only(&neighbours[index]))
-                }),
-            },
+            &BrickNeighbourhood::with_face_neighbours(
+                BrickChannels::blocks_only(&center),
+                std::array::from_fn(|index| Some(BrickChannels::blocks_only(&neighbours[index]))),
+            ),
             &self.table,
             AIR,
         );

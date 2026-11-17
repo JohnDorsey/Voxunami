@@ -153,10 +153,10 @@ fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
     let definitions: Vec<Option<&BlockDefinition>> = vec![Some(&air), Some(&solid)];
     with_material(
         mesh_brick(
-            &BrickNeighbourhood {
-                center: BrickChannels::blocks_only(&storage),
-                neighbours: [None; 6],
-            },
+            &BrickNeighbourhood::with_face_neighbours(
+                BrickChannels::blocks_only(&storage),
+                [None; 6],
+            ),
             &BlockTable::from_definitions(&definitions),
         )
         .pack(),
@@ -295,10 +295,10 @@ fn avatar_mesh(color: usize) -> PackedBrickMesh {
     // The mesh is made of block 1 (an opaque cube, air being 0) and given the avatar's material value.
     with_material(
         mesh_brick(
-            &BrickNeighbourhood {
-                center: BrickChannels::blocks_only(&storage),
-                neighbours: [None; 6],
-            },
+            &BrickNeighbourhood::with_face_neighbours(
+                BrickChannels::blocks_only(&storage),
+                [None; 6],
+            ),
             &BlockTable::of_cubes(&[false, true]),
         )
         .pack(),
