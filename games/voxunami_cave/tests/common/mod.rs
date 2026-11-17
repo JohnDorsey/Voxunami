@@ -221,6 +221,31 @@ pub fn ground_height(player: &Player, x: i128, z: i128) -> i128 {
         .expect("the column has ground")
 }
 
+/// The number the server has for a block, by its identifier.
+pub fn raw_in(content: &CaveContent, block: &str) -> u32 {
+    content.registries()[0]
+        .1
+        .raw_id_of(&block.parse().expect("an identifier"))
+        .unwrap_or_else(|| panic!("no block {block}"))
+}
+
+/// A player hovering above the ground at the column (16, 16), and the voxel above that ground.
+pub fn above_the_ground(
+    rig: &mut Rig,
+    connection: Option<Box<dyn Connection>>,
+) -> (Player, VoxelCoordinate) {
+    let mut player = match connection {
+        Some(connection) => rig.join_with(connection, [16.5, 110.0, 16.5], 0.0, 0.0),
+        None => rig.join([16.5, 110.0, 16.5], 0.0, 0.0),
+    };
+    rig.settle(&mut [&mut player]);
+    player.camera = above_ground(&player, 16, 16, 2.0);
+    player.teleport_to_camera();
+    rig.settle(&mut [&mut player]);
+    let ground = ground_height(&player, 16, 16);
+    (player, VoxelCoordinate::new(16, ground + 1, 16))
+}
+
 /// A camera `height` voxels above the ground of a column, looking straight down.
 pub fn above_ground(player: &Player, x: i128, z: i128, height: f64) -> Camera {
     let ground = ground_height(player, x, z) as f64 + 1.0;

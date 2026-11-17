@@ -47,6 +47,31 @@ fn load_into(content: &mut impl GameContent, directory: &Path) -> Result<Summary
     })
 }
 
+/// Reads the packs in `directory` again and replaces the package of the server that runs on `content` (`package_reload::reload_packs`), between two of its ticks.
+/// What it did, or why it did not, in words for whoever runs the server: a pack that is no good changes nothing.
+pub(crate) fn reload_from_directory(
+    content: &mut impl GameContent,
+    directory: &Path,
+    package: &crate::SharedPackage,
+    server: &mut server::Server,
+) -> Result<String, String> {
+    let raw = read_directory(directory).map_err(|errors| problems(&errors.to_string(), None))?;
+    let reloaded = crate::package_reload::reload_packs(content, &raw, package, server)
+        .map_err(|error| problems(&error.to_string(), Some(raw.len())))?;
+    for warning in &reloaded.warnings {
+        eprintln!("warning: {warning}");
+    }
+    Ok(format!(
+        "{} pack{} read again, {} block{} added; the package has been replaced {} time{}",
+        raw.len(),
+        plural(raw.len()),
+        reloaded.blocks_added,
+        plural(reloaded.blocks_added),
+        reloaded.version,
+        plural(reloaded.version as usize),
+    ))
+}
+
 fn problems(text: &str, packs: Option<usize>) -> String {
     let count = text.lines().count();
     let in_packs = packs.map_or(String::new(), |packs| {

@@ -223,6 +223,8 @@ pub struct ServerWorld {
     ship_settings: ShipSettings,
     /// The clients the game has sent away this tick, with what they are told.
     disconnects: Vec<(ClientId, String)>,
+    /// Whether a rule has asked for the packs to be read again (see [`ServerWorld::request_reload`]).
+    reload_requested: bool,
     /// The entities in a level that a planet on a rail carried in the last tick, by the planet (see [`ServerWorld::planet_carrying`]).
     carried_by: BTreeMap<EntityId, GridId>,
     /// The ships that a planet on a rail carried in the last tick, by the planet (see [`ServerWorld::carrier_of`]).
@@ -293,6 +295,7 @@ impl ServerWorld {
             structure_changes: Vec::new(),
             ship_settings: ShipSettings::default(),
             disconnects: Vec::new(),
+            reload_requested: false,
             carried_by: BTreeMap::new(),
             carried_ships: BTreeMap::new(),
             carried_entities: BTreeMap::new(),
@@ -319,6 +322,16 @@ impl ServerWorld {
             exit_searches: self.exit_searches,
             hand_overs: self.hand_overs,
         }
+    }
+
+    /// Asks whoever runs the server to read the game's packs again and replace the package, between this tick and the next (`/reload`: the server cannot do it
+    /// from inside a tick, and does not know where the packs are). Asking again before it is done asks once.
+    pub fn request_reload(&mut self) {
+        self.reload_requested = true;
+    }
+
+    pub(crate) fn take_reload_request(&mut self) -> bool {
+        std::mem::take(&mut self.reload_requested)
     }
 
     /// Sends a client away at the end of this tick's handling of the game, telling it why: it is disconnected and gone from the world,
@@ -376,6 +389,14 @@ impl ServerWorld {
 
     pub(crate) fn set_ship_storage(&mut self, format: ShipFormat, files: Box<dyn ShipFiles>) {
         self.ships = Some(ShipStorage { format, files });
+    }
+
+    /// Puts a new format on the ships' storage, keeping its files (the registries grew: the files of ships that are written from now on say
+    /// what the new numbers are). Nothing happens in a world with no storage.
+    pub(crate) fn set_ship_format(&mut self, format: ShipFormat) {
+        if let Some(ships) = &mut self.ships {
+            ships.format = format;
+        }
     }
 
     pub(crate) fn ship_format(&self) -> Option<&ShipFormat> {

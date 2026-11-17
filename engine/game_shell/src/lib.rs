@@ -22,6 +22,7 @@ pub mod host;
 pub mod options;
 pub mod package;
 mod package_data;
+mod package_reload;
 mod packs;
 #[cfg(test)]
 mod planet_view_tests;
@@ -51,6 +52,7 @@ pub use definition::{
 pub use identity::Identity;
 pub use package::{ContentPackage, FamilyFactory, GeneratorFactory, PackageSpec, no_families};
 pub use package_data::{PackageData, PackageError, check_materials};
+pub use package_reload::{ReloadError, Reloaded, reload_packs};
 pub use player_presence::{PlayerPose, Presence};
 pub use shared_package::{ReplaceError, SharedPackage};
 pub use sun::{Sky, Sun, SunView};

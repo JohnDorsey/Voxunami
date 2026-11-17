@@ -395,8 +395,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The placeholder specular pictures (2026-11-13): the stream is exactly 2,048 bytes longer (the package's, 7,220,093 to 7,222,141; no length number crossed a byte boundary), its hash moved to 15_826_922_587_325_389_508, and the saved world's did not.
 // A replaced package (2026-11-16; protocol 12): the stream hash changed once, for the protocol version in the welcome (12, was 11); the length and the saved world did not,
 // and with the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
+// `/reload` (2026-11-16): the reply to an unknown command lists the commands, and `, /reload` is 9 bytes: the stream is exactly 9 longer, its hash moved to 2_788_844_366_013_613_380,
+// the saved world's did not, and with the plugin taken out the old hash, 139_190_248_021_624_789, came back (run).
 const PINNED: (u64, usize, u64) = (
-    139_190_248_021_624_789,
-    7_222_141,
+    2_788_844_366_013_613_380,
+    7_222_150,
     15_594_210_036_057_493_535,
 );

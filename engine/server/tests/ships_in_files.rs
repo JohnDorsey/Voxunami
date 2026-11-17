@@ -130,6 +130,87 @@ fn a_ship_whose_file_is_gone_is_reported_stays_in_its_file_and_is_still_named_by
 }
 
 #[test]
+fn a_ship_that_holds_a_block_the_package_gained_is_saved_in_a_file_that_says_what_the_block_is_and_comes_back()
+ {
+    let mut game = Game::new(&ALL_PLUGINS);
+    let mut world = sample_world(&game);
+    // The block the package will gain takes the next number, which a ship can hold before the registry has the name (the server only keeps numbers).
+    let crystal_number = u32::try_from(game.blocks.len()).unwrap();
+    let mut ship = game.sample_ship(&world, 0);
+    let block_channel = ship
+        .voxels
+        .layout()
+        .channel_index(&id("core:block"))
+        .unwrap();
+    ship.voxels
+        .set(block_channel, VoxelCoordinate::new(2, 1, 1), crystal_number);
+    let ship_id = world.grids_mut().create(ship);
+    let before = world.grids().get(ship_id).unwrap().voxels.content_digest();
+    // The server puts the ship away in the tick after the replacement and brings it back in the next (with the files that it keeps while it runs, which are
+    // written in the format the server holds, not the one a save makes).
+    let outcome = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&outcome);
+    let logic = ScriptedLogic::new().on_tick(move |tick, world: &mut ServerWorld| {
+        let mut seen = seen.lock().unwrap();
+        match tick.get() {
+            2 => seen.push(
+                world
+                    .park_ship(ship_id, false)
+                    .map_err(|error| error.to_string()),
+            ),
+            3 => seen.push(world.load_ship(ship_id).map_err(|error| error.to_string())),
+            _ => {}
+        }
+    });
+    let files = MemoryShipFiles::new();
+    let mut server = server_for(&game, world, &files, logic);
+    server.step();
+
+    game.blocks.register(id("new_mod:crystal"), ()).unwrap();
+    assert_eq!(game.raw_block("new_mod:crystal"), crystal_number);
+    server.replace_package(vec![1], &game.registries()).unwrap();
+    server.step();
+    server.step();
+    assert_eq!(
+        *outcome.lock().unwrap(),
+        [Ok(()), Ok(())],
+        "put away and brought back"
+    );
+    assert_eq!(
+        server
+            .world()
+            .grids()
+            .get(ship_id)
+            .unwrap()
+            .voxels
+            .content_digest(),
+        before,
+        "with the block it held"
+    );
+    // And a save of it comes back in a world that has the block.
+    let world_file = written(&mut server, &game, &files);
+
+    let mut other_game = Game::new(&ALL_PLUGINS);
+    other_game
+        .blocks
+        .register(id("new_mod:crystal"), ())
+        .unwrap();
+    let (reloaded, _) = other_game.load(&world_file).unwrap();
+    let mut again = server_for(&other_game, reloaded, &files, ScriptedLogic::new());
+    assert!(again.load_parked_ships().is_empty());
+    assert_eq!(
+        again
+            .world()
+            .grids()
+            .get(ship_id)
+            .unwrap()
+            .voxels
+            .content_digest(),
+        before
+    );
+}
+
+#[test]
 fn a_ship_is_put_away_and_asked_for_again_from_inside_a_tick_and_cannot_be_asked_for_twice() {
     let game = Game::new(&ALL_PLUGINS);
     let mut world = sample_world(&game);

@@ -3291,3 +3291,359 @@ fn the_ship_a_clients_body_is_aboard_takes_the_budget_of_bricks_before_a_ship_wi
         .collect();
     assert_eq!(spawned, [a_ship_id(1)]);
 }
+
+// ---- Replacing the package while the world runs (`hot-reload-plan.md`, step 5, phase 4; `specs/package-replacement-spec.md`) ----
+
+/// The block that these tests append to the registry of blocks.
+fn crystal() -> NamespacedId {
+    id("new_mod:crystal")
+}
+
+/// What a client is told when `identifiers` were appended to the registry of blocks.
+fn blocks_appended(identifiers: &[NamespacedId]) -> protocol::RegistryAdditions {
+    protocol::RegistryAdditions {
+        registry: world_storage::test_support::block_kind(),
+        identifiers: identifiers.to_vec(),
+    }
+}
+
+fn is_a_replacement(frame: &[u8]) -> bool {
+    matches!(
+        ServerMessage::decode(frame),
+        Ok(ServerMessage::PackageReplaced { .. })
+    )
+}
+
+#[test]
+fn a_replaced_package_is_the_first_message_of_the_next_tick_for_every_client_that_was_there_and_is_sent_once()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut watching = harness.connect();
+    let mut idle = harness.connect();
+    harness.log_in(&mut [&mut watching, &mut idle]);
+    watching.received();
+    idle.received();
+    watching.watch(BrickCoordinate::ORIGIN, 1);
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![7, 7], &game.registries())
+        .unwrap();
+    assert!(
+        watching.received().is_empty() && idle.received().is_empty(),
+        "nothing is sent until the tick"
+    );
+
+    harness.server.step();
+    let replaced = ServerMessage::PackageReplaced {
+        appended: vec![blocks_appended(&[crystal()])],
+        package: vec![7, 7],
+    };
+    let told = watching.received();
+    assert_eq!(
+        told.first(),
+        Some(&replaced),
+        "before the change of what it watches, so that the rest of the tick is read with the new package: {told:?}"
+    );
+    assert!(
+        matches!(told[1], ServerMessage::InterestChanged { .. }),
+        "{told:?}"
+    );
+    assert!(matches!(
+        idle.received()[..],
+        [
+            ServerMessage::PackageReplaced { .. },
+            ServerMessage::TickCompleted { .. }
+        ]
+    ));
+
+    harness.server.step();
+    for client in [&mut watching, &mut idle] {
+        assert!(
+            client
+                .received()
+                .iter()
+                .all(|message| !matches!(message, ServerMessage::PackageReplaced { .. })),
+            "a package is replaced once"
+        );
+    }
+}
+
+#[test]
+fn the_replacement_is_the_same_bytes_for_every_client_whatever_it_watches() {
+    let (mut game, mut harness) = default_harness();
+    let mut near = harness.connect();
+    let mut far = harness.connect();
+    let mut idle = harness.connect();
+    harness.log_in(&mut [&mut near, &mut far, &mut idle]);
+    near.watch(BrickCoordinate::ORIGIN, 1);
+    far.watch(brick(40, 0, 0), 1);
+    harness.server.step();
+    for client in [&mut near, &mut far, &mut idle] {
+        client.received();
+    }
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![1, 2, 3], &game.registries())
+        .unwrap();
+    harness.server.step();
+    let first_frames: Vec<Vec<u8>> = [&mut near, &mut far, &mut idle]
+        .into_iter()
+        .map(|client| client.raw_frames().remove(0))
+        .collect();
+    assert!(is_a_replacement(&first_frames[0]));
+    assert_eq!(first_frames[0], first_frames[1]);
+    assert_eq!(first_frames[0], first_frames[2]);
+}
+
+#[test]
+fn a_client_that_joins_after_a_replacement_is_welcomed_with_the_new_package_and_the_new_tables_and_is_never_sent_the_message()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut early = harness.connect();
+    harness.log_in(&mut [&mut early]);
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![5], &game.registries())
+        .unwrap();
+    harness.server.step();
+
+    let mut late = harness.connect();
+    harness.log_in(&mut [&mut late]);
+    let told = late.received();
+    let [
+        ServerMessage::Welcome(welcome),
+        ServerMessage::TickCompleted { .. },
+    ] = &told[..]
+    else {
+        panic!("a welcome and a tick, and no replacement: {told:?}");
+    };
+    assert_eq!(welcome.package, vec![5]);
+    assert_eq!(
+        welcome.world_description,
+        harness.server.world().describe(&game.registries()).unwrap(),
+        "the registries it is told of have the block the package gained"
+    );
+    harness.server.step();
+    assert!(
+        late.received()
+            .iter()
+            .all(|message| !matches!(message, ServerMessage::PackageReplaced { .. }))
+    );
+}
+
+#[test]
+fn a_client_welcomed_in_the_tick_of_the_replacement_has_the_new_package_in_its_welcome_and_is_not_told_twice()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut early = harness.connect();
+    harness.log_in(&mut [&mut early]);
+    early.received();
+    let mut joining = harness.connect();
+    joining.hello();
+    harness.server.step();
+    joining.prove();
+    // (The tick that challenged the one was a tick of the other too.)
+    early.received();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![5], &game.registries())
+        .unwrap();
+    // This tick welcomes the one and replaces the package of the other.
+    let report = harness.server.step();
+    assert_eq!(report.joined, [ClientId::new(2)]);
+
+    let told = joining.received();
+    let [
+        ServerMessage::Welcome(welcome),
+        ServerMessage::TickCompleted { .. },
+    ] = &told[..]
+    else {
+        panic!("a welcome that has the package, and nothing to replace: {told:?}");
+    };
+    assert_eq!(welcome.package, vec![5]);
+    assert!(matches!(
+        early.received()[0],
+        ServerMessage::PackageReplaced { .. }
+    ));
+}
+
+#[test]
+fn replacements_made_before_the_same_tick_are_one_message_with_all_that_was_appended_and_the_last_package()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![1], &game.registries())
+        .unwrap();
+    let ruby = id("new_mod:ruby");
+    game.blocks.register(ruby.clone(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![2], &game.registries())
+        .unwrap();
+    harness.server.step();
+    assert_eq!(
+        client.received()[..],
+        [
+            ServerMessage::PackageReplaced {
+                appended: vec![blocks_appended(&[crystal(), ruby])],
+                package: vec![2],
+            },
+            ServerMessage::TickCompleted { tick: Tick::new(3) },
+        ]
+    );
+}
+
+#[test]
+fn a_rule_that_asks_for_a_reload_is_answered_after_the_tick_once_and_only_when_it_asked() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_command(|client, text, world| {
+        if text == "/reload" {
+            world.request_reload();
+            world.reply(client, "reading the packs again");
+        }
+    });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    harness.server.step();
+    assert!(!harness.server.take_reload_request(), "nobody asked");
+
+    client.send(&ClientMessage::Command {
+        text: "/reload".to_owned(),
+    });
+    harness.server.step();
+    assert!(harness.server.take_reload_request());
+    assert!(
+        !harness.server.take_reload_request(),
+        "asked for once, taken once"
+    );
+    harness.server.step();
+    assert!(!harness.server.take_reload_request(), "and not asked again");
+}
+
+#[test]
+fn a_later_replacement_appends_only_what_the_earlier_one_did_not() {
+    let (mut game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![1], &game.registries())
+        .unwrap();
+    harness.server.step();
+    client.received();
+
+    let ruby = id("new_mod:ruby");
+    game.blocks.register(ruby.clone(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![2], &game.registries())
+        .unwrap();
+    harness.server.step();
+    assert_eq!(
+        client.received()[0],
+        ServerMessage::PackageReplaced {
+            appended: vec![blocks_appended(&[ruby])],
+            package: vec![2],
+        },
+        "the crystal was told already"
+    );
+}
+
+#[test]
+fn a_replacement_that_adds_no_entry_still_replaces_the_package_and_appends_nothing() {
+    let (game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    harness
+        .server
+        .replace_package(vec![8], &game.registries())
+        .unwrap();
+    harness.server.step();
+    assert!(matches!(
+        &client.received()[0],
+        ServerMessage::PackageReplaced { appended, package } if appended.is_empty() && package == &vec![8]
+    ));
+}
+
+#[test]
+fn a_replacement_that_drops_renames_or_adds_a_kind_of_registry_is_refused_and_changes_nothing() {
+    use content_registry::Registry;
+
+    let (game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    let before = harness.server.world().describe(&game.registries()).unwrap();
+
+    // An entry fewer.
+    let mut shorter = Game::new(&ALL_PLUGINS);
+    let mut shortened = Registry::new();
+    for (_, entry) in game.blocks.iter().take(game.blocks.len() - 1) {
+        shortened.register(entry.identifier().clone(), ()).unwrap();
+    }
+    shorter.blocks = shortened;
+    let error = harness
+        .server
+        .replace_package(vec![1], &shorter.registries())
+        .unwrap_err();
+    assert!(error.to_string().contains("voxel_content:block"), "{error}");
+
+    // An entry with another name in its place (the numbers of what was there never change).
+    let mut renamed = Registry::new();
+    for (index, (_, entry)) in game.blocks.iter().enumerate() {
+        let identifier = if index == 3 {
+            id("new_mod:instead")
+        } else {
+            entry.identifier().clone()
+        };
+        renamed.register(identifier, ()).unwrap();
+    }
+    let mut other = Game::new(&ALL_PLUGINS);
+    other.blocks = renamed;
+    let error = harness
+        .server
+        .replace_package(vec![2], &other.registries())
+        .unwrap_err();
+    assert!(error.to_string().contains("new_mod:instead"), "{error}");
+
+    // A registry that clients were not told of.
+    let mut things = Registry::new();
+    things.register(id("new_mod:thing"), ()).unwrap();
+    let mut registries = game.registries();
+    registries.push((id("new_mod:things"), &things));
+    let error = harness
+        .server
+        .replace_package(vec![3], &registries)
+        .unwrap_err();
+    assert!(error.to_string().contains("new_mod:things"), "{error}");
+
+    // Nothing was kept of any of them: no message, and a welcome as it was.
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        matches!(told[..], [ServerMessage::TickCompleted { .. }]),
+        "only the tick completes: {told:?}"
+    );
+    let mut late = harness.connect();
+    harness.log_in(&mut [&mut late]);
+    let told = late.received();
+    let [ServerMessage::Welcome(welcome), ..] = &told[..] else {
+        panic!("a welcome: {told:?}");
+    };
+    assert_eq!(welcome.package, Vec::<u8>::new());
+    assert_eq!(welcome.world_description, before);
+}

@@ -5,8 +5,8 @@ use content_registry::IdentifierRegistry;
 use identity::ChallengeSource;
 use namespaced_id::NamespacedId;
 use protocol::{
-    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, PlayerKey, ServerMessage, Tick,
-    Welcome,
+    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, PlayerKey, RegistryAdditions,
+    ServerMessage, Tick, Welcome,
 };
 use region_octree::BrickCube;
 use transport::{Connection, ConnectionClosed, Listener};
@@ -114,6 +114,36 @@ pub struct Server {
     entity_views: ViewCache,
     /// Where the challenges players prove their identity against come from.
     challenges: ChallengeSource,
+    /// The identifiers in each registry, in order of their numbers, as a client that joins now is told them (`world_description` has them).
+    described_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
+    /// The same as the clients that are playing were last told them: what the next replacement of the package appends is the difference.
+    told_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
+    /// Whether the package was replaced since the last tick: the clients that were playing are told at the start of the next one.
+    package_replaced: bool,
+}
+
+/// Why a package was not replaced (see [`Server::replace_package`]).
+#[derive(Debug, thiserror::Error)]
+pub enum PackageReplacementError {
+    #[error("the registry {registry} was not one that clients were told of, and cannot start now")]
+    NewRegistry { registry: NamespacedId },
+    #[error("the registry {registry} had {was} entries and has {now}: a registry only grows")]
+    Shortened {
+        registry: NamespacedId,
+        was: usize,
+        now: usize,
+    },
+    #[error(
+        "the registry {registry} has {now} at number {number}, where it had {was}: an entry keeps its number"
+    )]
+    Renumbered {
+        registry: NamespacedId,
+        number: usize,
+        was: NamespacedId,
+        now: NamespacedId,
+    },
+    #[error("the world cannot be described to clients: {0}")]
+    CannotDescribeWorld(#[from] SaveError),
 }
 
 impl Server {
@@ -126,6 +156,7 @@ impl Server {
         listener: Box<dyn Listener>,
     ) -> Result<Self, ServerError> {
         let world_description = world.describe(registries)?;
+        let described_tables = world.registry_tables(registries);
         let challenges = config
             .challenge_seed
             .map_or_else(ChallengeSource::random, ChallengeSource::counter);
@@ -151,7 +182,72 @@ impl Server {
             next_client_id: 1,
             entity_views: ViewCache::default(),
             challenges,
+            told_tables: described_tables.clone(),
+            described_tables,
+            package_replaced: false,
         })
+    }
+
+    /// Replaces the package of the game while the world runs: from the next tick on, a client that joins is welcomed with `package` and with the registries as
+    /// they are in `registries`, and a client that was playing is told by a [`ServerMessage::PackageReplaced`] that is the first message it is sent in that tick
+    /// (`docs/specs/package-replacement-spec.md`). Call it between ticks, never during one. The registries only grow: an entry keeps its number, and a registry that
+    /// clients were not told of cannot start. A replacement that breaks that is refused and changes nothing. Several replacements before one tick are one message,
+    /// with every entry appended and the last package.
+    ///
+    /// The server does not look at `package`: the game that made it has already given the parts of the server that read blocks (a shared table) the same one.
+    pub fn replace_package(
+        &mut self,
+        package: Vec<u8>,
+        registries: &[(NamespacedId, &dyn IdentifierRegistry)],
+    ) -> Result<(), PackageReplacementError> {
+        let tables = self.world.data().registry_tables(registries);
+        for (registry, table) in &tables {
+            let Some(described) = self.described_tables.get(registry) else {
+                return Err(PackageReplacementError::NewRegistry {
+                    registry: registry.clone(),
+                });
+            };
+            if table.len() < described.len() {
+                return Err(PackageReplacementError::Shortened {
+                    registry: registry.clone(),
+                    was: described.len(),
+                    now: table.len(),
+                });
+            }
+            if let Some((number, (was, now))) = described
+                .iter()
+                .zip(table)
+                .enumerate()
+                .find(|(_, (was, now))| was != now)
+            {
+                return Err(PackageReplacementError::Renumbered {
+                    registry: registry.clone(),
+                    number,
+                    was: was.clone(),
+                    now: now.clone(),
+                });
+            }
+        }
+        if let Some(registry) = self
+            .described_tables
+            .keys()
+            .find(|registry| !tables.contains_key(*registry))
+        {
+            return Err(PackageReplacementError::Shortened {
+                registry: registry.clone(),
+                was: self.described_tables[registry].len(),
+                now: 0,
+            });
+        }
+        // (Everything that can fail is done before anything is kept.)
+        let world_description = self.world.data().describe(registries)?;
+        let ship_format = self.world.data().ship_format(registries)?;
+        self.world.set_ship_format(ship_format);
+        self.world_description = world_description;
+        self.described_tables = tables;
+        self.config.package = package;
+        self.package_replaced = true;
+        Ok(())
     }
 
     pub fn world(&self) -> &WorldData {
@@ -208,6 +304,12 @@ impl Server {
         self.world
             .ship_files_mut()
             .expect("a server has somewhere to keep ships")
+    }
+
+    /// Whether a rule asked, in the ticks since this was last called, for the packs to be read again (`ServerWorld::request_reload`). The one who ticks the server
+    /// asks it between ticks, and then reads them and calls [`Server::replace_package`].
+    pub fn take_reload_request(&mut self) -> bool {
+        self.world.take_reload_request()
     }
 
     /// The last tick completed.
@@ -535,9 +637,17 @@ impl Server {
             .filter(|(_, session)| matches!(session.phase, Phase::Joined { .. }))
             .map(|(id, _)| *id)
             .collect();
+        // The package replaced since the last tick comes first for those who were playing then: the rest of this tick is read with it. Those who were welcomed in
+        // this tick have it in the welcome.
+        let replacement = self.take_replacement();
         let mut closed = Vec::new();
         for id in ids {
-            let frames = self.frames_for(id, tick, &edited, &ships);
+            let mut frames = self.frames_for(id, tick, &edited, &ships);
+            if let Some(replacement) = &replacement
+                && !report.joined.contains(&id)
+            {
+                frames.insert(0, replacement.clone());
+            }
             let session = self.sessions.get_mut(&id).expect("the session exists");
             if frames
                 .into_iter()
@@ -549,6 +659,34 @@ impl Server {
         for id in closed {
             self.remove_session(id, LeaveReason::ConnectionClosed, report);
         }
+    }
+
+    /// The message that tells the clients that were playing of the package replaced since the last tick, encoded once, if it was; from now on they are
+    /// told of the registries as they are.
+    fn take_replacement(&mut self) -> Option<Vec<u8>> {
+        if !std::mem::take(&mut self.package_replaced) {
+            return None;
+        }
+        // (Registries in order of their kinds, none empty; the tables are kept in that order.)
+        let appended = self
+            .described_tables
+            .iter()
+            .filter_map(|(registry, table)| {
+                let known = self.told_tables.get(registry).map_or(0, Vec::len);
+                (table.len() > known).then(|| RegistryAdditions {
+                    registry: registry.clone(),
+                    identifiers: table[known..].to_vec(),
+                })
+            })
+            .collect();
+        self.told_tables = self.described_tables.clone();
+        Some(
+            ServerMessage::PackageReplaced {
+                appended,
+                package: self.config.package.clone(),
+            }
+            .encode(),
+        )
     }
 
     /// Sends away the clients the game asked to send away, telling each why.

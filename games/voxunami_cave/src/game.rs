@@ -248,6 +248,14 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
         cave_plugins(content)
     }
 
+    /// Every rule of Cave that reads the blocks follows the package, so the packs may be read again while it runs.
+    fn following_plugins(
+        content: &CaveContent,
+        package: &game_shell::SharedPackage,
+    ) -> Option<Vec<Box<dyn Plugin>>> {
+        Some(crate::plugins::cave_plugins_sharing(content, package).0)
+    }
+
     fn client_plugins(content: &CaveContent) -> Vec<Box<dyn ClientPlugin>> {
         let readout = FlightReadout::default();
         vec![

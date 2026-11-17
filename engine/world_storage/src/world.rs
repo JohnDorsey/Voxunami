@@ -919,8 +919,8 @@ impl WorldData {
     }
 
     /// The identifiers of the entries of each registry, in order of their numbers: those the registries give, and the tables the file had of
-    /// registries nobody supplied one for this time.
-    fn registry_tables(
+    /// registries nobody supplied one for this time. These are the tables a description tells a client of.
+    pub fn registry_tables(
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
     ) -> BTreeMap<NamespacedId, Vec<NamespacedId>> {

@@ -5,7 +5,7 @@
 mod common;
 
 use base_blocks::EMISSION;
-use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height};
+use common::{Player, Rig, SEED, VIEW_RADIUS, above_the_ground, raw_in};
 use entities::Inventory;
 use game_shell::client_plugin::MouseButton;
 use game_shell::files::{open_recording, record_connection};
@@ -15,12 +15,9 @@ use game_shell::{GameContent, Identity, KeyCode, RawFile, RawPack, RawTexture};
 use namespaced_id::NamespacedId;
 use player_presence::player_kind;
 use transport::Connection;
-use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{Cave, request_block};
 use world_storage::ParsedWorld;
-
-use common::PlayerExt;
 
 fn id(text: &str) -> NamespacedId {
     text.parse().unwrap()
@@ -126,31 +123,6 @@ fn rig_with_the_pack() -> Rig {
     let content = content_with_the_pack();
     let world = content.new_overworld_world(SEED);
     Rig::with_world(content, world)
-}
-
-/// The number the server has for a block.
-fn raw_in(content: &CaveContent, block: &str) -> u32 {
-    content.registries()[0]
-        .1
-        .raw_id_of(&id(block))
-        .unwrap_or_else(|| panic!("no block {block}"))
-}
-
-/// A player hovering above the ground at the column (16, 16), and the voxel above that ground.
-fn above_the_ground(
-    rig: &mut Rig,
-    connection: Option<Box<dyn Connection>>,
-) -> (Player, VoxelCoordinate) {
-    let mut player = match connection {
-        Some(connection) => rig.join_with(connection, [16.5, 110.0, 16.5], 0.0, 0.0),
-        None => rig.join([16.5, 110.0, 16.5], 0.0, 0.0),
-    };
-    rig.settle(&mut [&mut player]);
-    player.camera = above_ground(&player, 16, 16, 2.0);
-    player.teleport_to_camera();
-    rig.settle(&mut [&mut player]);
-    let ground = ground_height(&player, 16, 16);
-    (player, VoxelCoordinate::new(16, ground + 1, 16))
 }
 
 #[test]

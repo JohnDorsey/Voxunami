@@ -18,6 +18,7 @@ use world_storage::file::write_atomically;
 use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles, WorldData};
 
 use crate::definition::{GameContent, GameDefinition};
+use crate::shared_package::SharedPackage;
 
 /// How far beyond the drawn distance a client watches, so every drawn brick has its neighbours.
 pub const WATCH_MARGIN_BRICKS: i128 = 2;
@@ -194,6 +195,8 @@ pub struct HostSettings {
     /// How ships are kept: how near a player has to be for them to move, how far off for them to be put in files, and what a pilot's logout
     /// does to them.
     pub ships: ShipSettings,
+    /// The folder of data packs the content was made with, if there is one: what `/reload` reads again. Without it a server has nothing to reload.
+    pub packs: Option<PathBuf>,
 }
 
 impl HostSettings {
@@ -206,6 +209,7 @@ impl HostSettings {
             autosave: None,
             announce_players: false,
             ships: ShipSettings::default(),
+            packs: None,
         }
     }
 }
@@ -268,7 +272,7 @@ impl<G: GameDefinition> fmt::Debug for ServerThread<G> {
 
 impl<G: GameDefinition> ServerThread<G> {
     pub fn start(
-        content: G::Content,
+        mut content: G::Content,
         world: WorldData,
         settings: HostSettings,
     ) -> Result<Self, ServerError> {
@@ -277,7 +281,14 @@ impl<G: GameDefinition> ServerThread<G> {
         if let Some(network) = settings.network {
             listeners = listeners.with_boxed(network);
         }
-        let plugins = G::plugins(&content);
+        // A game whose rules follow a replaced package is given the one package the host replaces; a game whose rules do not cannot be reloaded.
+        let package = SharedPackage::new(content.package_data())
+            .unwrap_or_else(|error| panic!("the blocks of {} cannot be used: {error}", G::id()));
+        let (plugins, reloading) = match G::following_plugins(&content, &package) {
+            Some(plugins) => (plugins, Some(package)),
+            None => (G::plugins(&content), None),
+        };
+        let packs = settings.packs.clone();
         let ship_files: Box<dyn ShipFiles> = match &settings.world_file {
             Some(path) => Box::new(DirectoryShipFiles::beside(path)),
             None => Box::new(MemoryShipFiles::new()),
@@ -314,6 +325,31 @@ impl<G: GameDefinition> ServerThread<G> {
                         }
                         for (client, reason) in &report.left {
                             println!("{client} left ({reason:?})");
+                        }
+                    }
+                    // (Between two ticks, so that nothing reads the blocks while they are replaced.)
+                    if server.take_reload_request() {
+                        match (&reloading, &packs) {
+                            (None, _) => {
+                                eprintln!(
+                                    "reload: {} cannot replace its package while it runs",
+                                    G::title()
+                                );
+                            }
+                            (Some(_), None) => eprintln!(
+                                "reload: this server was started without --packs, so there is nothing to read again"
+                            ),
+                            (Some(package), Some(directory)) => {
+                                match crate::packs::reload_from_directory(
+                                    &mut content,
+                                    directory,
+                                    package,
+                                    &mut server,
+                                ) {
+                                    Ok(done) => println!("reload: {done}"),
+                                    Err(problem) => eprintln!("reload: {problem}"),
+                                }
+                            }
                         }
                     }
                     if let (Some(autosave), Some(path)) = (&autosave, &world_file)

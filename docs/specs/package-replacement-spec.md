@@ -1,6 +1,6 @@
 # Replacing the package while the world runs: what a recording does
 
-**A proposal for the owner to decide; nothing here is built.** Written 2026-11-15 on the branch `graphics-world-painting`, as step 4 of `hot-reload-plan.md`. It must be agreed before step 5 (`/reload` of block data) is built, because it changes the protocol, and a protocol version is decided once. Marks: **[read]** read in the code or a document, **[believed]** my reasoning, not run, **[measured]** run.
+**Accepted by the owner on 2026-11-16 (option A, and all four answers yes) and built: the client half in 38e3cb1, the server half in the phases of `hot-reload-plan.md` (the server sends it: `Server::replace_package`, phase 4).** Written 2026-11-15 on the branch `graphics-world-painting`, as step 4 of `hot-reload-plan.md`; what follows is the proposal as it was written, and `hot-reload-plan.md` says what was built and what was not. Marks: **[read]** read in the code or a document, **[believed]** my reasoning, not run, **[measured]** run.
 
 ## The problem
 

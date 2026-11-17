@@ -9,6 +9,7 @@ mod fire;
 mod items;
 mod light;
 mod movement;
+mod reload;
 mod ships;
 
 use block_models::SharedBlockTable;
@@ -29,6 +30,7 @@ pub use fire::FirePlugin;
 pub use items::ItemsPlugin;
 pub use light::LightPlugin;
 pub use movement::{MovementPlugin, SharedMovement};
+pub use reload::ReloadPlugin;
 pub use ships::ShipCommandsPlugin;
 
 /// The plugins of the Cave server.
@@ -109,6 +111,7 @@ pub fn cave_plugins_sharing(
         Box::new(bodies),
         Box::new(lifecycle),
         Box::new(commands),
+        Box::new(ReloadPlugin),
     ];
     (plugins, report)
 }

@@ -357,6 +357,11 @@ impl GameContent for CaveContent {
         self.package.apply_packs(packs)
     }
 
+    /// Cave's rules follow a replaced package (`plugins::cave_plugins_sharing`), so its packs may be read again while it runs.
+    fn reload_packs(&mut self, packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
+        self.package.reload_packs(packs)
+    }
+
     fn body_support(&self) -> BodySupport {
         self.package.body_support()
     }
