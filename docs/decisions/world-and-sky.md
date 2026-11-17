@@ -47,6 +47,12 @@ Light, levels of detail, planets, orbits, the great rivers, `/tp`, the sun and i
   everything); dimming the sun's term too is a decision for the owner, and it is a one-line change. Tests: the packed layout, a GPU test of the blend (a ratio of 0.4 at level 3, 0.7 at level 1.5, and the same at
   each end whichever way the triangles lie), and one of the owner's first bug (the four diagonal floor squares round a block are equally dark). The shadow tests mesh without shade (`mesh_of_blocks`).
   The quad counts are the cost of the merge rule and will decide whether the 12-byte quad is affordable; the time can be cut further (the table is made even for a brick with few faces).
+  **Measured on real terrain (2026-11-17, release, this machine; a throwaway test that meshes the bricks of the rolling-hills generator, seed 2024, 15 x 9 x 15 bricks, each with its 26 neighbours, 904 bricks with faces; the test was not kept):**
+  3,416,460 single-voxel faces; greedy merge without shade 1,445,611 quads (8 bytes each, 11.6 MB); with the shade rule 2,306,813 quads (12 bytes each, 27.7 MB): **+60 percent quads, 2.4 times the bytes, mesh time +20 to +27 percent**
+  (2.16 s against 2.58 to 2.74 s for the 904 bricks, two runs of the shaded mesher; the baseline switched the shade off by hand, so it is the old mesher less its table, not the old commit). 89 percent of the quads
+  carry some shade on this rough ground, so the rule takes back about 40 percent of what the merge saves (merge factor 2.36 down to 1.48). The earlier synthetic figures above (hash terrain) overstate it on gentle ground and
+  understate it on rough. Elsewhere: 0fps's article on Minecraft-like AO merges only faces with equal levels at every vertex, the same rule, and calls the cost a modest rise in meshing time; Sodium's chunk vertex is 20 bytes
+  (80 per quad, four vertices), stb_voxel_render's quad is 20 or 32 bytes with 6 bits per vertex for light or shade, a binary greedy mesher writes 8 bytes per quad (as reported by its README; not read by me).
 
 ## Decided (levels of detail; Phase 38, owner 2026-10-23; specified in `lod-spec.md`)
 - One level-of-detail system for terrain and every grid, ships included, so that the ground can one day be a ship (a planet: a rough sphere of cubes in ordinary
