@@ -447,6 +447,55 @@ impl BlockTable {
                 .all(|(ours, theirs)| ours.id == theirs.id && ours.kind == theirs.kind)
     }
 
+    /// Whether `block` is the same block in this table and in `other` to everything that reads how a block behaves: how many states it has, and in each state and each of
+    /// the 24 orientations its shape, whether light and sight pass it and what it hides, and every property it has (density, what it lights, which of its faces dock,
+    /// and so on). What it is drawn as is not behaviour: its colour, the colour of a state or a face, its pictures and how it is drawn where it is seen through. A block that
+    /// a table has no definition for is the unknown block, a whole cube with the default of every property, and is the same as a block that is that in the other. Tables that
+    /// declare other properties are not alike in anything.
+    ///
+    /// For a rule that keeps what it worked out of a block (the colliders and the mass of a ship) and wants to know which of its blocks it must work out again when the table
+    /// is replaced.
+    pub fn behaves_as(&self, other: &BlockTable, block: u32) -> bool {
+        if !self.has_the_properties_of(other) {
+            return false;
+        }
+        // (A block the table has no entry for, or has none definition for, is the unknown block: one state, a whole cube, the default of every property. It is the
+        // same as any block that is that, and `state_count` and `model_of` say so.)
+        if self.state_count(block) != other.state_count(block) {
+            return false;
+        }
+        (0..self.state_count(block)).all(|state| {
+            // (Properties do not depend on the orientation: one look at the state's first model has them all.)
+            let (ours_base, theirs_base) = (
+                self.model_of(block, state, 0).base(),
+                other.model_of(block, state, 0).base(),
+            );
+            self.columns
+                .iter()
+                .zip(&other.columns)
+                .all(|(mine, yours)| mine.values[ours_base] == yours.values[theirs_base])
+                && (0..ORIENTATION_COUNT as u32).all(|orientation| {
+                    let (mine, yours) = (
+                        &self.models[self.model_of(block, state, orientation).0 as usize],
+                        &other.models[other.model_of(block, state, orientation).0 as usize],
+                    );
+                    self.shapes[mine.shape as usize] == other.shapes[yours.shape as usize]
+                        && mine.sight_through == yours.sight_through
+                        && mine.light_through == yours.light_through
+                        && mine.opaque_cube == yours.opaque_cube
+                        && mine.hides == yours.hides
+                })
+        })
+    }
+
+    /// The blocks that do not behave alike (see [`BlockTable::behaves_as`]) in this table and in `other`, in order of their numbers: what a rule that keeps what it worked
+    /// out of its blocks must work out again when `other` replaces this table. None for a table made of the same blocks painted otherwise.
+    pub fn blocks_that_behave_otherwise_in(&self, other: &BlockTable) -> Vec<u32> {
+        (0..self.block_count().max(other.block_count()) as u32)
+            .filter(|&block| !self.behaves_as(other, block))
+            .collect()
+    }
+
     /// Finds a property's column, to read through [`BlockTable::get`]. An error if the table's schema does
     /// not declare the key, or declares it as another kind than `T`.
     pub fn handle<T: PropertyType>(
@@ -1692,5 +1741,164 @@ mod tests {
             12 + 1,
             "the twelve stairs and the unknown cube"
         );
+    }
+
+    // ---- behaves_as: what a changed table changes for what reads how blocks behave ----
+
+    /// A table of air, stone (three states), glass and a block with no definition, with `change` made to the definition of stone.
+    fn table_with_stone(change: impl Fn(BlockDefinition) -> BlockDefinition) -> BlockTable {
+        let air = BlockDefinition::air();
+        let stone = change(BlockDefinition::cube([0.5; 3]).with_shapes(vec![
+            Shape::full(),
+            Shape::half(DOWN),
+            Shape::half(UP),
+        ]));
+        let glass = BlockDefinition::cube([0.7, 0.9, 1.0])
+            .with_sight_through(true)
+            .with_light_through(true);
+        BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&glass), None])
+    }
+
+    /// The blocks of a table that are not what they are in another, to a rule that reads how they behave. (Asked block by block, and by the one call that asks them
+    /// all, which must say the same.)
+    fn blocks_that_differ(first: &BlockTable, second: &BlockTable) -> Vec<u32> {
+        let one_by_one: Vec<u32> = (0..4)
+            .filter(|&block| !first.behaves_as(second, block))
+            .collect();
+        assert_eq!(first.blocks_that_behave_otherwise_in(second), one_by_one);
+        one_by_one
+    }
+
+    #[test]
+    fn a_table_behaves_as_itself_and_as_one_made_from_the_same_definitions() {
+        let table = table_with_stone(|stone| stone);
+        assert_eq!(blocks_that_differ(&table, &table), Vec::<u32>::new());
+        assert_eq!(
+            blocks_that_differ(&table, &table_with_stone(|stone| stone)),
+            Vec::<u32>::new()
+        );
+    }
+
+    #[test]
+    fn what_a_block_is_drawn_as_is_not_how_it_behaves() {
+        let table = table_with_stone(|stone| stone);
+        // Its colour, the colour of a state, a colour of a face, the way it is drawn where it is seen through: every one of them is the renderer's alone.
+        for painted in [
+            table_with_stone(|stone| stone.with_face_colors(&[(UP, [1.0, 0.0, 0.0])])),
+            table_with_stone(|stone| stone.with_transparency(Transparency::Glass)),
+            table_with_stone(|stone| {
+                stone.with_state_colors(vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+            }),
+            table_with_stone(|_| {
+                BlockDefinition::cube([0.1, 0.2, 0.3]).with_shapes(vec![
+                    Shape::full(),
+                    Shape::half(DOWN),
+                    Shape::half(UP),
+                ])
+            }),
+        ] {
+            assert_eq!(blocks_that_differ(&table, &painted), Vec::<u32>::new());
+        }
+    }
+
+    #[test]
+    fn a_changed_shape_or_state_or_property_or_light_is_a_change_of_that_block_alone() {
+        let density = || key_id("engine:density");
+        let table = table_with_stone(|stone| stone);
+        let changed: Vec<(&str, BlockTable)> = vec![
+            (
+                "a shape of a state",
+                table_with_stone(|stone| {
+                    stone.with_shapes(vec![Shape::full(), Shape::half(UP), Shape::half(UP)])
+                }),
+            ),
+            (
+                "another number of states",
+                table_with_stone(|stone| stone.with_shapes(vec![Shape::full(), Shape::half(DOWN)])),
+            ),
+            (
+                "a property",
+                table_with_stone(|stone| stone.with_property_value(density(), 2000)),
+            ),
+            (
+                "a property of one state",
+                table_with_stone(|stone| stone.with_state_property_value(2, density(), 2000)),
+            ),
+            (
+                "a face of the docking",
+                table_with_stone(|stone| stone.with_docking_faces(&[Some(UP)])),
+            ),
+            (
+                "what light does",
+                table_with_stone(|stone| stone.with_light_through(true)),
+            ),
+            (
+                "what sight does",
+                table_with_stone(|stone| stone.with_sight_through(true)),
+            ),
+        ];
+        for (what, other) in &changed {
+            assert_eq!(blocks_that_differ(&table, other), [1], "{what}");
+            // (And the same the other way round.)
+            assert_eq!(blocks_that_differ(other, &table), [1], "{what}, reversed");
+        }
+    }
+
+    #[test]
+    fn a_shape_that_moved_inside_the_voxel_is_a_change_though_it_hides_and_lights_and_passes_what_it_did()
+     {
+        // Two posts that touch no face of the voxel: neither hides anything, and light and sight pass both alike, so only the shape tells them apart (it is what a body
+        // collides with).
+        let post = |first: u8| {
+            Shape::from_boxes(&[crate::ShapeBox {
+                min: [first, 1, first],
+                max: [first + 2, 6, first + 2],
+            }])
+        };
+        let with_post = |first: u8| table_with_stone(|stone| stone.with_shapes(vec![post(first)]));
+        assert_eq!(
+            blocks_that_differ(&with_post(2), &with_post(2)),
+            Vec::<u32>::new()
+        );
+        assert_eq!(blocks_that_differ(&with_post(2), &with_post(3)), [1]);
+    }
+
+    #[test]
+    fn a_block_one_table_has_no_definition_for_is_the_unknown_cube_and_is_the_same_only_as_what_behaves_as_that()
+     {
+        let air = BlockDefinition::air();
+        let cube = BlockDefinition::cube([0.5; 3]);
+        let slab = BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::half(DOWN)]);
+        let short = BlockTable::from_definitions(&[Some(&air), Some(&cube)]);
+        let long_with_cube = BlockTable::from_definitions(&[Some(&air), Some(&cube), Some(&cube)]);
+        let long_with_slab = BlockTable::from_definitions(&[Some(&air), Some(&cube), Some(&slab)]);
+        assert!(short.behaves_as(&long_with_cube, 0) && short.behaves_as(&long_with_cube, 1));
+        // Block 2 is the unknown cube to the short table. A plain cube is that, to everything that reads how a block behaves, and a slab is not.
+        assert!(short.behaves_as(&long_with_cube, 2));
+        assert!(long_with_cube.behaves_as(&short, 2));
+        assert!(!short.behaves_as(&long_with_slab, 2));
+        assert!(!long_with_slab.behaves_as(&short, 2));
+        // Blocks neither has are the unknown block in both.
+        assert!(short.behaves_as(&long_with_slab, 3));
+        // A block with no definition is the unknown cube, in a table that has an entry for it and in one that has none.
+        let with_none = BlockTable::from_definitions(&[Some(&air), Some(&cube), None]);
+        assert!(with_none.behaves_as(&short, 2) && short.behaves_as(&with_none, 2));
+        assert!(!with_none.behaves_as(&long_with_slab, 2));
+    }
+
+    #[test]
+    fn tables_that_declare_other_properties_do_not_behave_alike_at_all() {
+        let mut schema = PropertySchema::new();
+        schema
+            .declare(
+                PropertyKey::new("tests:extra", 0u8, "a property the other table lacks")
+                    .declaration(),
+            )
+            .unwrap();
+        let air = BlockDefinition::air();
+        let with = BlockTable::try_from_definitions(&schema, &[Some(&air)]).unwrap();
+        let without = BlockTable::from_definitions(&[Some(&air)]);
+        assert!(!with.behaves_as(&without, 0));
+        assert!(!without.behaves_as(&with, 0));
     }
 }

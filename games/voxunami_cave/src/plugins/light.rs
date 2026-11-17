@@ -79,14 +79,21 @@ impl LightState {
     }
 
     /// If the table of the blocks was replaced since the light was made, has the world's light made again by what the blocks are now (what gives light, what lets it
-    /// through).
+    /// through). A table whose blocks all behave as they did (it only repaints them) changes no light, and the light is left as it is: lighting the world again is a visit
+    /// to every voxel of every brick.
     fn follow_the_table(&mut self, context: &mut Context<'_>) {
         if self.shared.version() == self.table_version {
             return;
         }
         let (table, version) = self.shared.snapshot();
-        self.table = table;
+        let earlier = std::mem::replace(&mut self.table, table);
         self.table_version = version;
+        if earlier
+            .blocks_that_behave_otherwise_in(&self.table)
+            .is_empty()
+        {
+            return;
+        }
         self.restart_light(self.light_model, context, false);
     }
 

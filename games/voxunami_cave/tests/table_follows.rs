@@ -22,21 +22,7 @@ fn id(text: &str) -> NamespacedId {
     text.parse().unwrap()
 }
 
-/// The package of Cave as it is made, for putting back.
-fn original() -> PackageData {
-    CaveContent::new().package_data()
-}
-
-/// The package of Cave with `change` made to every block that has a definition, by the block's identifier.
-fn changed(change: impl Fn(&str, &mut block_models::BlockDefinition)) -> PackageData {
-    let mut package = original();
-    for (identifier, definition) in &mut package.blocks {
-        if let Some(definition) = definition {
-            change(identifier.as_str(), definition);
-        }
-    }
-    package
-}
+use common::{changed_package as changed, original_package as original};
 
 /// Bodies move through stone as if it were not there.
 fn stone_is_passable() -> PackageData {

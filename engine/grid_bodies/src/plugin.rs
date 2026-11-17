@@ -661,23 +661,71 @@ impl Bodies {
     }
 
     /// The table of the blocks was replaced since the bodies were made from it: what a block weighs, what it is to a body and where the ports and the ends of joints are
-    /// may all be other, and are all kept in the bodies (the colliders of every brick, the mass and the ports of every ship). So the bodies are forgotten, and the next step
-    /// makes every ship and planet again from its voxels, with the place and the speed that the world has for it (which are what the bodies last wrote there). What the
-    /// world is told of the weight of each ship is told again. A ship's place and speed are not changed by it, to what a step of the bodies is accurate to.
-    fn table_replaced(&mut self) {
+    /// may all be other, and are all kept in the bodies (the colliders of every brick, the mass and the ports of every ship). What is made again is what holds a block that
+    /// behaves other now (`BlockTable::behaves_as`: the colour of a block is not behaviour, so a reload that only repaints makes nothing again):
+    ///
+    /// - **the ground**: the colliders of the terrain of the level and of the planets' ground are dropped, and `keep_terrain` makes the ones that are wanted again, a few a
+    ///   tick (what is generated is not looked through for the blocks that changed);
+    /// - **a ship that holds one of those blocks**: every brick of it, and its mass, from its voxels, in the place it is (a ship that holds none is not touched: it goes on as
+    ///   it would have, to the last bit);
+    /// - **the couplings** are not touched: they are worked out from the ends of joints that the ships have, every tick (`couple_joints`), and the ends of a ship that is made
+    ///   again are worked out again with it, so a block that stopped being a joint ends its coupling and a ship's other blocks changing does not.
+    ///
+    /// A ship's place and speed are not changed by any of it. (Every replacement before this made every body again, which moved a ship by up to 1e-6 of a voxel, and cost a
+    /// brick scan for each ship whether or not it held what changed.) What the world is told of the weight of a ship that is made again is told again.
+    fn table_replaced(&mut self, world: &ServerWorld) {
         let (table, version) = self.config.table.snapshot();
-        self.table = table;
+        let earlier = std::mem::replace(&mut self.table, table);
         self.table_version = version;
-        self.frames.clear();
-        self.couplings.clear();
-        self.carried.clear();
-        self.checks.clear();
-        self.weighed.clear();
+        let changed: BTreeSet<u32> = earlier
+            .blocks_that_behave_otherwise_in(&self.table)
+            .into_iter()
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        let block_channel = self.config.block_channel;
+        let holders: Vec<(FrameKey, GridId)> = self
+            .frames
+            .iter()
+            .flat_map(|(key, frame)| frame.ships.keys().map(|id| (*key, *id)))
+            .filter(|(_, id)| {
+                world.data().grids().get(*id).is_some_and(|ship| {
+                    ship.voxels
+                        .sorted_brick_coordinates()
+                        .into_iter()
+                        .any(|brick| {
+                            ship.voxels.brick(brick).is_some_and(|contents| {
+                                contents
+                                    .channel(block_channel)
+                                    .may_hold(|block| changed.contains(&block))
+                            })
+                        })
+                })
+            })
+            .collect();
         self.refused.clear();
-        self.alone.clear();
-        self.changed_ship_bricks.clear();
-        self.changed_ship_voxels.clear();
-        self.changed_terrain_bricks.clear();
+        for frame in self.frames.values_mut() {
+            for brick in std::mem::take(&mut frame.terrain) {
+                frame.bodies.remove_terrain_brick(brick);
+            }
+            for (id, planet) in &mut frame.planets {
+                for brick in std::mem::take(&mut planet.bricks) {
+                    let _ = frame.bodies.remove_brick(BodyId(id.get()), brick);
+                }
+                planet.ports.clear();
+                planet.scanned = false;
+            }
+        }
+        for (key, id) in holders {
+            let Some(ship) = world.data().grids().get(id) else {
+                continue;
+            };
+            for brick in ship.voxels.sorted_brick_coordinates() {
+                self.remake_brick(key, id, brick, ship);
+            }
+            self.set_mass(key, id);
+        }
     }
 
     /// The frame a ship has a body in, if it has one.
@@ -927,7 +975,7 @@ impl Bodies {
     /// the ships are put where they went.
     fn step(&mut self, world: &mut ServerWorld) {
         if self.config.table.version() != self.table_version {
-            self.table_replaced();
+            self.table_replaced(world);
         }
         self.tick += 1;
         let tick = self.tick;

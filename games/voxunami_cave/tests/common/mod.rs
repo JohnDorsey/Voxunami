@@ -868,6 +868,24 @@ pub fn heavy_planet(scene: &mut Scene) {
     });
 }
 
+/// The package of Cave as it is made, for putting back.
+pub fn original_package() -> game_shell::PackageData {
+    CaveContent::new().package_data()
+}
+
+/// The package of Cave with `change` made to every block that has a definition, by the block's identifier.
+pub fn changed_package(
+    change: impl Fn(&str, &mut block_models::BlockDefinition),
+) -> game_shell::PackageData {
+    let mut package = original_package();
+    for (identifier, definition) in &mut package.blocks {
+        if let Some(definition) = definition {
+            change(identifier.as_str(), definition);
+        }
+    }
+    package
+}
+
 /// The package of the content, as the rules of a server read it.
 fn shared_package_of(content: &CaveContent) -> game_shell::SharedPackage {
     game_shell::SharedPackage::new(content.package_data())

@@ -171,6 +171,16 @@ impl ChannelStorage {
         }
     }
 
+    /// Whether some value `test` says yes to may be stored. Cheap: a channel with a palette asks the palette and does not visit the voxels, so **a yes can be a false
+    /// alarm** (a value written over stays in the palette until [`ChannelStorage::compact`]) and a no is certain. A dense channel looks at every voxel.
+    pub fn may_hold(&self, test: impl Fn(u32) -> bool) -> bool {
+        match &self.representation {
+            Representation::Uniform(value) => test(*value),
+            Representation::Paletted { palette, .. } => palette.iter().any(|&value| test(value)),
+            Representation::Dense(values) => values.iter().any(|&value| test(value)),
+        }
+    }
+
     /// The largest value stored. Cheap: it does not visit every voxel when a palette is in use.
     pub fn max_value(&self) -> u32 {
         match &self.representation {
@@ -325,6 +335,52 @@ mod tests {
         StorageKind::Paletted {
             palette_length,
             bits_per_index,
+        }
+    }
+
+    #[test]
+    fn what_may_be_held_is_asked_of_the_palette_and_not_of_every_voxel() {
+        // Uniform: the one value.
+        let uniform = ChannelStorage::uniform(7);
+        assert!(uniform.may_hold(|value| value == 7));
+        assert!(!uniform.may_hold(|value| value == 8));
+
+        // Paletted: every value that is in it.
+        let mut paletted = ChannelStorage::uniform(0);
+        paletted.set(voxel(5), 3);
+        paletted.set(voxel(900), 11);
+        assert!(paletted.may_hold(|value| value == 0));
+        assert!(paletted.may_hold(|value| value == 3));
+        assert!(paletted.may_hold(|value| value == 11));
+        assert!(!paletted.may_hold(|value| value == 4));
+
+        // A value that was written over is still in the palette until it is compacted: "may", never "does", so it can be a false alarm and is never a miss.
+        paletted.set(voxel(900), 0);
+        assert!(paletted.may_hold(|value| value == 11), "a stale entry");
+        paletted.compact();
+        assert!(!paletted.may_hold(|value| value == 11));
+        assert!(paletted.may_hold(|value| value == 3));
+
+        // Dense: more than 256 distinct values.
+        let dense = storage_with_distinct_values(300);
+        assert_eq!(dense.kind(), StorageKind::Dense);
+        assert!(dense.may_hold(|value| value == 299));
+        assert!(!dense.may_hold(|value| value == 301));
+    }
+
+    proptest! {
+        #[test]
+        fn what_a_voxel_holds_is_never_missed(
+            writes in proptest::collection::vec((0usize..BRICK_VOXEL_COUNT, 0u32..40), 0..60),
+            probe in 0u32..40,
+        ) {
+            let mut storage = ChannelStorage::uniform(0);
+            for (index, value) in &writes {
+                storage.set(voxel(*index), *value);
+            }
+            let held = storage.iter().any(|value| value == probe);
+            // (A miss is the only thing that is wrong: a false alarm is allowed.)
+            prop_assert!(!held || storage.may_hold(|value| value == probe));
         }
     }
 
