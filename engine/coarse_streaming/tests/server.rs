@@ -215,9 +215,19 @@ fn rig_over(
 }
 
 impl Rig {
+    /// Runs ticks. After each the worker that makes the nodes is waited for (until it has no more than it was handed, with a deadline), so that how many ticks
+    /// it takes for a node to be kept is the same on every run: the nodes it made are kept at the start of the next tick.
     fn step(&mut self, ticks: u32) {
         for _ in 0..ticks {
             self.server.step();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while self.handle.worker_is_busy() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the worker did not finish"
+                );
+                std::thread::yield_now();
+            }
         }
     }
 
@@ -275,7 +285,8 @@ fn cube_at_origin(level: u8) -> BrickCube {
 #[test]
 fn bricks_edited_before_the_server_started_get_overrides_up_to_the_limit_and_no_more() {
     let mut rig = rig_over_the_sample_world();
-    rig.step(5);
+    // (The worker makes a level of nodes in a tick: the nodes of the next level are made from them.)
+    rig.settle();
     // The sample world has edits in one brick, the one at the origin: a node at each level from 1 to 12 holds it.
     assert_eq!(rig.handle.counts(), (12, 0));
     assert_eq!(

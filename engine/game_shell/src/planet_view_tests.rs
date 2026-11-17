@@ -28,7 +28,7 @@ use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
 use crate::session::{Mode, Session};
-use crate::test_support::{ExampleContent, ExampleGame};
+use crate::test_support::{CoarseWatch, ExampleContent, ExampleGame};
 use crate::view::camera_at;
 
 type Player = Session<Box<dyn Connection>, ExampleGame>;
@@ -159,6 +159,7 @@ struct Rig {
     removal: Arc<Mutex<bool>>,
     planet: GridId,
     block: ChannelIndex,
+    nodes: CoarseWatch,
 }
 
 impl Rig {
@@ -189,6 +190,7 @@ impl Rig {
         let players = PlayersPlugin::new(true);
         let presence = players.presence();
         let mut plugins: Vec<Box<dyn Plugin>> = vec![Box::new(players)];
+        let mut nodes = CoarseWatch::default();
         if coarse_streaming {
             let config = CoarseConfig::new(
                 content.block_table(),
@@ -198,7 +200,9 @@ impl Rig {
                 ExampleGame::ticks_per_second(),
                 presence,
             );
-            plugins.push(Box::new(CoarseServerPlugin::new(config)));
+            let coarse = CoarseServerPlugin::new(config);
+            nodes = CoarseWatch::of(coarse.handle());
+            plugins.push(Box::new(coarse));
         }
         plugins.push(Box::new(digger));
         plugins.push(Box::new(remover));
@@ -211,6 +215,7 @@ impl Rig {
             removal,
             planet,
             block,
+            nodes,
         }
     }
 
@@ -226,7 +231,7 @@ impl Rig {
         position: [f64; 3],
         pitch: f64,
     ) -> Player {
-        let server = &mut self.server;
+        let (server, nodes) = (&mut self.server, &self.nodes);
         Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
@@ -234,7 +239,7 @@ impl Rig {
             3,
             camera_at(position, 0.0, pitch),
             || {
-                server.step();
+                nodes.step(server);
             },
         )
         .unwrap()
@@ -256,14 +261,23 @@ impl Rig {
 
     fn settle(&mut self, player: &mut Player, screen: &mut Screen) {
         player.send_pose();
-        for _ in 0..3 {
-            let server = &mut self.server;
+        // Three rounds, and more until the server has made the nodes it was to (which it does on a thread of its own, a level of nodes in a tick): the round
+        // after that takes them in.
+        let mut rounds = 0;
+        let mut rounds_after_done = 0;
+        while rounds < 3 || rounds_after_done < 1 {
+            let (server, nodes) = (&mut self.server, &self.nodes);
             let updates = player
                 .settle(|| {
-                    server.step();
+                    nodes.step(server);
                 })
                 .unwrap();
             screen.apply(self.planet, updates);
+            rounds += 1;
+            if self.nodes.is_done() {
+                rounds_after_done += 1;
+            }
+            assert!(rounds < 200, "the server is still making nodes");
         }
     }
 

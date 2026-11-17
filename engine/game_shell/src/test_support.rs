@@ -456,3 +456,36 @@ impl GameDefinition for ExamplePanickingGame {
         vec![Box::new(PanicOnThirdTick)]
     }
 }
+
+/// A way for a test to run a server that has the coarse plugin so that the nodes are kept after the same number of ticks on every run: the plugin makes its nodes
+/// on a thread, and keeps them in the tick after the one that handed them over.
+#[derive(Clone, Debug, Default)]
+pub struct CoarseWatch(Option<coarse_streaming::CoarseHandle>);
+
+impl CoarseWatch {
+    /// Watching the plugin that `handle` is of (a server without the plugin is watched with `CoarseWatch::default()`).
+    pub fn of(handle: coarse_streaming::CoarseHandle) -> Self {
+        Self(Some(handle))
+    }
+
+    /// One tick of the server, and then the wait (with a deadline) for the thread that makes the nodes to finish what it was given.
+    pub fn step(&self, server: &mut server::Server) {
+        server.step();
+        let Some(handle) = &self.0 else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while handle.worker_is_busy() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the thread that makes the nodes did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Whether no node is waiting to be made, or kept.
+    pub fn is_done(&self) -> bool {
+        self.0.as_ref().is_none_or(|handle| handle.counts().1 == 0)
+    }
+}

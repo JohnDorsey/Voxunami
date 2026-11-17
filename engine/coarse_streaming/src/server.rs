@@ -11,6 +11,8 @@
 //! not handled yet (the far-nodes plan, `docs/specs/far-nodes-spec.md`, F4).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use block_models::BlockTable;
@@ -22,12 +24,14 @@ use protocol::{ClientId, Message};
 use region_octree::BrickCube;
 use server::Audience;
 use terrain::TerrainGenerator;
-use voxel_grid::{Brick, ChannelIndex, ChannelStorage, Grid};
+use voxel_grid::{Brick, ChannelIndex, ChannelStorage, Grid, GridLayout};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, coarse_node_of_brick};
 use voxel_space::{
     BrickBox, BrickCoordinate, FaceDirection, GridId, LevelIndex, LevelOfDetail, WorldPosition,
 };
-use world_storage::{BrickSource, LevelData, WorldData};
+#[cfg(test)]
+use world_storage::BrickSource;
+use world_storage::{LevelData, WorldData};
 
 use crate::messages::{CoarseNodeUpdate, CoarseNodes, MAXIMUM_UPDATES, SetDetail};
 
@@ -77,7 +81,8 @@ pub struct CoarseConfig {
     pub maximum_override_level: u8,
     /// How far from a player, in voxels, nodes are chosen for them.
     pub view_distance: f64,
-    /// How many dirty nodes are remade in a tick.
+    /// The most dirty nodes a tick takes up for remaking, and the most that the worker that remakes them has in hand at once (a tick hands over what it can
+    /// and does not wait for the worker: the nodes come back in a later tick).
     pub nodes_per_tick: usize,
     /// The levels whose own terrain has nodes kept (by their identifiers), or every level if `None`. A game leaves out a level it draws in bricks only, whose
     /// generator may be slow to make a node of for nothing. (The planets in any level are kept.)
@@ -86,8 +91,8 @@ pub struct CoarseConfig {
 }
 
 impl CoarseConfig {
-    /// A configuration with the usual limits: overrides up to detail level 12 (cells of 4 kilometres), nodes chosen out to a million voxels, and 8 nodes
-    /// remade in a tick.
+    /// A configuration with the usual limits: overrides up to detail level 12 (cells of 4 kilometres), nodes chosen out to a million voxels, and 32 nodes
+    /// handed to the worker in a tick.
     pub fn new(
         table: BlockTable,
         air: u32,
@@ -107,7 +112,7 @@ impl CoarseConfig {
             ticks_per_second,
             maximum_override_level: 12,
             view_distance: 1_048_576.0,
-            nodes_per_tick: 8,
+            nodes_per_tick: 32,
             levels: None,
             presence,
         }
@@ -153,6 +158,51 @@ struct State {
     edited: EditedCubes,
     /// Counts up each time a place gets its first override or loses its last.
     edit_epoch: u64,
+    /// The nodes that are with the worker: handed over, not yet taken back.
+    in_flight: BTreeSet<Key>,
+    /// The thread that makes nodes, started when the first is handed over.
+    worker: Option<Worker>,
+}
+
+/// The thread that makes nodes from [`NodeJob`]s, in the order it was given them (as the thread of `prefetch` in the server does for bricks). It ends when this
+/// is dropped, after the node it is making.
+struct Worker {
+    jobs: Sender<(Key, NodeJob)>,
+    made: Receiver<(Key, Option<CoarseNode>)>,
+    /// How many jobs were handed over, and how many the thread has sent back (counted when the result is in the channel).
+    handed: u64,
+    finished: Arc<AtomicU64>,
+}
+
+impl Worker {
+    fn start(config: Arc<CoarseConfig>) -> Self {
+        let (jobs, wanted) = channel::<(Key, NodeJob)>();
+        let (sender, made) = channel();
+        let finished = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&finished);
+        std::thread::Builder::new()
+            .name("coarse nodes".to_owned())
+            .spawn(move || {
+                while let Ok((key, job)) = wanted.recv() {
+                    let node = job.run(&config);
+                    if sender.send((key, node)).is_err() {
+                        break;
+                    }
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+            .expect("a thread can be started");
+        Self {
+            jobs,
+            made,
+            handed: 0,
+            finished,
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        self.finished.load(Ordering::SeqCst) != self.handed
+    }
 }
 
 impl State {
@@ -285,92 +335,171 @@ impl<'a> GridBricks<'a> {
         }
     }
 
-    /// The brick as the game sees it, stored or made.
-    fn effective(&self, at: BrickCoordinate) -> BrickSource {
+    /// Where the brick comes from, for a thread to read it: the stored brick, or the generator that makes it, or nothing.
+    fn source(&self, at: BrickCoordinate) -> Source {
         match self {
-            Self::Level(level) => level.effective_brick(at),
+            Self::Level(level) => match level.overrides.brick(at) {
+                Some(stored) => Source::Stored(Arc::clone(stored)),
+                None => level
+                    .terrain
+                    .generator_of_brick(at)
+                    .map_or(Source::Nothing, |generator| {
+                        Source::Generated(generator, at)
+                    }),
+            },
             Self::Planet {
                 voxels,
                 generator,
                 extent,
             } => {
                 if let Some(stored) = voxels.brick(at) {
-                    BrickSource::Edited(Arc::clone(stored))
+                    Source::Stored(Arc::clone(stored))
                 } else if extent.contains(at) {
-                    BrickSource::Generated(generator.generate_brick(voxels.layout(), at))
+                    Source::Generated(Arc::clone(generator), at)
                 } else {
-                    BrickSource::Generated(Brick::new(voxels.layout()))
+                    Source::Blank
                 }
             }
         }
     }
 
-    /// The node of the cube that the generator gives, which is what a client derives where nothing was edited.
-    fn generated_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+    /// The brick as the game sees it, stored or made (what [`GridBricks::source`] says, made).
+    #[cfg(test)]
+    fn effective(&self, at: BrickCoordinate) -> BrickSource {
         match self {
-            Self::Level(level) => level.terrain.coarse_node(cube, unlit),
+            Self::Level(level) => level.effective_brick(at),
+            Self::Planet { voxels, .. } => match self.source(at) {
+                Source::Stored(brick) => BrickSource::Edited(brick),
+                Source::Generated(generator, at) => {
+                    BrickSource::Generated(generator.generate_brick(voxels.layout(), at))
+                }
+                Source::Blank => BrickSource::Generated(Brick::new(voxels.layout())),
+                Source::Nothing => BrickSource::Unassigned,
+            },
+        }
+    }
+
+    fn layout(&self) -> Arc<GridLayout> {
+        match self {
+            Self::Level(level) => Arc::clone(level.overrides.layout()),
+            Self::Planet { voxels, .. } => Arc::clone(voxels.layout()),
+        }
+    }
+
+    /// The generator whose coarse cells are the base of the node of the cube, which is what a client derives where nothing was edited.
+    fn node_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        match self {
+            Self::Level(level) => level.terrain.coarse_generator(cube),
             Self::Planet {
                 generator, extent, ..
-            } => cube
-                .meets(*extent)
-                .then(|| generator.coarse_node(cube, unlit))
-                .flatten(),
+            } => cube.meets(*extent).then(|| Arc::clone(generator)),
         }
     }
 }
 
-/// The cells of an edited brick, exactly: from the brick and from the six beside it as the game sees them (edited or generated; a region with no
-/// generator is air).
-fn summarize_edited_brick(
-    config: &CoarseConfig,
-    bricks: &GridBricks<'_>,
-    at: BrickCoordinate,
-) -> Option<CoarseNode> {
-    let center = Owned::new(Arc::clone(bricks.stored(at)?), config);
-    let neighbours: Vec<Option<Owned>> = FaceDirection::ALL
-        .iter()
-        .map(|face| {
-            let step = face.offset();
-            let next = at.checked_offset(step[0], step[1], step[2])?;
-            match bricks.effective(next) {
-                BrickSource::Edited(brick) => Some(Owned::new(brick, config)),
-                BrickSource::Generated(brick) => Some(Owned::new(Arc::new(brick), config)),
-                BrickSource::Unassigned | BrickSource::MissingGenerator(_) => None,
-            }
-        })
-        .collect();
-    Some(coarse_node_of_brick(
-        &BrickNeighbourhood {
-            center: center.channels(config),
-            neighbours: std::array::from_fn(|index| {
-                neighbours[index]
-                    .as_ref()
-                    .map(|owned| owned.channels(config))
-            }),
-        },
-        &config.table,
-        config.air,
-    ))
+/// A brick beside an edited one, as a thread that makes a node reads it.
+enum Source {
+    Stored(Arc<Brick>),
+    /// Made by the generator, at these coordinates.
+    Generated(Arc<dyn TerrainGenerator>, BrickCoordinate),
+    /// Air, where a planet has nothing outside its extent.
+    Blank,
+    /// No generator makes it (none is assigned, or its plugin is missing): it is not looked at.
+    Nothing,
 }
 
-/// The node of a cube as the server makes it: what the generator gives for it, patched with the exact cells of every half that is known exactly (an edited
-/// brick, or a node that has an override). `None` if no half is: there is nothing to say that the client does not derive.
-fn remake(
-    config: &CoarseConfig,
+/// One eighth of a node: what the node is patched with there.
+enum Child {
+    /// Nothing there to patch in.
+    Absent,
+    /// The override of the node of the half that is made of it.
+    Node(CoarseNode),
+    /// A stored brick, and the six beside it.
+    Brick {
+        center: Arc<Brick>,
+        beside: Box<[Source; 6]>,
+    },
+}
+
+/// Everything it takes to make a node of a cube, taken from the world on the tick so that a thread can do the making (the generators' work, which is what
+/// costs) while the world goes on.
+struct NodeJob {
+    cube: BrickCube,
+    generated: Option<Arc<dyn TerrainGenerator>>,
+    layout: Arc<GridLayout>,
+    children: [Child; 8],
+}
+
+impl NodeJob {
+    /// The node: what the generator gives for the cube, patched with the exact cells of every half that is known exactly (an edited brick, or a node that
+    /// has an override).
+    fn run(&self, config: &CoarseConfig) -> Option<CoarseNode> {
+        let parent_level = LevelOfDetail::new(self.cube.level())?;
+        let mut node = self
+            .generated
+            .as_ref()
+            .and_then(|generator| generator.coarse_node(self.cube, config.unlit))
+            .unwrap_or_else(|| CoarseNode::uniform(CoarseCell::empty(config.air, config.unlit)));
+        for (octant, child) in self.children.iter().enumerate() {
+            let patch = match child {
+                Child::Absent => continue,
+                Child::Node(half) => half.clone(),
+                Child::Brick { center, beside } => self.summarize_brick(config, center, beside),
+            };
+            node = node.patched_with_child(octant, &patch, parent_level, config.air);
+        }
+        Some(node)
+    }
+
+    /// The cells of an edited brick, exactly: from the brick and from the six beside it as the game sees them (edited or generated; a region with no
+    /// generator is air).
+    fn summarize_brick(
+        &self,
+        config: &CoarseConfig,
+        center: &Arc<Brick>,
+        beside: &[Source; 6],
+    ) -> CoarseNode {
+        let center = Owned::new(Arc::clone(center), config);
+        let neighbours: Vec<Option<Owned>> = beside
+            .iter()
+            .map(|source| match source {
+                Source::Stored(brick) => Some(Owned::new(Arc::clone(brick), config)),
+                Source::Generated(generator, at) => Some(Owned::new(
+                    Arc::new(generator.generate_brick(&self.layout, *at)),
+                    config,
+                )),
+                Source::Blank => Some(Owned::new(Arc::new(Brick::new(&self.layout)), config)),
+                Source::Nothing => None,
+            })
+            .collect();
+        coarse_node_of_brick(
+            &BrickNeighbourhood {
+                center: center.channels(config),
+                neighbours: std::array::from_fn(|index| {
+                    neighbours[index]
+                        .as_ref()
+                        .map(|owned| owned.channels(config))
+                }),
+            },
+            &config.table,
+            config.air,
+        )
+    }
+}
+
+/// What it takes to make the node of a cube as the server makes it, or `None` if no half of it is known exactly (an edited brick, or a node that has an
+/// override): there is nothing to say that the client does not derive.
+fn gather(
     overrides: &BTreeMap<Key, Stored>,
     data: &WorldData,
     grid: GridId,
     cube: BrickCube,
-) -> Option<CoarseNode> {
+) -> Option<NodeJob> {
     let bricks = GridBricks::of(data, grid)?;
-    let parent_level = LevelOfDetail::new(cube.level())?;
-    let mut node = bricks
-        .generated_node(cube, config.unlit)
-        .unwrap_or_else(|| CoarseNode::uniform(CoarseCell::empty(config.air, config.unlit)));
     let half = (cube.edge_length() / 2) as i128;
     let origin = cube.origin();
     let mut touched = false;
-    for octant in 0..8usize {
+    let children: [Child; 8] = std::array::from_fn(|octant| {
         let (dx, dy, dz) = (
             (octant & 1) as i128,
             ((octant >> 1) & 1) as i128,
@@ -382,63 +511,177 @@ fn remake(
             origin.z() + dz * half,
         );
         let child = if cube.level() == 1 {
-            summarize_edited_brick(config, &bricks, child_origin)
+            bricks.stored(child_origin).map(|center| Child::Brick {
+                center: Arc::clone(center),
+                beside: Box::new(std::array::from_fn(|index| {
+                    let step = FaceDirection::ALL[index].offset();
+                    child_origin
+                        .checked_offset(step[0], step[1], step[2])
+                        .map_or(Source::Nothing, |next| bricks.source(next))
+                })),
+            })
         } else {
             let child_cube =
                 BrickCube::new(child_origin, cube.level() - 1).expect("half of a cube is a cube");
             overrides
                 .get(&key_of(grid, child_cube))
-                .map(|stored| stored.node.clone())
+                .map(|stored| Child::Node(stored.node.clone()))
         };
-        if let Some(child) = child {
-            node = node.patched_with_child(octant, &child, parent_level, config.air);
-            touched = true;
-        }
-    }
-    touched.then_some(node)
+        touched |= child.is_some();
+        child.unwrap_or(Child::Absent)
+    });
+    touched.then(|| NodeJob {
+        cube,
+        generated: bricks.node_generator(cube),
+        layout: bricks.layout(),
+        children,
+    })
+}
+
+/// The node of a cube as the server makes it, on the spot (the worker makes it from the same [`gather`]ed job).
+#[cfg(test)]
+fn remake(
+    config: &CoarseConfig,
+    overrides: &BTreeMap<Key, Stored>,
+    data: &WorldData,
+    grid: GridId,
+    cube: BrickCube,
+) -> Option<CoarseNode> {
+    gather(overrides, data, grid, cube)?.run(config)
 }
 
 impl State {
-    /// Remakes up to `budget` dirty nodes, the finest first, so that the ones a node is made from are done before it.
-    fn remake_dirty(&mut self, config: &CoarseConfig, data: &WorldData, budget: usize) {
-        for _ in 0..budget {
-            let Some(key) = self.dirty.pop_first() else {
+    /// How many nodes are waiting to be remade: dirty, or with the worker.
+    fn waiting(&self) -> usize {
+        self.dirty.len()
+            + self
+                .in_flight
+                .iter()
+                .filter(|key| !self.dirty.contains(key))
+                .count()
+    }
+
+    /// What a tick does for the nodes: takes in what the worker has finished, and hands it more. It does not wait for the worker.
+    fn work(&mut self, config: &Arc<CoarseConfig>, data: &WorldData) {
+        self.take_in_finished(config.maximum_override_level);
+        self.hand_over(config, data);
+    }
+
+    /// Keeps the nodes the worker has finished, in the order it was given them.
+    fn take_in_finished(&mut self, maximum_level: u8) {
+        let Some(worker) = &self.worker else {
+            return;
+        };
+        let mut finished = Vec::new();
+        loop {
+            match worker.made.try_recv() {
+                Ok(done) => finished.push(done),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    panic!("the thread that makes coarse nodes ended (a generator panicked?)")
+                }
+            }
+        }
+        for (key, node) in finished {
+            self.in_flight.remove(&key);
+            self.keep(maximum_level, key, node);
+        }
+    }
+
+    /// Whether the node of `key` is made from nodes that are not final: one of its eight halves is dirty or with the worker.
+    fn waits_for_its_halves(&self, key: Key) -> bool {
+        let cube = cube_of(key);
+        if cube.level() <= 1 {
+            return false;
+        }
+        let half = (cube.edge_length() / 2) as i128;
+        let origin = cube.origin();
+        (0..8_i128).any(|octant| {
+            let child_origin = BrickCoordinate::new(
+                origin.x() + (octant & 1) * half,
+                origin.y() + ((octant >> 1) & 1) * half,
+                origin.z() + (octant >> 2) * half,
+            );
+            let child = key_of(
+                key.1,
+                BrickCube::new(child_origin, cube.level() - 1).expect("half of a cube is a cube"),
+            );
+            self.dirty.contains(&child) || self.in_flight.contains(&child)
+        })
+    }
+
+    /// Takes up to `nodes_per_tick` dirty nodes, the finest first, and hands the work of making them to the worker. A node waits until the nodes it is made
+    /// from are final (so none is made twice), and until the worker is done with the last time it was asked for it (an edit that comes while it is being made
+    /// leaves it dirty, and it is made again from what is there then).
+    fn hand_over(&mut self, config: &Arc<CoarseConfig>, data: &WorldData) {
+        let limit = config.nodes_per_tick;
+        let room = limit.saturating_sub(self.in_flight.len());
+        let mut taken: Vec<(Key, Option<NodeJob>)> = Vec::new();
+        let mut jobs = 0;
+        for &key in &self.dirty {
+            if taken.len() >= limit || jobs >= room {
                 break;
-            };
-            let cube = cube_of(key);
-            let grid = key.1;
-            let made = remake(config, &self.overrides, data, grid, cube);
-            let changed = match (&made, self.overrides.get(&key)) {
-                (Some(new), Some(old)) => *new != old.node,
-                (None, None) => false,
-                _ => true,
-            };
-            if !changed {
+            }
+            if self.in_flight.contains(&key) || self.waits_for_its_halves(key) {
                 continue;
             }
-            match made {
-                Some(node) => {
-                    // The exposure of a cell is not sent, so a node that differs only in it is the same to every client: the version stays.
-                    let version = match self.overrides.get(&key) {
-                        Some(old) if old.node.without_exposure() == node.without_exposure() => {
-                            old.version
-                        }
-                        _ => {
-                            self.next_version += 1;
-                            self.next_version
-                        }
-                    };
-                    self.store(key, Stored { node, version });
+            let job = gather(&self.overrides, data, key.1, cube_of(key));
+            jobs += usize::from(job.is_some());
+            taken.push((key, job));
+        }
+        for (key, job) in taken {
+            self.dirty.remove(&key);
+            match job {
+                None => self.keep(config.maximum_override_level, key, None),
+                Some(job) => {
+                    let worker = self
+                        .worker
+                        .get_or_insert_with(|| Worker::start(Arc::clone(config)));
+                    worker.handed += 1;
+                    worker
+                        .jobs
+                        .send((key, job))
+                        .expect("the thread that makes coarse nodes is there");
+                    self.in_flight.insert(key);
                 }
-                None => self.forget(key),
             }
-            self.epoch += 1;
-            if cube.level() < config.maximum_override_level {
-                self.dirty.insert(key_of(
-                    grid,
-                    BrickCube::containing(cube.origin(), cube.level() + 1),
-                ));
+        }
+    }
+
+    /// Keeps the node that was made for `key` (`None`: there is nothing to say of it) if it is not the one that is kept, and has the node of the cube round it made
+    /// again.
+    fn keep(&mut self, maximum_level: u8, key: Key, made: Option<CoarseNode>) {
+        let cube = cube_of(key);
+        let changed = match (&made, self.overrides.get(&key)) {
+            (Some(new), Some(old)) => *new != old.node,
+            (None, None) => false,
+            _ => true,
+        };
+        if !changed {
+            return;
+        }
+        match made {
+            Some(node) => {
+                // The exposure of a cell is not sent, so a node that differs only in it is the same to every client: the version stays.
+                let version = match self.overrides.get(&key) {
+                    Some(old) if old.node.without_exposure() == node.without_exposure() => {
+                        old.version
+                    }
+                    _ => {
+                        self.next_version += 1;
+                        self.next_version
+                    }
+                };
+                self.store(key, Stored { node, version });
             }
+            None => self.forget(key),
+        }
+        self.epoch += 1;
+        if cube.level() < maximum_level {
+            self.dirty.insert(key_of(
+                key.1,
+                BrickCube::containing(cube.origin(), cube.level() + 1),
+            ));
         }
     }
 
@@ -635,10 +878,18 @@ pub struct CoarseHandle {
 }
 
 impl CoarseHandle {
-    /// How many overrides there are and how many nodes are waiting to be remade.
+    /// How many overrides there are and how many nodes are waiting to be remade (dirty, or with the worker).
     pub fn counts(&self) -> (usize, usize) {
         let state = locked(&self.state);
-        (state.overrides.len(), state.dirty.len())
+        (state.overrides.len(), state.waiting())
+    }
+
+    /// Whether the worker is making a node it was handed (the node is kept in the next tick after it is done).
+    pub fn worker_is_busy(&self) -> bool {
+        locked(&self.state)
+            .worker
+            .as_ref()
+            .is_some_and(Worker::is_busy)
     }
 
     /// How many clients have said how they want things drawn and have not left.
@@ -779,7 +1030,7 @@ impl Plugin for CoarseServerPlugin {
             SystemSpec::new("engine:coarse_streaming", Phase::Rules),
             move |context| {
                 let mut state = locked(&working);
-                state.remake_dirty(&config, context.world().data(), config.nodes_per_tick);
+                state.work(&config, context.world().data());
                 let clients: Vec<ClientId> = state.clients.keys().copied().collect();
                 let mut outgoing: Vec<(ClientId, Vec<u8>)> = Vec::new();
                 for client in clients {
@@ -800,6 +1051,7 @@ impl Plugin for CoarseServerPlugin {
 #[cfg(test)]
 mod tests {
     use block_models::BlockTable;
+    use voxel_space::VoxelCoordinate;
     use world_storage::test_support::{ALL_PLUGINS, Game};
 
     use super::*;
@@ -1347,6 +1599,591 @@ mod tests {
         let made = game.sample_ship(&world, 0);
         let ship = world.grids_mut().create(made);
         assert!(GridBricks::of(&world, ship).is_none());
+    }
+
+    /// A generator that gives what another gives, but whose coarse cells are not given until the test lets it: how long a slow generator keeps a tick
+    /// waiting is shown by a generator that does not answer at all, which needs no clock.
+    #[derive(Debug)]
+    struct Gated {
+        inner: Arc<dyn TerrainGenerator>,
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        gave_up: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl TerrainGenerator for Gated {
+        fn generate_brick(&self, layout: &voxel_grid::GridLayout, at: BrickCoordinate) -> Brick {
+            self.inner.generate_brick(layout, at)
+        }
+
+        fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (lock, opened) = &*self.gate;
+            let guard = lock.lock().unwrap();
+            // A deadline so that a tick that waits for this ends the test with a failure instead of hanging it; nothing passes or fails by how long it is.
+            let (_guard, timeout) = opened
+                .wait_timeout_while(guard, std::time::Duration::from_secs(10), |open| !*open)
+                .unwrap();
+            if timeout.timed_out() {
+                self.gave_up
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.coarse_node(cube, unlit)
+        }
+    }
+
+    /// A generator that panics when it is asked for coarse cells.
+    #[derive(Debug)]
+    struct Panicking;
+
+    impl TerrainGenerator for Panicking {
+        fn generate_brick(&self, layout: &voxel_grid::GridLayout, _: BrickCoordinate) -> Brick {
+            Brick::new(layout)
+        }
+
+        fn coarse_node(&self, _: BrickCube, _: u8) -> Option<CoarseNode> {
+            panic!("a generator that cannot make a node");
+        }
+    }
+
+    /// What the plugin's system does each tick for the nodes.
+    fn work_a_tick(state: &mut State, config: &Arc<CoarseConfig>, world: &WorldData) {
+        state.work(config, world);
+    }
+
+    /// A configuration over the blocks of the sample game, as the plugin would be given.
+    fn config_for(game: &Game, world: &WorldData) -> Arc<CoarseConfig> {
+        let block = world
+            .main()
+            .overrides
+            .layout()
+            .channel_index(&"core:block".parse().unwrap())
+            .unwrap();
+        let air = game.raw_block("base_blocks:air");
+        let mut opaque = vec![true; 16];
+        opaque[air as usize] = false;
+        Arc::new(CoarseConfig::new(
+            BlockTable::of_cubes(&opaque),
+            air,
+            block,
+            0,
+            20,
+            Arc::new(Mutex::new(player_presence::Presence::new())),
+        ))
+    }
+
+    struct GatedPlanet {
+        world: WorldData,
+        config: Arc<CoarseConfig>,
+        planet: GridId,
+        open: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        gave_up: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl GatedPlanet {
+        /// A world with the sample planet, whose generator does not give coarse cells until it is let to.
+        fn new() -> Self {
+            Self::wrapping(|inner, open, asked, gave_up| {
+                Arc::new(Gated {
+                    inner,
+                    gate: open,
+                    asked,
+                    gave_up,
+                })
+            })
+        }
+
+        /// A world with the sample planet, whose generator is what `wrap` makes of the sample's.
+        fn wrapping(
+            wrap: impl FnOnce(
+                Arc<dyn TerrainGenerator>,
+                Arc<(Mutex<bool>, std::sync::Condvar)>,
+                Arc<std::sync::atomic::AtomicUsize>,
+                Arc<std::sync::atomic::AtomicBool>,
+            ) -> Arc<dyn TerrainGenerator>,
+        ) -> Self {
+            let game = Game::new(&ALL_PLUGINS);
+            let mut world = game.new_world();
+            let mut made = game.sample_planet(&world, 0);
+            let mut terrain = made.terrain.expect("a planet has terrain");
+            let inner = Arc::clone(
+                world
+                    .main()
+                    .terrain
+                    .generators()
+                    .entry(terrain.generator)
+                    .unwrap()
+                    .content()
+                    .unwrap(),
+            );
+            let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let gave_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            terrain.generator = world
+                .main_mut()
+                .terrain
+                .register_generator(
+                    "test_content:gated".parse().unwrap(),
+                    wrap(
+                        inner,
+                        Arc::clone(&open),
+                        Arc::clone(&asked),
+                        Arc::clone(&gave_up),
+                    ),
+                )
+                .unwrap();
+            made.terrain = Some(terrain);
+            let planet = world.grids_mut().create(made);
+            let config = config_for(&game, &world);
+            Self {
+                world,
+                config,
+                planet,
+                open,
+                asked,
+                gave_up,
+            }
+        }
+
+        /// The nodes of the planet's stored bricks made on the spot, finest first, one after the other, as the tick did before there was a worker.
+        fn settled_on_the_spot(&self) -> Vec<(Key, CoarseNode)> {
+            let mut spot = self.state_with_the_stored_bricks_marked();
+            while let Some(key) = spot.dirty.pop_first() {
+                let (cube, grid) = (cube_of(key), key.1);
+                match remake(&self.config, &spot.overrides, &self.world, grid, cube) {
+                    Some(node) => {
+                        spot.store(key, Stored { node, version: 0 });
+                        if cube.level() < self.config.maximum_override_level {
+                            spot.dirty.insert(key_of(
+                                grid,
+                                BrickCube::containing(cube.origin(), cube.level() + 1),
+                            ));
+                        }
+                    }
+                    None => spot.forget(key),
+                }
+            }
+            spot.overrides
+                .iter()
+                .map(|(key, stored)| (*key, stored.node.clone()))
+                .collect()
+        }
+
+        fn close_the_gate(&self) {
+            *self.open.0.lock().unwrap() = false;
+        }
+
+        fn open_the_gate(&self) {
+            *self.open.0.lock().unwrap() = true;
+            self.open.1.notify_all();
+        }
+
+        fn asked(&self) -> usize {
+            self.asked.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn state_with_the_stored_bricks_marked(&self) -> State {
+            let mut state = State::default();
+            for (brick, _) in self.world.grids().get(self.planet).unwrap().voxels.bricks() {
+                state.mark_brick(self.planet, brick, self.config.maximum_override_level);
+            }
+            assert!(!state.dirty.is_empty());
+            state
+        }
+    }
+
+    /// Works ticks until every node is made, waiting for the worker with a deadline.
+    fn work_until_done(state: &mut State, config: &Arc<CoarseConfig>, world: &WorldData) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while state.waiting() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the nodes are not made"
+            );
+            work_a_tick(state, config, world);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_tick_does_not_wait_for_a_generator_that_has_not_answered() {
+        let planet = GatedPlanet::new();
+        let mut state = planet.state_with_the_stored_bricks_marked();
+        for _ in 0..5 {
+            work_a_tick(&mut state, &planet.config, &planet.world);
+        }
+        assert!(
+            !planet.gave_up.load(std::sync::atomic::Ordering::SeqCst),
+            "a tick waited for the generator"
+        );
+        // The generator was asked (by the worker, which is waiting for it) and nothing came of it yet.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while planet.asked() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the generator was never asked"
+            );
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+        assert!(state.overrides.is_empty());
+        assert!(state.waiting() > 0);
+        // Let to answer, the nodes come.
+        planet.open_the_gate();
+        work_until_done(&mut state, &planet.config, &planet.world);
+        assert!(!state.overrides.is_empty());
+        assert!(
+            !planet.gave_up.load(std::sync::atomic::Ordering::SeqCst),
+            "the generator gave up waiting"
+        );
+    }
+
+    #[test]
+    fn the_nodes_a_worker_makes_are_the_nodes_made_on_the_spot_and_each_is_made_from_the_nodes_it_has_at_the_end()
+     {
+        let planet = GatedPlanet::new();
+        planet.open_the_gate();
+        let mut worked = planet.state_with_the_stored_bricks_marked();
+        work_until_done(&mut worked, &planet.config, &planet.world);
+
+        let spot = planet.settled_on_the_spot();
+
+        let nodes = |state: &State| -> Vec<(Key, CoarseNode)> {
+            state
+                .overrides
+                .iter()
+                .map(|(key, stored)| (*key, stored.node.clone()))
+                .collect()
+        };
+        assert!(
+            nodes(&worked).len() >= 12,
+            "a planet's stored bricks have nodes at every level"
+        );
+        assert_eq!(nodes(&worked), spot);
+    }
+
+    #[test]
+    fn a_node_that_is_edited_again_while_the_worker_has_it_is_made_again_from_what_is_there_then() {
+        let mut planet = GatedPlanet::new();
+        planet.open_the_gate();
+        let before = planet.settled_on_the_spot();
+        planet.close_the_gate();
+        let asked_before = planet.asked();
+        let mut state = planet.state_with_the_stored_bricks_marked();
+        // The worker has been given the nodes, and waits for the generator.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while planet.asked() == asked_before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the generator was never asked"
+            );
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+        // An edit comes to a stored brick: the nodes it is in were handed over as they were.
+        let brick = planet
+            .world
+            .grids()
+            .get(planet.planet)
+            .unwrap()
+            .voxels
+            .bricks()
+            .next()
+            .map(|(brick, _)| brick)
+            .unwrap();
+        let block = planet.config.block_channel;
+        let air = planet.config.air;
+        let ship = planet.world.grids_mut().get_mut(planet.planet).unwrap();
+        for x in 0..16 {
+            for y in 0..16 {
+                for z in 0..16 {
+                    let voxel = VoxelCoordinate::new(
+                        brick.x() * 32 + x,
+                        brick.y() * 32 + y,
+                        brick.z() * 32 + z,
+                    );
+                    let value = if ship.voxels.get(block, voxel) == air {
+                        1
+                    } else {
+                        air
+                    };
+                    ship.voxels.set(block, voxel, value);
+                }
+            }
+        }
+        assert!(
+            !state.in_flight.is_empty(),
+            "the node is with the worker when the edit comes"
+        );
+        state.mark_brick(planet.planet, brick, planet.config.maximum_override_level);
+        planet.open_the_gate();
+        work_until_done(&mut state, &planet.config, &planet.world);
+
+        let after = planet.settled_on_the_spot();
+        assert_ne!(before, after, "the edit changes the nodes");
+        let nodes: Vec<(Key, CoarseNode)> = state
+            .overrides
+            .iter()
+            .map(|(key, stored)| (*key, stored.node.clone()))
+            .collect();
+        assert_eq!(
+            nodes, after,
+            "what the worker had was made from the brick as it was before"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ended")]
+    fn a_generator_that_panics_in_the_worker_ends_the_server_in_a_later_tick_and_is_not_forgotten()
+    {
+        let planet = GatedPlanet::wrapping(|_, _, _, _| Arc::new(Panicking));
+        let mut state = planet.state_with_the_stored_bricks_marked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_node_is_not_handed_over_while_the_worker_has_it_and_waits_for_the_nodes_it_is_made_from() {
+        let planet = GatedPlanet::new();
+        let asked_before = planet.asked();
+        let mut state = planet.state_with_the_stored_bricks_marked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while planet.asked() == asked_before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the generator was never asked"
+            );
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+        let in_hand: Vec<Key> = state.in_flight.iter().copied().collect();
+        assert!(!in_hand.is_empty());
+        // Edited again, and ticks go by with the generator still not answering: what the worker has is not handed over a second time, and what is made from it
+        // (a node of a coarser level, dirty or not) waits.
+        for key in &in_hand {
+            state.dirty.insert(*key);
+            state.dirty.insert(key_of(
+                key.1,
+                BrickCube::containing(cube_of(*key).origin(), key.0 + 1),
+            ));
+        }
+        for _ in 0..5 {
+            work_a_tick(&mut state, &planet.config, &planet.world);
+        }
+        assert_eq!(
+            state.worker.as_ref().map(|worker| worker.handed),
+            Some(in_hand.len() as u64),
+            "each node was handed over once"
+        );
+        assert!(in_hand.iter().all(|key| state.dirty.contains(key)));
+        planet.open_the_gate();
+        work_until_done(&mut state, &planet.config, &planet.world);
+    }
+
+    #[test]
+    fn a_node_waits_while_one_of_its_halves_is_dirty_or_with_the_worker_and_a_node_of_the_finest_level_does_not()
+     {
+        let mut state = State::default();
+        let parent = key_of(
+            GridId::MAIN,
+            BrickCube::new(BrickCoordinate::new(0, 0, 0), 2).unwrap(),
+        );
+        let half = |x: i128, grid: GridId| {
+            key_of(
+                grid,
+                BrickCube::new(BrickCoordinate::new(x, 0, 0), 1).unwrap(),
+            )
+        };
+        assert!(!state.waits_for_its_halves(parent));
+        state.dirty.insert(half(2, GridId::MAIN));
+        assert!(state.waits_for_its_halves(parent), "a half is dirty");
+        state.dirty.clear();
+        state.in_flight.insert(half(0, GridId::MAIN));
+        assert!(
+            state.waits_for_its_halves(parent),
+            "a half is with the worker"
+        );
+        state.in_flight.clear();
+        // The same cube of another grid, and a cube that is not a half of it, are not in the way.
+        let other = GridId::new(GridId::FIRST_ALLOCATED);
+        state.dirty.insert(half(0, other));
+        state.dirty.insert(key_of(
+            GridId::MAIN,
+            BrickCube::new(BrickCoordinate::new(4, 0, 0), 1).unwrap(),
+        ));
+        assert!(!state.waits_for_its_halves(parent));
+        // A cube of the finest level is made of bricks, which are not nodes: it waits for nothing.
+        state.dirty.insert(half(0, GridId::MAIN));
+        assert!(!state.waits_for_its_halves(half(0, GridId::MAIN)));
+    }
+
+    #[test]
+    fn a_planet_has_the_node_of_its_generator_only_where_its_extent_is() {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        let extent = world.grids().get(planet).unwrap().terrain.unwrap().extent;
+        let bricks = GridBricks::of(&world, planet).unwrap();
+        let inside = BrickCube::containing(extent.min(), 1);
+        let far = BrickCube::containing(
+            BrickCoordinate::new(extent.max().x() + 64, extent.min().y(), extent.min().z()),
+            1,
+        );
+        assert!(bricks.node_generator(inside).is_some());
+        assert!(bricks.node_generator(far).is_none());
+    }
+
+    #[test]
+    fn the_cells_of_a_stored_brick_are_made_from_the_bricks_the_game_sees_beside_it() {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        let config = config_for(&game, &world);
+        let bricks = GridBricks::of(&world, planet).unwrap();
+        let stored: Vec<BrickCoordinate> = world
+            .grids()
+            .get(planet)
+            .unwrap()
+            .voxels
+            .bricks()
+            .map(|(brick, _)| brick)
+            .collect();
+        let mut compared = 0;
+        for at in stored {
+            // What the game sees beside it (the edited or generated brick, as bricks the mesher reads), as the nodes of the first version of the server read them.
+            let owned = |source: BrickSource| match source {
+                BrickSource::Edited(brick) => Some(Owned::new(brick, &config)),
+                BrickSource::Generated(brick) => Some(Owned::new(Arc::new(brick), &config)),
+                _ => None,
+            };
+            let center = Owned::new(Arc::clone(bricks.stored(at).unwrap()), &config);
+            let beside: Vec<Option<Owned>> = FaceDirection::ALL
+                .iter()
+                .map(|face| {
+                    let step = face.offset();
+                    at.checked_offset(step[0], step[1], step[2])
+                        .and_then(|next| owned(bricks.effective(next)))
+                })
+                .collect();
+            let expected = coarse_node_of_brick(
+                &BrickNeighbourhood {
+                    center: center.channels(&config),
+                    neighbours: std::array::from_fn(|index| {
+                        beside[index].as_ref().map(|owned| owned.channels(&config))
+                    }),
+                },
+                &config.table,
+                config.air,
+            );
+            let job = gather(
+                &BTreeMap::new(),
+                &world,
+                planet,
+                BrickCube::containing(at, 1),
+            )
+            .expect("a stored brick makes a job");
+            let found = job
+                .children
+                .iter()
+                .find_map(|child| match child {
+                    Child::Brick { center, beside }
+                        if Arc::ptr_eq(center, bricks.stored(at).unwrap()) =>
+                    {
+                        Some(job.summarize_brick(&config, center, beside))
+                    }
+                    _ => None,
+                })
+                .expect("the stored brick is a half of the job");
+            assert_eq!(found, expected, "{at}");
+            compared += 1;
+        }
+        assert!(compared > 0);
+    }
+
+    #[test]
+    fn the_source_of_a_brick_is_what_the_game_sees_of_it() {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_planet(&world, 0);
+        let planet = world.grids_mut().create(made);
+        // A level: a brick that was edited, one that is generated, and one in a region that nothing generates yet.
+        world
+            .main_mut()
+            .overrides
+            .brick_mut_or_default(BrickCoordinate::new(0, 0, 0));
+        world
+            .main_mut()
+            .terrain
+            .assign_unassigned(BrickCoordinate::new(0, 0, 0));
+        let extent = world.grids().get(planet).unwrap().terrain.unwrap().extent;
+        let stored = world
+            .grids()
+            .get(planet)
+            .unwrap()
+            .voxels
+            .bricks()
+            .next()
+            .map(|(brick, _)| brick)
+            .unwrap();
+        let places = [
+            (GridId::MAIN, BrickCoordinate::new(0, 0, 0)),
+            (GridId::MAIN, BrickCoordinate::new(1, 0, 0)),
+            (GridId::MAIN, BrickCoordinate::new(5000, 0, 0)),
+            (planet, stored),
+            (planet, extent.min()),
+            (
+                planet,
+                BrickCoordinate::new(extent.max().x() + 1, extent.min().y(), extent.min().z()),
+            ),
+        ];
+        let mut kinds = Vec::new();
+        for (grid, at) in places {
+            let bricks = GridBricks::of(&world, grid).unwrap();
+            let layout = bricks.layout();
+            let seen = bricks.effective(at);
+            match bricks.source(at) {
+                Source::Stored(brick) => {
+                    assert_eq!(seen, BrickSource::Edited(brick), "{grid} {at}");
+                    kinds.push("stored");
+                }
+                Source::Generated(generator, made_at) => {
+                    assert_eq!(made_at, at);
+                    assert_eq!(
+                        seen,
+                        BrickSource::Generated(generator.generate_brick(&layout, at)),
+                        "{grid} {at}"
+                    );
+                    kinds.push("generated");
+                }
+                Source::Blank => {
+                    assert_eq!(
+                        seen,
+                        BrickSource::Generated(Brick::new(&layout)),
+                        "{grid} {at}"
+                    );
+                    kinds.push("blank");
+                }
+                Source::Nothing => {
+                    assert!(
+                        matches!(
+                            seen,
+                            BrickSource::Unassigned | BrickSource::MissingGenerator(_)
+                        ),
+                        "{grid} {at}: {seen:?}"
+                    );
+                    kinds.push("nothing");
+                }
+            }
+        }
+        for kind in ["stored", "generated", "blank", "nothing"] {
+            assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
+        }
     }
 
     #[test]

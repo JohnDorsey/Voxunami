@@ -184,6 +184,13 @@ impl WorldTerrain {
             .is_none_or(|generator| generator.may_show(cube))
     }
 
+    /// The generator that makes a brick, for handing to a thread that makes it: `None` where no generator is assigned yet, or where the plugin of the one
+    /// that is assigned is not here (the two cases [`WorldTerrain::generate`] reports as not generated).
+    pub fn generator_of_brick(&self, brick: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        let generator = self.assigned_generator(brick)?;
+        self.generators.entry(generator)?.content().cloned()
+    }
+
     pub fn generate(&self, layout: &GridLayout, brick: BrickCoordinate) -> GenerationOutcome {
         let Some(generator_id) = self.assigned_generator(brick) else {
             return GenerationOutcome::Unassigned;
@@ -369,6 +376,37 @@ mod tests {
             .set_assignment(cube([16, 0, 16], 3), Some(fixture.ghost));
         assert_eq!(fixture.terrain.coarse_node(cube([16, 0, 16], 3), 7), None);
         assert_eq!(fixture.terrain.coarse_node(cube([8, 0, 8], 0), 7), None);
+    }
+
+    #[test]
+    fn the_generator_of_a_brick_is_the_one_that_makes_it_and_none_where_nothing_is_made() {
+        let mut fixture = fixture(3);
+        let at = |x: i128| brick(x, 0, 0);
+        fixture.terrain.set_assignment(
+            BrickCube::new(brick(0, 0, 0), 3).unwrap(),
+            Some(fixture.high),
+        );
+        fixture.terrain.set_assignment(
+            BrickCube::new(brick(8, 0, 0), 3).unwrap(),
+            Some(fixture.ghost),
+        );
+        let made = fixture
+            .terrain
+            .generator_of_brick(at(1))
+            .expect("an assigned generator that is here");
+        // It makes what `generate` makes.
+        assert_eq!(
+            fixture.terrain.generate(&fixture.layout.layout, at(1)),
+            GenerationOutcome::Generated(made.generate_brick(&fixture.layout.layout, at(1)))
+        );
+        assert!(
+            fixture.terrain.generator_of_brick(at(9)).is_none(),
+            "its plugin is missing"
+        );
+        assert!(
+            fixture.terrain.generator_of_brick(at(17)).is_none(),
+            "nothing is assigned"
+        );
     }
 
     #[test]

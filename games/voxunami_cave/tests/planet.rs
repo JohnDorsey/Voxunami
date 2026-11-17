@@ -336,19 +336,26 @@ fn a_hole_dug_in_a_planet_is_in_its_far_nodes_for_a_player_who_is_far_above_it()
             }
         }
     });
-    apply_nodes(&mut nodes, settle_collecting(&mut scene, &mut player));
-
-    let changed: Vec<region_octree::BrickCube> = nodes
-        .iter()
-        .filter(|(cube, update)| before.get(*cube) != Some(*update))
-        .map(|(cube, _)| *cube)
-        .chain(
-            before
-                .keys()
-                .filter(|cube| !nodes.contains_key(*cube))
-                .copied(),
-        )
-        .collect();
+    // The server makes the nodes on a thread of its own and sends them as it does: wait for the hole to show, with a deadline.
+    let changed_since = |nodes: &std::collections::HashMap<_, _>| -> Vec<region_octree::BrickCube> {
+        nodes
+            .iter()
+            .filter(|(cube, update)| before.get(*cube) != Some(*update))
+            .map(|(cube, _)| *cube)
+            .chain(
+                before
+                    .keys()
+                    .filter(|cube| !nodes.contains_key(*cube))
+                    .copied(),
+            )
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut changed = Vec::new();
+    while changed.is_empty() && std::time::Instant::now() < deadline {
+        apply_nodes(&mut nodes, settle_collecting(&mut scene, &mut player));
+        changed = changed_since(&nodes);
+    }
     assert!(!changed.is_empty(), "the hole is not in the picture");
     for cube in changed {
         let origin = cube.origin();

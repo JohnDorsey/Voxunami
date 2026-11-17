@@ -7,7 +7,7 @@ nodes after an edit (`world-and-sky.md`: "Not done"), step 38j (ships), and the 
 ## 1. What is true today
 
 - **[code]** The server half exists: `coarse_streaming::CoarseServerPlugin` keeps an *override* for each cube of detail level 1 to 12 that holds an edited brick (the generator's node patched with the exact cells of the edited
-  bricks and of the overrides below), remakes dirty ones finest first (8 a tick, **on the thread of the tick**), and sends each client the overrides of the cubes it selects, coarsest first, within a byte credit. The client half
+  bricks and of the overrides below), remakes dirty ones finest first (up to 32 a tick handed to a **worker thread** since F3; they were made on the thread of the tick before), and sends each client the overrides of the cubes it selects, coarsest first, within a byte credit. The client half
   exists: `LodView::set_override` (keyed by grid) makes the node from the override instead of the generator and replaces it where it is. A test in `game_shell/src/coarse_view_tests.rs` shows an edit far away in a watcher's
   view, a late arrival seeing the same, and a recording showing the same **[run, passes]**.
 - **[code]** **No game installs the plugin**, and Cave asks for 0 bytes a second (`Cave::grid_detail`, `level_detail`), so in the game a dug hole shows in the bricks round the player and never in the nodes beyond. The reason
@@ -41,7 +41,7 @@ nodes after an edit (`world-and-sky.md`: "Not done"), step 38j (ships), and the 
 `remake` takes a `Grid` of bricks and an optional generator and does not care which. `mark_brick` stops refusing non-root grids. The message already names the grid. Whether the *edit event* of a ship reaches the plugin is
 **[belief]**: the plugin listens to `on_channels` with the event's grid, and a ship's `set_moving_voxel` records the same kind of change; the first test of F2 settles it.
 
-**3.2 The server's cost.** Today every dirty cube costs a call to the generator for the whole cube (`terrain.coarse_node(cube)`) on the thread of the tick, up to 8 a tick, up to 12 levels per edit. For a planet and for the level of
+**3.2 The server's cost.** (F3 built the worker, 2026-11-17: the generator's work is off the tick; what follows is the cost as it was.) Every dirty cube cost a call to the generator for the whole cube (`terrain.coarse_node(cube)`) on the thread of the tick, up to 8 a tick, up to 12 levels per edit. For a planet and for the level of
 space this is milliseconds **[belief: from the build log, to be measured in F0]**. Two changes that do not change what is sent: do the work on a worker, as `prefetch.rs` does for bricks, and remember the generator's node of a cube
 (it never changes once released, so the memory needs no invalidation, only a limit). Not recommended: sending only the patch and letting the client merge it with its own generator node. It would take the generator off the server
 and cut bytes, but a parent's cells depend on the children's *exposure*, which is deliberately not sent, so the client could not make a coarser node from a patch alone. I have not tried it; this is reasoning.
@@ -73,13 +73,13 @@ Saved files do not change (coarse data is never saved, owner's decision 16). A s
   does it: `coarse_view_tests.rs` gets a second level), go and come back, the far nodes are as the server meant. Fails on today's code. Small, safe, first.
 - **F2 Planets** (**built 2026-11-17**, build log; not built: the test of a planet on a rail, the player's own rate setting, the scaled light in an edited node). Items 1 and 3 of section 2, in part: the plugin handles a ship with terrain (3.1), the session routes `CoarseNodes` to the planet's mesher, Cave installs the plugin and asks for a rate for planets. Tests: dig on the planet, the node
   over it changes from far away; a player who arrives later sees the same; a recording shows the same; the planet moving on its rail does not resend. Mutants: an override not routed, an override of the wrong grid, a version that does not change.
-- **F3 The server does the work off the tick** (3.2), after F0 says it is needed: a worker and a cache of generator nodes; tests that the tick does not wait (counted, not timed: a clock may not decide a test) and that what is sent is
+- **F3 The server does the work off the tick** (**worker built 2026-11-17**, build log; the cache of generator nodes is not built, for the reason in the log): a worker and a cache of generator nodes; tests that the tick does not wait (counted, not timed: a clock may not decide a test) and that what is sent is
   byte for byte what the synchronous version sent.
 - **F4 Ships, the nodes** (3.1 and 3.5c): overrides of plain ships from their bricks, the far-ship view, a ship drawn in nodes where it is known; tested with a ship the client already knows (so no wire change yet): its nodes beyond the
   bricks, and an edit to it.
 - **F5 Ships, the wire** (3.4, and 3.3 for moving grids): the far tier, the bands of distance, the promotion to bricks and the demotion. Protocol version. **The largest and riskiest piece, and the one that makes the rocket at 5 km visible.**
 
-F1 and F2 can be had in days of work; F4 and F5 are the bulk. F3 may turn out not to be needed.
+F1, F2 and F3 are built; F4 and F5 are the bulk.
 
 ## 5. Risks
 
@@ -124,7 +124,7 @@ Not checked: whether any *plugin* ticks a frozen ship by itself (I read the life
 the ship's file is written whole when the ship is parked, and a sidecar can be written a cube at a time as the nodes are made; an external program that writes a huge ship can write the sidecar too, since it knows the shape; and a damaged or missing sidecar costs only the far view. It would be a **reversal of decision 16 for ships** only (the owner's word is the reversal; this is what the owner asked for).
 
 **8.4 A very large ship ("a Death Star").** What would happen today **[code]**: bringing the ship in reads the **whole** file into memory (`read_ship` gives a whole `MovingGrid`), the first tick after it comes in walks **every voxel of every brick** for the rules (`take_changes`), and a client is sent its bricks only up to 16,384 (`maximum_ship_bricks`). So a ship of millions of bricks cannot be brought in *at all*, never mind drawn; that is a separate limit from LOD and needs bricks paged in as a level's are (not planned anywhere that I found; I would call it a prerequisite and say so to the owner).
-What already exists: the **dirty-ancestor** machinery and the rate-limited remake of nodes after an edit (`coarse_streaming`, on the tick thread today); the bricks' own nodes are made by `voxel_meshing::coarse_node_of_brick` from a brick and its six neighbours. What is **not** built or planned: a worker that makes nodes (that was F3, "if needed"), nodes that are kept between runs, nodes made from a file without bringing the ship in.
+What already exists: the **dirty-ancestor** machinery and the rate-limited remake of nodes after an edit (`coarse_streaming`; the generators' work is on a worker thread since F3); the bricks' own nodes are made by `voxel_meshing::coarse_node_of_brick` from a brick and its six neighbours. What is **not** built or planned: nodes that are kept between runs, nodes made from a file without bringing the ship in.
 
 **8.5 The proposal (a far record).** (a) For every ship, parked or not, the server keeps a small **far record** in memory: its box, its pose or rail, its level, and its *coarsest nodes* (say the levels from 5 or 6 up: a few hundred cells for a ship of any size). The world already keeps the first three for a parked ship (`ParkedGrid`: bounds, pose, level, rail flag), so this is those plus the nodes.
 (b) The nodes come from the **sidecar file** (8.3), read when the world starts or the ship is first seen. (c) A **worker thread** keeps the sidecar up to date: it builds missing nodes from the ship's bricks at low priority, so a ship made by another program gets them as time allows, and remakes the ancestors of a changed brick **while players edit** (the dirty marks exist; the worker is F3). It does not have to be quick, as the owner said; what it must do is *never block the tick* and *keep up on average*. A far client gets what exists and the rest as it arrives; the ship is drawn from what is there. (d) A tool command (`launcher prepare-ship FILE`) can build a sidecar offline for a ship made outside.

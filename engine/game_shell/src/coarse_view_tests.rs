@@ -23,7 +23,7 @@ use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
 use crate::session::{Mode, Session};
 use crate::test_support::{
-    ExampleContent, ExampleDetailGame, ExampleGame, ExampleOneCoarseLevelGame,
+    CoarseWatch, ExampleContent, ExampleDetailGame, ExampleGame, ExampleOneCoarseLevelGame,
 };
 use crate::view::camera_at;
 
@@ -126,6 +126,7 @@ struct Rig {
     server: Server,
     connector: LoopbackConnector,
     queue: Arc<Mutex<Vec<VoxelCoordinate>>>,
+    nodes: CoarseWatch,
 }
 
 impl Rig {
@@ -157,23 +158,23 @@ impl Rig {
         config.view_distance = detail().maximum_distance;
         let queue: Arc<Mutex<Vec<VoxelCoordinate>>> = Arc::default();
         let digger = Digger::new(GridId::MAIN, block, air, Arc::clone(&queue));
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(players),
-            Box::new(CoarseServerPlugin::new(config)),
-            Box::new(digger),
-        ];
+        let coarse = CoarseServerPlugin::new(config);
+        let nodes = CoarseWatch::of(coarse.handle());
+        let plugins: Vec<Box<dyn Plugin>> =
+            vec![Box::new(players), Box::new(coarse), Box::new(digger)];
         let (server, connector) =
             build_server_with_plugins::<G>(&content, world, 3, plugins).unwrap();
         Self {
             server,
             connector,
             queue,
+            nodes,
         }
     }
 
     /// A player who draws far terrain, at `position`, over a connection.
     fn join(&mut self, connection: Box<dyn Connection>, who: u8, position: [f64; 3]) -> Player {
-        let server = &mut self.server;
+        let (server, nodes) = (&mut self.server, &self.nodes);
         let mut player = Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
@@ -181,7 +182,7 @@ impl Rig {
             3,
             camera_at(position, 0.0, 0.0),
             || {
-                server.step();
+                nodes.step(server);
             },
         )
         .unwrap();
@@ -196,7 +197,7 @@ impl Rig {
         who: u8,
         position: [f64; 3],
     ) -> Session<Box<dyn Connection>, G> {
-        let server = &mut self.server;
+        let (server, nodes) = (&mut self.server, &self.nodes);
         let mut player = Session::<_, G>::connect(
             connection,
             &Identity::from_secret([who; 32]),
@@ -204,7 +205,7 @@ impl Rig {
             3,
             camera_at(position, 0.0, 0.0),
             || {
-                server.step();
+                nodes.step(server);
             },
         )
         .unwrap();
@@ -223,14 +224,23 @@ impl Rig {
         screen: &mut Screen,
     ) {
         player.send_pose();
-        for _ in 0..3 {
-            let server = &mut self.server;
+        // Three rounds, and more until the server has made the nodes it was to (which it does on a thread of its own, a level of nodes in a tick): the round
+        // after that takes them in.
+        let mut rounds = 0;
+        let mut rounds_after_done = 0;
+        while rounds < 3 || rounds_after_done < 1 {
+            let (server, nodes) = (&mut self.server, &self.nodes);
             let updates = player
                 .settle(|| {
-                    server.step();
+                    nodes.step(server);
                 })
                 .unwrap();
             screen.apply(updates);
+            rounds += 1;
+            if self.nodes.is_done() {
+                rounds_after_done += 1;
+            }
+            assert!(rounds < 200, "the server is still making nodes");
         }
     }
 
