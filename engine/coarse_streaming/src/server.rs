@@ -162,7 +162,12 @@ struct State {
     in_flight: BTreeSet<Key>,
     /// The thread that makes nodes, started when the first is handed over.
     worker: Option<Worker>,
+    /// Ticks since the nodes of ships that are gone were last swept away.
+    ticks_since_sweep: u32,
 }
+
+/// How often (in ticks) the nodes of ships that are no more are looked for: every few seconds, so that a world of many ships does not pay for it in every tick.
+const SWEEP_EVERY_TICKS: u32 = 64;
 
 /// The thread that makes nodes from [`NodeJob`]s, in the order it was given them (as the thread of `prefetch` in the server does for bricks). It ends when this
 /// is dropped, after the node it is making.
@@ -275,14 +280,13 @@ impl Owned {
     }
 }
 
-/// Whether the plugin keeps nodes for the grid: the root grid of a level the configuration keeps, or a planet (a ship with terrain generators of its own).
+/// Whether the plugin keeps nodes for the grid: the root grid of a level the configuration keeps, or a ship that is in memory (a planet, whose generator makes
+/// the base of its nodes, or a ship nothing generates, whose nodes are made from its bricks alone).
 fn keeps_nodes_of(config: &CoarseConfig, data: &WorldData, grid: GridId) -> bool {
     if let Some(level) = grid.root_level() {
         return keeps_level(config, data, level);
     }
-    data.grids()
-        .get(grid)
-        .is_some_and(|ship| ship.terrain.is_some())
+    data.grids().get(grid).is_some()
 }
 
 /// Whether the configuration keeps the nodes of the terrain of a level.
@@ -303,16 +307,20 @@ enum GridBricks<'a> {
         generator: Arc<dyn TerrainGenerator>,
         extent: BrickBox,
     },
+    /// A ship that nothing generates: its stored bricks are all of it, and where it has none there is nothing.
+    Ship(&'a Grid),
 }
 
 impl<'a> GridBricks<'a> {
-    /// `None` for a grid that has no nodes, or a planet whose generator this program lacks (a client cannot make its nodes either).
+    /// `None` for a grid that is not in memory, or a planet whose generator this program lacks (a client cannot make its nodes either).
     fn of(data: &'a WorldData, grid: GridId) -> Option<Self> {
         if let Some(level) = grid.root_level() {
             return data.level(level).map(Self::Level);
         }
         let ship = data.grids().get(grid)?;
-        let terrain = ship.terrain?;
+        let Some(terrain) = ship.terrain else {
+            return Some(Self::Ship(&ship.voxels));
+        };
         let generator = data
             .main()
             .terrain
@@ -331,7 +339,7 @@ impl<'a> GridBricks<'a> {
     fn stored(&self, at: BrickCoordinate) -> Option<&Arc<Brick>> {
         match self {
             Self::Level(level) => level.overrides.brick(at),
-            Self::Planet { voxels, .. } => voxels.brick(at),
+            Self::Planet { voxels, .. } | Self::Ship(voxels) => voxels.brick(at),
         }
     }
 
@@ -360,6 +368,9 @@ impl<'a> GridBricks<'a> {
                     Source::Blank
                 }
             }
+            Self::Ship(voxels) => voxels
+                .brick(at)
+                .map_or(Source::Blank, |stored| Source::Stored(Arc::clone(stored))),
         }
     }
 
@@ -368,7 +379,7 @@ impl<'a> GridBricks<'a> {
     fn effective(&self, at: BrickCoordinate) -> BrickSource {
         match self {
             Self::Level(level) => level.effective_brick(at),
-            Self::Planet { voxels, .. } => match self.source(at) {
+            Self::Planet { voxels, .. } | Self::Ship(voxels) => match self.source(at) {
                 Source::Stored(brick) => BrickSource::Edited(brick),
                 Source::Generated(generator, at) => {
                     BrickSource::Generated(generator.generate_brick(voxels.layout(), at))
@@ -382,7 +393,7 @@ impl<'a> GridBricks<'a> {
     fn layout(&self) -> Arc<GridLayout> {
         match self {
             Self::Level(level) => Arc::clone(level.overrides.layout()),
-            Self::Planet { voxels, .. } => Arc::clone(voxels.layout()),
+            Self::Planet { voxels, .. } | Self::Ship(voxels) => Arc::clone(voxels.layout()),
         }
     }
 
@@ -393,6 +404,7 @@ impl<'a> GridBricks<'a> {
             Self::Planet {
                 generator, extent, ..
             } => cube.meets(*extent).then(|| Arc::clone(generator)),
+            Self::Ship(_) => None,
         }
     }
 }
@@ -487,15 +499,25 @@ impl NodeJob {
     }
 }
 
-/// What it takes to make the node of a cube as the server makes it, or `None` if no half of it is known exactly (an edited brick, or a node that has an
-/// override): there is nothing to say that the client does not derive.
+/// What there is to make of the node of a cube.
+enum Gathered {
+    /// The grid is not in memory (a ship in a file, or one that is gone): there are no bricks to look at.
+    NotHere,
+    /// No half of the cube is known exactly (an edited brick, or a node that has an override): there is nothing to say that the client does not derive.
+    Nothing,
+    Job(Box<NodeJob>),
+}
+
+/// What it takes to make the node of a cube as the server makes it.
 fn gather(
     overrides: &BTreeMap<Key, Stored>,
     data: &WorldData,
     grid: GridId,
     cube: BrickCube,
-) -> Option<NodeJob> {
-    let bricks = GridBricks::of(data, grid)?;
+) -> Gathered {
+    let Some(bricks) = GridBricks::of(data, grid) else {
+        return Gathered::NotHere;
+    };
     let half = (cube.edge_length() / 2) as i128;
     let origin = cube.origin();
     let mut touched = false;
@@ -530,12 +552,15 @@ fn gather(
         touched |= child.is_some();
         child.unwrap_or(Child::Absent)
     });
-    touched.then(|| NodeJob {
+    if !touched {
+        return Gathered::Nothing;
+    }
+    Gathered::Job(Box::new(NodeJob {
         cube,
         generated: bricks.node_generator(cube),
         layout: bricks.layout(),
         children,
-    })
+    }))
 }
 
 /// The node of a cube as the server makes it, on the spot (the worker makes it from the same [`gather`]ed job).
@@ -547,7 +572,10 @@ fn remake(
     grid: GridId,
     cube: BrickCube,
 ) -> Option<CoarseNode> {
-    gather(overrides, data, grid, cube)?.run(config)
+    match gather(overrides, data, grid, cube) {
+        Gathered::Job(job) => job.run(config),
+        Gathered::Nothing | Gathered::NotHere => None,
+    }
 }
 
 impl State {
@@ -565,6 +593,39 @@ impl State {
     fn work(&mut self, config: &Arc<CoarseConfig>, data: &WorldData) {
         self.take_in_finished(config.maximum_override_level);
         self.hand_over(config, data);
+        self.ticks_since_sweep += 1;
+        if self.ticks_since_sweep >= SWEEP_EVERY_TICKS {
+            self.ticks_since_sweep = 0;
+            self.sweep_the_nodes_of_ships_that_are_gone(data);
+        }
+    }
+
+    /// Takes back the nodes of ships that are neither in memory nor in a file (they were merged away, or lost): nothing will mark them again. A ship in a file
+    /// keeps its nodes, which is what they are for.
+    fn sweep_the_nodes_of_ships_that_are_gone(&mut self, data: &WorldData) {
+        let gone: BTreeSet<GridId> = self
+            .overrides
+            .keys()
+            .map(|key| key.1)
+            .filter(|grid| {
+                grid.root_level().is_none()
+                    && data.grids().get(*grid).is_none()
+                    && data.grids().get_parked(*grid).is_none()
+            })
+            .collect();
+        for grid in gone {
+            let keys: Vec<Key> = self
+                .overrides
+                .keys()
+                .filter(|key| key.1 == grid)
+                .copied()
+                .collect();
+            for key in keys {
+                self.forget(key);
+                self.dirty.remove(&key);
+            }
+            self.epoch += 1;
+        }
     }
 
     /// Keeps the nodes the worker has finished, in the order it was given them.
@@ -616,7 +677,7 @@ impl State {
     fn hand_over(&mut self, config: &Arc<CoarseConfig>, data: &WorldData) {
         let limit = config.nodes_per_tick;
         let room = limit.saturating_sub(self.in_flight.len());
-        let mut taken: Vec<(Key, Option<NodeJob>)> = Vec::new();
+        let mut taken: Vec<(Key, Gathered)> = Vec::new();
         let mut jobs = 0;
         for &key in &self.dirty {
             if taken.len() >= limit || jobs >= room {
@@ -625,22 +686,28 @@ impl State {
             if self.in_flight.contains(&key) || self.waits_for_its_halves(key) {
                 continue;
             }
-            let job = gather(&self.overrides, data, key.1, cube_of(key));
-            jobs += usize::from(job.is_some());
-            taken.push((key, job));
+            let gathered = gather(&self.overrides, data, key.1, cube_of(key));
+            jobs += usize::from(matches!(gathered, Gathered::Job(_)));
+            taken.push((key, gathered));
         }
-        for (key, job) in taken {
+        for (key, gathered) in taken {
             self.dirty.remove(&key);
-            match job {
-                None => self.keep(config.maximum_override_level, key, None),
-                Some(job) => {
+            match gathered {
+                Gathered::Nothing => self.keep(config.maximum_override_level, key, None),
+                // A ship in a file keeps the nodes it has (when it comes back every voxel of it is a change, and they are made again); one that is gone has none.
+                Gathered::NotHere => {
+                    if data.grids().get_parked(key.1).is_none() {
+                        self.keep(config.maximum_override_level, key, None);
+                    }
+                }
+                Gathered::Job(job) => {
                     let worker = self
                         .worker
                         .get_or_insert_with(|| Worker::start(Arc::clone(config)));
                     worker.handed += 1;
                     worker
                         .jobs
-                        .send((key, job))
+                        .send((key, *job))
                         .expect("the thread that makes coarse nodes is there");
                     self.in_flight.insert(key);
                 }
@@ -956,12 +1023,10 @@ impl Plugin for CoarseServerPlugin {
                     state.mark_brick(grid, brick, config.maximum_override_level);
                 }
             }
-            // (A planet that is in a file is told of when it comes out, as a change of every voxel it holds.)
+            // (A ship that is in a file is told of when it comes out, as a change of every voxel it holds.)
             for (grid, ship) in registrar.world().grids().iter() {
-                if ship.terrain.is_some() {
-                    for (brick, _) in ship.voxels.bricks() {
-                        state.mark_brick(grid, brick, config.maximum_override_level);
-                    }
+                for (brick, _) in ship.voxels.bricks() {
+                    state.mark_brick(grid, brick, config.maximum_override_level);
                 }
             }
         }
@@ -1388,7 +1453,8 @@ mod tests {
     }
 
     #[test]
-    fn nodes_are_kept_for_the_root_grids_of_levels_and_for_planets_and_for_no_other_grid() {
+    fn nodes_are_kept_for_the_root_grids_of_levels_and_for_every_ship_in_memory_and_for_no_other_grid()
+     {
         let game = Game::new(&ALL_PLUGINS);
         let mut world = game.new_world();
         let made = game.sample_ship(&world, 0);
@@ -1398,8 +1464,8 @@ mod tests {
         assert!(keeps_nodes_of(&config(), &world, GridId::MAIN));
         assert!(keeps_nodes_of(&config(), &world, planet));
         assert!(
-            !keeps_nodes_of(&config(), &world, ship),
-            "a ship nobody generates has no nodes yet"
+            keeps_nodes_of(&config(), &world, ship),
+            "a ship nobody generates has its nodes made from its bricks"
         );
         // (A grid that is not there has none.)
         assert!(!keeps_nodes_of(
@@ -1595,10 +1661,8 @@ mod tests {
             assert!(bricks.stored(brick).is_some());
             assert!(matches!(bricks.effective(brick), BrickSource::Edited(_)));
         }
-        // A ship nobody generates has no nodes, so no bricks to read them from.
-        let made = game.sample_ship(&world, 0);
-        let ship = world.grids_mut().create(made);
-        assert!(GridBricks::of(&world, ship).is_none());
+        // A ship that is not in memory has no bricks to read.
+        assert!(GridBricks::of(&world, GridId::new(GridId::FIRST_ALLOCATED + 100)).is_none());
     }
 
     /// A generator that gives what another gives, but whose coarse cells are not given until the test lets it: how long a slow generator keeps a tick
@@ -2044,8 +2108,20 @@ mod tests {
         let mut world = game.new_world();
         let made = game.sample_planet(&world, 0);
         let planet = world.grids_mut().create(made);
+        let made = game.sample_ship(&world, 0);
+        let ship = world.grids_mut().create(made);
         let config = config_for(&game, &world);
-        let bricks = GridBricks::of(&world, planet).unwrap();
+        for grid in [planet, ship] {
+            check_the_cells_of_the_stored_bricks(&world, &config, grid);
+        }
+    }
+
+    fn check_the_cells_of_the_stored_bricks(
+        world: &WorldData,
+        config: &Arc<CoarseConfig>,
+        planet: GridId,
+    ) {
+        let bricks = GridBricks::of(world, planet).unwrap();
         let stored: Vec<BrickCoordinate> = world
             .grids()
             .get(planet)
@@ -2058,11 +2134,11 @@ mod tests {
         for at in stored {
             // What the game sees beside it (the edited or generated brick, as bricks the mesher reads), as the nodes of the first version of the server read them.
             let owned = |source: BrickSource| match source {
-                BrickSource::Edited(brick) => Some(Owned::new(brick, &config)),
-                BrickSource::Generated(brick) => Some(Owned::new(Arc::new(brick), &config)),
+                BrickSource::Edited(brick) => Some(Owned::new(brick, config)),
+                BrickSource::Generated(brick) => Some(Owned::new(Arc::new(brick), config)),
                 _ => None,
             };
-            let center = Owned::new(Arc::clone(bricks.stored(at).unwrap()), &config);
+            let center = Owned::new(Arc::clone(bricks.stored(at).unwrap()), config);
             let beside: Vec<Option<Owned>> = FaceDirection::ALL
                 .iter()
                 .map(|face| {
@@ -2073,21 +2149,22 @@ mod tests {
                 .collect();
             let expected = coarse_node_of_brick(
                 &BrickNeighbourhood {
-                    center: center.channels(&config),
+                    center: center.channels(config),
                     neighbours: std::array::from_fn(|index| {
-                        beside[index].as_ref().map(|owned| owned.channels(&config))
+                        beside[index].as_ref().map(|owned| owned.channels(config))
                     }),
                 },
                 &config.table,
                 config.air,
             );
-            let job = gather(
+            let Gathered::Job(job) = gather(
                 &BTreeMap::new(),
-                &world,
+                world,
                 planet,
                 BrickCube::containing(at, 1),
-            )
-            .expect("a stored brick makes a job");
+            ) else {
+                panic!("a stored brick makes a job");
+            };
             let found = job
                 .children
                 .iter()
@@ -2095,7 +2172,7 @@ mod tests {
                     Child::Brick { center, beside }
                         if Arc::ptr_eq(center, bricks.stored(at).unwrap()) =>
                     {
-                        Some(job.summarize_brick(&config, center, beside))
+                        Some(job.summarize_brick(config, center, beside))
                     }
                     _ => None,
                 })
@@ -2104,6 +2181,143 @@ mod tests {
             compared += 1;
         }
         assert!(compared > 0);
+    }
+
+    #[test]
+    fn the_node_of_a_plain_ship_is_empty_where_the_ship_has_no_brick_and_is_made_of_its_bricks_where_it_has()
+     {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_ship(&world, 0);
+        let ship = world.grids_mut().create(made);
+        let config = config_for(&game, &world);
+        let stored: BTreeSet<BrickCoordinate> = world
+            .grids()
+            .get(ship)
+            .unwrap()
+            .voxels
+            .bricks()
+            .map(|(brick, _)| brick)
+            .collect();
+        assert!(stored.len() >= 2);
+        let first = *stored.iter().next().unwrap();
+        let cube = BrickCube::containing(first, 1);
+        let node = remake(&config, &BTreeMap::new(), &world, ship, cube)
+            .expect("a cube with a stored brick has a node");
+        // A cube of two bricks: a cell is two voxels, so the 16 cells a brick takes along an axis. Only the cells of the stored bricks are anything.
+        let origin = cube.origin();
+        let mut filled = 0;
+        for (index, cell) in node.cells().enumerate() {
+            if cell.fill == 0 {
+                continue;
+            }
+            filled += 1;
+            let (x, y, z) = (index % 32, (index / 32) % 32, index / 1024);
+            let brick = BrickCoordinate::new(
+                origin.x() + (x / 16) as i128,
+                origin.y() + (y / 16) as i128,
+                origin.z() + (z / 16) as i128,
+            );
+            assert!(
+                stored.contains(&brick),
+                "a cell of {brick} that has no brick"
+            );
+        }
+        assert!(filled > 0, "the stored bricks are in the node");
+        // A cube with no stored brick has none, and nothing generates one.
+        let empty = BrickCube::containing(
+            BrickCoordinate::new(first.x() + 40, first.y(), first.z()),
+            1,
+        );
+        assert!(remake(&config, &BTreeMap::new(), &world, ship, empty).is_none());
+        assert!(
+            GridBricks::of(&world, ship)
+                .unwrap()
+                .node_generator(cube)
+                .is_none()
+        );
+    }
+
+    /// Stores a node as the override of a cube, as if it had been made.
+    fn keep_a_node(state: &mut State, grid: GridId, level: u8) -> Key {
+        let key = key_of(
+            grid,
+            BrickCube::new(BrickCoordinate::new(0, 0, 0), level).unwrap(),
+        );
+        state.store(
+            key,
+            Stored {
+                node: CoarseNode::uniform(CoarseCell::empty(0, 0)),
+                version: 1,
+            },
+        );
+        key
+    }
+
+    #[test]
+    fn a_ship_in_a_file_keeps_its_nodes_and_a_ship_that_is_gone_loses_them_when_they_are_looked_at()
+    {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_ship(&world, 0);
+        let parked = world.grids_mut().create(made);
+        let config = config_for(&game, &world);
+        let format = game.ship_format(&world);
+        let mut files = world_storage::MemoryShipFiles::new();
+        world.park_ship(parked, false, &mut files, &format).unwrap();
+        let gone = GridId::new(GridId::FIRST_ALLOCATED + 500);
+
+        let mut state = State::default();
+        let kept = keep_a_node(&mut state, parked, 1);
+        let lost = keep_a_node(&mut state, gone, 1);
+        state.dirty.insert(kept);
+        state.dirty.insert(lost);
+        while state.waiting() > 0 {
+            work_a_tick(&mut state, &config, &world);
+        }
+        assert!(state.overrides.contains_key(&kept), "a ship in a file");
+        assert!(!state.overrides.contains_key(&lost), "a ship that is gone");
+        assert!(!state.edited.holds(gone, cube_of(lost)));
+    }
+
+    #[test]
+    fn the_nodes_of_ships_that_are_gone_are_swept_away_from_time_to_time_and_those_of_ships_in_memory_and_in_files_are_not()
+     {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let made = game.sample_ship(&world, 0);
+        let loaded = world.grids_mut().create(made);
+        let made = game.sample_ship(&world, 100);
+        let parked = world.grids_mut().create(made);
+        let config = config_for(&game, &world);
+        let format = game.ship_format(&world);
+        let mut files = world_storage::MemoryShipFiles::new();
+        world.park_ship(parked, false, &mut files, &format).unwrap();
+        let gone = GridId::new(GridId::FIRST_ALLOCATED + 500);
+
+        let mut state = State::default();
+        let keys = [
+            keep_a_node(&mut state, GridId::MAIN, 3),
+            keep_a_node(&mut state, loaded, 3),
+            keep_a_node(&mut state, parked, 3),
+            keep_a_node(&mut state, gone, 3),
+            keep_a_node(&mut state, gone, 4),
+        ];
+        let epoch = state.epoch;
+        for _ in 0..SWEEP_EVERY_TICKS - 1 {
+            work_a_tick(&mut state, &config, &world);
+        }
+        assert_eq!(state.overrides.len(), 5, "not yet");
+        work_a_tick(&mut state, &config, &world);
+        let left: Vec<Key> = state.overrides.keys().copied().collect();
+        let mut expected = vec![keys[0], keys[1], keys[2]];
+        expected.sort();
+        assert_eq!(left, expected);
+        assert_ne!(
+            state.epoch, epoch,
+            "what clients were sent is looked at again"
+        );
+        assert!(!state.edited.holds(gone, cube_of(keys[3])));
     }
 
     #[test]
@@ -2184,6 +2398,24 @@ mod tests {
         for kind in ["stored", "generated", "blank", "nothing"] {
             assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
         }
+        // A ship that nothing generates has air where it has no brick, and what it has is what is stored.
+        let made = game.sample_ship(&world, 0);
+        let ship = world.grids_mut().create(made);
+        let stored = world
+            .grids()
+            .get(ship)
+            .unwrap()
+            .voxels
+            .bricks()
+            .next()
+            .map(|(brick, _)| brick)
+            .unwrap();
+        let bricks = GridBricks::of(&world, ship).unwrap();
+        assert!(matches!(bricks.source(stored), Source::Stored(_)));
+        assert!(matches!(
+            bricks.source(BrickCoordinate::new(500, 500, 500)),
+            Source::Blank
+        ));
     }
 
     #[test]

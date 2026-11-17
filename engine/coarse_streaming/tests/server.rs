@@ -18,7 +18,10 @@ use server::{GridView, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
 use voxel_grid::ChannelIndex;
-use voxel_space::{BrickCoordinate, GridId, LocalVoxelIndex, VoxelCoordinate, WorldPosition};
+use voxel_space::{
+    BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
+};
 use world_storage::WorldData;
 use world_storage::test_support::{Game, Plugin as FixturePlugin, id, sample_world};
 
@@ -27,12 +30,15 @@ const AIR: u32 = 0;
 const STONE: u32 = 1;
 const TICKS_PER_SECOND: u32 = 20;
 
-type Edits = Arc<Mutex<Vec<(ChannelIndex, VoxelCoordinate, u32)>>>;
+type Edits = Arc<Mutex<Vec<(GridId, ChannelIndex, VoxelCoordinate, u32)>>>;
 
 /// A plugin that makes the edits a test queues, the way a rule of a game does, so that the plugin under test hears of them from the host.
 struct Editor {
     channels: Vec<ChannelIndex>,
     edits: Edits,
+    /// How many ships to make (each with a few voxels of stone) in the next tick, and the ones made.
+    ships_to_make: Arc<Mutex<usize>>,
+    ships_made: Arc<Mutex<Vec<GridId>>>,
 }
 
 impl Plugin for Editor {
@@ -42,13 +48,38 @@ impl Plugin for Editor {
 
     fn register(&self, registrar: &mut Registrar<'_>) {
         let edits = Arc::clone(&self.edits);
+        let (ships_to_make, ships_made) = (
+            Arc::clone(&self.ships_to_make),
+            Arc::clone(&self.ships_made),
+        );
+        let block = self.channels[0];
         registrar.system(
             SystemSpec::new("test:editor", Phase::Rules).writes(&self.channels),
             move |context| {
+                let to_make = std::mem::take(&mut *ships_to_make.lock().unwrap());
+                for _ in 0..to_make {
+                    let world = context.world();
+                    let pose = GridPose::new(
+                        WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]),
+                        Orientation::IDENTITY,
+                    );
+                    let ship = world.create_grid(LevelIndex::MAIN, pose).unwrap();
+                    ships_made.lock().unwrap().push(ship);
+                    for x in 0..4 {
+                        context
+                            .grid(ship)
+                            .unwrap()
+                            .set(block, VoxelCoordinate::new(x, 1, 1), STONE)
+                            .unwrap();
+                    }
+                }
                 let queued = std::mem::take(&mut *edits.lock().unwrap());
-                let mut grid = context.grid(GridId::MAIN).unwrap();
-                for (channel, voxel, value) in queued {
-                    grid.set(channel, voxel, value).unwrap();
+                for (grid, channel, voxel, value) in queued {
+                    context
+                        .grid(grid)
+                        .unwrap()
+                        .set(channel, voxel, value)
+                        .unwrap();
                 }
             },
         );
@@ -106,6 +137,8 @@ struct Rig {
     client: Client,
     handle: CoarseHandle,
     edits: Edits,
+    ships_to_make: Arc<Mutex<usize>>,
+    ships_made: Arc<Mutex<Vec<GridId>>>,
     block: ChannelIndex,
     temperature: ChannelIndex,
 }
@@ -180,9 +213,13 @@ fn rig_over(
     let coarse = CoarseServerPlugin::new(config);
     let handle = coarse.handle();
     let edits: Edits = Arc::default();
+    let ships_to_make: Arc<Mutex<usize>> = Arc::default();
+    let ships_made: Arc<Mutex<Vec<GridId>>> = Arc::default();
     let editor = Editor {
         channels: vec![block, temperature],
         edits: Arc::clone(&edits),
+        ships_to_make: Arc::clone(&ships_to_make),
+        ships_made: Arc::clone(&ships_made),
     };
     let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(players), Box::new(coarse), Box::new(editor)];
     let host = PluginHost::new(plugins, &world).unwrap();
@@ -209,6 +246,8 @@ fn rig_over(
         client,
         handle,
         edits,
+        ships_to_make,
+        ships_made,
         block,
         temperature,
     }
@@ -243,11 +282,23 @@ impl Rig {
 
     /// Queues the setting of a channel to a value in every voxel in the box.
     fn set_channel(&self, from: [i128; 3], to: [i128; 3], channel: ChannelIndex, value: u32) {
+        self.set_channel_in(GridId::MAIN, from, to, channel, value);
+    }
+
+    /// The same in a ship.
+    fn set_channel_in(
+        &self,
+        grid: GridId,
+        from: [i128; 3],
+        to: [i128; 3],
+        channel: ChannelIndex,
+        value: u32,
+    ) {
         let mut edits = self.edits.lock().unwrap();
         for x in from[0]..to[0] {
             for y in from[1]..to[1] {
                 for z in from[2]..to[2] {
-                    edits.push((channel, VoxelCoordinate::new(x, y, z), value));
+                    edits.push((grid, channel, VoxelCoordinate::new(x, y, z), value));
                 }
             }
         }
@@ -756,4 +807,72 @@ fn the_light_of_a_cell_is_the_brightness_of_the_air_it_looks_at() {
     assert_eq!(light_of([12, 0, 12]), 20);
     // And what no brick of the edits is in is the generator's, which knows of no light: the game's darkness.
     assert_eq!(light_of([20, 20, 20]), 7);
+}
+
+/// A rig over a world with no edits and one ship that nothing generates (the sample ship: two bricks, one at the origin and one beside it up and along), whose
+/// blocks are all opaque but air.
+fn rig_with_a_ship() -> (Rig, GridId) {
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let mut world = game.new_world();
+    let made = game.sample_ship(&world, 0);
+    let ship = world.grids_mut().create(made);
+    let rig = rig_over(&game, world, |config, _| {
+        let mut opaque = vec![true; 16];
+        opaque[AIR as usize] = false;
+        config.table = BlockTable::of_cubes(&opaque);
+    });
+    (rig, ship)
+}
+
+#[test]
+fn the_nodes_of_a_ship_nothing_generates_are_made_from_its_bricks_follow_its_edits_and_are_not_sent_to_a_client_that_has_the_bricks()
+ {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    let at_level = |rig: &Rig, level: u8| {
+        rig.handle
+            .override_of(ship, BrickCube::containing(BrickCoordinate::ORIGIN, level))
+    };
+    // The ship came into the world as a change of every voxel it holds: a node at each level from 1 to 12 holds its bricks.
+    let (first, first_version) = at_level(&rig, 1).expect("the first level of nodes");
+    for level in 1..=12 {
+        assert!(at_level(&rig, level).is_some(), "level {level}");
+    }
+    assert!(at_level(&rig, 13).is_none());
+    assert!(
+        first.cells().any(|cell| cell.fill > 0),
+        "the stone of the ship is in its node"
+    );
+
+    // A block put in a brick of the ship changes the node over it and not the ones that a block that small does not show in.
+    rig.set_channel_in(ship, [8, 8, 8], [16, 16, 16], rig.block, STONE);
+    rig.settle();
+    let (second, second_version) = at_level(&rig, 1).unwrap();
+    assert_ne!(first, second);
+    assert!(second_version > first_version);
+
+    // A client near the ship, and one far from it, are sent nothing for it: a client has the bricks of the ships it knows, and makes their nodes itself.
+    for stand in [[0, 0, 0], [96, 0, 0], [4000, 0, 0]] {
+        rig.client.stand_at(stand);
+        rig.client.set_detail(&detail(10_000_000));
+        rig.step(10);
+        let (_, updates) = rig.client.coarse_nodes();
+        assert!(updates.is_empty(), "{stand:?}: {updates:?}");
+    }
+}
+
+#[test]
+fn a_ship_made_while_the_server_runs_has_nodes_too() {
+    let mut rig = rig();
+    *rig.ships_to_make.lock().unwrap() = 1;
+    rig.settle();
+    let ship = rig.ships_made.lock().unwrap()[0];
+    for level in 1..=12 {
+        assert!(
+            rig.handle
+                .override_of(ship, BrickCube::containing(BrickCoordinate::ORIGIN, level))
+                .is_some(),
+            "level {level}"
+        );
+    }
 }
