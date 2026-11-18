@@ -3104,6 +3104,18 @@ SLIDERS = {
     "airbrush": (("airbrush_hardness", "Hardness"), ("airbrush_opacity", "Opacity")),
 }
 COLOR_HISTORY_LENGTH = 16
+
+# What the rows of the channel controls are called (by the identity of the channel).
+CHANNEL_LABELS = {
+    "smoothness": "Smooth",
+    "reflectance": "Reflect",
+    "porosity_scattering": "Porosity",
+    "emission": "Emission",
+    "normal_x": "Normal X",
+    "normal_y": "Normal Y",
+    "ambient_occlusion": "Occlusion",
+    "height": "Height",
+}
 MAXIMUM_CANVAS_ZOOM = 64
 
 
@@ -4584,6 +4596,10 @@ class EditorAreas:
     secondary_swatch: pygame.Rect
     hex_field: pygame.Rect
     history: list[pygame.Rect]
+    # The blend mode buttons of the colour (RGB, alpha) under the history, and the panel of channel controls.
+    rgb_mode: pygame.Rect
+    alpha_mode: pygame.Rect
+    channel_panel: pygame.Rect
 
 
 def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
@@ -4591,8 +4607,11 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
     margin, gap = scaled(10), scaled(6)
     width = rect.width - 2 * margin
     header = pygame.Rect(rect.x + margin, rect.y + margin, width, scaled(30))
+    # The colour area is as tall as what is stacked right of its square: swatches, hex field, the history of colours, and the
+    # blend modes of RGB and alpha. When the editor is short the history gets fewer rows (or none), the rest stays.
     square_size = scaled(120)
-    color_top = rect.bottom - margin - square_size
+    band_height = max(scaled(150), min(scaled(246), rect.height // 3))
+    color_top = rect.bottom - margin - band_height
     options = pygame.Rect(rect.x + margin, color_top - scaled(30), width, scaled(22))
     # The sliders and the shape menu of the noise brush and the air brush; empty for the other tools.
     controls = pygame.Rect(rect.x + margin, options.y - gap - scaled(24), width, scaled(24))
@@ -4616,35 +4635,44 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         for index, name in enumerate(SIDEBAR_BUTTONS)
     }
     left = rect.x + margin
-    square = pygame.Rect(left, color_top, square_size, square_size)
-    hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), square_size)
-    alpha_bar = pygame.Rect(hue_bar.right + gap, color_top, scaled(16), square_size)
+    square = pygame.Rect(left, color_top, square_size, band_height)
+    hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), band_height)
+    alpha_bar = pygame.Rect(hue_bar.right + gap, color_top, scaled(16), band_height)
     swatch_left = alpha_bar.right + scaled(20)
     swatch_size = scaled(48)
     primary_swatch = pygame.Rect(swatch_left, color_top, swatch_size, swatch_size)
     secondary_swatch = pygame.Rect(primary_swatch.right + gap, color_top, swatch_size, swatch_size)
     hex_field = pygame.Rect(swatch_left, color_top + swatch_size + gap, 2 * swatch_size + gap, scaled(28))
-    history_left = secondary_swatch.right + scaled(16)
+    mode_height = scaled(22)
+    alpha_mode = pygame.Rect(swatch_left, rect.bottom - margin - mode_height, hex_field.width, mode_height)
+    rgb_mode = alpha_mode.move(0, -(mode_height + scaled(4)))
     history_swatch = scaled(22)
-    history_columns = max(2, (rect.right - margin - history_left) // (history_swatch + 4))
+    history_columns = max(1, (hex_field.width + 4) // (history_swatch + 4))
     history = []
+    history_top = hex_field.bottom + gap
     for index in range(COLOR_HISTORY_LENGTH):
         column, row = index % history_columns, index // history_columns
-        if (row + 1) * (history_swatch + 4) > square_size:
+        if history_top + (row + 1) * (history_swatch + 4) - 4 > rgb_mode.top - gap:
             break
-        history.append(pygame.Rect(history_left + column * (history_swatch + 4), color_top + row * (history_swatch + 4), history_swatch, history_swatch))
-    return EditorAreas(header, canvas, sidebar, sidebar_buttons, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
+        history.append(pygame.Rect(swatch_left + column * (history_swatch + 4), history_top + row * (history_swatch + 4), history_swatch, history_swatch))
+    panel_left = hex_field.right + scaled(14)
+    channel_panel = pygame.Rect(panel_left, color_top, max(scaled(40), rect.right - margin - panel_left), band_height)
+    return EditorAreas(
+        header, canvas, sidebar, sidebar_buttons, tool_buttons, options, controls, square, hue_bar, alpha_bar,
+        primary_swatch, secondary_swatch, hex_field, history, rgb_mode, alpha_mode, channel_panel,
+    )
 
 
-def saturation_value_square(hue: float, size: int) -> pygame.Surface:
+def saturation_value_square(hue: float, width: int, height: Optional[int] = None) -> pygame.Surface:
     """The picture of a color picker's square for one hue: saturation grows to the right, value falls downward."""
     import colorsys
 
-    saturation = numpy.linspace(0.0, 1.0, size)[None, :, None]
-    value = numpy.linspace(1.0, 0.0, size)[:, None, None]
+    height = width if height is None else height
+    saturation = numpy.linspace(0.0, 1.0, width)[None, :, None]
+    value = numpy.linspace(1.0, 0.0, height)[:, None, None]
     pure = numpy.array(colorsys.hsv_to_rgb(hue, 1.0, 1.0))
     rgb = (value * ((1.0 - saturation) + saturation * pure) * 255).astype(numpy.uint8)
-    return pygame.image.frombuffer(rgb.tobytes(), (size, size), "RGB")
+    return pygame.image.frombuffer(rgb.tobytes(), (width, height), "RGB")
 
 
 def hue_gradient(width: int, height: int) -> pygame.Surface:
@@ -4715,6 +4743,14 @@ class EditorPanel:
         self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
         self.hex_focused = False
         self.hex_invalid = False
+        # The channel controls: the row whose mode menu is open ("rgb", "alpha" or a channel), the slider being dragged
+        # (identity, slot), the row whose value is being typed, and how far the rows are scrolled (pixels).
+        self.mode_menu_open: Optional[str] = None
+        self.channel_drag: Optional[tuple[str, str]] = None
+        self.value_field = TextField("", lambda character: character in "0123456789.-mM", 6)
+        self.value_focus: Optional[str] = None
+        self.value_invalid = False
+        self.channel_scroll = 0
         # The name above the canvas is a text field when a single tile is shown and the name is clicked.
         # The field holds the name without its extension (.png); the extension is shown beside it and cannot be edited.
         self.name_field = TextField(
@@ -4939,6 +4975,24 @@ class EditorPanel:
         if self.name_focused and not (button == 1 and areas.header.collidepoint(position)):
             self.apply_name_field()  # a name that is not allowed is dropped; the message says why
             self.name_focused = False
+        if self.value_focus is not None:
+            row = self.channel_row_areas(self.value_focus)
+            if not (button == 1 and row is not None and row["value"].collidepoint(position)):
+                self.apply_value_field()
+        if self.mode_menu_open is not None:
+            # As with the shape menu: a press closes the menu; choosing an option or pressing its button is all it does,
+            # and a press on the canvas must not also draw.
+            key = self.mode_menu_open
+            options = self.mode_option_rectangles()
+            self.mode_menu_open = None
+            if button == 1:
+                for mode, rectangle in options.items():
+                    if rectangle.collidepoint(position):
+                        self.controls.set_mode(key, mode)
+                        return
+            opener = self.mode_button(key)
+            if (opener is not None and opener.collidepoint(position)) or areas.canvas.collidepoint(position):
+                return
         if self.shape_dropdown_open:
             # A press closes the menu. Choosing an option or pressing the menu itself is all it does; a press on
             # the canvas must not also draw.
@@ -4958,6 +5012,8 @@ class EditorPanel:
                 return
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
+                return
+            if self._press_channels(position):
                 return
             sidebar_button = self.sidebar_button_at(position)
             if sidebar_button is not None:
@@ -5104,6 +5160,8 @@ class EditorPanel:
                 self._pick(self.view.pixel_at(position), self.color_drag.removeprefix("dropper_"))
             else:
                 self._drag_color(position)
+        elif self.channel_drag is not None:
+            self._set_slider(self.channel_drag[0], self.channel_drag[1], position[0])
         elif self.slider_drag is not None:
             rectangle = self.control_rectangles().get(self.slider_drag)
             if rectangle is not None:
@@ -5131,6 +5189,7 @@ class EditorPanel:
             self.color_drag = None
         if button == 1:
             self.slider_drag = None
+            self.channel_drag = None
             self.floating_drag = None
             if self.selecting_from is not None:
                 pixel = self._selection_pixel(position)
@@ -5288,7 +5347,10 @@ class EditorPanel:
         self.message = "Drag the pasted picture to move it. Enter places it, Esc throws it away."
 
     def wheel(self, steps: int, position: tuple[int, int]) -> None:
-        if self.layout is not None and self.areas.canvas.collidepoint(position):
+        if self.areas.channel_panel.collidepoint(position):
+            step = self._channel_row_height()
+            self.channel_scroll = max(0, min(self.channel_scroll_limit(), self.channel_scroll - steps * step))
+        elif self.layout is not None and self.areas.canvas.collidepoint(position):
             self.view.zoom_by(steps, position)
 
     def _drag_color(self, position: tuple[int, int]) -> None:
@@ -5313,8 +5375,153 @@ class EditorPanel:
         self.hex_invalid = False
         self.colors.set_color(color)
 
+    # Channel controls ------------------------------------------------------------------------------------
+
+    def channels_enabled(self) -> bool:
+        """The controls are for the tools that paint; the eraser, the rotation and the selection ignore them (the eraser
+        and Delete reset the channels)."""
+        return self.tool not in ("eraser", "rotate", "select")
+
+    def _channel_row_height(self) -> int:
+        return scaled(22)
+
+    def channel_body(self) -> pygame.Rect:
+        """The part of the panel that holds the rows: under a line of column names."""
+        panel = self.areas.channel_panel
+        header = scaled(16)
+        return pygame.Rect(panel.x, panel.y + header, panel.width, max(0, panel.height - header))
+
+    def channel_scroll_limit(self) -> int:
+        """The most the rows can be scrolled: what does not fit under the column names."""
+        return max(0, len(self.controls.rows) * self._channel_row_height() - self.channel_body().height)
+
+    def channel_row_areas(self, identity: str) -> Optional[dict[str, pygame.Rect]]:
+        """The parts of the row of a channel (label, mode, primary and secondary slider, value field), or None if there is
+        no such row or it is not all in view."""
+        if identity not in self.controls.rows:
+            return None
+        body, height = self.channel_body(), self._channel_row_height()
+        top = body.y + self.controls.rows.index(identity) * height - self.channel_scroll
+        if top < body.y or top + height > body.bottom:
+            return None
+        return self._channel_columns(top)
+
+    def _channel_columns(self, top: int) -> dict[str, pygame.Rect]:
+        """The parts of a row whose top is at `top`: label, mode, the two sliders, the value."""
+        body, height = self.channel_body(), self._channel_row_height()
+        gap = scaled(3)
+        inner = body.width - scaled(6) - 4 * gap  # the right edge is left to the scroll bar
+        widths = {"label": inner * 26 // 100, "mode": inner * 21 // 100, "value": inner * 14 // 100}
+        slider = (inner - sum(widths.values())) // 2
+        areas: dict[str, pygame.Rect] = {}
+        left = body.x
+        for name, width in (("label", widths["label"]), ("mode", widths["mode"]), ("primary", slider), ("secondary", slider), ("value", widths["value"])):
+            areas[name] = pygame.Rect(left, top + 1, max(1, width), height - 2)
+            left += width + gap
+        return areas
+
+    def mode_button(self, key: str) -> Optional[pygame.Rect]:
+        if key == "rgb":
+            return self.areas.rgb_mode
+        if key == "alpha":
+            return self.areas.alpha_mode
+        row = self.channel_row_areas(key)
+        return None if row is None else row["mode"]
+
+    def mode_button_text(self, key: str) -> str:
+        mode = self.controls.mode(key).title()
+        return {"rgb": f"RGB: {mode}", "alpha": f"Alpha: {mode}"}.get(key, mode)
+
+    def mode_option_rectangles(self) -> dict[str, pygame.Rect]:
+        """The modes of the open menu, stacked above its button (below it they would run off the window)."""
+        button = self.mode_button(self.mode_menu_open) if self.mode_menu_open is not None else None
+        if button is None:
+            return {}
+        width = max(button.width, scaled(76))
+        count = len(BLEND_MODES)
+        return {
+            mode: pygame.Rect(button.x, button.y - (count - index) * button.height, width, button.height)
+            for index, mode in enumerate(BLEND_MODES)
+        }
+
+    def value_field_text(self, identity: str) -> str:
+        return self.controls.value_text(identity, self.colors.active_slot)
+
+    def _set_slider(self, identity: str, slot: str, x: int) -> None:
+        row = self.channel_row_areas(identity)
+        if row is not None:
+            track = row[slot]
+            self.controls.set_value(identity, slot, self.controls.value_at(identity, (x - track.x) / max(track.width - 1, 1)))
+
+    def _start_value_edit(self, identity: str) -> None:
+        self.apply_value_field()
+        self.value_focus = identity
+        self.value_invalid = False
+        self.value_field.set_text(self.value_field_text(identity))
+        self.value_field.select(0, len(self.value_field.text))
+
+    def apply_value_field(self) -> None:
+        """Take what was typed in the value field as the value of the active slot; text that is not a value is dropped."""
+        identity, self.value_focus = self.value_focus, None
+        if identity is None or identity not in self.controls.rows:
+            return
+        value = self.controls.parse_value(identity, self.value_field.text)
+        if value is None:
+            self.message = f"{self.value_field.text!r} is not a value for {CHANNEL_LABELS.get(identity, identity)}."
+            return
+        self.controls.set_value(identity, self.colors.active_slot, value)
+
+    def value_key_down(self, event: pygame.event.Event) -> None:
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.apply_value_field()
+        elif event.key == pygame.K_ESCAPE:
+            self.value_focus = None
+        elif event.key in (pygame.K_UP, pygame.K_DOWN) and self.value_focus is not None:
+            identity, slot = self.value_focus, self.colors.active_slot
+            value = self.controls.parse_value(identity, self.value_field.text)
+            if value is not None:
+                self.controls.set_value(identity, slot, value)
+            self.controls.step(identity, slot, 1 if event.key == pygame.K_UP else -1, bool(event.mod & pygame.KMOD_SHIFT))
+            self.value_field.set_text(self.value_field_text(identity))
+        else:
+            self.value_field.handle_key_down(event.key, event.mod)
+        self.value_invalid = False
+
+    def _press_channels(self, position: tuple[int, int]) -> bool:
+        """A press of the left button on the channel controls. True if it was on them (a greyed control takes the press
+        and does nothing)."""
+        areas = self.areas
+        enabled = self.channels_enabled()
+        for key in ("rgb", "alpha"):
+            button = self.mode_button(key)
+            if button is not None and button.collidepoint(position):
+                if enabled:
+                    self.mode_menu_open = key
+                return True
+        if not areas.channel_panel.collidepoint(position):
+            return False
+        for identity in self.controls.rows:
+            row = self.channel_row_areas(identity)
+            if row is None or not enabled:
+                continue
+            if row["mode"].collidepoint(position):
+                self.mode_menu_open = identity
+            elif row["primary"].collidepoint(position) or row["secondary"].collidepoint(position):
+                slot = "primary" if row["primary"].collidepoint(position) else "secondary"
+                self.channel_drag = (identity, slot)
+                self._set_slider(identity, slot, position[0])
+            elif row["value"].collidepoint(position):
+                self._start_value_edit(identity)
+            else:
+                continue
+            return True
+        return True
+
     def lose_focus(self) -> None:
         """Called when the user clicks somewhere else: a typed color or name is applied."""
+        self.mode_menu_open = None
+        if self.value_focus is not None:
+            self.apply_value_field()
         if self.hex_focused:
             self.apply_hex_field()
             self.hex_focused = False
@@ -5416,7 +5623,9 @@ class EditorPanel:
         self.draw_sidebar(surface)
         self.draw_tools(surface)
         self.draw_colors(surface, caret_visible)
+        self.draw_channels(surface, caret_visible)
         self.draw_shape_menu(surface)
+        self.draw_mode_menu(surface)
 
     def message_for_empty_canvas(self) -> str:
         selected = [self.project.tiles[coordinate] for coordinate in self.project.selection]
@@ -5614,6 +5823,74 @@ class EditorPanel:
             if shape == self.settings.noise_shape:
                 pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
 
+    def draw_mode_button(self, surface: pygame.Surface, rectangle: pygame.Rect, key: str, enabled: bool) -> None:
+        hovered = rectangle.collidepoint(self.pointer)
+        draw_button(surface, rectangle, self.mode_button_text(key), self.fonts.small, hovered, enabled)
+        painted = self.controls.mode(key) not in ("none", "replace") if key in ("rgb", "alpha") else self.controls.mode(key) != "none"
+        if painted and enabled:
+            pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=1, border_radius=4)
+
+    def draw_mode_menu(self, surface: pygame.Surface) -> None:
+        if self.mode_menu_open is None:
+            return
+        current = self.controls.mode(self.mode_menu_open)
+        for mode, rectangle in self.mode_option_rectangles().items():
+            draw_button(surface, rectangle, mode.title(), self.fonts.small, rectangle.collidepoint(self.pointer))
+            if mode == current:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
+
+    def draw_channels(self, surface: pygame.Surface, caret_visible: bool) -> None:
+        """The panel of channel controls: a line of column names and a row for each channel of the profile."""
+        enabled = self.channels_enabled()
+        for key, rectangle in (("rgb", self.areas.rgb_mode), ("alpha", self.areas.alpha_mode)):
+            self.draw_mode_button(surface, rectangle, key, enabled)
+        panel, font = self.areas.channel_panel, self.fonts.small
+        pygame.draw.rect(surface, Theme.BACKGROUND, panel)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, panel, width=1)
+        rows = self.controls.rows
+        if not rows:
+            lines = wrap_text(font, "No PBR channels: the setting is none.", panel.width - scaled(20))
+            for number, line in enumerate(lines):
+                draw_text(surface, font, line, Theme.TEXT_DIMMED, (panel.centerx, panel.y + scaled(12) + number * scaled(16)), "midtop")
+            return
+        columns = self._channel_columns(panel.y)
+        for name, label in (("mode", "Mode"), ("primary", "Primary"), ("secondary", "Secondary"), ("value", "Value")):
+            draw_text(surface, font, label, Theme.TEXT_DIMMED, (columns[name].centerx, panel.y + scaled(8)), "center")
+        body, height = self.channel_body(), self._channel_row_height()
+        previous_clip = surface.get_clip()
+        surface.set_clip(body)
+        for index, identity in enumerate(rows):
+            top = body.y + index * height - self.channel_scroll
+            if top + height <= body.y or top >= body.bottom:
+                continue
+            parts = self._channel_columns(top)
+            draw_text(surface, font, CHANNEL_LABELS.get(identity, identity), Theme.TEXT if enabled else Theme.DISABLED_TEXT, parts["label"].midleft, "midleft")
+            self.draw_mode_button(surface, parts["mode"], identity, enabled)
+            for slot in ColorState.SLOTS:
+                track = parts[slot]
+                pygame.draw.rect(surface, Theme.FIELD, track, border_radius=3)
+                filled = track.copy()
+                filled.width = int(round(track.width * self.controls.fraction(identity, slot)))
+                if filled.width > 0:
+                    pygame.draw.rect(surface, Theme.SLIDER_FILL if enabled else Theme.PANEL_BORDER, filled, border_radius=3)
+                active = enabled and slot == self.colors.active_slot
+                pygame.draw.rect(surface, Theme.ACCENT if active else Theme.PANEL_BORDER, track, width=1, border_radius=3)
+            field = parts["value"]
+            if self.value_focus == identity:
+                self.value_field.draw(surface, field, font, True, caret_visible, self.value_invalid)
+            else:
+                pygame.draw.rect(surface, Theme.FIELD, field, border_radius=3)
+                pygame.draw.rect(surface, Theme.PANEL_BORDER, field, width=1, border_radius=3)
+                draw_text(surface, font, self.value_field_text(identity), Theme.TEXT if enabled else Theme.DISABLED_TEXT, field.center, "center")
+        surface.set_clip(previous_clip)
+        limit = self.channel_scroll_limit()
+        if limit > 0:
+            track = pygame.Rect(panel.right - scaled(6), body.y, scaled(4), body.height)
+            pygame.draw.rect(surface, Theme.FIELD, track, border_radius=2)
+            thumb_height = max(scaled(12), track.height * body.height // (body.height + limit))
+            thumb_top = track.y + (track.height - thumb_height) * self.channel_scroll // limit
+            pygame.draw.rect(surface, Theme.TEXT_DIMMED, pygame.Rect(track.x, thumb_top, track.width, thumb_height), border_radius=2)
+
     def draw_swatch(self, surface: pygame.Surface, rectangle: pygame.Rect, color: Color) -> None:
         surface.blit(checkerboard(max(rectangle.size)), rectangle, (0, 0, rectangle.width, rectangle.height))
         swatch = pygame.Surface(rectangle.size, pygame.SRCALPHA)
@@ -5624,11 +5901,11 @@ class EditorPanel:
     def draw_colors(self, surface: pygame.Surface, caret_visible: bool) -> None:
         areas = self.areas
         hue, saturation, value, alpha = self.colors.get_hsva()
-        key = (int(hue * 255), areas.square.width)
+        key = (int(hue * 255), areas.square.width, areas.square.height)
         if key not in self._squares:
             if len(self._squares) > 64:
                 self._squares.clear()
-            self._squares[key] = saturation_value_square(key[0] / 255.0, areas.square.width)
+            self._squares[key] = saturation_value_square(key[0] / 255.0, areas.square.width, areas.square.height)
         surface.blit(self._squares[key], areas.square)
         pygame.draw.rect(surface, Theme.PANEL_BORDER, areas.square, width=1)
         marker = (areas.square.x + int(saturation * (areas.square.width - 1)), areas.square.y + int((1.0 - value) * (areas.square.height - 1)))
@@ -6435,6 +6712,9 @@ class Application:
         elif event.type == pygame.TEXTINPUT and self.editor.name_focused:
             self.editor.name_field.insert_text(event.text)
             self.editor.name_invalid = False
+        elif event.type == pygame.TEXTINPUT and self.editor.value_focus is not None:
+            self.editor.value_field.insert_text(event.text)
+            self.editor.value_invalid = False
         elif event.type == pygame.KEYDOWN:
             self._handle_key(event)
 
@@ -6489,6 +6769,8 @@ class Application:
             self.editor.hex_key_down(event)
         elif self.editor.name_focused:
             self.editor.name_key_down(event)
+        elif self.editor.value_focus is not None:
+            self.editor.value_key_down(event)
         elif self.editor.key_down(event.key, event.mod, getattr(event, "scancode", 0)):
             pass
         elif event.key == pygame.K_ESCAPE:

@@ -35,7 +35,7 @@ phases; what works so far:
   occlusion, top height), and saving creates a companion file only for a file with a channel that is not neutral, and rewrites
   only the files that changed. Renaming, deleting (purging) and copying a tile do the same to all its files, all or none. A companion
   that cannot be read, or has another size, makes its tile an error tile naming the file; a picture that has only companion
-  files is a tile with blank pixels. No control paints the channels yet, and the window has no settings page yet (the setting is
+  files is a tile with blank pixels. The window has no settings page yet (the setting is
   edited in `atlas.json` by hand); names that end in `_n` or `_s` are what the game reads as companions whatever the setting says, since
   the game never reads `atlas.json`.
 - Changing the setting (built in `AtlasProject.switch_pbr_profile`, no window for it yet) is refused while any tile has unsaved changes. Tiles
@@ -51,7 +51,12 @@ phases; what works so far:
   add, subtract, multiply, min, max, worked out on the meaning of the channel, once per pixel however often the stroke passes it, at the stroke's coverage; a normal
   longer than 1 is shortened on the pixels the stroke covered), the eraser resets them to neutral, the fill stops where a channel differs, and rotating a row or column
   rotates them. The colour has blend modes of its own too (`ColorBlend`: one for red, green and blue together, one for alpha, the same seven; replace for both is the old way of every tool, and the eraser ignores them;
-  alpha is blended as a number, not composited). No control sets any mode or value yet, so no stroke paints a channel in the window; the eraser and the rotation already act on them. Copy and paste inside the program carry the channels with the pixels (a pixel that is
+  alpha is blended as a number, not composited). The controls are in the editor: the colour area is taller, with the history of colours under the hex field and, under it, the blend modes of RGB and of alpha (a menu each, opening upward). Right of the
+  colours is the panel of channels, a row for each channel of the setting: its name, a mode menu (none, replace, add, subtract, multiply, min, max), a slider for the primary value and one for the secondary (the
+  button that draws decides which counts), and a number field for the value of the active colour slot: type a number and press Enter, or use the Up and Down arrows (a hundredth, a tenth with Shift); for
+  reflectance `m0` to `m25` is a metal. The sliders show meaning (normals -1 to 1, emission 0 is none, occlusion is light lost). A channel with mode none is not painted; the panel scrolls with the wheel when
+  the rows do not fit, and is greyed for the eraser, the rotation and the selection. The eye dropper loads the values of the pixel into the slot, not the modes. The key X swaps the two colours and the two
+  sets of values. The eraser and the rotation act on the channels as described above.
   transparent and has no channel data leaves what is under it); a picture from another program leaves the channels alone; Delete and Cut reset them to neutral.
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
