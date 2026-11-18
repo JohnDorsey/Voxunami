@@ -654,6 +654,21 @@ impl BodyWorld {
         if wanted.iter().any(|row| *row != 0) {
             body.filled.insert(brick, wanted);
         }
+        // A voxel collider with no voxel left has no bounds (its box is not a number), which Rapier takes for a fault: it puts the collider out of play for good (`quarantine`),
+        // and a collider that is out of play keeps the place in the broad phase it had, so the voxels that are put in it later are not met where they are far from where
+        // the old ones were (a thing thrown at the ground of a planet, thrown off it and let go of by the ground round it, came down through the ground made again: 5 of 9
+        // throws in the game; `tests/emptied_ground.rs`). So the collider goes with its last voxel, and the next brick that has a voxel makes it again.
+        if body.filled.is_empty()
+            && let Some(handle) = body.voxels.take()
+        {
+            self.colliders.remove(
+                handle,
+                &mut self.islands,
+                &mut self.bodies,
+                &mut self.soft_bodies,
+                true,
+            );
+        }
         // The boxes: the brick's one compound is made again.
         if let Some(old) = body.partial.remove(&brick) {
             self.colliders.remove(
