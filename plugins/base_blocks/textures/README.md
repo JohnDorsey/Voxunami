@@ -50,8 +50,8 @@ phases; what works so far:
   is part of the tile's history. Every drawing tool carries the channels (`CanvasSession`): a stroke paints the channels it is given with a blend mode each (none, replace,
   add, subtract, multiply, min, max, worked out on the meaning of the channel, once per pixel however often the stroke passes it, at the stroke's coverage; a normal
   longer than 1 is shortened on the pixels the stroke covered), the eraser resets them to neutral, the fill stops where a channel differs, and rotating a row or column
-  rotates them. No control sets the modes or values yet, so no stroke paints a channel in the window; the eraser and the rotation already act on them. Select, cut, paste
-  and Delete do not carry or reset them yet.
+  rotates them. No control sets the modes or values yet, so no stroke paints a channel in the window; the eraser and the rotation already act on them. Copy and paste inside the program carry the channels with the pixels (a pixel that is
+  transparent and has no channel data leaves what is under it); a picture from another program leaves the channels alone; Delete and Cut reset them to neutral.
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
 - The right half edits the selected tiles. With several selected they appear as one canvas in their atlas

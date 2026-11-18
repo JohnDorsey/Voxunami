@@ -1690,6 +1690,53 @@ def paste_pixels(
     return result
 
 
+def paste_planes(
+    destination: numpy.ndarray,
+    source: numpy.ndarray,
+    column: int,
+    row: int,
+    source_pixels: numpy.ndarray,
+    profile: PbrProfile,
+    editable_mask: Optional[numpy.ndarray] = None,
+) -> numpy.ndarray:
+    """A copy of the channels `destination` with the channels `source` put over it, its top left pixel at (column, row).
+
+    A pasted pixel brings its channels if it is not fully transparent or if it has channel data (is not neutral): a
+    pixel with nothing at all leaves what is under it, as a transparent pixel does. Parts outside the destination, or
+    over cells that are not editable, are dropped."""
+    result = destination.copy()
+    height, width = destination.shape[:2]
+    source_height, source_width = source.shape[:2]
+    left, top = max(column, 0), max(row, 0)
+    right, bottom = min(column + source_width, width), min(row + source_height, height)
+    if left >= right or top >= bottom:
+        return result
+    visible = source[top - row : bottom - row, left - column : right - column]
+    visible_pixels = source_pixels[top - row : bottom - row, left - column : right - column]
+    neutral = numpy.array([channel.neutral for channel in profile.channels], dtype=numpy.uint8)
+    brings = (visible_pixels[..., 3] > 0) | numpy.any(visible != neutral, axis=2)
+    if editable_mask is not None:
+        brings &= editable_mask[top:bottom, left:right]
+    region = result[top:bottom, left:right]
+    region[brings] = visible[brings]
+    return result
+
+
+def clear_planes(
+    profile: PbrProfile,
+    planes: numpy.ndarray,
+    rectangle: tuple[int, int, int, int],
+    editable_mask: Optional[numpy.ndarray] = None,
+) -> numpy.ndarray:
+    """A copy of the channels with a rectangle (left, top, right, bottom) taken back to neutral (Delete and Cut)."""
+    left, top, right, bottom = rectangle
+    coverage = numpy.zeros(planes.shape[:2], dtype=numpy.float64)
+    coverage[top:bottom, left:right] = 1.0
+    if editable_mask is not None:
+        coverage *= editable_mask
+    return reset_channels(profile, planes, coverage)
+
+
 # ----------------------------------------------------------------------------------------------------------
 # Painting: round and square brushes (noise and air brush)
 # ----------------------------------------------------------------------------------------------------------
@@ -3340,6 +3387,8 @@ class FloatingPaste:
     pixels: numpy.ndarray
     column: int
     row: int
+    # The channels that go with the pixels, when they were copied from tiles of this program.
+    planes: Optional[numpy.ndarray] = None
 
     @property
     def rectangle(self) -> tuple[int, int, int, int]:
@@ -4454,6 +4503,7 @@ class EditorPanel:
         self.clipboard = SystemImageClipboard()
         # The pixels of the last copy made here, used when the system clipboard cannot hold or give a picture.
         self.internal_image: Optional[numpy.ndarray] = None
+        self.internal_planes: Optional[numpy.ndarray] = None
         self.internal_is_newer = False
         # The rectangle chosen with the select tool, (left, top, right, bottom) in canvas pixels, and a pasted
         # picture that has not been placed yet.
@@ -4913,13 +4963,17 @@ class EditorPanel:
 
     # Selection and clipboard ------------------------------------------------------------------------------
 
-    def _apply_pixels(self, new_pixels: numpy.ndarray) -> bool:
-        """Make the canvas look like `new_pixels` as one edit. False if that changes nothing or cannot be saved."""
+    def _apply_pixels(self, new_pixels: numpy.ndarray, new_planes: Optional[numpy.ndarray] = None) -> bool:
+        """Make the canvas look like `new_pixels` (and have the channels `new_planes`, if given) as one edit. False if
+        that changes nothing or cannot be saved."""
         layout = self.layout
-        if layout is None or numpy.array_equal(new_pixels, layout.pixels):
+        if layout is None:
+            return False
+        planes_same = new_planes is None or layout.planes is None or numpy.array_equal(new_planes, layout.planes)
+        if numpy.array_equal(new_pixels, layout.pixels) and planes_same:
             return False
         try:
-            self.project.apply_canvas_edit(layout, new_pixels)
+            self.project.apply_canvas_edit(layout, new_pixels, new_planes)
         except OSError as error:
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
             return False
@@ -4945,7 +4999,15 @@ class EditorPanel:
         paste, self.floating, self.floating_drag = self.floating, None, None
         if paste is None or self.layout is None:
             return
-        self._apply_pixels(paste_pixels(self.layout.pixels, paste.pixels, paste.column, paste.row, self.layout.editable_mask))
+        planes = None
+        if paste.planes is not None and self.layout.planes is not None:
+            planes = paste_planes(
+                self.layout.planes, paste.planes, paste.column, paste.row, paste.pixels, self.project.profile,
+                self.layout.editable_mask,
+            )
+        self._apply_pixels(
+            paste_pixels(self.layout.pixels, paste.pixels, paste.column, paste.row, self.layout.editable_mask), planes
+        )
         left, top, right, bottom = paste.rectangle
         self._set_selection((left, top), (right - 1, bottom - 1))
 
@@ -4961,6 +5023,7 @@ class EditorPanel:
         pixels = crop_pixels(self.layout.pixels, self.selection_rectangle)
         height, width = pixels.shape[:2]
         self.internal_image = pixels
+        self.internal_planes = None if self.layout.planes is None else crop_pixels(self.layout.planes, self.selection_rectangle)
         self.internal_is_newer = not self.clipboard.set_image(pixels)
         self.message = f"{verb} {width} x {height} pixels."
         if self.internal_is_newer:
@@ -4972,7 +5035,10 @@ class EditorPanel:
             return
         pixels = self.layout.pixels.copy()
         clear_rectangle(pixels, self.selection_rectangle, self.layout.editable_mask)
-        self._apply_pixels(pixels)
+        planes = None
+        if self.layout.planes is not None:
+            planes = clear_planes(self.project.profile, self.layout.planes, self.selection_rectangle, self.layout.editable_mask)
+        self._apply_pixels(pixels, planes)
 
     def cut_selection(self) -> None:
         if self.copy_selection("Cut"):
@@ -4992,6 +5058,19 @@ class EditorPanel:
                 return image
         return self.internal_image
 
+    def _planes_of_pasted(self, image: numpy.ndarray) -> Optional[numpy.ndarray]:
+        """The channels of the picture to paste if it is what was copied here (the colors of transparent pixels do not
+        count, since the system clipboard may change them) and the tiles still have the same channels; else None."""
+        copied, planes = self.internal_image, self.internal_planes
+        if copied is None or planes is None or self.layout is None or self.layout.planes is None:
+            return None
+        if image.shape != copied.shape or planes.shape[2] != self.layout.planes.shape[2]:
+            return None
+        if not numpy.array_equal(image[..., 3], copied[..., 3]):
+            return None
+        opaque = copied[..., 3] > 0
+        return planes.copy() if numpy.array_equal(image[opaque], copied[opaque]) else None
+
     def paste(self) -> None:
         self.sync()
         if self.layout is None:
@@ -5010,7 +5089,7 @@ class EditorPanel:
         else:
             height, width = self.layout.pixels.shape[:2]
             column, row = self.view.visible_pixels(width, height)[:2]
-        self.floating = FloatingPaste(image, column, row)
+        self.floating = FloatingPaste(image, column, row, self._planes_of_pasted(image))
         self.message = "Drag the pasted picture to move it. Enter places it, Esc throws it away."
 
     def wheel(self, steps: int, position: tuple[int, int]) -> None:
