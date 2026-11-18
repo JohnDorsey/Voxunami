@@ -3068,6 +3068,45 @@ fn a_ship_that_is_far_is_told_of_without_bricks_or_those_aboard_and_with_both_wh
 }
 
 #[test]
+fn the_plugins_can_ask_which_ships_a_client_was_told_of_as_far_away_and_they_are_no_longer_so_when_it_goes_near()
+ {
+    let mut config = ServerConfig::new(game_id());
+    config.far_ships = Some(server::FarShipSettings {
+        minimum_apparent_size: 0.005,
+        maximum_ships: 4,
+    });
+    // What a system sees at the start of each tick, for the first client.
+    let seen: Arc<Mutex<Vec<Vec<GridId>>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    let (mut harness, mut client) = herd_ship_harness_with(config, move |tick, world| {
+        if tick.get() == 3 {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+        }
+        // (The ticks while the client was logging in have none.)
+        let ships = world
+            .clients()
+            .next()
+            .map(|first| world.far_ships_of(first).collect())
+            .unwrap_or_default();
+        record.lock().unwrap().push(ships);
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    for _ in 0..4 {
+        harness.server.step();
+    }
+    // Told of in the tick after the ship was made, seen by the tick after that.
+    assert_eq!(seen.lock().unwrap().last().unwrap(), &[a_ship_id(0)]);
+    assert!(seen.lock().unwrap().iter().any(Vec::is_empty));
+    // Near: not far.
+    client.watch(BrickCoordinate::new(40, 0, 0), 2);
+    for _ in 0..3 {
+        harness.server.step();
+    }
+    assert!(seen.lock().unwrap().last().unwrap().is_empty());
+}
+
+#[test]
 fn an_entity_aboard_moves_with_a_pose_in_the_frame_of_the_ship_and_the_ship_moving_tells_only_the_ship()
  {
     let (mut harness, mut client) = herd_ship_harness(|tick, world| match tick.get() {

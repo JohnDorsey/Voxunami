@@ -404,3 +404,32 @@ fn how_far_a_ship_is_is_measured_from_the_middle_of_the_region_to_the_middle_of_
     assert_eq!(known.keys().copied().collect::<Vec<_>>(), [ahead]);
     assert!(!known.contains_key(&behind));
 }
+
+#[test]
+fn the_ships_a_client_was_told_of_as_far_are_asked_for_by_client_and_forgotten_when_it_leaves() {
+    let (mut world, _, _) = counting_world();
+    let (first, second) = (protocol::ClientId::new(1), protocol::ClientId::new(2));
+    for client in [first, second] {
+        world.add_client(client, protocol::PlayerKey::new([client.get() as u8; 32]));
+    }
+    let ships = |ids: &[u64]| -> std::collections::BTreeSet<GridId> {
+        ids.iter()
+            .map(|id| GridId::new(GridId::FIRST_ALLOCATED + id))
+            .collect()
+    };
+    assert_eq!(world.far_ships_of(first).count(), 0);
+    world.set_far_ships(first, ships(&[3, 1]));
+    world.set_far_ships(second, ships(&[2]));
+    assert_eq!(
+        world.far_ships_of(first).collect::<Vec<_>>(),
+        ships(&[1, 3]).into_iter().collect::<Vec<_>>()
+    );
+    assert_eq!(world.far_ships_of(second).count(), 1);
+    // A later telling replaces the earlier.
+    world.set_far_ships(first, ships(&[]));
+    assert_eq!(world.far_ships_of(first).count(), 0);
+    world.set_far_ships(first, ships(&[5]));
+    world.remove_client(first);
+    assert_eq!(world.far_ships_of(first).count(), 0);
+    assert_eq!(world.far_ships_of(second).count(), 1);
+}

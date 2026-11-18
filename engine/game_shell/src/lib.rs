@@ -14,6 +14,8 @@ mod coarse_overrides;
 mod coarse_view_tests;
 mod command_entry;
 mod definition;
+#[cfg(test)]
+mod far_ship_view_tests;
 pub mod files;
 pub mod following;
 mod headless;

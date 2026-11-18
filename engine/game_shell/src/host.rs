@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use plugin_host::{Plugin, PluginHost};
-use server::{Server, ServerConfig, ServerError, ShipSettings};
+use server::{FarShipSettings, Server, ServerConfig, ServerError, ShipSettings};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::tcp::{TcpConnection, TcpServerListener};
 use transport::{ConnectionClosed, Listener, ListenerSet};
@@ -37,9 +37,11 @@ fn server_config<G: GameDefinition>(
     view_radius_bricks: i128,
     counted_challenges: bool,
     ships: ShipSettings,
+    far_ships: Option<FarShipSettings>,
 ) -> ServerConfig {
     let mut config = ServerConfig::new(G::id()).with_package(package);
     config.ships = ships;
+    config.far_ships = far_ships;
     if counted_challenges {
         config = config.with_counted_challenges(1);
     }
@@ -55,6 +57,8 @@ fn server_config<G: GameDefinition>(
 struct ShipKeeping {
     files: Box<dyn ShipFiles>,
     settings: ShipSettings,
+    /// What a test says of far ships instead of the game (`None`: the game's).
+    far_ships: Option<FarShipSettings>,
 }
 
 fn new_server<G: GameDefinition>(
@@ -80,6 +84,7 @@ fn new_server<G: GameDefinition>(
             view_radius_bricks,
             counted_challenges,
             ships.settings,
+            ships.far_ships.or_else(G::far_ships),
         ),
         world,
         &content.registries(),
@@ -135,6 +140,32 @@ pub fn build_server_with<G: GameDefinition>(
         ShipKeeping {
             files: ship_files,
             settings: ShipSettings::default(),
+            far_ships: None,
+        },
+    )?;
+    Ok((server, connector))
+}
+
+/// Like [`build_server_with_plugins`], telling players of far ships as `far_ships` says whatever the game says: for tests of how they are drawn.
+pub fn build_server_telling_of_far_ships<G: GameDefinition>(
+    content: &G::Content,
+    world: WorldData,
+    view_radius_bricks: i128,
+    plugins: Vec<Box<dyn Plugin>>,
+    far_ships: FarShipSettings,
+) -> Result<(Server, LoopbackConnector), ServerError> {
+    let (listener, connector) = loopback_listener();
+    let server = new_server::<G>(
+        content,
+        world,
+        view_radius_bricks,
+        Box::new(listener),
+        plugins,
+        true,
+        ShipKeeping {
+            files: Box::new(MemoryShipFiles::new()),
+            settings: ShipSettings::default(),
+            far_ships: Some(far_ships),
         },
     )?;
     Ok((server, connector))
@@ -292,6 +323,7 @@ impl<G: GameDefinition> ServerThread<G> {
             ShipKeeping {
                 files: ship_files,
                 settings: settings.ships,
+                far_ships: None,
             },
         )?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -400,11 +432,13 @@ mod tests {
 
     #[test]
     fn the_server_is_configured_with_the_gravity_of_the_game() {
-        let plain = server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default());
+        let plain =
+            server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default(), None);
         assert_eq!(plain.gravity, voxel_space::GravitySettings::default());
         assert!(plain.level_gravity.is_empty());
 
-        let space = server_config::<ExampleSpaceGame>(Vec::new(), 3, true, ShipSettings::default());
+        let space =
+            server_config::<ExampleSpaceGame>(Vec::new(), 3, true, ShipSettings::default(), None);
         assert_eq!(space.gravity.base, [0.0, -9.0, 0.0]);
         assert_eq!(space.gravity.pull_mass_threshold, Some(1.0e20));
         assert_eq!(

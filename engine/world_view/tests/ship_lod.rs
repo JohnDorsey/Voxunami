@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use block_models::BlockTable;
-use coarse_cells::DetailSettings;
+use coarse_cells::{CoarseCell, CoarseNode, DetailSettings};
 use region_octree::BrickCube;
 use terrain::test_support::ball;
 use terrain::{SurfaceLayers, TerrainGenerator};
@@ -573,4 +573,94 @@ fn the_horizon_goes_with_the_viewer_what_was_hidden_is_drawn_when_the_viewer_goe
     );
     assert!(from_top > 5, "{from_top}");
     assert!(from_bottom * 2 < from_top, "{from_bottom} {from_top}");
+}
+
+// ---- a ship that is far: no brick and no generator, only the nodes the server sent ----
+
+fn far_view_settings() -> ViewSettings {
+    // (No brick is drawn of a far ship: the ball of bricks round the viewer has no radius.)
+    ViewSettings {
+        view_radius_bricks: 0,
+        worker_count: 3,
+    }
+}
+
+fn far_ship(scene: &Scene) -> ShipTerrainMesher {
+    ShipTerrainMesher::with_detail(
+        PLANET,
+        far_view_settings(),
+        ViewChannels::new(scene.material, None, None),
+        table_of(scene),
+        config(),
+        settings(),
+    )
+}
+
+/// A node that draws as a cube of the block.
+fn solid(block: u32) -> CoarseNode {
+    CoarseNode::uniform(CoarseCell {
+        block,
+        fill: 255,
+        light: 255,
+        exposure: 0,
+    })
+}
+
+/// Every cube of detail level 1 to 12 that meets the box.
+fn cubes_meeting(bounds: BrickBox) -> Vec<BrickCube> {
+    let mut cubes = Vec::new();
+    for level in 1..=12 {
+        let edge = 1i128 << level;
+        let (low, high) = (bounds.min(), bounds.max());
+        for x in low.x().div_euclid(edge)..=high.x().div_euclid(edge) {
+            for y in low.y().div_euclid(edge)..=high.y().div_euclid(edge) {
+                for z in low.z().div_euclid(edge)..=high.z().div_euclid(edge) {
+                    cubes.push(
+                        BrickCube::new(BrickCoordinate::new(x * edge, y * edge, z * edge), level)
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+    }
+    cubes
+}
+
+#[test]
+fn a_far_ship_is_drawn_as_the_nodes_it_was_given_at_the_levels_the_viewer_selects_and_never_as_bricks()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    // The ship is 4 bricks across, 30 bricks (960 voxels) from the viewer along x, within the 1,500 voxels the settings reach.
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(33, 3, 3)).unwrap();
+    let voxels = no_edits(&scene);
+    let source = ShipTerrainSource::far(&voxels, bounds);
+    let mut ship = far_ship(&scene);
+    for cube in cubes_meeting(bounds) {
+        ship.set_override(cube, Some(solid(stone)));
+    }
+    let viewer = viewer_in(brick(0, 0, 0));
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&source, viewer));
+    assert!(ship.is_settled());
+    assert!(screen.bricks.is_empty(), "a far ship has no brick to draw");
+
+    // What is drawn is what the selection from the viewer's brick chooses among the cubes of the ship, and the selection is the one a server makes.
+    let view = coarse_cells::ViewSelection {
+        detail: settings().detail,
+        zoom: None,
+        fine_radius: 0,
+        maximum_distance: settings().maximum_distance,
+    };
+    let mut expected: Vec<BrickCube> =
+        coarse_cells::select_around_brick(brick(0, 0, 0), &view, &|cube| cube.meets(bounds))
+            .into_iter()
+            .filter(|cube| cube.level() >= 1)
+            .collect();
+    expected.sort_by_key(|cube| (cube.level(), cube.origin()));
+    let mut drawn: Vec<BrickCube> = screen.nodes.keys().copied().collect();
+    drawn.sort_by_key(|cube| (cube.level(), cube.origin()));
+    assert!(drawn.len() > 3, "{drawn:?}");
+    assert_eq!(drawn, expected);
 }

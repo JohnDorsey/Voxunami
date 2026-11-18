@@ -24,6 +24,8 @@ pub struct ShipTerrainSource<'a> {
     voxels: &'a Grid,
     generator: Option<Arc<dyn TerrainGenerator>>,
     extent: BrickBox,
+    /// Whether the ship is far (see [`ShipTerrainSource::far`]).
+    far: bool,
 }
 
 impl std::fmt::Debug for ShipTerrainSource<'_> {
@@ -33,6 +35,7 @@ impl std::fmt::Debug for ShipTerrainSource<'_> {
             .field("stored", &self.voxels.brick_count())
             .field("has_generator", &self.generator.is_some())
             .field("extent", &self.extent)
+            .field("far", &self.far)
             .finish()
     }
 }
@@ -49,6 +52,18 @@ impl<'a> ShipTerrainSource<'a> {
             voxels,
             generator,
             extent,
+            far: false,
+        }
+    }
+
+    /// A ship that is far away: it has no brick here and no generator, and its picture is the nodes the server sends (see [`ShipTerrainMesher::set_override`]) and
+    /// nothing else. `bounds` are the bricks the ship occupies, in its own coordinates; no cube that does not meet them can show anything.
+    pub fn far(voxels: &'a Grid, bounds: BrickBox) -> Self {
+        Self {
+            voxels,
+            generator: None,
+            extent: bounds,
+            far: true,
         }
     }
 }
@@ -57,6 +72,10 @@ impl TerrainSource for ShipTerrainSource<'_> {
     fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
         if let Some(stored) = self.voxels.brick(coordinate) {
             return Some(Arc::clone(stored));
+        }
+        // A far ship has no brick anywhere: what is not drawn as a node is not drawn.
+        if self.far {
+            return Some(Arc::new(Brick::new(self.voxels.layout())));
         }
         // Beyond what the generator makes there is nothing.
         (!self.extent.contains(coordinate)).then(|| Arc::new(Brick::new(self.voxels.layout())))
@@ -80,6 +99,9 @@ impl CoarseTerrainSource for ShipTerrainSource<'_> {
     /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (a node the server corrected is kept by the view whatever the
     /// generator says: an edit can make something to see where the generator would not).
     fn may_show(&self, cube: BrickCube) -> bool {
+        if self.far {
+            return cube.meets(self.extent);
+        }
         self.generator
             .as_ref()
             .is_some_and(|generator| cube.meets(self.extent) && generator.may_show(cube))

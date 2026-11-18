@@ -705,6 +705,12 @@ impl Server {
             current,
             known_grids,
         ));
+        let far_ships: BTreeSet<GridId> = known_grids
+            .iter()
+            .filter(|(_, known)| known.far)
+            .map(|(ship, _)| *ship)
+            .collect();
+        self.world.set_far_ships(id, far_ships);
         for outgoing in &self.world.outgoing {
             if reaches(outgoing, id, current) {
                 messages.push(ServerMessage::GameMessage {

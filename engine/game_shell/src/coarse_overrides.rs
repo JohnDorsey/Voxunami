@@ -29,6 +29,24 @@ impl CoarseOverrides {
         }
     }
 
+    /// Forgets every node of a grid: the server tells of it again when the grid comes back (a ship that was far and is near, or the other way round, is told of afresh).
+    pub(crate) fn forget_grid(&mut self, grid: GridId) {
+        self.held.retain(|(held, _), _| *held != grid);
+    }
+
+    /// The ships (grids that are not the root of a level) there is a node held of, in order.
+    pub(crate) fn ships(&self) -> Vec<GridId> {
+        let mut ships: Vec<GridId> = self
+            .held
+            .keys()
+            .map(|(grid, _)| *grid)
+            .filter(|grid| grid.root_level().is_none())
+            .collect();
+        ships.sort_unstable();
+        ships.dedup();
+        ships
+    }
+
     /// Everything held, in an order that is the same whenever the same is held (finest first, then by grid and place), so that a view given it is made the same way each time.
     pub(crate) fn in_order(&self) -> Vec<(GridId, BrickCube, &CoarseNode)> {
         let mut all: Vec<_> = self

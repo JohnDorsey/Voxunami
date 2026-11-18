@@ -164,6 +164,12 @@ pub struct Session<C: Connection, G: GameDefinition> {
     sent_poses: BTreeMap<GridId, GridPose>,
     /// The grids the renderer was told are the ground of a planet (a ship with terrain).
     sent_ground: BTreeSet<GridId>,
+    /// The ships that were far (no brick, drawn from nodes) when the renderer was last told of them: a ship that is told of again in the other tier is one the renderer is
+    /// told to drop and is told of afresh.
+    sent_far: BTreeSet<GridId>,
+    /// The ships that were told of again in the other tier since the renderer was last told of them: what was kept of each is gone, and the renderer is told to drop it
+    /// the next time the ships are drawn.
+    changed_tier: BTreeSet<GridId>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
     client_plugins: Vec<Box<dyn ClientPlugin>>,
@@ -279,6 +285,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             follows_level_detail: false,
             sent_poses: BTreeMap::new(),
             sent_ground: BTreeSet::new(),
+            sent_far: BTreeSet::new(),
+            changed_tier: BTreeSet::new(),
             camera: start,
             client_plugins,
             client_host,
@@ -554,6 +562,35 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         terrain.max(self.grid_detail.as_ref().map_or(0, distance_in_bricks))
     }
 
+    /// Drops what is kept of a ship that the server has told of again in the other tier since it was drawn (far, or near): its bricks, its nodes and its mesher. The server
+    /// does not send a node again that it has sent, and it forgot them when the ship stopped being what it was; and what it sends of the ship now is sent in this tick
+    /// or a later one. So it is done as each tick's events are taken in, not when the ships are drawn (which may be after several ticks), or what arrived in between
+    /// would be lost with the rest. The nodes held of a ship that is gone are dropped too.
+    fn forget_ships_that_changed_tier(&mut self) {
+        let ships = self.client.world().grids();
+        let changed: Vec<GridId> = self
+            .sent_poses
+            .keys()
+            .copied()
+            .filter(|grid| {
+                ships
+                    .get(*grid)
+                    .is_some_and(|ship| ship.far.is_some() != self.sent_far.contains(grid))
+            })
+            .collect();
+        for grid in changed {
+            self.coarse_overrides.forget_grid(grid);
+            self.grid_mesher.forget_grid(grid);
+            self.planets.remove(&grid);
+            self.changed_tier.insert(grid);
+        }
+        for grid in self.coarse_overrides.ships() {
+            if ships.get(grid).is_none() {
+                self.coarse_overrides.forget_grid(grid);
+            }
+        }
+    }
+
     /// What the server is asked for, and what the terrain is drawn with: how fine, as far as the camera sees and the picture is high.
     fn coarse_request(&self, detail: &CoarseDetail) -> SetDetail {
         let tangent = libm::tanf(self.camera.vertical_field_of_view * 0.5);
@@ -607,7 +644,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     }
                 }
                 // Where ships are and which are gone is read from the client's picture when the view is updated.
-                ClientEvent::GridsChanged => players_changed = true,
+                ClientEvent::GridsChanged => {
+                    players_changed = true;
+                    self.forget_ships_that_changed_tier();
+                }
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
                 ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.
@@ -883,16 +923,23 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     fn ship_updates(&mut self) -> Vec<MeshUpdate> {
         let ships = self.client.world().grids();
         let mut updates = Vec::new();
+        // (A ship that is told of again as far, or near, is another picture of it: taken down whole and made afresh.)
         let gone: Vec<GridId> = self
             .sent_poses
             .keys()
             .filter(|id| ships.get(**id).is_none())
+            .chain(self.changed_tier.iter())
             .copied()
             .collect();
+        self.changed_tier.clear();
         for id in gone {
             self.sent_poses.remove(&id);
             self.sent_ground.remove(&id);
-            self.grid_mesher.forget_grid(id);
+            self.sent_far.remove(&id);
+            // (A ship that changed tier had its bricks forgotten as the events came in, and those that came after are the new ones.)
+            if ships.get(id).is_none() {
+                self.grid_mesher.forget_grid(id);
+            }
             // (Dropping its mesher ends its threads; the renderer drops the ship whole.)
             self.planets.remove(&id);
             updates.push(MeshUpdate::RemoveGrid(id));
@@ -901,6 +948,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             // (Before its pose: the renderer holds a grid that is ground as it holds terrain, whatever else it is told of it.)
             if ship.terrain.is_some() && self.sent_ground.insert(id) {
                 updates.push(MeshUpdate::GridIsGround(id));
+            }
+            if ship.far.is_some() {
+                self.sent_far.insert(id);
             }
             if self.sent_poses.get(&id) != Some(&ship.pose) {
                 self.sent_poses.insert(id, ship.pose);
@@ -918,17 +968,28 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         });
         let world = self.client.world().world();
         for (id, ship) in ships.iter() {
-            let Some(terrain) = ship.terrain else {
+            // A planet is drawn from its generator, and a far ship (no brick, no generator) from the nodes the server sends, and from them only: none without a game that
+            // draws in detail.
+            if ship.terrain.is_none() && (ship.far.is_none() || detail.is_none()) {
                 continue;
-            };
+            }
             let Some(local) = ship.pose.world_to_local(self.camera.position) else {
                 continue;
+            };
+            // (No brick of a far ship is ever drawn: the ball of bricks round the viewer has no radius.)
+            let view_settings = if ship.far.is_some() {
+                ViewSettings {
+                    view_radius_bricks: 0,
+                    ..self.view_settings
+                }
+            } else {
+                self.view_settings
             };
             let planet = self.planets.entry(id).or_insert_with(|| {
                 let mesher = match detail {
                     Some((detail, settings)) => ShipTerrainMesher::with_detail(
                         id,
-                        self.view_settings,
+                        view_settings,
                         self.view_channels.clone(),
                         Arc::clone(&self.block_table),
                         LodConfig {
@@ -939,7 +1000,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     ),
                     None => ShipTerrainMesher::new(
                         id,
-                        self.view_settings,
+                        view_settings,
                         self.view_channels.clone(),
                         Arc::clone(&self.block_table),
                     ),
@@ -960,13 +1021,19 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);
             }
-            let generator = world
-                .main()
-                .terrain
-                .generators()
-                .entry(terrain.generator)
-                .and_then(|entry| entry.content().cloned());
-            let source = ShipTerrainSource::new(&ship.voxels, generator, terrain.extent);
+            let source = match (ship.terrain, ship.far) {
+                (Some(terrain), _) => {
+                    let generator = world
+                        .main()
+                        .terrain
+                        .generators()
+                        .entry(terrain.generator)
+                        .and_then(|entry| entry.content().cloned());
+                    ShipTerrainSource::new(&ship.voxels, generator, terrain.extent)
+                }
+                (None, Some(bounds)) => ShipTerrainSource::far(&ship.voxels, bounds),
+                (None, None) => unreachable!("a ship that is neither was left out above"),
+            };
             updates.extend(planet.update(&source, local));
             if let Some(report) = planet.take_stall_report() {
                 eprintln!("warning: the planet {id:?}: {report}");

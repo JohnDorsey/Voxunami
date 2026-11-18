@@ -16,13 +16,13 @@ use plugin_host::{Phase, Plugin, PluginHost, Registrar, SystemSpec};
 use protocol::{ClientMessage, Message, ServerMessage};
 use region_octree::BrickCube;
 use server::test_support::log_in;
-use server::{GridView, Server, ServerConfig};
+use server::{FarShipSettings, GridView, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
-    BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate,
-    WorldPosition,
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
 };
 use world_storage::far_nodes::{FarFileName, FarNodes, FarNodesRead, read_far_nodes};
 use world_storage::test_support::{Game, Plugin as FixturePlugin, id, sample_world};
@@ -122,6 +122,14 @@ impl Client {
 
     fn set_detail(&mut self, detail: &SetDetail) {
         self.send_game_message(SetDetail::kind(), detail.encode());
+    }
+
+    /// Asks to watch the bricks round `brick` of the main level (the region a server tells ships of by).
+    fn watch(&mut self, brick: [i128; 3], radius: u32) {
+        self.send(&ClientMessage::SetInterest {
+            level: LevelIndex::MAIN,
+            region: BrickBox::around(BrickCoordinate::new(brick[0], brick[1], brick[2]), radius),
+        });
     }
 
     fn stand_at(&mut self, brick: [i128; 3]) {
@@ -224,6 +232,17 @@ fn rig_over_files(
     files: MemoryShipFiles,
     configure: impl FnOnce(&mut CoarseConfig, ChannelIndex),
 ) -> Rig {
+    rig_over_files_telling_of_far_ships(game, world, files, None, configure)
+}
+
+/// Like [`rig_over_files`], with ships told of as far away if `far_ships` says so.
+fn rig_over_files_telling_of_far_ships(
+    game: &Game,
+    world: WorldData,
+    files: MemoryShipFiles,
+    far_ships: Option<FarShipSettings>,
+    configure: impl FnOnce(&mut CoarseConfig, ChannelIndex),
+) -> Rig {
     let format = game.ship_format(&world);
     let block = world
         .main()
@@ -268,8 +287,10 @@ fn rig_over_files(
     let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(players), Box::new(coarse), Box::new(editor)];
     let host = PluginHost::new(plugins, &world).unwrap();
     let (listener, connector) = loopback_listener();
+    let mut server_config = ServerConfig::new(id("test_game:game")).with_counted_challenges(1);
+    server_config.far_ships = far_ships;
     let mut server = Server::new(
-        ServerConfig::new(id("test_game:game")).with_counted_challenges(1),
+        server_config,
         world,
         &game.registries(),
         Box::new(host),
@@ -1155,4 +1176,137 @@ fn a_ship_that_comes_back_has_its_nodes_made_again_from_its_bricks_and_is_the_sa
     again.settle();
     assert!(again.server.world().grids().get(ship).is_some());
     assert_eq!(nodes_kept_of(&again, ship), before);
+}
+
+// ---- ships that are far away ----
+
+/// A rig that tells of ships as far away when they look a quarter of a degree long, with a ship nothing generates whose first brick is 100 bricks along from where the
+/// sample ship's pose puts it (so a client at the origin is some 3,200 voxels from it).
+fn rig_with_a_far_ship() -> (Rig, GridId) {
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let mut world = game.new_world();
+    let made = game.sample_ship(&world, 100);
+    let ship = world.grids_mut().create(made);
+    let rig = rig_over_files_telling_of_far_ships(
+        &game,
+        world,
+        MemoryShipFiles::new(),
+        Some(FarShipSettings {
+            minimum_apparent_size: 0.005,
+            maximum_ships: 4,
+        }),
+        |config, _| {
+            let mut opaque = vec![true; 16];
+            opaque[AIR as usize] = false;
+            config.table = BlockTable::of_cubes(&opaque);
+        },
+    );
+    (rig, ship)
+}
+
+/// The cubes of a ship that the nodes sent say, in the order they came.
+fn cubes_of(updates: &[CoarseNodeUpdate], ship: GridId) -> Vec<BrickCube> {
+    updates
+        .iter()
+        .filter(|update| update.grid == ship)
+        .map(|update| update.cube)
+        .collect()
+}
+
+/// What a client standing in `brick` of the main level, asking with `detail`, is to be sent of a far ship: what the shared selection says, among the cubes that have
+/// an override.
+fn expected_far_nodes(
+    rig: &Rig,
+    ship: GridId,
+    brick: [i128; 3],
+    asked: &SetDetail,
+) -> Vec<BrickCube> {
+    let data = rig.server.world();
+    let pose = data.grids().get(ship).unwrap().pose;
+    let at = WorldPosition::new(
+        BrickCoordinate::new(brick[0], brick[1], brick[2]),
+        [16.0, 20.0, 16.0],
+    );
+    let local = pose.world_to_local(at).unwrap().brick();
+    let view = coarse_cells::ViewSelection {
+        detail: asked.settings(),
+        zoom: asked.zoom(),
+        fine_radius: u32::from(asked.fine_radius),
+        maximum_distance: 20_000.0,
+    };
+    let held = |cube: BrickCube| rig.handle.override_of(ship, cube).is_some();
+    let nodes = coarse_cells::far_ship_nodes_to_send(
+        local,
+        &view,
+        &|cube| {
+            rig.handle.overrides_of(ship).iter().any(|(held, _)| {
+                held.level() <= cube.level()
+                    && BrickCube::containing(held.origin(), cube.level()) == cube
+            })
+        },
+        12,
+    );
+    nodes.into_iter().filter(|cube| held(*cube)).collect()
+}
+
+#[test]
+fn a_client_is_sent_the_nodes_of_a_ship_it_was_told_of_as_far_away_coarsest_first_and_each_once() {
+    let (mut rig, ship) = rig_with_a_far_ship();
+    rig.settle();
+    rig.client.stand_at([0, 0, 0]);
+    rig.client.watch([0, 0, 0], 2);
+    let asked = detail(10_000_000);
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    let (_, updates) = rig.client.coarse_nodes();
+    let sent = cubes_of(&updates, ship);
+    assert!(sent.len() > 4, "{sent:?}");
+    // What the selection says, in the order it says it, once each.
+    assert_eq!(sent, expected_far_nodes(&rig, ship, [0, 0, 0], &asked));
+    let levels: Vec<u8> = sent.iter().map(|cube| cube.level()).collect();
+    assert!(
+        levels.windows(2).all(|pair| pair[0] >= pair[1]),
+        "{levels:?}"
+    );
+    // Nothing more comes while nothing changes.
+    rig.step(10);
+    assert!(rig.client.coarse_nodes().1.is_empty());
+}
+
+#[test]
+fn nothing_is_sent_for_a_ship_that_is_not_told_of_as_far_away() {
+    let (mut rig, ship) = rig_with_a_far_ship();
+    rig.settle();
+    // Too far to look big enough: 3,200 voxels away from a viewer 20,000 bricks off.
+    rig.client.stand_at([20_000, 0, 0]);
+    rig.client.watch([20_000, 0, 0], 2);
+    rig.client.set_detail(&detail(10_000_000));
+    rig.step(10);
+    assert!(cubes_of(&rig.client.coarse_nodes().1, ship).is_empty());
+}
+
+#[test]
+fn a_ship_that_comes_near_and_goes_far_again_is_sent_its_nodes_again_for_the_client_forgot_them() {
+    let (mut rig, ship) = rig_with_a_far_ship();
+    rig.settle();
+    rig.client.stand_at([0, 0, 0]);
+    rig.client.watch([0, 0, 0], 2);
+    rig.client.set_detail(&detail(10_000_000));
+    rig.step(10);
+    let first = cubes_of(&rig.client.coarse_nodes().1, ship);
+    assert!(!first.is_empty());
+    // Near: its bricks are sent instead, and no node.
+    rig.client.stand_at([97, 0, 0]);
+    rig.client.watch([97, 0, 0], 8);
+    // (The plugin hears which ships are far a tick late, so what it sends in the tick of the move is for a client that was far a moment ago.)
+    rig.step(3);
+    rig.client.coarse_nodes();
+    rig.step(10);
+    assert!(cubes_of(&rig.client.coarse_nodes().1, ship).is_empty());
+    // Far again: the same nodes.
+    rig.client.stand_at([0, 0, 0]);
+    rig.client.watch([0, 0, 0], 2);
+    rig.step(10);
+    let again = cubes_of(&rig.client.coarse_nodes().1, ship);
+    assert_eq!(again, first);
 }

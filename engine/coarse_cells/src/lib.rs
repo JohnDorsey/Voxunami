@@ -12,6 +12,7 @@
 
 mod cell;
 mod edited;
+mod far_ship;
 mod fine_region;
 mod node;
 pub mod node_codec;
@@ -20,6 +21,7 @@ mod swap;
 
 pub use cell::{BRIGHTEST_LIGHT_UP_TO_LEVEL, CoarseCell, DRAWN_FILL, FULL_LIGHT, combine};
 pub use edited::EditedCubes;
+pub use far_ship::{far_ship_nodes_to_send, select_far_ship};
 pub use fine_region::FineRegion;
 pub use node::{CELLS_PER_NODE, CoarseNode, NODE_EDGE};
 pub use selection::{

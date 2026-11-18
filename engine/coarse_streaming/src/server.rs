@@ -16,7 +16,9 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use block_models::BlockTable;
-use coarse_cells::{CoarseCell, CoarseNode, EditedCubes, ViewSelection, select_around_brick};
+use coarse_cells::{
+    CoarseCell, CoarseNode, EditedCubes, ViewSelection, far_ship_nodes_to_send, select_around_brick,
+};
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
 use plugin_host::{HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, ShipParked, SystemSpec};
@@ -134,6 +136,8 @@ struct ClientState {
     /// Where the selection was made from: the brick the client is in, in each grid that has nodes (the root grid of its level, and each planet in it), in the
     /// grid's own coordinates.
     selected_from: Option<Vec<(GridId, BrickCoordinate)>>,
+    /// The ships the client was told of as far away when the selection was made, and the brick it is in, in each ship's own coordinates.
+    selected_far_from: Vec<(GridId, BrickCoordinate)>,
     selected_for: Option<SetDetail>,
     leaves: Vec<(GridId, BrickCube)>,
     /// Which set of places with an override the leaves were last worked out for ([`State::edit_epoch`]).
@@ -862,7 +866,11 @@ impl State {
 
     /// Works out, for a client, which cubes of the level it is in it needs (the selection from where it is, bricks left out) and then which of them have
     /// overrides it has not been sent, coarsest first.
-    fn plan(&mut self, config: &CoarseConfig, data: &WorldData, client: ClientId) {
+    ///
+    /// `far` are the ships the client has been told of as far away (see [`ServerWorld::far_ships_of`]): their bricks are not sent, so what they are drawn from is
+    /// sent here, selected as the client selects ([`far_ship_nodes_to_send`]). A ship that has stopped being far is forgotten as far as what the client holds of it
+    /// goes: the client drops a ship's nodes with the ship, and they are sent again if it is far again.
+    fn plan(&mut self, config: &CoarseConfig, data: &WorldData, client: ClientId, far: &[GridId]) {
         let Some(state) = self.clients.get(&client) else {
             return;
         };
@@ -881,15 +889,32 @@ impl State {
             return;
         };
         let from = viewer_bricks(config, data, level, position);
-        let moved =
-            state.selected_from.as_ref() != Some(&from) || state.selected_for != Some(state.detail);
+        let far_from = far_viewer_bricks(data, level, position, far);
+        // (The ships that are far no more: what was sent of them is not on the client any more.)
+        let left: Vec<GridId> = state
+            .selected_far_from
+            .iter()
+            .map(|(grid, _)| *grid)
+            .filter(|grid| !far_from.iter().any(|(far, _)| far == grid))
+            .collect();
+        if !left.is_empty() {
+            state.sent.retain(|key, _| !left.contains(&key.1));
+            state.pending_epoch = u64::MAX;
+        }
+        let moved = state.selected_from.as_ref() != Some(&from)
+            || state.selected_far_from != far_from
+            || state.selected_for != Some(state.detail);
         if moved || state.selected_edit_epoch != self.edit_epoch {
             state.leaves = from
                 .iter()
                 .flat_map(|&(grid, brick)| {
                     select_leaves(config, &self.edited, grid, brick, &state.detail)
                 })
+                .chain(far_from.iter().flat_map(|&(grid, brick)| {
+                    select_far_leaves(config, &self.edited, grid, brick, &state.detail)
+                }))
                 .collect();
+            state.selected_far_from = far_from;
             state.selected_from = Some(from);
             state.selected_for = Some(state.detail);
             state.selected_edit_epoch = self.edit_epoch;
@@ -1002,6 +1027,47 @@ fn viewer_bricks(
             .map(|local| (id, local.brick()))
     }));
     bricks
+}
+
+/// The brick a client at `position` in `level` is in, in each of the ships it was told of as far away (`far`), in the ship's own coordinates; none for a ship that is
+/// not in the level or is not in the world.
+fn far_viewer_bricks(
+    data: &WorldData,
+    level: LevelIndex,
+    position: WorldPosition,
+    far: &[GridId],
+) -> Vec<(GridId, BrickCoordinate)> {
+    far.iter()
+        .filter_map(|&grid| {
+            let ship = data.grids().get(grid).filter(|ship| ship.level == level)?;
+            Some((grid, ship.pose.world_to_local(position)?.brick()))
+        })
+        .collect()
+}
+
+/// The cubes of a far ship to send a client in `brick` of the ship (see [`far_ship_nodes_to_send`]), among the cubes that have an override in them.
+fn select_far_leaves(
+    config: &CoarseConfig,
+    edited: &EditedCubes,
+    grid: GridId,
+    brick: BrickCoordinate,
+    detail: &SetDetail,
+) -> Vec<(GridId, BrickCube)> {
+    let view = ViewSelection {
+        detail: detail.settings(),
+        zoom: detail.zoom(),
+        fine_radius: u32::from(detail.fine_radius),
+        maximum_distance: config.view_distance,
+    };
+    far_ship_nodes_to_send(
+        brick,
+        &view,
+        &|cube| edited.holds(grid, cube),
+        config.maximum_override_level,
+    )
+    .into_iter()
+    .map(|cube| (grid, cube))
+    .collect()
 }
 
 /// The cubes of detail level 1 or more that a client in `brick` of `grid` is to draw and that have an override in them: the selection with the bricks it
@@ -1160,6 +1226,7 @@ impl Plugin for CoarseServerPlugin {
                         ClientState {
                             detail,
                             selected_from: None,
+                            selected_far_from: Vec::new(),
                             selected_for: None,
                             leaves: Vec::new(),
                             selected_edit_epoch: 0,
@@ -1239,7 +1306,8 @@ impl Plugin for CoarseServerPlugin {
                 let clients: Vec<ClientId> = state.clients.keys().copied().collect();
                 let mut outgoing: Vec<(ClientId, Vec<u8>)> = Vec::new();
                 for client in clients {
-                    state.plan(&config, context.world().data(), client);
+                    let far: Vec<GridId> = context.world().far_ships_of(client).collect();
+                    state.plan(&config, context.world().data(), client, &far);
                     for payload in state.send(&config, client) {
                         outgoing.push((client, payload));
                     }
@@ -1406,6 +1474,7 @@ mod tests {
                 zoom: None,
             },
             selected_from: None,
+            selected_far_from: Vec::new(),
             selected_for: None,
             leaves: Vec::new(),
             selected_edit_epoch: 0,

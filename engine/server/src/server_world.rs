@@ -189,6 +189,9 @@ pub struct ServerWorld {
     catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
+    /// The ships each client was told of as far away in the latest tick it was sent updates, for the plugins that send what a far ship is drawn from (see
+    /// [`ServerWorld::far_ships_of`]).
+    far_ships: BTreeMap<ClientId, BTreeSet<GridId>>,
     /// The entity that is each client's own body, if the game says which it is: the ships it is aboard are in the client's picture wherever the client's view is.
     focus: BTreeMap<ClientId, EntityId>,
     /// (Behind a cell so that reading a ship that has terrain needs only a shared borrow of the world: a body meets several grids at once, and the others are
@@ -276,6 +279,7 @@ impl ServerWorld {
             catalog,
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
+            far_ships: BTreeMap::new(),
             focus: BTreeMap::new(),
             generated: RefCell::new(GeneratedBrickCache::default()),
             generations: Cell::new(0),
@@ -624,8 +628,20 @@ impl ServerWorld {
         self.clients.insert(client, key);
     }
 
+    /// The ships a client has been told of as far away, as of the updates the latest tick sent it (the tick before this one, to a system that runs in it): their bricks
+    /// are not sent and never will be while they are far, and what draws them is for a plugin to send. In order of id; none for a client that has joined and has not
+    /// been sent an update yet, or has left.
+    pub fn far_ships_of(&self, client: ClientId) -> impl Iterator<Item = GridId> + '_ {
+        self.far_ships.get(&client).into_iter().flatten().copied()
+    }
+
+    pub(crate) fn set_far_ships(&mut self, client: ClientId, ships: BTreeSet<GridId>) {
+        self.far_ships.insert(client, ships);
+    }
+
     pub(crate) fn remove_client(&mut self, client: ClientId) {
         self.clients.remove(&client);
+        self.far_ships.remove(&client);
         self.focus.remove(&client);
     }
 
