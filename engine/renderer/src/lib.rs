@@ -56,6 +56,6 @@ pub use sun::{
     balls_and_ground, daylight_at, sun_visibility, sunlight, zenith,
 };
 pub use voxel_renderer::{
-    AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_PICTURE_DISTANCE, EntityBox,
-    MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
+    AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_CORNER_SHADE,
+    DEFAULT_PICTURE_DISTANCE, EntityBox, MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
 };

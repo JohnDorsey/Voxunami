@@ -51,6 +51,9 @@ struct Frame {
     avatars: array<vec4<f32>, 16>,
     // x: how far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
     pictures: vec4<f32>,
+    // x: how much one level of the shade of the corners of a face darkens it: the colour is multiplied by one minus this times the level (the default, a fifth, leaves the darkest
+    // corner, level 3, with two fifths of what it was).
+    shade: vec4<f32>,
 }
 
 // What a shader pack is told of a face at a pixel (`docs/specs/shader-pack-spec.md`): the engine works out what is lit and what is not, and the pack's `pack_shade` makes a colour
@@ -177,9 +180,6 @@ struct VertexOutput {
     // Whether the face is a whole voxel's, whose corners are shaded by the cubes beside it (`volume_shade_level`): 1 for a whole quad, 0 for a detailed one.
     @location(8) @interpolate(flat) shaded: u32,
 }
-
-// How much one level of shade darkens a face: the colour is multiplied by one minus this times the level (so the darkest corner, level 3, is 0.4 of what it was).
-const SHADE_PER_LEVEL: f32 = 0.2;
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
 const SUN_DISC_SOFTNESS: f32 = 0.005;
@@ -567,7 +567,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (in.shaded != 0u) {
         shade_level = volume_shade_level(in);
     }
-    surface.ambient_occlusion = relief.open * (1.0 - SHADE_PER_LEVEL * shade_level);
+    surface.ambient_occlusion = relief.open * (1.0 - frame.shade.x * shade_level);
     surface.subsurface = material.subsurface;
     surface.sun_behind = 0.0;
     surface.relief_sun = relief.sun;

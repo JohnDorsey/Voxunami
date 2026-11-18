@@ -33,7 +33,7 @@ pub(crate) const PARTIAL_ENTRY_SHIFT: u32 = 16;
 #[cfg(test)]
 pub(crate) const BITS_ENTRY_MASK: u32 = (1 << PARTIAL_ENTRY_SHIFT) - 1;
 
-/// What a table entry says (the same numbers as `ENTRY_*` in `contact_on.wgsl`): nothing is known of the brick,
+/// What a table entry says (the same numbers as `ENTRY_*` in `volume_table.wgsl`): nothing is known of the brick,
 pub(crate) const ENTRY_UNKNOWN: u32 = 0;
 /// no voxel of the brick blocks the sun,
 pub(crate) const ENTRY_EMPTY: u32 = 1;

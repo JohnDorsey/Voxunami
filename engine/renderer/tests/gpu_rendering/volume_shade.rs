@@ -275,6 +275,20 @@ fn brightness_at(image: &[u8], x: u32, y: u32) -> f64 {
 /// What of the world is solid (blocks the sun and is drawn), in the voxels of the first brick.
 type Solid<'a> = &'a dyn Fn(usize, usize, usize) -> bool;
 
+/// How the scene is lit. The shade is the same in each: it does not depend on the sun or on the shadows being drawn.
+#[derive(Clone, Copy, Debug)]
+enum Lighting {
+    /// A sun under the ground (the faces that look up are turned from it, and the walls are edge on) with its shadows drawn: the faces are drawn by the shader that walks the sun's
+    /// ray.
+    ShadowsOn,
+    /// The same sun with no shadows.
+    ShadowsOff,
+    /// No sun at all.
+    NoSun,
+}
+
+const LIGHTINGS: [Lighting; 3] = [Lighting::ShadowsOn, Lighting::ShadowsOff, Lighting::NoSun];
+
 /// The scene drawn twice from `camera` under the ambient light alone: with the voxels that block the sun told to the renderer (so the shader shades the corners) and without
 /// (so nothing is shaded, and every face has its open brightness).
 fn pictures(
@@ -282,6 +296,7 @@ fn pictures(
     name: &str,
     solid: Solid,
     camera: &Camera,
+    lighting: Lighting,
 ) -> (Vec<u8>, Vec<u8>) {
     pictures_of_bricks(
         context,
@@ -292,6 +307,7 @@ fn pictures(
                 && solid(place[0] as usize, place[1] as usize, place[2] as usize)
         },
         camera,
+        lighting,
     )
 }
 
@@ -303,16 +319,20 @@ fn pictures_of_bricks(
     bricks: &[BrickCoordinate],
     solid: &dyn Fn([i64; 3]) -> bool,
     camera: &Camera,
+    lighting: Lighting,
 ) -> (Vec<u8>, Vec<u8>) {
     let mut opaque = vec![true; 256];
     opaque[0] = false;
     let table = BlockTable::of_cubes(&opaque);
     let atmosphere = Atmosphere {
-        // (Under the ground: the faces that look up are turned from it, and the walls are edge on.)
         sun_direction: [0.0, -1.0, 0.0],
-        sun_light: 120,
+        sun_light: if matches!(lighting, Lighting::NoSun) {
+            0
+        } else {
+            120
+        },
         ambient_light: 120,
-        shadows: true,
+        shadows: matches!(lighting, Lighting::ShadowsOn),
         ..Atmosphere::default()
     };
     let mut shaded = new_renderer(context);
@@ -406,36 +426,40 @@ fn the_shader_shades_a_place_on_a_face_as_the_rule_blended_across_the_voxel_says
         };
         for context in contexts() {
             let name = adapter_name(&context);
-            let mut camera = narrow(camera_at(ORIGIN_BRICK, [16.0, 60.0, 16.0]));
-            camera.pitch = -Camera::MAXIMUM_PITCH;
-            let (shaded, open) = pictures(&context, &name, &solid, &camera);
-            let mut darkest: f64 = 1.0;
-            let mut worst = 0.0f64;
-            for x in 14..18i64 {
-                for z in 14..18i64 {
-                    let top = height(x, z);
-                    let levels = corner_levels(blocks, [x, top - 1, z], FaceDirection::PositiveY);
-                    for fraction_x in [0.25, 0.5, 0.75] {
-                        for fraction_z in [0.25, 0.5, 0.75] {
-                            // (The first axis of a face looking up is z and the second is x.)
-                            let level = blended(levels, fraction_z, fraction_x);
-                            let expected = 1.0 - SHADE_PER_LEVEL * level;
-                            let place = [x as f64 + fraction_x, top as f64, z as f64 + fraction_z];
-                            let share = share_at(&shaded, &open, &camera, place);
-                            darkest = darkest.min(share);
-                            worst = worst.max((share - expected).abs());
+            for lighting in LIGHTINGS {
+                let mut camera = narrow(camera_at(ORIGIN_BRICK, [16.0, 60.0, 16.0]));
+                camera.pitch = -Camera::MAXIMUM_PITCH;
+                let (shaded, open) = pictures(&context, &name, &solid, &camera, lighting);
+                let mut darkest: f64 = 1.0;
+                let mut worst = 0.0f64;
+                for x in 14..18i64 {
+                    for z in 14..18i64 {
+                        let top = height(x, z);
+                        let levels =
+                            corner_levels(blocks, [x, top - 1, z], FaceDirection::PositiveY);
+                        for fraction_x in [0.25, 0.5, 0.75] {
+                            for fraction_z in [0.25, 0.5, 0.75] {
+                                // (The first axis of a face looking up is z and the second is x.)
+                                let level = blended(levels, fraction_z, fraction_x);
+                                let expected = 1.0 - SHADE_PER_LEVEL * level;
+                                let place =
+                                    [x as f64 + fraction_x, top as f64, z as f64 + fraction_z];
+                                let share = share_at(&shaded, &open, &camera, place);
+                                darkest = darkest.min(share);
+                                worst = worst.max((share - expected).abs());
+                            }
                         }
                     }
                 }
+                assert!(
+                    darkest < 0.85,
+                    "{name}, seed {seed}: some of the scene is shaded (the darkest place is {darkest} of its open brightness)"
+                );
+                assert!(
+                    worst < 0.02,
+                    "{name}, seed {seed}: a place is {worst} of its open brightness from what the rule says"
+                );
             }
-            assert!(
-                darkest < 0.85,
-                "{name}, seed {seed}: some of the scene is shaded (the darkest place is {darkest} of its open brightness)"
-            );
-            assert!(
-                worst < 0.02,
-                "{name}, seed {seed}: a place is {worst} of its open brightness from what the rule says"
-            );
         }
     }
 }
@@ -444,21 +468,23 @@ fn the_shader_shades_a_place_on_a_face_as_the_rule_blended_across_the_voxel_says
 fn the_floor_of_a_pit_one_voxel_wide_is_at_level_three_all_over() {
     for context in contexts() {
         let name = adapter_name(&context);
-        let solid = |x: usize, y: usize, z: usize| y < 14 && (x, y, z) != (16, 13, 16);
-        let mut camera = narrow(camera_at(ORIGIN_BRICK, [16.5, 60.0, 16.5]));
-        camera.pitch = -Camera::MAXIMUM_PITCH;
-        let (shaded, open) = pictures(&context, &name, &solid, &camera);
-        // The bottom of the pit is the top of the voxel at y = 12, 13 voxels deep: look at its middle, and at open floor beside.
-        let middle = share_at(&shaded, &open, &camera, [16.5, 13.0, 16.5]);
-        assert!(
-            (middle - 0.4).abs() < 0.02,
-            "{name}: the middle of the pit's floor is {middle} of its open brightness, not 0.4"
-        );
-        let open_floor = share_at(&shaded, &open, &camera, [13.5, 14.0, 13.5]);
-        assert!(
-            (open_floor - 1.0).abs() < 0.01,
-            "{name}: open floor is {open_floor}"
-        );
+        for lighting in LIGHTINGS {
+            let solid = |x: usize, y: usize, z: usize| y < 14 && (x, y, z) != (16, 13, 16);
+            let mut camera = narrow(camera_at(ORIGIN_BRICK, [16.5, 60.0, 16.5]));
+            camera.pitch = -Camera::MAXIMUM_PITCH;
+            let (shaded, open) = pictures(&context, &name, &solid, &camera, lighting);
+            // The bottom of the pit is the top of the voxel at y = 12, 13 voxels deep: look at its middle, and at open floor beside.
+            let middle = share_at(&shaded, &open, &camera, [16.5, 13.0, 16.5]);
+            assert!(
+                (middle - 0.4).abs() < 0.02,
+                "{name}: the middle of the pit's floor is {middle} of its open brightness, not 0.4"
+            );
+            let open_floor = share_at(&shaded, &open, &camera, [13.5, 14.0, 13.5]);
+            assert!(
+                (open_floor - 1.0).abs() < 0.01,
+                "{name}: open floor is {open_floor}"
+            );
+        }
     }
 }
 
@@ -471,7 +497,7 @@ fn a_block_on_a_floor_darkens_the_four_diagonal_floor_squares_alike_and_the_four
         let solid = |x: usize, y: usize, z: usize| y < 16 || (x, y, z) == (16, 16, 16);
         let mut camera = narrow(camera_at(ORIGIN_BRICK, [16.5, 60.0, 16.5]));
         camera.pitch = -Camera::MAXIMUM_PITCH;
-        let (shaded, open) = pictures(&context, &name, &solid, &camera);
+        let (shaded, open) = pictures(&context, &name, &solid, &camera, Lighting::ShadowsOn);
         // Places on the floor's top (y = 16) a quarter of the way from the corner of the block: one in each of the four diagonal squares, and the same for the four squares
         // beside the block (at the middle of the edge it shares).
         let at = |x: f64, z: f64| share_at(&shaded, &open, &camera, [x, 16.0, z]);
@@ -522,7 +548,7 @@ fn the_wall_of_a_three_tall_staircase_is_shaded_as_its_saddle_says_and_without_a
             |x: usize, y: usize, z: usize| z <= 14 || (z == 15 && !tunnel(x as i64, y as i64));
         let blocks = |cell: [i64; 3]| cell[2] <= 14 || (cell[2] == 15 && !tunnel(cell[0], cell[1]));
         let camera = narrow(camera_at(ORIGIN_BRICK, [16.0, 16.0, 56.0]));
-        let (shaded, open) = pictures(&context, &name, &solid, &camera);
+        let (shaded, open) = pictures(&context, &name, &solid, &camera, Lighting::ShadowsOn);
         let mut worst = 0.0f64;
         let mut saddle = [f64::MAX; 2];
         for x in 14..19i64 {
@@ -600,35 +626,40 @@ fn the_shade_is_the_same_across_the_edges_and_corners_of_bricks() {
         ];
         for context in contexts() {
             let name = adapter_name(&context);
-            let mut camera = narrow(camera_at(ORIGIN_BRICK, [32.0, 60.0, 32.0]));
-            camera.pitch = -Camera::MAXIMUM_PITCH;
-            let (shaded, open) = pictures_of_bricks(&context, &name, &bricks, &blocks, &camera);
-            let mut darkest: f64 = 1.0;
-            let mut worst = 0.0f64;
-            for x in 30..34i64 {
-                for z in 30..34i64 {
-                    let top = height(x, z);
-                    let levels = corner_levels(blocks, [x, top - 1, z], FaceDirection::PositiveY);
-                    for fraction_x in [0.25, 0.5, 0.75] {
-                        for fraction_z in [0.25, 0.5, 0.75] {
-                            let expected =
-                                1.0 - SHADE_PER_LEVEL * blended(levels, fraction_z, fraction_x);
-                            let place = [x as f64 + fraction_x, top as f64, z as f64 + fraction_z];
-                            let share = share_at(&shaded, &open, &camera, place);
-                            darkest = darkest.min(share);
-                            worst = worst.max((share - expected).abs());
+            for lighting in LIGHTINGS {
+                let mut camera = narrow(camera_at(ORIGIN_BRICK, [32.0, 60.0, 32.0]));
+                camera.pitch = -Camera::MAXIMUM_PITCH;
+                let (shaded, open) =
+                    pictures_of_bricks(&context, &name, &bricks, &blocks, &camera, lighting);
+                let mut darkest: f64 = 1.0;
+                let mut worst = 0.0f64;
+                for x in 30..34i64 {
+                    for z in 30..34i64 {
+                        let top = height(x, z);
+                        let levels =
+                            corner_levels(blocks, [x, top - 1, z], FaceDirection::PositiveY);
+                        for fraction_x in [0.25, 0.5, 0.75] {
+                            for fraction_z in [0.25, 0.5, 0.75] {
+                                let expected =
+                                    1.0 - SHADE_PER_LEVEL * blended(levels, fraction_z, fraction_x);
+                                let place =
+                                    [x as f64 + fraction_x, top as f64, z as f64 + fraction_z];
+                                let share = share_at(&shaded, &open, &camera, place);
+                                darkest = darkest.min(share);
+                                worst = worst.max((share - expected).abs());
+                            }
                         }
                     }
                 }
+                assert!(
+                    darkest < 0.85,
+                    "{name}, seed {seed}: some of it is shaded ({darkest})"
+                );
+                assert!(
+                    worst < 0.02,
+                    "{name}, seed {seed}: a place is {worst} of its open brightness from what the rule says"
+                );
             }
-            assert!(
-                darkest < 0.85,
-                "{name}, seed {seed}: some of it is shaded ({darkest})"
-            );
-            assert!(
-                worst < 0.02,
-                "{name}, seed {seed}: a place is {worst} of its open brightness from what the rule says"
-            );
         }
     }
 }

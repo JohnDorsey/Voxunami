@@ -59,7 +59,11 @@ fn shadows_on_and_off(
     camera: &Camera,
 ) -> (Vec<u8>, Vec<u8>) {
     renderer.set_atmosphere(shadow_atmosphere(0, sun, false));
+    // (Without the shade of the corners of faces, which the picture without shadows has now too: these tests measure how much of its brightness a face keeps where the walk finds
+    // the sun blocked, against the picture of the faces as they were before any was shaded; the shade is the tests of `volume_shade.rs`.)
+    renderer.set_corner_shade(0.0);
     let off = settled_at(renderer, camera, BIG);
+    renderer.set_corner_shade(renderer::DEFAULT_CORNER_SHADE);
     renderer.set_atmosphere(shadow_atmosphere(0, sun, true));
     let on = settled_at(renderer, camera, BIG);
     (on, off)
