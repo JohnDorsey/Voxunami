@@ -2160,6 +2160,16 @@ class AtlasProject:
         self._scan(loaded)
         return True
 
+    def reserved_name_warnings(self) -> list[tuple[str, str]]:
+        """(name, warning) for each tile whose name ends as a companion picture does: the game reads such a file as
+        the companion of another picture, whatever the setting says (it never reads atlas.json)."""
+        found = []
+        for coordinate in sorted(self.tiles, key=reading_order_key):
+            warning = reserved_ending_warning(self.tiles[coordinate].name)
+            if warning is not None:
+                found.append((self.tiles[coordinate].name, warning))
+        return found
+
     # Changing the PBR setting ------------------------------------------------------------------------------
 
     def plan_pbr_switch(self, profile_name: str) -> PbrSwitchPlan:
@@ -2907,6 +2917,120 @@ class PurgeDialog:
 
     def cancel(self) -> str:
         return "cancel"
+
+
+def describe_reserved_names(warnings: list[tuple[str, str]]) -> str:
+    """One sentence for the status line about names the game reads as companion pictures; empty if there are none."""
+    if not warnings:
+        return ""
+    names = ", ".join(name for name, _ in warnings[:3]) + (", ..." if len(warnings) > 3 else "")
+    return f"Warning: {len(warnings)} tile name{'s' if len(warnings) != 1 else ''} ({names}) end as companion pictures do, so the game reads them as companions, not as pictures of their own."
+
+
+class SettingsDialog:
+    """The settings window: the PBR setting (choose, apply, confirm if channels with data would be lost) and reading the
+    folder again. apply() and reload() return "done" (the window closes; `done_message` says what happened) or "ask"
+    (it stays; `error` says why, or `stage` is "confirm" and `lost_text` says what would be lost)."""
+
+    NOTE = "Changing the setting cannot be undone, and is refused while a tile has unsaved changes."
+
+    def __init__(self, project: AtlasProject):
+        self.project = project
+        self.choice = project.pbr_profile
+        self.list_open = False
+        self.stage = "choose"
+        self.error = ""
+        self.lost_text = ""
+        self.done_message = ""
+
+    @property
+    def profile_names(self) -> list[str]:
+        return list(PBR_PROFILES)
+
+    @property
+    def note(self) -> str:
+        return self.NOTE
+
+    @property
+    def can_apply(self) -> bool:
+        return self.choice != self.project.pbr_profile
+
+    def choose(self, name: str) -> None:
+        if name not in PBR_PROFILES:
+            raise ValueError(f"{name!r} is not a PBR setting")
+        self.choice = name
+        self.stage = "choose"
+        self.error = ""
+
+    def back(self) -> None:
+        self.stage = "choose"
+        self.error = ""
+
+    def apply(self) -> str:
+        if self.stage == "choose" and not self.can_apply:
+            return "ask"
+        self.error = ""
+        plan = self.project.plan_pbr_switch(self.choice)
+        if plan.problem is not None:
+            self.error = plan.problem
+            return "ask"
+        if plan.dropped and self.stage != "confirm":
+            self.stage = "confirm"
+            self.lost_text = "; ".join(
+                f"{self.project.tiles[coordinate].name}: {', '.join(names)}" for coordinate, names in plan.dropped.items()
+            )
+            return "ask"
+        try:
+            result = self.project.switch_pbr_profile(self.choice, confirm_dropped=True)
+        except (OSError, ValueError) as error:
+            self.error = f"Could not change the setting: {error}"
+            return "ask"
+        warnings = [] if result is None else result.warnings
+        self.done_message = " ".join([f"The PBR setting is now {self.choice}."] + warnings)
+        return "done"
+
+    def reload(self) -> str:
+        self.error = ""
+        try:
+            read = self.project.reload()
+        except AtlasFileError as error:
+            self.error = f"{ATLAS_FILE_NAME} cannot be used: {error}"
+            return "ask"
+        if not read:
+            count = len(self.project.unsaved_tiles())
+            self.error = f"{count} tile{'s' if count != 1 else ''} have unsaved changes: save or discard them before reading the folder again"
+            return "ask"
+        self.done_message = f"Read {ATLAS_FILE_NAME} and the folder again."
+        return "done"
+
+
+def settings_dialog_areas(window_size: tuple[int, int], profile_names: list[str], list_open: bool) -> dict[str, object]:
+    """Where the parts of the settings window are: the panel, the menu of settings and its options (while open), the text,
+    the row for an error and the buttons."""
+    width = min(scaled(540), window_size[0] - scaled(40))
+    height = min(scaled(300), window_size[1] - scaled(40))
+    panel = pygame.Rect(0, 0, width, height)
+    panel.center = (window_size[0] // 2, window_size[1] // 2)
+    margin, gap = scaled(20), scaled(10)
+    row = scaled(30)
+    choice = pygame.Rect(panel.x + margin, panel.y + scaled(84), scaled(220), row)
+    options = (
+        {name: pygame.Rect(choice.x, choice.bottom + index * row, choice.width, row) for index, name in enumerate(profile_names)}
+        if list_open
+        else {}
+    )
+    button_height, button_width = scaled(34), scaled(130)
+    buttons_top = panel.bottom - margin - button_height
+    return {
+        "panel": panel,
+        "choice": choice,
+        "options": options,
+        "note": pygame.Rect(panel.x + margin, choice.bottom + gap, panel.width - 2 * margin, scaled(70)),
+        "error": pygame.Rect(panel.x + margin, buttons_top - gap - scaled(40), panel.width - 2 * margin, scaled(40)),
+        "reload": pygame.Rect(panel.x + margin, buttons_top, button_width, button_height),
+        "apply": pygame.Rect(panel.right - margin - 2 * button_width - gap, buttons_top, button_width, button_height),
+        "cancel": pygame.Rect(panel.right - margin - button_width, buttons_top, button_width, button_height),
+    }
 
 
 def purge_dialog_areas(window_size: tuple[int, int]) -> dict[str, pygame.Rect]:
@@ -4879,6 +5003,9 @@ class EditorPanel:
         try:
             if self.project.rename_tile(coordinate, new_name):
                 self.message = f"Renamed to {new_name}."
+                warning = reserved_ending_warning(new_name)
+                if warning is not None:
+                    self.message += f" Warning: {warning}."
         except ValueError as problem:
             self.message = f"Could not rename: {problem}"
             self.name_invalid = True
@@ -6375,12 +6502,129 @@ class Application:
         self.import_dialog: Optional[ImportDialog] = None
         self.context_menu: Optional[ContextMenu] = None
         self.purge_dialog: Optional[PurgeDialog] = None
+        self.settings_dialog: Optional[SettingsDialog] = None
         self.file_picker = SystemFilePicker()
         self.closing = False
         self.bridge_link: Optional[BridgeLink] = None
         self.bridge: Optional[BridgeController] = None
         self.layout = compute_layout(surface.get_size())
         self.update_layout()
+        self.message = describe_reserved_names(project.reserved_name_warnings())
+
+    # The gear and the settings window -----------------------------------------------------------------------
+
+    def gear_area(self) -> pygame.Rect:
+        """The button left of the title of the atlas that opens the settings."""
+        title = self.layout.atlas_title
+        size = max(scaled(16), title.height - scaled(4))
+        return pygame.Rect(title.x, title.y + (title.height - size) // 2, size, size)
+
+    def atlas_title_left(self) -> int:
+        return self.gear_area().right + scaled(8)
+
+    def settings_areas(self) -> dict[str, object]:
+        dialog = self.settings_dialog
+        assert dialog is not None
+        return settings_dialog_areas(self.surface.get_size(), dialog.profile_names, dialog.list_open)
+
+    def _handle_settings_event(self, event: pygame.event.Event) -> None:
+        """While the settings window is open it gets every event; the window behind it does nothing."""
+        dialog = self.settings_dialog
+        assert dialog is not None
+        outcome = "ask"
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            areas = self.settings_areas()
+            if dialog.list_open:
+                dialog.list_open = False
+                for name, rectangle in areas["options"].items():  # type: ignore[union-attr]
+                    if rectangle.collidepoint(event.pos):
+                        dialog.choose(name)
+                        return
+                if areas["choice"].collidepoint(event.pos):  # type: ignore[union-attr]
+                    return
+            if areas["choice"].collidepoint(event.pos) and dialog.stage == "choose":  # type: ignore[union-attr]
+                dialog.list_open = True
+            elif areas["apply"].collidepoint(event.pos):  # type: ignore[union-attr]
+                outcome = dialog.apply()
+            elif areas["reload"].collidepoint(event.pos):  # type: ignore[union-attr]
+                outcome = dialog.reload()
+            elif areas["cancel"].collidepoint(event.pos):  # type: ignore[union-attr]
+                if dialog.stage == "confirm":
+                    dialog.back()
+                else:
+                    outcome = "cancel"
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if dialog.list_open:
+                dialog.list_open = False
+            elif dialog.stage == "confirm":
+                dialog.back()
+            else:
+                outcome = "cancel"
+        if outcome == "done":
+            self.message = dialog.done_message
+            warnings = describe_reserved_names(self.project.reserved_name_warnings())
+            if warnings:
+                self.message += " " + warnings
+            self.editor.sync()
+        if outcome in ("done", "cancel"):
+            self.settings_dialog = None
+
+    def draw_settings_dialog(self, dialog: SettingsDialog) -> None:
+        surface = self.surface
+        dimming = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dimming.fill((0, 0, 0, 170))
+        surface.blit(dimming, (0, 0))
+        areas = self.settings_areas()
+        panel = areas["panel"]
+        pygame.draw.rect(surface, Theme.PANEL, panel, border_radius=6)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, panel, width=1, border_radius=6)
+        draw_text(surface, self.fonts.large, "Settings", Theme.TEXT, (panel.x + scaled(20), panel.y + scaled(16)))
+        draw_text(surface, self.fonts.normal, "PBR setting", Theme.TEXT_DIMMED, (panel.x + scaled(20), panel.y + scaled(58)))
+        choice = areas["choice"]
+        draw_button(surface, choice, dialog.choice, self.fonts.normal, choice.collidepoint(self.pointer), dialog.stage == "choose")
+        tip = choice.right - scaled(14)
+        pygame.draw.polygon(surface, Theme.TEXT_DIMMED, [(tip - 5, choice.centery - 3), (tip + 5, choice.centery - 3), (tip, choice.centery + 3)])
+        line_height = self.fonts.normal.get_linesize()
+        if dialog.stage == "confirm":
+            text = f"These channels have data that {dialog.choice} has no place for, and they will be lost: {dialog.lost_text}."
+            color = Theme.ERROR
+        else:
+            text, color = dialog.note, Theme.TEXT_DIMMED
+        for number, line in enumerate(wrap_text(self.fonts.normal, text, areas["note"].width)):
+            draw_text(surface, self.fonts.normal, line, color, (areas["note"].x, areas["note"].y + number * line_height))
+        for number, line in enumerate(wrap_text(self.fonts.small, dialog.error, areas["error"].width)):
+            draw_text(surface, self.fonts.small, line, Theme.ERROR, (areas["error"].x, areas["error"].y + number * self.fonts.small.get_linesize()))
+        enabled = dialog.stage == "confirm" or dialog.can_apply
+        buttons = (
+            ("apply", "Switch anyway" if dialog.stage == "confirm" else "Apply", enabled),
+            ("reload", "Reload folder", dialog.stage == "choose"),
+            ("cancel", "Back" if dialog.stage == "confirm" else "Cancel", True),
+        )
+        for name, label, button_enabled in buttons:
+            draw_button(surface, areas[name], label, self.fonts.normal, areas[name].collidepoint(self.pointer), button_enabled)
+        for name, rectangle in areas["options"].items():  # type: ignore[union-attr]
+            draw_button(surface, rectangle, name, self.fonts.normal, rectangle.collidepoint(self.pointer))
+            if name == dialog.choice:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
+
+    def _draw_gear(self) -> None:
+        area = self.gear_area()
+        hovered = area.collidepoint(self.pointer)
+        color = Theme.TEXT if hovered else Theme.TEXT_DIMMED
+        centre, radius = area.center, area.width // 2 - 2
+        for index in range(8):
+            angle = index * math.pi / 4
+            outer = (centre[0] + radius * math.cos(angle), centre[1] + radius * math.sin(angle))
+            inner = (centre[0] + (radius - scaled(4)) * math.cos(angle), centre[1] + (radius - scaled(4)) * math.sin(angle))
+            pygame.draw.line(self.surface, color, inner, outer, max(2, scaled(3)))
+        pygame.draw.circle(self.surface, color, centre, radius - scaled(3), 2)
+        pygame.draw.circle(self.surface, color, centre, max(2, radius // 3), 2)
 
     # The bridge -------------------------------------------------------------------------------------------
 
@@ -6395,7 +6639,10 @@ class Application:
         """Once a frame: take in what the program said, and tell it what changed."""
         if self.bridge_link is None or self.bridge is None:
             return
-        busy = any(dialog is not None for dialog in (self.quit_dialog, self.import_dialog, self.context_menu, self.purge_dialog))
+        busy = any(
+            dialog is not None
+            for dialog in (self.quit_dialog, self.import_dialog, self.context_menu, self.purge_dialog, self.settings_dialog)
+        )
         events = self.bridge_link.poll()
         for kind, content in events:
             if kind == "message" and isinstance(content, dict):
@@ -6461,7 +6708,7 @@ class Application:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
             # Closing the window gives up an import that has not started, and a purge that has not been confirmed.
-            self.import_dialog = self.context_menu = self.purge_dialog = None
+            self.import_dialog = self.context_menu = self.purge_dialog = self.settings_dialog = None
             if self.quit_dialog is None:
                 if not self.project.unsaved_tiles():
                     return False
@@ -6473,6 +6720,8 @@ class Application:
                 self._handle_dialog_event(event)
             elif self.purge_dialog is not None:
                 self._handle_purge_event(event)
+            elif self.settings_dialog is not None:
+                self._handle_settings_event(event)
             elif self.import_dialog is not None:
                 self._handle_import_event(event)
             elif self.context_menu is not None:
@@ -6720,6 +6969,13 @@ class Application:
 
     def _handle_press(self, position: tuple[int, int]) -> None:
         self.message = ""
+        if self.gear_area().collidepoint(position):
+            if self.project.is_empty:
+                self.message = f"Create {ATLAS_FILE_NAME} first: the settings are kept in it."
+            else:
+                self.editor.lose_focus()
+                self.settings_dialog = SettingsDialog(self.project)
+            return
         if self.project.is_empty:
             rectangles = self.empty_state_rectangles()
             if "field" in rectangles and rectangles["field"].collidepoint(position):
@@ -6819,7 +7075,11 @@ class Application:
         surface.fill(Theme.BACKGROUND)
         layout = self.layout
         count = len(self.project.tiles)
-        draw_text(surface, self.fonts.normal, f"Atlas ({count} tile{'' if count == 1 else 's'})", Theme.TEXT, layout.atlas_title.midleft, "midleft")
+        self._draw_gear()
+        draw_text(
+            surface, self.fonts.normal, f"Atlas ({count} tile{'' if count == 1 else 's'})", Theme.TEXT,
+            (self.atlas_title_left(), layout.atlas_title.centery), "midleft",
+        )
         draw_text(
             surface, self.fonts.normal, f"Not in the atlas ({len(self.project.unplaced)})", Theme.TEXT,
             layout.unplaced_title.midleft, "midleft",
@@ -6833,6 +7093,8 @@ class Application:
             self.draw_quit_dialog(self.quit_dialog)
         elif self.purge_dialog is not None:
             self.draw_purge_dialog(self.purge_dialog)
+        elif self.settings_dialog is not None:
+            self.draw_settings_dialog(self.settings_dialog)
         elif self.import_dialog is not None:
             self.draw_import_dialog(self.import_dialog)
         elif self.context_menu is not None:
