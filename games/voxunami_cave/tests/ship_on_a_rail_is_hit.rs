@@ -35,7 +35,7 @@ fn rail_of(scene: &Scene, ship: GridId) -> Option<Rail> {
         .clone()
 }
 
-/// A ship (number 1) of stone in orbit at `DISTANCE`, going along x at the speed of a circle, on its rail, and what it needs to be watched.
+/// A ship (number 1) of stone in orbit at `DISTANCE`, going along z at the speed of a circle, on its rail, and what it needs to be watched.
 fn a_ship_on_its_rail() -> (
     Scene,
     impl Fn() -> grid_bodies::BodiesReport,
@@ -43,6 +43,15 @@ fn a_ship_on_its_rail() -> (
     f64,
     Rail,
 ) {
+    let (scene, report, ship, speed) = a_ship_in_orbit(true);
+    let rail = rail_of(&scene, ship).expect("it rides a rail");
+    (scene, report, ship, speed, rail)
+}
+
+/// The ship of [`a_ship_on_its_rail`], put on its rail or not (the same orbit either way: a ship that is not on a rail is moved by the bodies).
+fn a_ship_in_orbit(
+    on_its_rail: bool,
+) -> (Scene, impl Fn() -> grid_bodies::BodiesReport, GridId, f64) {
     let (mut scene, report) = Scene::reporting_in_a_new_world();
     let speed = circular_speed(&scene, 0, DISTANCE);
     // (It goes along z, across the way a wall closes on it along x: along the way it goes the orbit's curve would turn its speed into the speed that is measured.)
@@ -65,11 +74,12 @@ fn a_ship_on_its_rail() -> (
         world
             .set_grid_velocity(ship, [0.0, 0.0, speed], [0.0; 3])
             .unwrap();
-        put_on_its_rail_in(world, ship);
+        if on_its_rail {
+            put_on_its_rail_in(world, ship);
+        }
     });
     scene.ticks(3);
-    let rail = rail_of(&scene, ship).expect("it rides a rail");
-    (scene, report, ship, speed, rail)
+    (scene, report, ship, speed)
 }
 
 /// A wall (ship number 2) that begins `FIRST_OFFSET` voxels past the east end of the ship, `lateral` voxels off its axis along y, going at the ship's speed and `closing` metres a
@@ -426,4 +436,121 @@ fn a_ship_on_a_rail_whose_port_pulls_on_the_port_of_another_ship_leaves_the_rail
         "the first ship was taken off its rail for the port that pulled on it"
     );
     assert_eq!(report().rail_kicks, 0, "and no hit was made");
+}
+
+/// What a push (a force or a torque, asked of the world as an engine or a seat asks it) does to a ship in its orbit, on its rail or not: its velocity and its spin after the tick that
+/// has the push, and whether it still rides a rail. `ServerWorld::apply_grid_force` and `apply_grid_torque` take the ship off its rail where it is, so the bodies give it a body of its
+/// own for the push, and the ship does what the one that was never on a rail does (4c-5-4b would split the push, the torque to the bodies and the force to the rail, so that it need
+/// not leave). **The speeds are compared after the push, not as a change from before it**: the speed a ship on a rail has stored is a tick behind the one that a ship with a body has
+/// (-1.24 and -1.66 metres a second along y, the orbit's curve, in the same tick), so a change from before the push is a tick of the orbit's turn too much for the one that was on a rail
+/// (probed: the speeds after the push are the same to 1e-6 along y).
+fn push_the_ship_and_see(
+    on_its_rail: bool,
+    push: impl FnOnce(&mut server::ServerWorld, GridId, f64) + Send + 'static,
+) -> ([f64; 3], [f64; 3], bool) {
+    let (mut scene, _, ship, _) = a_ship_in_orbit(on_its_rail);
+    let mass = mass_of(&scene, &[ship]);
+    scene.run(move |world| push(world, ship, mass));
+    let after = scene.rig.server.world().grids().get(ship).unwrap();
+    (
+        after.linear_velocity,
+        after.angular_velocity,
+        after.rail.is_some(),
+    )
+}
+
+#[test]
+fn a_torque_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_turns_it_as_it_turns_a_ship_that_was_never_on_one()
+ {
+    let torque = |world: &mut server::ServerWorld, ship: GridId, mass: f64| {
+        world
+            .apply_grid_torque(ship, [0.0, 30.0 * mass, 0.0])
+            .unwrap();
+    };
+    let (_, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, torque);
+    let (_, spin_free, _) = push_the_ship_and_see(false, torque);
+    assert!(!still_on_a_rail, "the push took the ship off its rail");
+    assert!(
+        spin_free[1] > 0.0,
+        "the ship that was never on a rail turned about y: {spin_free:?}"
+    );
+    assert!(
+        spin_free[0].abs() < 1e-9 * spin_free[1] && spin_free[2].abs() < 1e-9 * spin_free[1],
+        "and about y only: {spin_free:?}"
+    );
+    for axis in 0..3 {
+        assert!(
+            (spin_on_a_rail[axis] - spin_free[axis]).abs() <= 1e-9 * spin_free[1],
+            "the spin of the ship that was on a rail, {spin_on_a_rail:?}, is that of the one that was not, {spin_free:?}"
+        );
+    }
+}
+
+#[test]
+fn a_force_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_pushes_it_as_it_pushes_a_ship_that_was_never_on_one()
+ {
+    let force = |world: &mut server::ServerWorld, ship: GridId, mass: f64| {
+        world
+            .apply_grid_force(ship, [0.0, 0.0, 400.0 * mass], None)
+            .unwrap();
+    };
+    let (speed_on_a_rail, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, force);
+    let (speed_free, spin_free, _) = push_the_ship_and_see(false, force);
+    assert!(!still_on_a_rail, "the push took the ship off its rail");
+    // (The ship went 761.39 along z; the push is 400 metres a second a second for the tick of a twentieth of a second, 20 metres a second, and a missed turn of the orbit is 0.41 along y.)
+    assert!(
+        speed_free[2] > 780.0,
+        "the push gave the free ship its speed along z: {speed_free:?}"
+    );
+    for axis in 0..3 {
+        assert!(
+            (speed_on_a_rail[axis] - speed_free[axis]).abs() <= 1e-2,
+            "the speed of the ship that was on a rail, {speed_on_a_rail:?}, is that of the one that was not, {speed_free:?}"
+        );
+        assert!(
+            spin_on_a_rail[axis].abs() < 1e-9 && spin_free[axis].abs() < 1e-9,
+            "a push at the centre of mass does not turn the ship: {spin_on_a_rail:?}, {spin_free:?}"
+        );
+    }
+}
+
+/// Whether a stranger that goes with the ship (the same velocity, 20 voxels off its east face), `offset` voxels along the way the ship goes from the ship's middle, is in a ghost with
+/// it within six ticks.
+fn is_a_stranger_beside_a_ship_on_its_rail_in_a_ghost(offset: f64) -> bool {
+    let (mut scene, report, ship, speed, _) = a_ship_on_its_rail();
+    let origin = origins_of(&scene, &[ship])[0];
+    make_all_going(
+        &mut scene,
+        vec![(
+            pose_at(
+                origin[0] + EDGE as f64 + 20.0,
+                origin[1] + EDGE as f64 / 2.0,
+                origin[2] + EDGE as f64 / 2.0 + offset,
+            ),
+            a_wall(),
+        )],
+        [0.0, 0.0, speed],
+    );
+    scene.ticks(6);
+    report().ghosts_made > 0
+}
+
+/// A ship on a rail is put at its place of the end of the tick and a stranger with a body at its place of the start, a tick of the ship's speed (38 voxels at 761 a second) behind; the
+/// ghost's search for what is near puts the railed ship back by that tick (`ships_near_mechanism_lagging`). Without it the ghost's room is that far off the ship, ahead of it: this is
+/// the mutant (the lag of 0 in `ghost_parts`) that the other tests of this file did not kill, because none of them has a stranger that goes with the ship and is near by its side.
+/// Probed: the ghost is made for a stranger from 40 voxels behind the ship's middle to 36 ahead, and with the lag of 0 from 0 to 76 (strangers go by every 4 voxels).
+#[test]
+fn the_room_of_the_ghost_of_a_ship_on_a_rail_is_as_wide_ahead_of_it_as_behind_it() {
+    for offset in [-30.0, 30.0] {
+        assert!(
+            is_a_stranger_beside_a_ship_on_its_rail_in_a_ghost(offset),
+            "a stranger {offset} voxels along the ship's way, going with it and 20 voxels off its side, is in the ghost's room"
+        );
+    }
+    for offset in [-56.0, 56.0] {
+        assert!(
+            !is_a_stranger_beside_a_ship_on_its_rail_in_a_ghost(offset),
+            "and one {offset} voxels along is not"
+        );
+    }
 }

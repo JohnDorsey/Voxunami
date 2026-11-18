@@ -40,6 +40,7 @@ use physics::{BodyId, BodyKind, BodySettings, BodyState, ContactGhost, CouplingI
 use server::{ContactRoom, ServerWorld};
 use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 
+use super::clusters::clusters_of;
 use super::couplings::CouplingKey;
 use super::{Bodies, Follow, Followed, FrameKey, local_in, velocity_from, velocity_in};
 
@@ -82,17 +83,14 @@ impl Bodies {
                 _ => None,
             })
             .collect();
-        // What is near each, with the ships it is coupled to that have bodies.
+        // What is near each, with the ships it is coupled to that have bodies (all asked together: the hull of each ship is worked out once).
         let grids = world.data().grids();
-        let near: BTreeMap<GridId, BTreeSet<GridId>> = mechanisms
-            .keys()
-            .map(|anchor| {
-                let ships: BTreeSet<GridId> = world
-                    .ships_near_mechanism_lagging(
-                        *anchor,
-                        GHOST_ROOM,
-                        self.config.settings.time_step,
-                    )
+        let anchors: Vec<GridId> = mechanisms.keys().copied().collect();
+        let near: BTreeMap<GridId, BTreeSet<GridId>> = world
+            .ships_near_mechanisms_lagging(&anchors, GHOST_ROOM, self.config.settings.time_step)
+            .into_iter()
+            .map(|(anchor, ships)| {
+                let ships: BTreeSet<GridId> = ships
                     .into_iter()
                     .flat_map(|ship| {
                         if grids.has_partners(ship) {
@@ -103,35 +101,11 @@ impl Bodies {
                     })
                     .filter(|ship| self.frame_of(*ship).is_some())
                     .collect();
-                (*anchor, ships)
+                (anchor, ships)
             })
             .collect();
         // Groups that are near each other are one mechanism: the clusters of the groups, each by its lowest anchor.
-        let anchors: Vec<GridId> = mechanisms.keys().copied().collect();
-        let mut cluster_of: BTreeMap<GridId, GridId> = anchors.iter().map(|a| (*a, *a)).collect();
-        for first in &anchors {
-            for second in &anchors {
-                let is_near = grids
-                    .group_of(*second)
-                    .iter()
-                    .any(|ship| near[first].contains(ship));
-                if second > first && is_near {
-                    let (kept, absorbed) = (cluster_of[first], cluster_of[second]);
-                    if kept != absorbed {
-                        let (low, high) = (kept.min(absorbed), kept.max(absorbed));
-                        for cluster in cluster_of.values_mut() {
-                            if *cluster == high {
-                                *cluster = low;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let mut clusters: BTreeMap<GridId, Vec<GridId>> = BTreeMap::new();
-        for (anchor, cluster) in &cluster_of {
-            clusters.entry(*cluster).or_default().push(*anchor);
-        }
+        let clusters = clusters_of(&anchors, &near, |anchor| grids.group_of(anchor));
         let mut planned = BTreeMap::new();
         for (lowest, mut groups) in clusters {
             groups.truncate(MECHANISM_SIDES);

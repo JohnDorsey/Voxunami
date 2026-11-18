@@ -1975,7 +1975,7 @@ impl ServerWorld {
     }
 }
 
-mod contact_room;
+pub(super) mod contact_room;
 pub use contact_room::ContactRoom;
 
 mod coasting;

@@ -472,3 +472,93 @@ fn a_group_has_the_same_ships_near_it_as_a_mechanism_and_as_a_group_and_only_its
     assert_eq!(near_mechanism(&world, ships[1], room), []);
     assert_eq!(near_mechanism(&world, ships[2], room), []);
 }
+
+/// What `ships_near_mechanism_lagging` is by its definition, found the long way: for each ship that is not of the group, whether any ship of the group is near it by the hulls
+/// (`HullSphere`, with no ship on a rail, so no lag). **This is the program as it was** when each mechanism looked at every ship by itself (2026-11-17).
+fn near_by_looking_at_every_ship(
+    world: &ServerWorld,
+    anchor: GridId,
+    room: ContactRoom,
+) -> Vec<GridId> {
+    use crate::server_world::contact_room::HullSphere;
+    let grids = world.data().grids();
+    let members = grids.group_of(anchor);
+    if members.first() != Some(&anchor) {
+        return Vec::new();
+    }
+    grids
+        .iter()
+        .filter(|(id, _)| !members.contains(id))
+        .filter(|(_, other)| {
+            let Some(sphere) = HullSphere::of(other, 0.0) else {
+                return false;
+            };
+            members.iter().any(|member| {
+                grids.get(*member).is_some_and(|ship| {
+                    ship.level == other.level
+                        && HullSphere::of(ship, 0.0).is_some_and(|mine| mine.is_near(&sphere, room))
+                })
+            })
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
+#[test]
+fn the_ships_near_many_mechanisms_found_together_are_those_found_for_each_by_looking_at_every_ship()
+{
+    // (A crowd of 160 ships in clusters, round a moon and spread out, at no speed to orbital ones, all with a hull; five groups of two or three among them; and some ships whose
+    // hull has gone.)
+    let (mut world, _, ships) = super::near_ships::crowded_world(7, 160);
+    for ship in &ships {
+        world
+            .set_grid_hull(*ship, Some(hull_at([0, 0, 0])))
+            .unwrap();
+    }
+    for first in [4, 41, 77, 100, 130] {
+        world.set_ships_coupled(ships[first], ships[first + 1], true);
+        if first % 2 == 1 {
+            world.set_ships_coupled(ships[first + 1], ships[first + 2], true);
+        }
+    }
+    for gone in [9, 50, 120] {
+        world.set_grid_hull(ships[gone], None).unwrap();
+    }
+    let mut every_anchor: Vec<GridId> = ships.clone();
+    every_anchor.push(GridId::new(9_999));
+    let mut most_near_one = 0;
+    let mut anchors_with_near = 0;
+    for room in [
+        ContactRoom {
+            margin: 32.0,
+            seconds: 0.5,
+        },
+        ContactRoom {
+            margin: 64.0,
+            seconds: 1.0,
+        },
+        ContactRoom {
+            margin: 0.0,
+            seconds: 0.0,
+        },
+    ] {
+        let together = world.ships_near_mechanisms_lagging(&every_anchor, room, 0.0);
+        assert_eq!(together.len(), every_anchor.len(), "an answer for each");
+        for anchor in &every_anchor {
+            let alone = near_by_looking_at_every_ship(&world, *anchor, room);
+            assert_eq!(
+                together[anchor], alone,
+                "the ships near {anchor:?} with {room:?}"
+            );
+            assert_eq!(
+                world.ships_near_mechanism_lagging(*anchor, room, 0.0),
+                alone
+            );
+            most_near_one = most_near_one.max(alone.len());
+            anchors_with_near += usize::from(!alone.is_empty());
+        }
+    }
+    // (The crowd has ships near each other and ships that are not: the test is of something.)
+    assert!(most_near_one >= 2, "{most_near_one}");
+    assert!(anchors_with_near > 20, "{anchors_with_near}");
+}

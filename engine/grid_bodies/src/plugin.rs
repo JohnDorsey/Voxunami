@@ -21,6 +21,7 @@ use crate::docking::{BlockFace, BlockFaceView, Docking, approach, docked_pose, t
 use crate::joints::JointSettings;
 
 mod alone;
+mod clusters;
 mod couplings;
 mod ghosts;
 
