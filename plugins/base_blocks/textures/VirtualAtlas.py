@@ -568,6 +568,44 @@ def sample_channel_values(profile: PbrProfile, planes: numpy.ndarray, row: int, 
     return values
 
 
+@dataclasses.dataclass(frozen=True)
+class ColorBlend:
+    """The blend modes of the colour of a stroke: one for red, green and blue together, one for alpha. Replace for both
+    is what the tools always did (a color written exactly, or composited over what is there by its alpha)."""
+
+    rgb_mode: str = "replace"
+    alpha_mode: str = "replace"
+
+    def __post_init__(self) -> None:
+        for mode in (self.rgb_mode, self.alpha_mode):
+            if mode not in BLEND_MODES:
+                raise ValueError(f"unknown blend mode {mode!r}")
+
+    @property
+    def is_replace(self) -> bool:
+        return self.rgb_mode == "replace" and self.alpha_mode == "replace"
+
+
+def blend_color(
+    old_pixels: numpy.ndarray, color: Color, rgb_mode: str, alpha_mode: str, coverage: numpy.ndarray
+) -> numpy.ndarray:
+    """The pixels (uint8 RGBA) after painting `color` with a mode for red, green and blue and a mode for alpha, at
+    `coverage` (0 to 1 per pixel). Like the channels, each component is combined with the painted one as a number from 0
+    to 1, and the result goes from the old value toward the combined one by the coverage. Where the coverage is 0, or the
+    mode is none, the bytes come out as they were. Alpha is blended as it is, not composited, so that its mode means what it says."""
+    old = old_pixels.astype(numpy.float64) / 255.0
+    value = numpy.array(color, dtype=numpy.float64) / 255.0
+    blended = old.copy()
+    for components, mode in ((slice(0, 3), rgb_mode), (slice(3, 4), alpha_mode)):
+        if mode not in BLEND_MODES:
+            raise ValueError(f"unknown blend mode {mode!r}")
+        if mode == "none":
+            continue
+        combined = numpy.clip(_combine(mode, old[..., components], value[components]), 0.0, 1.0)
+        blended[..., components] = old[..., components] * (1.0 - coverage[..., None]) + combined * coverage[..., None]
+    return numpy.clip(numpy.rint(blended * 255.0), 0, 255).astype(numpy.uint8)
+
+
 # ----------------------------------------------------------------------------------------------------------
 # atlas.json
 # ----------------------------------------------------------------------------------------------------------
@@ -3165,10 +3203,13 @@ class CanvasSession:
         random_source: Optional[RandomSource] = None,
         wrap: bool = False,
         channels: Optional[ChannelPaint] = None,
+        color_blend: ColorBlend = ColorBlend(),
     ):
         if tool not in STROKE_TOOLS:
             raise ValueError(f"{tool!r} does not draw")
         self.channels = channels
+        # The eraser and the rotation have no colour to blend.
+        self.color_blend = color_blend if tool not in COLORLESS_TOOLS else ColorBlend()
         self.planes: Optional[numpy.ndarray] = None if layout.planes is None else layout.planes.copy()
         # How much of each pixel the stroke has covered so far (0 to 1), which is what the channels are painted by.
         self.coverage = numpy.zeros(layout.pixels.shape[:2], dtype=numpy.float64)
@@ -3254,13 +3295,19 @@ class CanvasSession:
 
     def _cover(self, strength: numpy.ndarray) -> None:
         """The stroke covers pixels with this strength (0 to 1 per pixel); each pixel keeps the strongest it was given."""
-        if self.planes is None or not (strength > self.coverage).any():
+        if not (strength > self.coverage).any():
+            if not self.color_blend.is_replace:
+                self._refresh_planes()  # the tool has drawn the color its own way over the pixels meanwhile
             return
         numpy.maximum(self.coverage, strength, out=self.coverage)
         self._refresh_planes()
 
     def _refresh_planes(self) -> None:
-        """Work out the channels again from what the stroke covers."""
+        """Work out the colour and the channels again from what the stroke covers."""
+        if not self.color_blend.is_replace:
+            self.pixels = blend_color(
+                self.base, self.color, self.color_blend.rgb_mode, self.color_blend.alpha_mode, self.coverage
+            )
         if self.planes is None:
             return
         if self.tool == "eraser" and self.channels is not None:
@@ -4499,6 +4546,8 @@ class EditorPanel:
         self.session: Optional[CanvasSession] = None
         # What a stroke paints in the channels of the tiles (by identity of the channel); the controls for it come later.
         self.channel_blends: dict[str, ChannelBlend] = {}
+        # The blend modes of the colour (red, green and blue together, and alpha).
+        self.color_blend = ColorBlend()
         self.random_source = random.Random()
         self.clipboard = SystemImageClipboard()
         # The pixels of the last copy made here, used when the system clipboard cannot hold or give a picture.
@@ -4834,7 +4883,8 @@ class EditorPanel:
         if self.layout is not None and self.layout.planes is not None:
             channels = ChannelPaint(self.project.profile, dict(self.channel_blends))
         self.session = CanvasSession(
-            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist, channels
+            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist, channels,
+            self.color_blend,
         )
 
     # A pointer from elsewhere -----------------------------------------------------------------------------
