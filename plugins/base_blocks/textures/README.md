@@ -27,6 +27,16 @@ phases; what works so far:
   is listed at two places or two files at one place.
 - Only PNG files whose size is the tile size are used. A listed file that is missing or has another size shows
   an error symbol; an unlisted file of another size is ignored.
+- Companion files: the optional `"pbr"` setting of `atlas.json` is `"none"` (also when the key is missing) or
+  `"labpbr_1_3"`. Under `labpbr_1_3` the files `name_s.png` and `name_n.png` are not tiles of their own: they hold the eight
+  PBR channels of the tile `name.png` (smoothness, reflectance, porosity or scattering and emission in `_s`; normal x,
+  normal y, ambient occlusion and height in `_n`; the table is `tools/virtual_atlas/labpbr_channels.json`). A tile always
+  has all eight channels in memory; a channel of a file that does not exist is neutral (no smoothness, no emission, no tilt, full
+  occlusion, top height), and saving creates a companion file only for a file with a channel that is not neutral, and rewrites
+  only the files that changed. Renaming, deleting (purging) and copying a tile do the same to all its files, all or none. A companion
+  that cannot be read, or has another size, makes its tile an error tile naming the file; a picture that has only companion
+  files is a tile with blank pixels. No control paints the channels yet (the setting is edited in `atlas.json` by hand);
+  names that end in `_n` or `_s` are what the game reads as companions whatever the setting says, since the game never reads `atlas.json`.
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
 - The right half edits the selected tiles. With several selected they appear as one canvas in their atlas

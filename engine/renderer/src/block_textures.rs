@@ -794,4 +794,41 @@ mod tests {
         let none: Vec<u8> = (0..4).flat_map(|_| NO_NORMAL).collect();
         assert_eq!(data_mip_chain(2, &none)[1], NO_NORMAL);
     }
+
+    /// `tools/virtual_atlas/labpbr_channels.json` is the LabPBR 1.3 table as the picture editor VirtualAtlas has it (it writes `_s` and `_n` files from its own copy of the public
+    /// spec, and `test_pbr_files.py` checks that copy against the file). This checks the game's own constants against the same file, so that the two copies cannot drift apart
+    /// unseen. It reaches only what the game has as constants: the pixel of a picture with no companion and the emission byte. The rest of the table is read by the shaders.
+    #[test]
+    fn the_pixel_of_a_picture_with_no_companion_is_the_one_in_the_file_that_the_picture_editor_is_checked_against()
+     {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tools/virtual_atlas/labpbr_channels.json"
+        ))
+        .expect("the vector file is JSON");
+        assert_eq!(vectors["profile"], "labpbr_1_3");
+        let neutral_pixel = |ending: &str| -> [u8; 4] {
+            let bytes = vectors["neutral_pixels"][ending]
+                .as_array()
+                .unwrap_or_else(|| panic!("the file has a neutral pixel for {ending}"));
+            std::array::from_fn(|index| bytes[index].as_u64().expect("a byte") as u8)
+        };
+        // On disk a picture with no specular companion has no emission (255); the loader turns that into the engine's form, which is `NO_SPECULAR`.
+        assert_eq!(engine_specular(&neutral_pixel("_s")), NO_SPECULAR.to_vec());
+        assert_eq!(neutral_pixel("_n"), NO_NORMAL);
+        // The emission is the alpha of the specular picture and 255 is none, which is what `engine_specular` reads.
+        let emission = vectors["channels"]
+            .as_array()
+            .expect("a list of channels")
+            .iter()
+            .find(|channel| channel["identity"] == "emission")
+            .expect("an emission channel");
+        assert_eq!(
+            (
+                emission["file"].as_str(),
+                emission["byte"].as_u64(),
+                emission["neutral"].as_u64()
+            ),
+            (Some("_s"), Some(3), Some(255))
+        );
+    }
 }

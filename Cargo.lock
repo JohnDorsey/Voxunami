@@ -2704,6 +2704,7 @@ dependencies = [
  "pollster",
  "proptest",
  "region_octree",
+ "serde_json",
  "thiserror 2.0.21",
  "voxel_grid",
  "voxel_meshing",

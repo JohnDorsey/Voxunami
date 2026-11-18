@@ -12,6 +12,8 @@ atlas.json:
     }
 coordinates_to_data holds the pixels of a tile that has no PNG file yet. The entry is removed when the tile is
 saved as a file. Unknown top-level keys are kept when the file is rewritten.
+An optional "pbr": "labpbr_1_3" (the default, "none", is not written) makes name_s.png and name_n.png the companion
+files of the tile name.png: its PBR channels (see PBR_PROFILES).
 
 This file is organised in sections: file formats and folder scanning, atlas arrangement rules, painting
 algorithms, edit history, the project (tiles, selection, saving), then the user interface. Everything except the
@@ -165,6 +167,150 @@ def copy_name(name: str, taken_names: Iterable[str]) -> str:
 
 
 # ----------------------------------------------------------------------------------------------------------
+# PBR profiles: the channels of a material that are kept in companion files
+# ----------------------------------------------------------------------------------------------------------
+
+NO_PBR_PROFILE = "none"
+LABPBR_1_3 = "labpbr_1_3"
+
+
+@dataclasses.dataclass(frozen=True)
+class PbrChannel:
+    """One kind of data that a PBR texture holds about a material, and where a profile keeps it.
+
+    `identity` says what the data means in every profile (smoothness is smoothness whichever file and byte holds it),
+    so that a later change of profile can move data between files. `suffix` is the ending of the companion file
+    ("_s" for dirt_s.png), `byte` which of the file's red, green, blue and alpha (0 to 3) holds it, and `neutral` the
+    byte of a material that has no data there: what a picture with no companion file has.
+    """
+
+    identity: str
+    suffix: str
+    byte: int
+    neutral: int
+
+
+@dataclasses.dataclass(frozen=True)
+class PbrProfile:
+    """A convention for the companion files of a picture. The channels of a profile are the planes of a tile, in this
+    order. A profile owns every byte of each of its files, so that a file can always be written from the planes."""
+
+    name: str
+    channels: tuple[PbrChannel, ...]
+
+    def __post_init__(self) -> None:
+        identities = [channel.identity for channel in self.channels]
+        if len(identities) != len(set(identities)):
+            raise ValueError(f"{self.name}: two channels have the same identity")
+        owned = [(channel.suffix, channel.byte) for channel in self.channels]
+        if len(owned) != len(set(owned)):
+            raise ValueError(f"{self.name}: two channels are kept in the same byte")
+        for suffix in self.suffixes:
+            if {byte for owned_suffix, byte in owned if owned_suffix == suffix} != {0, 1, 2, 3}:
+                raise ValueError(f"{self.name}: the channels do not fill every byte of the {suffix} file")
+
+    @property
+    def suffixes(self) -> tuple[str, ...]:
+        """The endings of the companion files, in the order of their first channel."""
+        return tuple(dict.fromkeys(channel.suffix for channel in self.channels))
+
+    def channel_indices(self, suffix: str) -> list[int]:
+        """The planes that are kept in the companion file with this ending."""
+        return [index for index, channel in enumerate(self.channels) if channel.suffix == suffix]
+
+
+# LabPBR 1.3 as the public specification and docs/specs/block-textures-spec.md (section 4.4) give it. The same table is
+# in labpbr_channels.json, which a test here and a test of the game both check, so that the two copies do not drift apart.
+PBR_PROFILES: dict[str, PbrProfile] = {
+    NO_PBR_PROFILE: PbrProfile(NO_PBR_PROFILE, ()),
+    LABPBR_1_3: PbrProfile(
+        LABPBR_1_3,
+        (
+            PbrChannel("smoothness", "_s", 0, 0),
+            PbrChannel("reflectance", "_s", 1, 0),
+            PbrChannel("porosity_scattering", "_s", 2, 0),
+            PbrChannel("emission", "_s", 3, 255),
+            PbrChannel("normal_x", "_n", 0, 128),
+            PbrChannel("normal_y", "_n", 1, 128),
+            PbrChannel("ambient_occlusion", "_n", 2, 255),
+            PbrChannel("height", "_n", 3, 255),
+        ),
+    ),
+}
+# The endings the game reads as companions whatever the setting is (the game does not read atlas.json).
+RESERVED_COMPANION_SUFFIXES: tuple[str, ...] = tuple(
+    dict.fromkeys(suffix for profile in PBR_PROFILES.values() for suffix in profile.suffixes)
+)
+
+
+def companion_name(base_name: str, suffix: str) -> str:
+    """The companion file of a picture: "dirt.png" and "_n" make "dirt_n.png"."""
+    return f"{base_name[: -len(TILE_FILE_EXTENSION)]}{suffix}{TILE_FILE_EXTENSION}"
+
+
+def _split_ending(name: str, suffixes: Iterable[str]) -> Optional[tuple[str, str]]:
+    """("dirt.png", "_n") for "dirt_n.png" and the endings that count, ignoring letter case; None if no ending fits."""
+    if not name.lower().endswith(TILE_FILE_EXTENSION):
+        return None
+    stem = name[: -len(TILE_FILE_EXTENSION)]
+    for suffix in suffixes:
+        if len(stem) > len(suffix) and stem[-len(suffix):].lower() == suffix:
+            return stem[: -len(suffix)] + TILE_FILE_EXTENSION, suffix
+    return None
+
+
+def split_companion_name(name: str, profile: PbrProfile) -> Optional[tuple[str, str]]:
+    """The picture a file is the companion of, and which companion: ("dirt.png", "_n") for "dirt_n.png" under LabPBR.
+    None if the profile does not read the file as a companion (always, under "none")."""
+    return _split_ending(name, profile.suffixes)
+
+
+def reserved_ending_warning(name: str) -> Optional[str]:
+    """A warning for a tile name that ends as a companion file does, under any setting, or None. The game reads
+    atlas.json never, so it takes such a file for the companion of another picture whatever the setting says."""
+    split = _split_ending(name, RESERVED_COMPANION_SUFFIXES)
+    if split is None:
+        return None
+    base, suffix = split
+    return f"the game reads {name} as a companion picture ({suffix}) of {base}, not as a picture of its own"
+
+
+def neutral_planes(profile: PbrProfile, size: int) -> numpy.ndarray:
+    """The planes of a tile whose material has no data, as a (size, size, channels) array: each channel's neutral byte."""
+    return numpy.broadcast_to(
+        numpy.array([channel.neutral for channel in profile.channels], dtype=numpy.uint8),
+        (size, size, len(profile.channels)),
+    ).copy()
+
+
+def companions_from_planes(profile: PbrProfile, planes: numpy.ndarray) -> dict[str, numpy.ndarray]:
+    """The picture of each companion file (RGBA, height x width x 4) that holds these planes."""
+    pictures: dict[str, numpy.ndarray] = {}
+    for suffix in profile.suffixes:
+        picture = numpy.zeros(planes.shape[:2] + (4,), dtype=numpy.uint8)
+        for index in profile.channel_indices(suffix):
+            picture[:, :, profile.channels[index].byte] = planes[:, :, index]
+        pictures[suffix] = picture
+    return pictures
+
+
+def planes_from_companions(
+    profile: PbrProfile, pictures: dict[str, numpy.ndarray], size: Optional[int] = None
+) -> numpy.ndarray:
+    """The planes held by companion pictures; the channels of a companion that is not given are neutral. `size` is
+    needed only when no picture is given."""
+    if size is None:
+        if not pictures:
+            raise ValueError("the size of the planes is not known: no companion picture is given")
+        size = next(iter(pictures.values())).shape[0]
+    planes = neutral_planes(profile, size)
+    for suffix, picture in pictures.items():
+        for index in profile.channel_indices(suffix):
+            planes[:, :, index] = picture[:, :, profile.channels[index].byte]
+    return planes
+
+
+# ----------------------------------------------------------------------------------------------------------
 # atlas.json
 # ----------------------------------------------------------------------------------------------------------
 
@@ -184,6 +330,8 @@ class AtlasFile:
     # Base64 text, not decoded, so that data that cannot be used is preserved when the file is rewritten.
     coordinates_to_data: dict[Coordinate, str] = dataclasses.field(default_factory=dict)
     other_settings: dict[str, object] = dataclasses.field(default_factory=dict)
+    # The name of a profile of PBR_PROFILES: which companion files (dirt_n.png, dirt_s.png) belong to a tile.
+    pbr_profile: str = NO_PBR_PROFILE
 
 
 class _DuplicateKeyError(Exception):
@@ -251,6 +399,11 @@ def parse_atlas_file(text: str) -> AtlasFile:
         problems.append(f"tile_size must be a whole number from {MINIMUM_TILE_SIZE} to {MAXIMUM_TILE_SIZE}")
         tile_size = None
 
+    pbr_profile = other_settings.pop("pbr", NO_PBR_PROFILE)
+    if not isinstance(pbr_profile, str) or pbr_profile not in PBR_PROFILES:
+        problems.append(f"pbr must be one of: {', '.join(PBR_PROFILES)}")
+        pbr_profile = NO_PBR_PROFILE
+
     names = _read_coordinate_mapping(
         "coordinates_to_names", other_settings.pop("coordinates_to_names", {}), "file name", problems
     )
@@ -277,7 +430,7 @@ def parse_atlas_file(text: str) -> AtlasFile:
 
     if problems:
         raise AtlasFileError(problems)
-    return AtlasFile(tile_size, dict(names), dict(data), other_settings)  # type: ignore[arg-type]
+    return AtlasFile(tile_size, dict(names), dict(data), other_settings, pbr_profile)  # type: ignore[arg-type]
 
 
 def serialize_atlas_file(atlas_file: AtlasFile) -> str:
@@ -285,6 +438,8 @@ def serialize_atlas_file(atlas_file: AtlasFile) -> str:
     document: dict[str, object] = {}
     if atlas_file.tile_size is not None:
         document["tile_size"] = atlas_file.tile_size
+    if atlas_file.pbr_profile != NO_PBR_PROFILE:
+        document["pbr"] = atlas_file.pbr_profile
     document["coordinates_to_names"] = {
         format_coordinate(coordinate): atlas_file.coordinates_to_names[coordinate]
         for coordinate in sorted(atlas_file.coordinates_to_names, key=reading_order_key)
@@ -308,23 +463,71 @@ def read_atlas_file(path: Path) -> Optional[AtlasFile]:
     return parse_atlas_file(text)
 
 
-def write_bytes_atomically(path: Path, content: bytes) -> None:
-    """Write `content` to `path` so that readers see the old file or the new one, never half of it."""
+def _remove_quietly(path: "str | Path") -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _write_temporary_file(directory: Path, content: bytes) -> str:
+    """Write `content` to a new temporary file in `directory` and return its name."""
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=TEMPORARY_FILE_PREFIX, suffix=TEMPORARY_FILE_SUFFIX, dir=path.parent
+        prefix=TEMPORARY_FILE_PREFIX, suffix=TEMPORARY_FILE_SUFFIX, dir=directory
     )
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+    except BaseException:
+        _remove_quietly(temporary_name)
+        raise
+    return temporary_name
+
+
+def write_bytes_atomically(path: Path, content: bytes) -> None:
+    """Write `content` to `path` so that readers see the old file or the new one, never half of it."""
+    temporary_name = _write_temporary_file(path.parent, content)
+    try:
         os.replace(temporary_name, path)
     except BaseException:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
+        _remove_quietly(temporary_name)
         raise
+
+
+def write_files_all_or_none(writes: list[tuple[Path, bytes]]) -> None:
+    """Write several files so that, if one cannot be written, none of them has changed: a file that was replaced is
+    given its old content back and one that was new is removed again. Each file is itself written atomically.
+    Raises the OSError of the first failure. (A crash in the middle can still leave some files new and some old.)"""
+    staged: list[tuple[Path, str]] = []
+    backups: dict[Path, str] = {}
+    replaced: list[Path] = []
+    try:
+        for path, content in writes:
+            staged.append((path, _write_temporary_file(path.parent, content)))
+        for path, _ in staged:
+            if path.exists():
+                backups[path] = _write_temporary_file(path.parent, path.read_bytes())
+        for path, temporary_name in staged:
+            os.replace(temporary_name, path)
+            replaced.append(path)
+    except BaseException:
+        for path in reversed(replaced):
+            try:
+                if path in backups:
+                    os.replace(backups.pop(path), path)
+                else:
+                    os.unlink(path)
+            except OSError:
+                logger.warning("could not put %s back as it was after a failed save", path.name)
+        for _, temporary_name in staged:
+            _remove_quietly(temporary_name)
+        for backup_name in backups.values():
+            _remove_quietly(backup_name)
+        raise
+    for backup_name in backups.values():
+        _remove_quietly(backup_name)
 
 
 def write_atlas_file(path: Path, atlas_file: AtlasFile) -> None:
@@ -409,6 +612,13 @@ class TileRecord:
     revision: int = 0
     # The stored base64 of an error tile whose data could not be used, kept so that saving does not drop it.
     preserved_data_text: Optional[str] = None
+    # The channels of the PBR profile, as (height, width, channels) bytes (None when the profile has no channels).
+    # disk_planes is what the companion files hold; a companion file that does not exist counts as every channel
+    # neutral, so a tile whose channels are all neutral is the same as its files whether or not they exist.
+    planes: Optional[numpy.ndarray] = None
+    disk_planes: Optional[numpy.ndarray] = None
+    # The endings of the companion files that exist for this tile ("_n", "_s").
+    disk_suffixes: frozenset[str] = frozenset()
 
     @property
     def is_new(self) -> bool:
@@ -417,10 +627,12 @@ class TileRecord:
 
     @property
     def is_modified(self) -> bool:
-        """Has changes that the PNG file does not have, or has no PNG file."""
+        """Has changes that the files do not have, or has no PNG file."""
         if self.error is not None:
             return False
-        return self.disk_pixels is None or not numpy.array_equal(self.pixels, self.disk_pixels)
+        if self.disk_pixels is None or not numpy.array_equal(self.pixels, self.disk_pixels):
+            return True
+        return self.planes is not None and not numpy.array_equal(self.planes, self.disk_planes)
 
     @property
     def can_return_to_unplaced(self) -> bool:
@@ -432,6 +644,13 @@ class TileRecord:
 class UnplacedTile:
     name: str
     pixels: numpy.ndarray
+    # The channels held by its companion files (see TileRecord), and which companion files exist.
+    planes: Optional[numpy.ndarray] = None
+    disk_suffixes: frozenset[str] = frozenset()
+    # False for a picture that has only companion files: its pixels are blank and no PNG file has its name yet.
+    has_file: bool = True
+    # Why it cannot be placed, when a companion file is not usable.
+    companion_error: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -449,7 +668,13 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
 
     Listed files with a problem become error tiles. Unlisted files of the right size are returned as
     unplaced; unlisted files of any other size, or unreadable, are ignored.
+
+    Under a PBR profile with channels, a file named as a companion of another picture (dirt_n.png) is not a tile of
+    its own: it gives the channels of the picture it goes with. A companion that cannot be used makes its picture an
+    error tile, or an unplaced picture that cannot be placed. A picture that has only companion files is a tile with
+    blank pixels and no PNG file yet.
     """
+    profile = PBR_PROFILES[atlas_file.pbr_profile]
     png_names = sorted(
         entry.name
         for entry in os.scandir(folder)
@@ -458,6 +683,18 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
     actual_names_by_casefold: dict[str, list[str]] = {}
     for actual_name in png_names:
         actual_names_by_casefold.setdefault(actual_name.casefold(), []).append(actual_name)
+
+    # The companion files of each picture, found by the picture's name (lower-cased): {name: {ending: file name}}.
+    companion_files_of: dict[str, dict[str, str]] = {}
+    base_name_of: dict[str, str] = {}
+    companion_file_names: set[str] = set()
+    for actual_name in png_names:
+        split = split_companion_name(actual_name, profile)
+        if split is not None:
+            base_name, suffix = split
+            companion_files_of.setdefault(base_name.casefold(), {}).setdefault(suffix, actual_name)
+            base_name_of.setdefault(base_name.casefold(), base_name)
+            companion_file_names.add(actual_name)
 
     def find_actual_name(listed_name: str) -> Optional[str]:
         if listed_name in png_names:
@@ -476,22 +713,67 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
         except TileImageError as error:
             return None, str(error)
 
+    def read_companions(picture_name: str) -> tuple[Optional[numpy.ndarray], frozenset[str], Optional[str]]:
+        """(planes, the endings of the files found, None), or (None, no endings, why a companion cannot be used).
+        Without channels in the profile there are no planes and nothing to find."""
+        if not profile.channels:
+            return None, frozenset(), None
+        found = companion_files_of.get(picture_name.casefold(), {})
+        pictures: dict[str, numpy.ndarray] = {}
+        for suffix in profile.suffixes:
+            if suffix in found:
+                pixels, problem = read_tile_file(found[suffix])
+                if pixels is None:
+                    return None, frozenset(), f"the companion {found[suffix]} {problem}"
+                pictures[suffix] = pixels
+        return planes_from_companions(profile, pictures, tile_size), frozenset(pictures), None
+
+    def make_record(
+        name: str, pixels: numpy.ndarray, disk_pixels: Optional[numpy.ndarray], planes: Optional[numpy.ndarray],
+        disk_suffixes: frozenset[str],
+    ) -> TileRecord:
+        return TileRecord(
+            name,
+            pixels,
+            disk_pixels,
+            planes=None if planes is None else planes.copy(),
+            disk_planes=None if planes is None else planes.copy(),
+            disk_suffixes=disk_suffixes,
+        )
+
     tiles: dict[Coordinate, TileRecord] = {}
     stale_data_coordinates: list[Coordinate] = []
     for coordinate in sorted(atlas_file.coordinates_to_names, key=reading_order_key):
         name = atlas_file.coordinates_to_names[coordinate]
+        data_text = atlas_file.coordinates_to_data.get(coordinate)
+        split = split_companion_name(name, profile)
+        if split is not None:
+            tiles[coordinate] = TileRecord(
+                name,
+                None,
+                None,
+                f"the name is that of a companion of {split[0]} under {profile.name}, not of a picture of its own",
+                preserved_data_text=data_text,
+            )
+            continue
+        planes, disk_suffixes, companion_problem = read_companions(name)
+        if companion_problem is not None:
+            tiles[coordinate] = TileRecord(name, None, None, companion_problem, preserved_data_text=data_text)
+            continue
         actual_name = find_actual_name(name)
         if actual_name is None:
             disk_pixels, disk_problem = None, "is missing"
         else:
             disk_pixels, disk_problem = read_tile_file(actual_name)
 
-        data_text = atlas_file.coordinates_to_data.get(coordinate)
         if data_text is None:
-            if disk_pixels is None:
-                tiles[coordinate] = TileRecord(name, None, None, f"the file {disk_problem}")
+            if disk_pixels is not None:
+                tiles[coordinate] = make_record(name, disk_pixels.copy(), disk_pixels, planes, disk_suffixes)
+            elif actual_name is None and disk_suffixes:
+                blank = numpy.zeros((tile_size, tile_size, 4), dtype=numpy.uint8)
+                tiles[coordinate] = make_record(name, blank, None, planes, disk_suffixes)
             else:
-                tiles[coordinate] = TileRecord(name, disk_pixels.copy(), disk_pixels)
+                tiles[coordinate] = TileRecord(name, None, None, f"the file {disk_problem}")
             continue
 
         try:
@@ -500,7 +782,7 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
             tiles[coordinate] = TileRecord(name, None, None, f"the stored pixel data {error}", preserved_data_text=data_text)
             continue
         if actual_name is None:
-            tiles[coordinate] = TileRecord(name, data_pixels, None)
+            tiles[coordinate] = make_record(name, data_pixels, None, planes, disk_suffixes)
         elif disk_pixels is None:
             tiles[coordinate] = TileRecord(
                 name,
@@ -511,9 +793,9 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
             )
         elif numpy.array_equal(data_pixels, disk_pixels):
             stale_data_coordinates.append(coordinate)
-            tiles[coordinate] = TileRecord(name, disk_pixels.copy(), disk_pixels)
+            tiles[coordinate] = make_record(name, disk_pixels.copy(), disk_pixels, planes, disk_suffixes)
         else:
-            tiles[coordinate] = TileRecord(name, data_pixels, disk_pixels)
+            tiles[coordinate] = make_record(name, data_pixels, disk_pixels, planes, disk_suffixes)
 
     for coordinate, record in tiles.items():
         if record.error is not None:
@@ -522,11 +804,22 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
     listed_casefolded = {name.casefold() for name in atlas_file.coordinates_to_names.values()}
     unplaced: list[UnplacedTile] = []
     for actual_name in png_names:
-        if actual_name.casefold() in listed_casefolded:
+        if actual_name.casefold() in listed_casefolded or actual_name in companion_file_names:
             continue
         pixels, _ = read_tile_file(actual_name)
         if pixels is not None:
-            unplaced.append(UnplacedTile(actual_name, pixels))
+            planes, disk_suffixes, companion_problem = read_companions(actual_name)
+            unplaced.append(
+                UnplacedTile(actual_name, pixels, planes, disk_suffixes, companion_error=companion_problem)
+            )
+    for key, base_name in base_name_of.items():
+        if key in actual_names_by_casefold or key in listed_casefolded:
+            continue
+        planes, disk_suffixes, companion_problem = read_companions(base_name)
+        if companion_problem is None:
+            blank = numpy.zeros((tile_size, tile_size, 4), dtype=numpy.uint8)
+            unplaced.append(UnplacedTile(base_name, blank, planes, disk_suffixes, has_file=False))
+    unplaced.sort(key=lambda tile: tile.name)
 
     return FolderScan(tiles, unplaced, {name.casefold() for name in png_names}, stale_data_coordinates)
 
@@ -1276,6 +1569,7 @@ class AtlasProject:
         # Until atlas.json says otherwise the size is provisional, and can be changed.
         self.tile_size = loaded.tile_size if loaded.tile_size is not None else DEFAULT_TILE_SIZE
         self.other_settings = dict(loaded.other_settings)
+        self.pbr_profile = loaded.pbr_profile
         self.selection: set[Coordinate] = set()
         self.tiles: dict[Coordinate, TileRecord] = {}
         self.unplaced: list[UnplacedTile] = []
@@ -1308,6 +1602,23 @@ class AtlasProject:
     def is_empty(self) -> bool:
         return not self.tiles
 
+    @property
+    def profile(self) -> PbrProfile:
+        return PBR_PROFILES[self.pbr_profile]
+
+    def _new_planes(self) -> Optional[numpy.ndarray]:
+        """The planes of a tile with no data in its channels, or None if the profile has no channels."""
+        if not self.profile.channels:
+            return None
+        return neutral_planes(self.profile, self.tile_size)
+
+    def _new_record(self, name: str, pixels: numpy.ndarray) -> TileRecord:
+        """A tile that has no files yet: the given pixels, and channels with no data."""
+        planes = self._new_planes()
+        return TileRecord(
+            name, pixels, None, planes=planes, disk_planes=None if planes is None else planes.copy()
+        )
+
     def build_atlas_file(self) -> AtlasFile:
         """What atlas.json should contain for the current state."""
         data: dict[Coordinate, str] = {}
@@ -1321,6 +1632,7 @@ class AtlasProject:
             {coordinate: record.name for coordinate, record in self.tiles.items()},
             data,
             dict(self.other_settings),
+            self.pbr_profile,
         )
 
     def save_atlas_file(self) -> None:
@@ -1422,11 +1734,41 @@ class AtlasProject:
         path = self.folder / record.name
         if was_new and (path.exists() or record.name.casefold() in self.existing_names):
             raise FileExistsError(f"{record.name} already exists in the folder")
-        write_png_atomically(path, record.pixels)
+        writes: list[tuple[Path, bytes]] = []
+        if was_new or not numpy.array_equal(record.pixels, record.disk_pixels):
+            writes.append((path, encode_png(record.pixels)))
+        companion_writes = self._companion_writes(record)
+        for suffix, companion_path, _ in companion_writes:
+            if suffix not in record.disk_suffixes and companion_path.exists():
+                raise FileExistsError(f"{companion_path.name} already exists in the folder")
+        writes.extend((companion_path, content) for _, companion_path, content in companion_writes)
+        write_files_all_or_none(writes)
         record.disk_pixels = record.pixels.copy()
+        if record.planes is not None:
+            record.disk_planes = record.planes.copy()
+        record.disk_suffixes = record.disk_suffixes | {suffix for suffix, _, _ in companion_writes}
         self.existing_names.add(record.name.casefold())
+        self.existing_names.update(companion_path.name.casefold() for _, companion_path, _ in companion_writes)
         if was_new:
             self.save_atlas_file()
+
+    def _companion_writes(self, record: TileRecord) -> list[tuple[str, Path, bytes]]:
+        """The companion files that saving the tile must write: (ending, path, content) for each file whose channels
+        differ from what is on disk. A file that does not exist counts as neutral, so a file is created only when one
+        of its channels has data, and one that exists is rewritten when any of its channels changed, even to neutral."""
+        if record.planes is None:
+            return []
+        pictures = companions_from_planes(self.profile, record.planes)
+        writes: list[tuple[str, Path, bytes]] = []
+        for suffix in self.profile.suffixes:
+            indices = self.profile.channel_indices(suffix)
+            if numpy.array_equal(record.planes[:, :, indices], record.disk_planes[:, :, indices]):
+                continue
+            path = self._find_tile_file(companion_name(record.name, suffix)) or self.folder / companion_name(
+                record.name, suffix
+            )
+            writes.append((suffix, path, encode_png(pictures[suffix])))
+        return writes
 
     def save_tiles(self, coordinates: Iterable[Coordinate]) -> tuple[int, list[str]]:
         """Save every modified tile among `coordinates`. Returns how many were saved and a message for each failure."""
@@ -1463,7 +1805,7 @@ class AtlasProject:
         names = default_import_names(tiles, self.existing_names)
 
         def change() -> None:
-            self.tiles = {coordinate: TileRecord(names[coordinate], pixels.copy(), None) for coordinate, pixels in tiles.items()}
+            self.tiles = {coordinate: self._new_record(names[coordinate], pixels.copy()) for coordinate, pixels in tiles.items()}
             self.selection = set()
 
         self._commit(change)
@@ -1478,10 +1820,19 @@ class AtlasProject:
         record = self.tiles[coordinate]
         if record.error is not None:
             return f"this tile cannot be renamed: {record.error}"
-        taken = set(self.existing_names)
-        taken.discard(record.name.casefold())
+        own_files = {record.name.casefold()} | {
+            companion_name(record.name, suffix).casefold() for suffix in record.disk_suffixes
+        }
+        taken = set(self.existing_names) - own_files
         taken |= {other.name.casefold() for other_coordinate, other in self.tiles.items() if other_coordinate != coordinate}
-        return find_name_problem(new_name, taken)
+        problem = find_name_problem(new_name, taken)
+        if problem is not None:
+            return problem
+        for suffix in self.profile.suffixes:
+            companion = companion_name(new_name, suffix)
+            if companion.casefold() in taken:
+                return f"{companion} already exists in the folder and would become a companion file of {new_name}"
+        return None
 
     def rename_tile(self, coordinate: Coordinate, new_name: str) -> bool:
         """Rename a tile now: its file (if it has one) and its entry in atlas.json. False if the name is the same.
@@ -1496,26 +1847,36 @@ class AtlasProject:
         if problem is not None:
             raise ValueError(problem)
         old_name = record.name
-        old_path, new_path = self.folder / old_name, self.folder / new_name
-        has_file = not record.is_new
-        if has_file:
+        # Every file of the tile moves with it: its PNG file, if it has one, and each companion file that exists.
+        moves: list[tuple[Path, Path]] = []
+        if not record.is_new:
+            moves.append((self.folder / old_name, self.folder / new_name))
+        for suffix in self.profile.suffixes:
+            if suffix in record.disk_suffixes:
+                old_file = self._find_tile_file(companion_name(old_name, suffix))
+                if old_file is not None:
+                    moves.append((old_file, self.folder / companion_name(new_name, suffix)))
+        for old_path, new_path in moves:
             if new_path.exists() and not os.path.samefile(old_path, new_path):
-                raise FileExistsError(f"{new_name} already exists in the folder")
-            os.rename(old_path, new_path)
-        record.name = new_name
+                raise FileExistsError(f"{new_path.name} already exists in the folder")
+        done: list[tuple[Path, Path]] = []
         try:
+            for old_path, new_path in moves:
+                os.rename(old_path, new_path)
+                done.append((old_path, new_path))
+            record.name = new_name
             self.save_atlas_file()
         except BaseException:
             record.name = old_name
-            if has_file:
+            for old_path, new_path in reversed(done):
                 try:
                     os.rename(new_path, old_path)
                 except OSError:
-                    logger.warning("could not give %s back its name %s", new_name, old_name)
+                    logger.warning("could not give %s back its name %s", new_path.name, old_path.name)
             raise
-        if has_file:
-            self.existing_names.discard(old_name.casefold())
-            self.existing_names.add(new_name.casefold())
+        for old_path, new_path in moves:
+            self.existing_names.discard(old_path.name.casefold())
+            self.existing_names.add(new_path.name.casefold())
         return True
 
     # Selection ------------------------------------------------------------------------------------------
@@ -1553,7 +1914,26 @@ class AtlasProject:
 
         def change() -> None:
             tile = self.unplaced.pop(index)
-            self.tiles[target] = TileRecord(tile.name, tile.pixels.copy(), tile.pixels)
+            if tile.companion_error is not None:
+                self.tiles[target] = TileRecord(tile.name, None, None, tile.companion_error)
+            elif not tile.has_file:
+                self.tiles[target] = TileRecord(
+                    tile.name,
+                    tile.pixels.copy(),
+                    None,
+                    planes=tile.planes.copy(),
+                    disk_planes=tile.planes.copy(),
+                    disk_suffixes=tile.disk_suffixes,
+                )
+            else:
+                self.tiles[target] = TileRecord(
+                    tile.name,
+                    tile.pixels.copy(),
+                    tile.pixels,
+                    planes=None if tile.planes is None else tile.planes.copy(),
+                    disk_planes=None if tile.planes is None else tile.planes.copy(),
+                    disk_suffixes=tile.disk_suffixes,
+                )
 
         self._commit(change)
         return True
@@ -1571,7 +1951,9 @@ class AtlasProject:
         def change() -> None:
             for coordinate in coordinates:
                 record = self.tiles.pop(coordinate)
-                self.unplaced.append(UnplacedTile(record.name, record.disk_pixels))
+                self.unplaced.append(
+                    UnplacedTile(record.name, record.disk_pixels, record.disk_planes, record.disk_suffixes)
+                )
                 self.selection.discard(coordinate)
             self.unplaced.sort(key=lambda tile: tile.name.casefold())
 
@@ -1616,11 +1998,12 @@ class AtlasProject:
 
         try:
             for record in records:
-                path = self._find_tile_file(record.name)
-                if path is not None:
-                    held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
-                    os.rename(path, held)
-                    held_aside.append((path, held))
+                for file_name in [record.name] + [companion_name(record.name, suffix) for suffix in self.profile.suffixes]:
+                    path = self._find_tile_file(file_name)
+                    if path is not None:
+                        held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+                        os.rename(path, held)
+                        held_aside.append((path, held))
             self._commit(change)
         except BaseException:
             for path, held in reversed(held_aside):
@@ -1631,7 +2014,8 @@ class AtlasProject:
             raise
         for record in records:
             self.history.forget(record)
-            self.existing_names.discard(record.name.casefold())
+        for path, _ in held_aside:
+            self.existing_names.discard(path.name.casefold())
         for path, held in held_aside:
             try:
                 os.unlink(held)
@@ -1640,8 +2024,14 @@ class AtlasProject:
                 logger.warning("%s was purged but its leftover %s could not be deleted: %s", path.name, held.name, error)
 
     def _taken_names(self) -> set[str]:
-        """Lower-cased names a new tile cannot have: every PNG file in the folder and the name of every tile."""
-        return set(self.existing_names) | {record.name.casefold() for record in self.tiles.values()}
+        """Lower-cased names a new tile cannot have: every PNG file in the folder, the name of every tile, and the
+        picture that each companion file in the folder goes with (a tile with that name would take the file over)."""
+        names = set(self.existing_names) | {record.name.casefold() for record in self.tiles.values()}
+        for name in self.existing_names:
+            split = split_companion_name(name, self.profile)
+            if split is not None:
+                names.add(split[0].casefold())
+        return names
 
     def create_tile(self, coordinate: Coordinate) -> str:
         """Add an empty (fully transparent) tile at an empty place and select it. It has no file yet: its pixels are
@@ -1657,7 +2047,7 @@ class AtlasProject:
         name = make_unique_name(NEW_TILE_NAME, self._taken_names())
 
         def change() -> None:
-            self.tiles[coordinate] = TileRecord(name, numpy.zeros((self.tile_size, self.tile_size, 4), dtype=numpy.uint8), None)
+            self.tiles[coordinate] = self._new_record(name, numpy.zeros((self.tile_size, self.tile_size, 4), dtype=numpy.uint8))
             self.selection = {coordinate}
 
         self._commit(change)
@@ -1690,7 +2080,22 @@ class AtlasProject:
             source = self.tiles[original]
             name = copy_name(source.name, taken)
             taken.add(name.casefold())
-            copies[places[original]] = TileRecord(name, source.pixels.copy(), source.pixels.copy())
+            copy = TileRecord(name, source.pixels.copy(), source.pixels.copy())
+            if source.planes is not None:
+                # A companion file is copied when the tile has one or has data in its channels.
+                copy.planes = source.planes.copy()
+                suffixes = [
+                    suffix
+                    for suffix in self.profile.suffixes
+                    if suffix in source.disk_suffixes
+                    or not numpy.array_equal(
+                        source.planes[:, :, self.profile.channel_indices(suffix)],
+                        neutral_planes(self.profile, self.tile_size)[:, :, self.profile.channel_indices(suffix)],
+                    )
+                ]
+                copy.disk_planes = source.planes.copy()
+                copy.disk_suffixes = frozenset(suffixes)
+            copies[places[original]] = copy
 
         def change() -> None:
             self.tiles.update(copies)
@@ -1699,11 +2104,18 @@ class AtlasProject:
         written: list[Path] = []
         try:
             for record in copies.values():
-                path = self.folder / record.name
-                if path.exists():
-                    raise FileExistsError(f"{record.name} already exists in the folder")
-                write_png_atomically(path, record.pixels)
-                written.append(path)
+                pictures = None if record.planes is None else companions_from_planes(self.profile, record.planes)
+                writes = [(self.folder / record.name, record.pixels)]
+                writes += [
+                    (self.folder / companion_name(record.name, suffix), pictures[suffix])
+                    for suffix in self.profile.suffixes
+                    if suffix in record.disk_suffixes
+                ]
+                for path, pixels in writes:
+                    if path.exists():
+                        raise FileExistsError(f"{path.name} already exists in the folder")
+                    write_png_atomically(path, pixels)
+                    written.append(path)
             self._commit(change)
         except BaseException:
             for path in written:
@@ -1712,7 +2124,7 @@ class AtlasProject:
                 except OSError:
                     logger.warning("could not delete %s, which was written for a copy that failed", path.name)
             raise
-        self.existing_names |= {record.name.casefold() for record in copies.values()}
+        self.existing_names |= {path.name.casefold() for path in written}
         return True
 
 
