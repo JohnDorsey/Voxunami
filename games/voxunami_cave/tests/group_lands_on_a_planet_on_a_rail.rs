@@ -21,7 +21,8 @@ const SPIN_PERIOD: f64 = 2_000.0;
 
 /// How far the chain is over the ground when it is made, and how fast it goes at it, in voxels and voxels a second. (It has to be made over the reach of the ground, 10,880 voxels
 /// from the middle of the wanderer, and the room the world keeps for it, to be alone and have a frame of its own at all; falling from rest it comes down at about 125 voxels a second,
-/// where one that is thrown at the ground at 300 is thrown up from it again, 180 voxels, and tumbles for a long time.)
+/// where one that is thrown at the ground at 300 is thrown off it again by the hills (measured 2026-11-17: 15 to 680 voxels, by where it lands; on ground without hills it does not bounce)
+/// and tumbles for a long time: `docs/history/build-log.md`, "The bounce, investigated".)
 const HEIGHT: f64 = 1_200.0;
 const SPEED_AT_THE_GROUND: f64 = 0.0;
 
