@@ -40,7 +40,7 @@ import tempfile
 from collections import deque
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable, Hashable, Iterable, Optional
+from typing import Callable, Hashable, Iterable, Optional, Union
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 try:
@@ -324,6 +324,232 @@ def convert_planes(old: PbrProfile, new: PbrProfile, planes: numpy.ndarray) -> t
         elif (planes[:, :, index] != channel.neutral).any():
             dropped.append(channel.identity)
     return new_planes, dropped
+
+
+# ----------------------------------------------------------------------------------------------------------
+# PBR channels: what a byte means, and how painting changes it
+# ----------------------------------------------------------------------------------------------------------
+#
+# Painting works on the meaning of a channel, not on its byte: a smoothness of 0.2 is added to a smoothness, whatever
+# bytes they are. Each channel has a codec between the byte and a float meaning (the slider shows the meaning). A blend
+# mode combines the old meaning with the painted value, the stroke's coverage says how far the pixel goes from the old
+# meaning toward the result, and the result is written back as a byte. Only pixels with coverage are written again.
+
+BLEND_MODES = ("none", "replace", "add", "subtract", "multiply", "min", "max")
+METAL_FIRST_BYTE = 230  # LabPBR: the bytes of reflectance from 230 are 26 named metals, not levels of a dielectric
+METAL_COUNT = 26
+
+
+@dataclasses.dataclass(frozen=True)
+class Metal:
+    """One of the 26 metals that reflectance can name instead of a level (0 is the first of them)."""
+
+    index: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.index < METAL_COUNT:
+            raise ValueError(f"a metal is 0 to {METAL_COUNT - 1}, not {self.index}")
+
+    @property
+    def byte(self) -> int:
+        return METAL_FIRST_BYTE + self.index
+
+
+@dataclasses.dataclass(frozen=True)
+class ChannelCodec:
+    """Between the bytes of a channel and its meaning (floats). `decode` takes a uint8 array and gives meanings in
+    `lowest` to `highest`; `encode_in_range` takes meanings in that range. `encode` also takes a meaning past the range,
+    which is the end of it."""
+
+    decode: Callable[[numpy.ndarray], numpy.ndarray]
+    encode_in_range: Callable[[numpy.ndarray], numpy.ndarray]
+    lowest: float
+    highest: float
+
+    def encode(self, meaning: numpy.ndarray) -> numpy.ndarray:
+        return self.encode_in_range(numpy.clip(meaning, self.lowest, self.highest))
+
+
+def _to_bytes(values: numpy.ndarray) -> numpy.ndarray:
+    return numpy.clip(numpy.rint(values), 0, 255).astype(numpy.uint8)
+
+
+def _linear_codec() -> ChannelCodec:
+    return ChannelCodec(lambda data: data / 255.0, lambda meaning: _to_bytes(meaning * 255.0), 0.0, 1.0)
+
+
+def _emission_encode(meaning: numpy.ndarray) -> numpy.ndarray:
+    # 255 is "no emission", so the other bytes are one step up from zero: byte 0 is 1/255, byte 254 is 1.
+    return numpy.where(meaning <= 0.0, 255, _to_bytes(numpy.rint(meaning * 255.0) - 1.0)).astype(numpy.uint8)
+
+
+def _normal_decode(data: numpy.ndarray) -> numpy.ndarray:
+    return numpy.maximum((data.astype(numpy.float64) - 128.0) / 127.0, -1.0)
+
+
+CHANNEL_CODECS: dict[str, ChannelCodec] = {
+    "smoothness": _linear_codec(),
+    "porosity_scattering": _linear_codec(),
+    "height": _linear_codec(),
+    # A level of reflectance stops at the last byte of a dielectric: the metals above it are not levels.
+    "reflectance": ChannelCodec(
+        lambda data: data / 255.0,
+        lambda meaning: numpy.minimum(_to_bytes(meaning * 255.0), METAL_FIRST_BYTE - 1).astype(numpy.uint8),
+        0.0,
+        1.0,
+    ),
+    "emission": ChannelCodec(
+        lambda data: numpy.where(data == 255, 0.0, (data.astype(numpy.float64) + 1.0) / 255.0), _emission_encode, 0.0, 1.0
+    ),
+    # Tilt of the surface along one axis, -1 to 1, zero at the neutral byte 128. Byte 0 reads as -1, as byte 1 does.
+    "normal_x": ChannelCodec(_normal_decode, lambda meaning: _to_bytes(128.0 + meaning * 127.0), -1.0, 1.0),
+    "normal_y": ChannelCodec(_normal_decode, lambda meaning: _to_bytes(128.0 + meaning * 127.0), -1.0, 1.0),
+    # How much light is lost, so the neutral byte 255 (all light) is zero.
+    "ambient_occlusion": ChannelCodec(
+        lambda data: (255.0 - data.astype(numpy.float64)) / 255.0,
+        lambda meaning: _to_bytes(255.0 - numpy.rint(meaning * 255.0)),
+        0.0,
+        1.0,
+    ),
+}
+ChannelValue = Union[float, Metal]
+
+
+@dataclasses.dataclass(frozen=True)
+class ChannelBlend:
+    """What a stroke does to one channel: a blend mode and the value it paints (a meaning, or a `Metal`)."""
+
+    mode: str
+    value: ChannelValue
+
+
+def _check_blend(identity: str, value: ChannelValue, mode: str) -> None:
+    if mode not in BLEND_MODES:
+        raise ValueError(f"unknown blend mode {mode!r}")
+    if identity not in CHANNEL_CODECS:
+        raise ValueError(f"unknown channel {identity!r}")
+    if isinstance(value, Metal) and identity != "reflectance":
+        raise ValueError(f"only reflectance has metals, not {identity}")
+
+
+def _combine(mode: str, old: numpy.ndarray, value: float) -> numpy.ndarray:
+    if mode == "replace":
+        return numpy.full_like(old, value)
+    if mode == "add":
+        return old + value
+    if mode == "subtract":
+        return old - value
+    if mode == "multiply":
+        return old * value
+    if mode == "min":
+        return numpy.minimum(old, value)
+    return numpy.maximum(old, value)
+
+
+def blend_channel(
+    identity: str, old_bytes: numpy.ndarray, value: ChannelValue, mode: str, coverage: numpy.ndarray
+) -> numpy.ndarray:
+    """The bytes of one channel after painting `value` with `mode` at `coverage` (0 to 1 per pixel, the shape of the
+    bytes). Where the coverage is 0 the old byte is returned as it was, not read and written again. A metal is written
+    as its byte, whatever the mode but none; the lerp between old and new is made in the meaning, or in bytes for a metal."""
+    _check_blend(identity, value, mode)
+    if mode == "none":
+        return old_bytes.copy()
+    codec = CHANNEL_CODECS[identity]
+    covered = coverage > 0.0
+    if isinstance(value, Metal):
+        mixed = _to_bytes(old_bytes * (1.0 - coverage) + value.byte * coverage)
+    else:
+        old = codec.decode(old_bytes)
+        combined = numpy.clip(_combine(mode, old, float(value)), codec.lowest, codec.highest)
+        mixed = codec.encode(old * (1.0 - coverage) + combined * coverage)
+    return numpy.where(covered, mixed, old_bytes).astype(numpy.uint8)
+
+
+class ChannelStroke:
+    """The channels of the tiles during one stroke. The planes it is given are the planes before the stroke and are never
+    changed; `planes` is what they become, always worked out again from them, so a pixel that the stroke passes over
+    many times is blended once with the strongest coverage any pass gave it (adding 0.2 five times adds 0.2).
+
+    After the blend, the pixels the stroke covered have their normal made no longer than 1: both axes are divided by the
+    length, so the tilt keeps its direction. Pixels the stroke did not cover are never touched. Nothing is shortened if no
+    channel has a mode (a stroke that paints no channel).
+    """
+
+    def __init__(self, profile: PbrProfile, planes_before: numpy.ndarray, blends: dict[str, ChannelBlend]):
+        identities = [channel.identity for channel in profile.channels]
+        for identity, blend in blends.items():
+            if identity not in identities:
+                raise ValueError(f"{profile.name} has no channel {identity!r}")
+            _check_blend(identity, blend.value, blend.mode)
+        self.profile = profile
+        self.planes_before = planes_before.copy()
+        self.blends = dict(blends)
+        self.coverage = numpy.zeros(planes_before.shape[:2], dtype=numpy.float64)
+        self._planes = self.planes_before.copy()
+
+    def add_coverage(self, coverage: numpy.ndarray) -> None:
+        """Pass over pixels with this coverage (0 to 1 per pixel)."""
+        numpy.maximum(self.coverage, coverage, out=self.coverage)
+        self._planes = self._worked_out()
+
+    @property
+    def planes(self) -> numpy.ndarray:
+        return self._planes
+
+    @property
+    def changed(self) -> bool:
+        return not numpy.array_equal(self._planes, self.planes_before)
+
+    def _worked_out(self) -> numpy.ndarray:
+        planes = self.planes_before.copy()
+        identities = [channel.identity for channel in self.profile.channels]
+        painted = False
+        for index, identity in enumerate(identities):
+            blend = self.blends.get(identity)
+            if blend is not None and blend.mode != "none":
+                planes[:, :, index] = blend_channel(
+                    identity, self.planes_before[:, :, index], blend.value, blend.mode, self.coverage
+                )
+                painted = True
+        if painted and "normal_x" in identities and "normal_y" in identities:
+            self._shorten_normals(planes, identities.index("normal_x"), identities.index("normal_y"))
+        return planes
+
+    def _shorten_normals(self, planes: numpy.ndarray, x_index: int, y_index: int) -> None:
+        x_codec, y_codec = CHANNEL_CODECS["normal_x"], CHANNEL_CODECS["normal_y"]
+        x_meaning = x_codec.decode(planes[:, :, x_index])
+        y_meaning = y_codec.decode(planes[:, :, y_index])
+        length = numpy.sqrt(x_meaning * x_meaning + y_meaning * y_meaning)
+        too_long = (self.coverage > 0.0) & (length > 1.0)
+        if not too_long.any():
+            return
+        divisor = numpy.where(too_long, length, 1.0)
+        planes[:, :, x_index] = numpy.where(too_long, x_codec.encode(x_meaning / divisor), planes[:, :, x_index])
+        planes[:, :, y_index] = numpy.where(too_long, y_codec.encode(y_meaning / divisor), planes[:, :, y_index])
+
+
+def reset_channels(profile: PbrProfile, planes: numpy.ndarray, coverage: numpy.ndarray) -> numpy.ndarray:
+    """A copy of the planes with every channel moved toward its neutral byte by `coverage` (the eraser, Delete and Cut:
+    full coverage is exactly neutral). Bytes, not meanings, are mixed, and pixels with no coverage are not touched."""
+    result = planes.copy()
+    for index, channel in enumerate(profile.channels):
+        mixed = _to_bytes(planes[:, :, index] * (1.0 - coverage) + channel.neutral * coverage)
+        result[:, :, index] = numpy.where(coverage > 0.0, mixed, planes[:, :, index])
+    return result
+
+
+def sample_channel_values(profile: PbrProfile, planes: numpy.ndarray, row: int, column: int) -> dict[str, ChannelValue]:
+    """The value of every channel of one pixel, as a stroke would paint it to get the pixel (the eye dropper): a meaning,
+    or the `Metal` for a reflectance byte that names one."""
+    values: dict[str, ChannelValue] = {}
+    for index, channel in enumerate(profile.channels):
+        byte = planes[row, column, index : index + 1]
+        if channel.identity == "reflectance" and int(byte[0]) >= METAL_FIRST_BYTE:
+            values[channel.identity] = Metal(int(byte[0]) - METAL_FIRST_BYTE)
+        else:
+            values[channel.identity] = float(CHANNEL_CODECS[channel.identity].decode(byte)[0])
+    return values
 
 
 # ----------------------------------------------------------------------------------------------------------
