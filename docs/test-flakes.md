@@ -36,6 +36,18 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   CPU thread per core) until it fails, and look at the listener's `accept`. If the order is not guaranteed by the listener, the test should send a value that says which client it is and not
   depend on the order (`accept` twice, and match frames to clients by what they carry).
 
+### `engine/renderer/tests/gpu_rendering.rs`: `the_ground_of_a_planet_casts_shadows_at_every_distance_as_terrain_does_though_a_planet_is_a_grid`
+
+- **The test.** It draws a planet's ground and a roof and asserts, at each roof level, that the pixels that should be in shadow are (line 3036).
+- **Occurrence 1: 2026-11-18**, the full gate (`cargo test --workspace --no-fail-fast`, dev profile) on **Windows**, with the VirtualAtlas bridge change in the working tree (`game_shell` and the Cave tests; the renderer was not touched).
+  The whole `gpu_rendering` binary reported `202 passed; 1 failed; 3 ignored ... finished in 835.76s`. The message: `AMD Radeon(TM) Graphics (IntegratedGpu, Dx12) roof level 15: [16.0, 1.0, 12.0] at pixel (52, 41) is lit but is 20.783 of the light`.
+  Only the integrated GPU through DX12 failed; the other adapters passed.
+- **Reruns.** Alone twice (`cargo test -p renderer --test gpu_rendering the_ground_of_a_planet_casts_shadows_at_every_distance`): 0 failures in 2. The whole binary once more, as the gate runs it: **203 passed, 0 failed** (867 s). The gate itself ran twice in all, and the failure was in the second.
+  (The first gate run's summary kept only the top lines of the output, so whether it failed too is **not known**.)
+- **What it depends on [read].** The picture of a fresh renderer, taken by comparing pixels to a reference; the same family as the shadow tests listed under *Explained and fixed* (the integrated AMD GPU leaving out pixels of a fresh renderer's first frames), where the cure was `settled` (two frames that agree) before the picture is taken.
+- **Beliefs about the cause.** **Believed, not tested**: the same family as the fixed entries: this test takes its picture without a settling frame. **Not checked**: whether it does, and the rate (1 in 3 gate runs here, 0 in 2 alone).
+- **What would settle it.** Read how the test takes its picture; if it is a bare `render`, take it with `settled` as the fixed tests do, and run it alone 24 times on the integrated GPU with `VOX_REQUIRE_GPU=1`.
+
 ### `games/voxunami_cave/tests/screen.rs`: `a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_closed`
 
 - **The test.** It draws a form live and again from a replay and compares them pixel for pixel.

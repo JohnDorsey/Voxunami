@@ -1,9 +1,14 @@
 //! The messages of the bridge: one JSON object a line (`tools/virtual_atlas/BRIDGE.md` is the description both sides keep).
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 /// The version of the protocol the program speaks; the tool refuses another.
 pub const PROTOCOL: u32 = 1;
+/// The PBR convention the game reads the companion pictures of a tile in (`docs/specs/block-textures-spec.md` section 4.4): a tool that paints them says in `welcome` which
+/// convention its own setting is, and sends them only if it is this one.
+pub const PBR_PROFILE: &str = "labpbr_1_3";
 /// The port a tool listens on unless it was told another (on this machine only).
 pub const DEFAULT_PORT: u16 = 47625;
 /// The most a line of the tool's may hold before the rest of it is thrown away (the largest picture, 1024 by 1024 at four bytes a pixel, is under this in base64).
@@ -42,7 +47,11 @@ pub struct Pointer {
 /// What the game says to the tool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToTool {
-    Hello { host: String },
+    /// `profile` is the PBR convention the game reads companion pictures in; left out of the line when there is none.
+    Hello {
+        host: String,
+        profile: Option<String>,
+    },
     Tiles(Vec<CatalogueTile>),
     Pointer(Pointer),
 }
@@ -51,7 +60,13 @@ impl ToTool {
     /// The message as one line of JSON, with its end of line.
     pub fn to_line(&self) -> Vec<u8> {
         let value = match self {
-            Self::Hello { host } => json!({"type": "hello", "protocol": PROTOCOL, "host": host}),
+            Self::Hello { host, profile } => {
+                let mut hello = json!({"type": "hello", "protocol": PROTOCOL, "host": host});
+                if let Some(profile) = profile {
+                    hello["profile"] = json!(profile);
+                }
+                hello
+            }
             Self::Tiles(tiles) => json!({
                 "type": "tiles",
                 "tiles": tiles.iter().map(|tile| {
@@ -84,6 +99,8 @@ pub enum FromTool {
     Welcome {
         tool: String,
         tile_size: u32,
+        /// The PBR convention the tool's atlas is set to, if it has channels (a tool whose setting is none says nothing).
+        profile: Option<String>,
     },
     /// Which of the game's pictures the tool has a file for and which not.
     Known {
@@ -95,6 +112,9 @@ pub enum FromTool {
         id: String,
         size: u32,
         rgba: Vec<u8>,
+        /// The companion pictures the tool's files for this tile would hold, by the ending of the file (`_s`, `_n`), each `size` by `size` pixels of four bytes. `None`: the tool
+        /// said nothing of them (the picture keeps the companions it had). `Some` of an empty set: no companion file would exist, and the game clears its own.
+        companions: Option<BTreeMap<String, Vec<u8>>>,
     },
     Error {
         text: String,
@@ -136,6 +156,10 @@ impl FromTool {
             Some("welcome") => Ok(Self::Welcome {
                 tool: text("tool")?,
                 tile_size: number("tile_size")?,
+                profile: match value.get("profile") {
+                    None => None,
+                    Some(_) => Some(text("profile")?),
+                },
             }),
             Some("known") => Ok(Self::Known {
                 ids: texts("ids")?,
@@ -152,7 +176,33 @@ impl FromTool {
                         rgba.len()
                     ));
                 }
-                Ok(Self::Tile { id, size, rgba })
+                let companions = match value.get("companions") {
+                    None => None,
+                    Some(Value::Object(files)) => {
+                        let mut found = BTreeMap::new();
+                        for (ending, picture) in files {
+                            let bytes = picture
+                                .as_str()
+                                .and_then(decode_base64)
+                                .ok_or_else(|| format!("the companion \"{ending}\" is base64"))?;
+                            if bytes.len() as u64 != wanted {
+                                return Err(format!(
+                                    "the companion \"{ending}\" of a tile of {size} by {size} has {wanted} bytes of pixels, not {}",
+                                    bytes.len()
+                                ));
+                            }
+                            found.insert(ending.clone(), bytes);
+                        }
+                        Some(found)
+                    }
+                    Some(_) => return Err("\"companions\" is an object of pictures".to_owned()),
+                };
+                Ok(Self::Tile {
+                    id,
+                    size,
+                    rgba,
+                    companions,
+                })
             }
             Some("error") => Ok(Self::Error {
                 text: text("text")?,

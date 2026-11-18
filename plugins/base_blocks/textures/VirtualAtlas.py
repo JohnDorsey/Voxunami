@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import contextlib
 import dataclasses
 import io
 import itertools
@@ -2779,6 +2780,85 @@ class AtlasProject:
         return True
 
 
+CHANNEL_NAMES = {
+    "smoothness": "Smoothness",
+    "reflectance": "Reflectance",
+    "porosity_scattering": "Porosity or scattering",
+    "emission": "Emission",
+    "normal_x": "Normal X",
+    "normal_y": "Normal Y",
+    "ambient_occlusion": "Occlusion",
+    "height": "Height",
+}
+
+
+@dataclasses.dataclass
+class DifferenceRow:
+    """One row of the quit dialog: what a part of a tile is on disk (`old`) and now (`new`), and where the two differ
+    (`difference`: bright red on black). Each picture is RGBA, the size of the tile."""
+
+    label: str
+    old: numpy.ndarray
+    new: numpy.ndarray
+    difference: numpy.ndarray
+
+
+def _grey_picture(values: numpy.ndarray) -> numpy.ndarray:
+    picture = numpy.empty(values.shape + (4,), dtype=numpy.uint8)
+    picture[..., :3] = values[..., None]
+    picture[..., 3] = 255
+    return picture
+
+
+def _difference_picture(differs: numpy.ndarray) -> numpy.ndarray:
+    picture = numpy.zeros(differs.shape + (4,), dtype=numpy.uint8)
+    picture[..., 3] = 255
+    picture[differs, 0] = 255
+    return picture
+
+
+def channel_grey(identity: str, plane: numpy.ndarray) -> numpy.ndarray:
+    """The bytes of a channel as grey levels of its meaning: its lowest value black and its highest white."""
+    codec = CHANNEL_CODECS[identity]
+    fraction = (codec.decode(plane) - codec.lowest) / (codec.highest - codec.lowest)
+    return numpy.clip(numpy.rint(fraction * 255.0), 0, 255).astype(numpy.uint8)
+
+
+def tile_difference_rows(profile: PbrProfile, record: TileRecord) -> list[DifferenceRow]:
+    """The rows that the quit dialog shows for a tile: RGB together (alpha not part of it), alpha, then each channel of the
+    profile, and only those that differ from the files (a tile with no file always has its RGB row). A channel is a grey
+    of its meaning from its lowest value to its highest, as the breakout shows it."""
+    pixels = record.pixels
+    has_file = record.disk_pixels is not None
+    old_pixels = record.disk_pixels if has_file else numpy.zeros_like(pixels)
+    rows: list[DifferenceRow] = []
+    colour_differs = (pixels[..., :3] != old_pixels[..., :3]).any(axis=2)
+    if colour_differs.any() or not has_file:
+        old_colour = old_pixels.copy()
+        old_colour[..., 3] = 255 if has_file else 0  # alpha is not part of this row; with no file there is nothing to show
+        new_colour = pixels.copy()
+        new_colour[..., 3] = 255
+        rows.append(DifferenceRow("RGB", old_colour, new_colour, _difference_picture(colour_differs)))
+    alpha_differs = pixels[..., 3] != old_pixels[..., 3]
+    if alpha_differs.any():
+        rows.append(
+            DifferenceRow("Alpha", _grey_picture(old_pixels[..., 3]), _grey_picture(pixels[..., 3]), _difference_picture(alpha_differs))
+        )
+    if record.planes is not None and record.disk_planes is not None:
+        for index, channel in enumerate(profile.channels):
+            differs = record.planes[:, :, index] != record.disk_planes[:, :, index]
+            if differs.any():
+                rows.append(
+                    DifferenceRow(
+                        CHANNEL_NAMES.get(channel.identity, channel.identity),
+                        _grey_picture(channel_grey(channel.identity, record.disk_planes[:, :, index])),
+                        _grey_picture(channel_grey(channel.identity, record.planes[:, :, index])),
+                        _difference_picture(differs),
+                    )
+                )
+    return rows
+
+
 class QuitDialog:
     """What to do with each tile that has unsaved changes when the window is closed, one tile at a time.
 
@@ -2801,6 +2881,11 @@ class QuitDialog:
     @property
     def remaining(self) -> int:
         return len(self.coordinates) - self.position
+
+    @property
+    def rows(self) -> list[DifferenceRow]:
+        """What differs in the tile shown, a row each (see tile_difference_rows)."""
+        return tile_difference_rows(self.project.profile, self.record)
 
     @property
     def current_pixels(self) -> numpy.ndarray:
@@ -3158,26 +3243,47 @@ class SystemFilePicker:
         return Path(chosen) if chosen else None
 
 
-def quit_dialog_areas(window_size: tuple[int, int], show_checkbox: bool) -> dict[str, pygame.Rect]:
-    """Where the parts of the quit dialog are: the panel, the two pictures, the checkbox row (when there is more
-    than one tile to ask about), the row for an error and the three buttons."""
-    width = min(scaled(640), window_size[0] - scaled(40))
-    height = min(scaled(430), window_size[1] - scaled(40))
+def quit_dialog_areas(window_size: tuple[int, int], show_checkbox: bool, row_count: int = 1) -> dict[str, pygame.Rect]:
+    """Where the parts of the quit dialog are: the panel, the column headings, for each row its label and its three pictures
+    (old, new, difference: `label0`, `old0`, `new0`, `difference0`, `label1`, ...), the checkbox row (when there is more than
+    one tile to ask about), the row for an error and the three buttons."""
+    width = min(scaled(680), window_size[0] - scaled(40))
+    height = min(scaled(620), window_size[1] - scaled(40))
     panel = pygame.Rect(0, 0, width, height)
     panel.center = (window_size[0] // 2, window_size[1] // 2)
-    margin, gap = scaled(20), scaled(16)
-    box = max(scaled(60), min(scaled(220), (width - 2 * margin - gap) // 2, height - scaled(228)))
-    left = panel.centerx - (2 * box + gap) // 2
-    top = panel.y + scaled(98)
-    areas = {
-        "panel": panel,
-        "current": pygame.Rect(left, top, box, box),
-        "disk": pygame.Rect(left + box + gap, top, box, box),
-    }
-    row_top = top + box + gap
+    margin, gap = scaled(20), scaled(10)
+    label_width = scaled(120) if width >= scaled(500) else scaled(70)
+    heading_top = panel.y + scaled(74)
+    rows_top = heading_top + scaled(22)
+    bottom_part = (scaled(24) + gap // 2 if show_checkbox else 0) + scaled(20) + gap // 2 + scaled(34) + margin + gap
+    rows_height = max(scaled(30), panel.bottom - bottom_part - rows_top)
+    smallest = scaled(24)
+    # Rows that do not fit at the smallest size are left out, and a line says how many.
+    shown = row_count
+    if row_count * smallest + (row_count - 1) * gap > rows_height:
+        shown = max(1, (rows_height - scaled(18) + gap) // (smallest + gap))
+    more = row_count - shown
+    box = max(
+        smallest,
+        min(scaled(150), (width - 2 * margin - label_width - 3 * gap) // 3, (rows_height - (more > 0) * scaled(18) - (shown - 1) * gap) // shown),
+    )
+    left = panel.x + margin + label_width + gap
+    areas = {"panel": panel}
+    for name, column in (("old", 0), ("new", 1), ("difference", 2)):
+        areas[f"{name}_heading"] = pygame.Rect(left + column * (box + gap), heading_top, box, scaled(18))
+    for index in range(shown):
+        top = rows_top + index * (box + gap)
+        areas[f"label{index}"] = pygame.Rect(panel.x + margin, top, label_width, box)
+        for name, column in (("old", 0), ("new", 1), ("difference", 2)):
+            areas[f"{name}{index}"] = pygame.Rect(left + column * (box + gap), top, box, box)
+    row_top = rows_top + shown * (box + gap)
+    if more:
+        areas["more"] = pygame.Rect(panel.x + margin, row_top - gap + scaled(2), panel.width - 2 * margin, scaled(16))
+        row_top += scaled(18)
     if show_checkbox:
         areas["checkbox"] = pygame.Rect(panel.x + margin, row_top, panel.width - 2 * margin, scaled(24))
-    areas["error"] = pygame.Rect(panel.x + margin, row_top + scaled(24) + gap // 2, panel.width - 2 * margin, scaled(20))
+        row_top += scaled(24) + gap // 2
+    areas["error"] = pygame.Rect(panel.x + margin, row_top, panel.width - 2 * margin, scaled(20))
     button_height = scaled(34)
     button_width = (panel.width - 2 * margin - 2 * gap) // 3
     for index, name in enumerate(("save", "discard", "cancel")):
@@ -4692,11 +4798,12 @@ class AtlasInteraction:
 
 
 # The checkbox buttons in the thin sidebar right of the canvas: their names and what they show on the button.
-SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"}
+SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg", "breakout": "Ch"}
 SIDEBAR_BUTTON_HINTS = {
     "wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges",
     "pixel_grid": "Pixel grid: lines between the pixels (shown when zoomed in far enough)",
     "tile_grid": "Tile grid: lines around the tiles (wrap assist keeps its own setting, off at first)",
+    "breakout": "Channel breakout: show the colour, the alpha and each channel as panels of their own (a stroke paints where it began)",
 }
 # The pixel grid is drawn when the canvas is zoomed in at least this far (screen pixels per canvas pixel).
 PIXEL_GRID_MINIMUM_ZOOM = 6
@@ -4787,6 +4894,53 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
     )
 
 
+def compute_breakout_cells(
+    area: pygame.Rect, count: int, canvas_size: tuple[int, int], copies: int = 1
+) -> list[tuple[pygame.Rect, pygame.Rect]]:
+    """The panels of the channel breakout in `area`: for each a (label, cell) pair of rectangles, the label right above its cell,
+    in reading order. The cells are of one size, and the number of columns is the one that lets the canvas (`canvas_size`
+    wide and high, `copies` of it side by side with wrap-assist) be shown biggest in a cell."""
+    gap, label_height = scaled(6), scaled(16)
+    width, height = max(canvas_size[0] * copies, 1), max(canvas_size[1] * copies, 1)
+    best: Optional[tuple[int, int, int, int]] = None
+    for columns in range(1, count + 1):
+        rows = -(-count // columns)
+        cell_width = (area.width - (columns - 1) * gap) // columns
+        cell_height = (area.height - rows * label_height - (rows - 1) * gap) // rows
+        fit = min(cell_width / width, cell_height / height)
+        if best is None or fit > best[0]:
+            best = (fit, columns, cell_width, cell_height)  # type: ignore[assignment]
+    assert best is not None
+    _, columns, cell_width, cell_height = best
+    cell_width, cell_height = max(1, cell_width), max(1, cell_height)
+    cells = []
+    for index in range(count):
+        row, column = divmod(index, columns)
+        left = area.x + column * (cell_width + gap)
+        top = area.y + row * (label_height + cell_height + gap) + label_height
+        cells.append((pygame.Rect(left, top - label_height, cell_width, label_height), pygame.Rect(left, top, cell_width, cell_height)))
+    return cells
+
+
+def panel_image(key: str, pixels: numpy.ndarray, planes: Optional[numpy.ndarray], profile: PbrProfile) -> numpy.ndarray:
+    """What a panel of the breakout shows: "rgb" the colour with no transparency, "alpha" the alpha as grey levels, and the
+    identity of a channel its meaning as grey levels (lowest black, highest white). RGBA, the size of the canvas."""
+    if key == "rgb":
+        picture = pixels.copy()
+        picture[..., 3] = 255
+        return picture
+    if key == "alpha":
+        return _grey_picture(pixels[..., 3])
+    for index, channel in enumerate(profile.channels):
+        if channel.identity == key and planes is not None:
+            return _grey_picture(channel_grey(key, planes[:, :, index]))
+    raise ValueError(f"no panel {key!r}")
+
+
+def format_channel_value(value: ChannelValue) -> str:
+    return f"m{value.index}" if isinstance(value, Metal) else f"{value:.2f}"
+
+
 def saturation_value_square(hue: float, width: int, height: Optional[int] = None) -> pygame.Surface:
     """The picture of a color picker's square for one hue: saturation grows to the right, value falls downward."""
     import colorsys
@@ -4869,6 +5023,14 @@ class EditorPanel:
         self.hex_invalid = False
         # The channel controls: the row whose mode menu is open ("rgb", "alpha" or a channel), the slider being dragged
         # (identity, slot), the row whose value is being typed, and how far the rows are scrolled (pixels).
+        # The breakout: the canvas as a grid of panels (see breakout_panels), each a view of its own with the same zoom and pan, the
+        # panel a stroke or a pan began in, and the panel that is being drawn (the kind of picture it shows).
+        self.breakout = False
+        self.panel_cells: list[tuple[pygame.Rect, pygame.Rect]] = []
+        self.panel_views: list[CanvasView] = []
+        self.bound_panel: Optional[int] = None
+        self._panel_key: Optional[str] = None
+        self._outline_pixel: Optional[Coordinate] = None
         self.mode_menu_open: Optional[str] = None
         self.channel_drag: Optional[tuple[str, str]] = None
         self.value_field = TextField("", lambda character: character in "0123456789.-mM", 6)
@@ -4909,7 +5071,106 @@ class EditorPanel:
         if self.layout is None:
             return
         copies = WRAP_PREVIEW_COPIES if self.wrap_assist else 1
+        if self.breakout:
+            self._layout_breakout()
+            for view in self.panel_views:
+                view.fit(self.layout.pixels.shape[1] * copies, self.layout.pixels.shape[0] * copies)
+            return
         self.view.fit(self.layout.pixels.shape[1] * copies, self.layout.pixels.shape[0] * copies)
+
+    # The breakout ------------------------------------------------------------------------------------------
+
+    def breakout_panels(self) -> list[tuple[str, str]]:
+        """The panels: (key, label) for the colour, the alpha, and each channel of the setting."""
+        panels = [("rgb", "RGB"), ("alpha", "Alpha")]
+        panels += [(identity, CHANNEL_NAMES.get(identity, identity)) for identity in self.controls.rows]
+        return panels
+
+    def _layout_breakout(self) -> None:
+        """Place the panels (a view for each, with its own rectangle) in the canvas area."""
+        if self.layout is None:
+            self.panel_cells, self.panel_views = [], []
+            return
+        copies = WRAP_PREVIEW_COPIES if self.wrap_assist else 1
+        height, width = self.layout.pixels.shape[:2]
+        self.panel_cells = compute_breakout_cells(self.areas.canvas, len(self.breakout_panels()), (width, height), copies)
+        self.panel_views = []
+        for _, cell in self.panel_cells:
+            view = CanvasView()
+            view.rect = cell
+            self.panel_views.append(view)
+
+    def panel_at(self, position: tuple[int, int]) -> Optional[int]:
+        for index, (_, cell) in enumerate(self.panel_cells):
+            if cell.collidepoint(position):
+                return index
+        return None
+
+    @contextlib.contextmanager
+    def _in_panel(self, index: int):
+        """Everything that works with `self.view` and the canvas area (the mouse, the tools, the drawing) works in panel
+        `index` for the length of the block."""
+        saved = (self.view, self.areas)
+        self.view = self.panel_views[index]
+        self.areas = dataclasses.replace(self.areas, canvas=self.panel_cells[index][1])
+        try:
+            yield
+        finally:
+            self.view, self.areas = saved
+
+    def _share_view(self, index: int) -> None:
+        """Every panel shows what panel `index` shows: the same zoom, and the canvas at the same place in its cell."""
+        if not (0 <= index < len(self.panel_views)):
+            return
+        view, cell = self.panel_views[index], self.panel_cells[index][1]
+        offset_x, offset_y = view.origin_x - cell.x, view.origin_y - cell.y
+        for other, (_, other_cell) in zip(self.panel_views, self.panel_cells):
+            other.zoom = view.zoom
+            other.origin_x, other.origin_y = other_cell.x + offset_x, other_cell.y + offset_y
+
+    def _press_in_panels(self, button: int, position: tuple[int, int]) -> None:
+        index = self.panel_at(position)
+        if index is None:
+            return
+        self.bound_panel = index
+        with self._in_panel(index):
+            if button == 2:
+                self.panning_from = position
+            elif button in (1, 3) and self.layout is not None:
+                self._press_on_canvas(button, position)
+
+    def hover_text(self) -> Optional[str]:
+        """The pixel under the pointer, its colour and the value of each channel decoded, as one line; None when the
+        pointer is not over a pixel of the canvas (with wrap-assist a pixel of any copy is the pixel of the canvas)."""
+        parts = self.hover_parts()
+        return None if parts is None else "  ".join(parts)
+
+    def hover_parts(self) -> Optional[list[str]]:
+        """The pieces of the read-out: the place, the colour (#RRGGBBAA) and one piece for each channel."""
+        layout = self.layout
+        if layout is None:
+            return None
+        view = self.view
+        if self.breakout:
+            index = self.bound_panel if self.bound_panel is not None else self.panel_at(self.pointer)
+            if index is None or index >= len(self.panel_views):
+                return None
+            view = self.panel_views[index]
+        elif not self.areas.canvas.collidepoint(self.pointer):
+            return None
+        pixel = view.pixel_at(self.pointer)
+        height, width = layout.pixels.shape[:2]
+        column, row = wrap_pixel(pixel, (height, width)) if self.wrap_assist else pixel
+        if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
+            return None
+        pixels = self.session.pixels if self.session is not None else layout.pixels
+        planes = self.session.planes if self.session is not None else layout.planes
+        red, green, blue, alpha = (int(value) for value in pixels[row, column])
+        parts = [f"({column}, {row})", f"#{red:02x}{green:02x}{blue:02x}{alpha:02x}"]
+        if planes is not None:
+            values = sample_channel_values(self.project.profile, planes, row, column)
+            parts += [f"{CHANNEL_LABELS.get(identity, identity)} {format_channel_value(value)}" for identity, value in values.items()]
+        return parts
 
     def toggle_wrap_assist(self) -> None:
         self.wrap_assist = not self.wrap_assist
@@ -4931,10 +5192,14 @@ class EditorPanel:
                 self.wrap_tile_grid = not self.wrap_tile_grid
             else:
                 self.tile_grid = not self.tile_grid
+        elif name == "breakout":
+            self.breakout = not self.breakout
+            self.bound_panel = None
+            self._fit_view()
 
     def sidebar_button_checked(self, name: str) -> bool:
         tile_grid = self.wrap_tile_grid if self.wrap_assist else self.tile_grid
-        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": tile_grid}[name]
+        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": tile_grid, "breakout": self.breakout}[name]
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
@@ -5180,7 +5445,9 @@ class EditorPanel:
                     self.colors.set_color(color, "secondary")
                     return
         if areas.canvas.collidepoint(position):
-            if button == 2:
+            if self.breakout:
+                self._press_in_panels(button, position)
+            elif button == 2:
                 self.panning_from = position
             elif button in (1, 3) and self.layout is not None:
                 self._press_on_canvas(button, position)
@@ -5281,6 +5548,14 @@ class EditorPanel:
         self.selection_rectangle = rectangle if right > left and bottom > top else None
 
     def mouse_move(self, position: tuple[int, int]) -> None:
+        if self.breakout and self.bound_panel is not None and self.bound_panel < len(self.panel_views):
+            with self._in_panel(self.bound_panel):
+                self._mouse_move(position)
+            self._share_view(self.bound_panel)
+        else:
+            self._mouse_move(position)
+
+    def _mouse_move(self, position: tuple[int, int]) -> None:
         self.pointer = position
         if self.color_drag is not None:
             if self.color_drag.startswith("dropper_") and self.layout is not None:
@@ -5309,6 +5584,17 @@ class EditorPanel:
             self.session.move(self.view.pixel_at(position))
 
     def mouse_up(self, button: int, position: tuple[int, int]) -> None:
+        if self.breakout and self.bound_panel is not None and self.bound_panel < len(self.panel_views):
+            panel = self.bound_panel
+            with self._in_panel(panel):
+                self._mouse_up(button, position)
+            self._share_view(panel)
+            if self.session is None and self.panning_from is None and self.selecting_from is None and self.floating_drag is None:
+                self.bound_panel = None
+        else:
+            self._mouse_up(button, position)
+
+    def _mouse_up(self, button: int, position: tuple[int, int]) -> None:
         self.pointer = position
         if button == 2:
             self.panning_from = None
@@ -5477,6 +5763,12 @@ class EditorPanel:
         if self.areas.channel_panel.collidepoint(position):
             step = self._channel_row_height()
             self.channel_scroll = max(0, min(self.channel_scroll_limit(), self.channel_scroll - steps * step))
+        elif self.breakout:
+            index = self.panel_at(position)
+            if index is not None:
+                with self._in_panel(index):
+                    self.view.zoom_by(steps, position)
+                self._share_view(index)
         elif self.layout is not None and self.areas.canvas.collidepoint(position):
             self.view.zoom_by(steps, position)
 
@@ -5770,11 +6062,53 @@ class EditorPanel:
             for number, line in enumerate(lines):
                 draw_text(surface, self.fonts.normal, line, Theme.TEXT_DIMMED, (area.centerx, area.centery + number * scaled(20)), "midtop")
             return
+        if self.breakout:
+            self._draw_breakout(surface)
+        else:
+            self._draw_canvas_view(surface)
+        self._draw_hover_text(surface)
+
+    def _draw_hover_text(self, surface: pygame.Surface) -> None:
+        """The read-out at the right of the name above the canvas: as many channels as fit beside the name."""
+        parts = self.hover_parts()
+        if parts is None or self.name_focused:
+            return
+        header = self.areas.header
+        start = header.x + scaled(6) + self.fonts.large.size(self.header_text())[0] + scaled(20)
+        available = header.right - start
+        while parts and self.fonts.small.size("  ".join(parts))[0] > available:
+            if len(parts) <= 2:
+                return
+            parts.pop()
+        draw_text(surface, self.fonts.small, "  ".join(parts), Theme.TEXT_DIMMED, header.midright, "midright")
+
+    def _draw_breakout(self, surface: pygame.Surface) -> None:
+        """The panels, each with its label above it. The brush guide is in every panel, where the pointer is (or where the
+        stroke began) in the others."""
+        hovered = self.bound_panel if self.bound_panel is not None else self.panel_at(self.pointer)
+        self._outline_pixel = None
+        if hovered is not None and hovered < len(self.panel_views):
+            self._outline_pixel = self.panel_views[hovered].pixel_at(self.pointer)
+        for index, ((label_rectangle, _), (key, label)) in enumerate(zip(self.panel_cells, self.breakout_panels())):
+            draw_text(surface, self.fonts.small, label, Theme.TEXT, label_rectangle.midleft, "midleft")
+            with self._in_panel(index):
+                self._panel_key = key
+                try:
+                    self._draw_canvas_view(surface)
+                finally:
+                    self._panel_key = None
+
+    def _draw_canvas_view(self, surface: pygame.Surface) -> None:
+        area = self.areas.canvas
+        pygame.draw.rect(surface, Theme.BACKGROUND, area)
         layout, view = self.layout, self.view
         pixels = self.session.pixels if self.session is not None else layout.pixels
         if self.floating is not None:
             paste = self.floating
             pixels = paste_pixels(pixels, paste.pixels, paste.column, paste.row, layout.editable_mask)
+        if self._panel_key is not None:
+            planes = self.session.planes if self.session is not None else layout.planes
+            pixels = panel_image(self._panel_key, pixels, planes, self.project.profile)
         height, width = pixels.shape[:2]
         surface.set_clip(area)
         # With wrap-assist the canvas fills the whole area, as copies of itself.
@@ -5855,7 +6189,10 @@ class EditorPanel:
             left, top, right, bottom = marked
             for offset_column, offset_row in self.copy_offsets(marked):
                 draw_dashed_outline(surface, view.pixel_rectangle(left + offset_column, top + offset_row, right - left, bottom - top))
-        if self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
+        if self.breakout:
+            if self.tool_uses_outline() and self._outline_pixel is not None and self.session is None:
+                self.draw_footprint_outline(surface, self._outline_pixel)
+        elif self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
             self.draw_footprint_outline(surface)
 
     def copy_offsets(self, rectangle: tuple[int, int, int, int]) -> list[tuple[int, int]]:
@@ -5879,8 +6216,8 @@ class EditorPanel:
             and self.tool != "select"
         )
 
-    def draw_footprint_outline(self, surface: pygame.Surface) -> None:
-        column, row = self.view.pixel_at(self.pointer)
+    def draw_footprint_outline(self, surface: pygame.Surface, pixel: Optional[Coordinate] = None) -> None:
+        column, row = pixel if pixel is not None else self.view.pixel_at(self.pointer)
         width, height = self.settings.footprint_size(self.tool)
         left, top = column - width // 2, row - height // 2
         is_round = self.tool == "airbrush" or (self.tool == "noise_brush" and self.settings.noise_shape == "circle")
@@ -6182,12 +6519,15 @@ class BridgeController:
         self.editor = editor
         self.group = group
         self.host_name: Optional[str] = None
+        # The PBR convention the program says it reads companion pictures in (`profile` of its hello), if it says one.
+        self.host_profile: Optional[str] = None
         self.tiles: dict[str, BridgeTile] = {}
         self.outgoing: list[dict] = []
         # The stroke from the program that is going on: (button, tile id, segment, last pixel).
         self.active: Optional[tuple[int, str, int, Coordinate]] = None
-        # What each tile was when the program was last told (or already had it): the pixels as bytes.
-        self.told: dict[str, bytes] = {}
+        # What each tile was when the program was last told (or already had it): the pixels as bytes, and the companion
+        # pictures as (ending, bytes) in the order of the endings (None when the program is told none).
+        self.told: dict[str, tuple[bytes, Optional[tuple[tuple[str, bytes], ...]]]] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -6211,6 +6551,7 @@ class BridgeController:
         """The program went away: a stroke it had begun ends where it was."""
         self._end_stroke()
         self.host_name = None
+        self.host_profile = None
         self.tiles = {}
         self.told = {}
         self.outgoing = []
@@ -6222,7 +6563,12 @@ class BridgeController:
             self.outgoing.append({"type": "error", "text": f"this is protocol {BRIDGE_PROTOCOL}, not {protocol!r}"})
             return
         self.host_name = name if isinstance(name, str) and name else "a program"
-        self.outgoing.append({"type": "welcome", "protocol": BRIDGE_PROTOCOL, "tool": "VirtualAtlas", "tile_size": self.project.tile_size})
+        profile = message.get("profile")
+        self.host_profile = profile if isinstance(profile, str) and profile else None
+        welcome: dict = {"type": "welcome", "protocol": BRIDGE_PROTOCOL, "tool": "VirtualAtlas", "tile_size": self.project.tile_size}
+        if self.project.profile.channels:
+            welcome["profile"] = self.project.pbr_profile  # so that the program can see when its convention is not ours
+        self.outgoing.append(welcome)
 
     def _tiles(self, message: dict) -> None:
         tiles, problems = parse_bridge_tiles(message)
@@ -6231,7 +6577,7 @@ class BridgeController:
         self.told = {}
         known = [identifier for identifier in self.tiles if self.resolve(identifier) is not None]
         for identifier in known:
-            self.told[identifier] = self._pixels_of(self.resolve(identifier))
+            self.told[identifier] = self._content_of(self.resolve(identifier))
         self.outgoing.append(
             {"type": "known", "ids": known, "missing": [identifier for identifier in self.tiles if identifier not in known]}
         )
@@ -6302,6 +6648,30 @@ class BridgeController:
             return extract_canvas_tiles(session.layout, session.pixels)[coordinate].tobytes()
         return self.project.tiles[coordinate].pixels.tobytes()
 
+    def _companions_of(self, coordinate: Coordinate) -> Optional[tuple[tuple[str, bytes], ...]]:
+        """The companion pictures of a tile as they are now, as (ending, bytes of the RGBA picture) for each file that has
+        something in it (a file whose channels are all neutral would not exist, and the program takes a missing one as neutral).
+        None, not even an empty set, when they are not to be told: the program did not say it reads the convention of this
+        atlas, or the atlas has no channels."""
+        profile = self.project.profile
+        if not profile.channels or self.host_profile != self.project.pbr_profile:
+            return None
+        planes = self.project.tiles[coordinate].planes
+        session = self.editor.session
+        if session is not None and session.planes is not None and coordinate in session.layout.tile_coordinates:
+            planes = extract_canvas_planes(session.layout, session.planes)[coordinate]
+        if planes is None:
+            return None
+        pictures = companions_from_planes(profile, planes)
+        return tuple(
+            (suffix, picture.tobytes())
+            for suffix, picture in pictures.items()
+            if any((planes[:, :, index] != profile.channels[index].neutral).any() for index in profile.channel_indices(suffix))
+        )
+
+    def _content_of(self, coordinate: Coordinate) -> tuple[bytes, Optional[tuple[tuple[str, bytes], ...]]]:
+        return self._pixels_of(coordinate), self._companions_of(coordinate)
+
     def take_outgoing(self) -> list[dict]:
         """Everything to tell the program: answers, and the pixels of each tile of its that changed since it was last told."""
         if self.host_name is not None:
@@ -6309,12 +6679,14 @@ class BridgeController:
                 coordinate = self.resolve(identifier)
                 if coordinate is None:
                     continue
-                pixels = self._pixels_of(coordinate)
-                if self.told.get(identifier) != pixels:
-                    self.told[identifier] = pixels
-                    self.outgoing.append(
-                        {"type": "tile", "id": identifier, "size": tile.size, "pixels": base64.b64encode(pixels).decode("ascii")}
-                    )
+                content = self._content_of(coordinate)
+                if self.told.get(identifier) != content:
+                    self.told[identifier] = content
+                    pixels, companions = content
+                    message = {"type": "tile", "id": identifier, "size": tile.size, "pixels": base64.b64encode(pixels).decode("ascii")}
+                    if companions is not None:
+                        message["companions"] = {suffix: base64.b64encode(data).decode("ascii") for suffix, data in companions}
+                    self.outgoing.append(message)
         outgoing, self.outgoing = self.outgoing, []
         return outgoing
 
@@ -6742,7 +7114,7 @@ class Application:
 
     def dialog_areas(self) -> dict[str, pygame.Rect]:
         assert self.quit_dialog is not None
-        return quit_dialog_areas(self.surface.get_size(), self.quit_dialog.remaining > 1)
+        return quit_dialog_areas(self.surface.get_size(), self.quit_dialog.remaining > 1, max(1, len(self.quit_dialog.rows)))
 
     def import_dialog_areas(self) -> dict[str, pygame.Rect]:
         return import_dialog_areas(self.surface.get_size())
@@ -7210,7 +7582,8 @@ class Application:
 
     def draw_dialog_picture(self, box: pygame.Rect, pixels: Optional[numpy.ndarray], label: str) -> None:
         surface = self.surface
-        draw_text(surface, self.fonts.normal, label, Theme.TEXT_DIMMED, (box.centerx, box.y - scaled(6)), "midbottom")
+        if label:
+            draw_text(surface, self.fonts.normal, label, Theme.TEXT_DIMMED, (box.centerx, box.y - scaled(6)), "midbottom")
         pygame.draw.rect(surface, Theme.FIELD, box)
         if pixels is None:
             draw_text(surface, self.fonts.normal, "no file yet", Theme.TEXT_DIMMED, box.center, "center")
@@ -7236,8 +7609,20 @@ class Application:
             surface, self.fonts.small, f"Tile {position} of {len(dialog.coordinates)} with unsaved changes",
             Theme.TEXT_DIMMED, (panel.x + scaled(20), panel.y + scaled(44)),
         )
-        self.draw_dialog_picture(areas["current"], dialog.current_pixels, "Current")
-        self.draw_dialog_picture(areas["disk"], dialog.disk_pixels, "On disk")
+        for name, heading in (("old", "Old (on disk)"), ("new", "New"), ("difference", "Difference")):
+            draw_text(surface, self.fonts.small, heading, Theme.TEXT_DIMMED, areas[f"{name}_heading"].midbottom, "midbottom")
+        rows = dialog.rows
+        if "more" in areas:
+            hidden = len(rows) - sum(1 for name in areas if name.startswith("label"))
+            draw_text(surface, self.fonts.small, f"... and {hidden} more that differ (save to keep them all)", Theme.TEXT_DIMMED, areas["more"].midleft, "midleft")
+        for index, row in enumerate(rows):
+            if f"label{index}" not in areas:
+                break
+            draw_text(surface, self.fonts.normal, row.label, Theme.TEXT, areas[f"label{index}"].midleft, "midleft")
+            no_file = dialog.disk_pixels is None and row.label == "RGB"
+            self.draw_dialog_picture(areas[f"old{index}"], None if no_file else row.old, "")
+            self.draw_dialog_picture(areas[f"new{index}"], row.new, "")
+            self.draw_dialog_picture(areas[f"difference{index}"], row.difference, "")
         if "checkbox" in areas:
             box = pygame.Rect(areas["checkbox"].x, areas["checkbox"].y + scaled(3), scaled(18), scaled(18))
             pygame.draw.rect(surface, Theme.FIELD, box, border_radius=3)

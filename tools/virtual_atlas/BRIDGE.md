@@ -23,7 +23,8 @@ version does not know is ignored, so a newer side can talk to an older one. A li
 
 ## What the host says
 
-**`hello`** (first): `{"type":"hello","protocol":1,"host":"Name of the program"}`. Another protocol is refused with an `error`; nothing but `hello` is heard before it.
+**`hello`** (first): `{"type":"hello","protocol":1,"host":"Name of the program","profile":"labpbr_1_3"}`. Another protocol is refused with an `error`; nothing but `hello` is heard before it.
+`profile` is optional: the PBR convention the host reads companion pictures in (see "Companion pictures" below). Without it, or when it is not the convention of VirtualAtlas's atlas, no companion pictures are sent.
 
 **`tiles`**: the tiles the host has, said again whenever they change (it ends the stroke in progress):
 
@@ -58,17 +59,32 @@ one step of VirtualAtlas's undo history. Pointers with no button down only make 
 
 ## What VirtualAtlas says
 
-**`welcome`** (answer to `hello`): `{"type":"welcome","protocol":1,"tool":"VirtualAtlas","tile_size":16}`.
+**`welcome`** (answer to `hello`): `{"type":"welcome","protocol":1,"tool":"VirtualAtlas","tile_size":16,"profile":"labpbr_1_3"}`. `profile` is the PBR setting of the atlas (`pbr` in its `atlas.json`), and is there only when
+that setting has channels; a host that finds it is not the convention it reads can tell its user.
 
 **`known`** (answer to `tiles`): `{"type":"known","ids":["0:3"],"missing":["1:0"]}`: which of the host's tiles have a file in the atlas, and which do not (no file, another size, another
 group, a file that is not in the atlas yet, a file that cannot be read). A host may show the player what is missing.
 
-**`tile`**: `{"type":"tile","id":"0:3","size":16,"pixels":"<base64>"}`: the tile's pixels as they are now, `size` by `size` pixels of four bytes each (red, green, blue, alpha), row by
+**`tile`**: `{"type":"tile","id":"0:3","size":16,"pixels":"<base64>","companions":{"_s":"<base64>","_n":"<base64>"}}`: the tile's pixels as they are now, `size` by `size` pixels of four bytes each (red, green, blue, alpha), row by
 row from the top, base64 (RFC 4648, with padding). Sent **when a tile of the host's changed** since it was last sent (or since `known`, which counts as sent): while a stroke is
 going on (each time the pointer has moved, at most once a frame) and when it ends; after an undo or redo, or any edit made in VirtualAtlas's own window (a stroke drawn there, a
 cut or a delete, a pasted picture once it is placed; one still floating, which Escape throws away, is not an edit yet). A tile that has not been painted on is never sent, so the
 host's pictures are not replaced by the files until something is painted. A tile that comes back to what the host already has (an undo of the only stroke) is sent like any other:
 the host writes every `tile` it hears. The host writes the pixels where the tile is drawn, on its own screen.
+
+### Companion pictures
+
+A material has more than a colour: under a PBR convention the atlas keeps the rest in companion files beside the picture (`dirt_s.png`, `dirt_n.png` under `labpbr_1_3`: smoothness, reflectance, porosity or scattering and emission in the first;
+normal x and y, occlusion and height in the second; `tools/virtual_atlas/labpbr_channels.json` is the table). When the host said in `hello` the same `profile` that the atlas is set to, each `tile` also has `companions`: an object of
+the companion pictures as they would be in files, by the ending of the file (`"_s"`, `"_n"`), each `size` by `size` pixels of four bytes, base64, row by row from the top, bytes exactly as the PNG file would hold them (so the host may
+use them as it uses the file).
+
+- **A key that is not there is a file that would not exist**: every channel in it is neutral (no smoothness, no emission, no tilt, full occlusion, top height). The host takes it as none, **also if the picture had one before**: what is painted
+  here is what the file would be. `"companions":{}` says that neither file would exist. A `tile` with no `companions` key at all says nothing of them (the atlas has no channels, or the host did not name the convention): the host keeps the
+  ones the picture had.
+- A change of a channel alone (the colour untouched) is a change of the tile: it is sent. Unsaved changes are sent as the pixels are; the files are written when the user saves.
+- The convention is the host's to name and VirtualAtlas's to check: with `profile` not equal to the atlas's setting nothing about channels is sent and the `welcome` shows the atlas's setting. A host that wants a convention VirtualAtlas
+  does not have gets pictures and no companions.
 
 **`error`**: `{"type":"error","text":"..."}`: a message was refused. The connection stays.
 
@@ -84,8 +100,7 @@ VirtualAtlas tells its user what is happening in its status line (waiting, conne
 
 ## Not in version 1
 
-Companion pictures (a host's normal or specular maps as tiles of their own, to be painted: they are separate tiles with their own ids and files, and nothing prevents a host from
-listing them today); a brush guide drawn by the host; streaming the host's view into VirtualAtlas's window; several hosts; a host asking for a tile's pixels (VirtualAtlas sends them
+Companion pictures as tiles of their own (a host may still list `dirt_n` as a tile with its own id and file, under an atlas whose setting is `none`); a brush guide drawn by the host; streaming the host's view into VirtualAtlas's window; several hosts; a host asking for a tile's pixels (VirtualAtlas sends them
 when they change, never on request); a stroke that goes from one tile onto another tile (it ends at the edge of the first).
 
 ## Tests

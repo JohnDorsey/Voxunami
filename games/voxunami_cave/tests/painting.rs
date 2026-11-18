@@ -445,6 +445,143 @@ fn a_picture_the_tool_sends_again_as_it_was_is_written_again_so_that_undo_and_re
     }
 }
 
+/// What a tool that sends companion pictures does to the game: the game says which convention it reads, a picture with `companions` is written with exactly those (a file
+/// that is not there is none, even if the world's picture had one), an empty set clears them, and a picture that says nothing of them keeps the ones it last had.
+#[test]
+fn companions_the_tool_sends_are_written_with_the_picture_and_a_missing_one_is_none() {
+    let mut rig = Rig::new();
+    let player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    let (listener, address) = listen();
+    let mut painter = Painter::connect(address, "Cave under test", player.package()).unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    let mut tool = Tool {
+        stream,
+        heard: Vec::new(),
+    };
+    let mut applier = Writes::default();
+    tool.stream
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    painter.step(player.package(), None, Buttons::default(), &mut applier);
+    let heard = tool.lines(2);
+    assert_eq!(heard[0]["profile"], "labpbr_1_3");
+    let dirt = heard[1]["tiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tile| {
+            tile["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|name| name == "dirt")
+        })
+        .expect("the dirt is a picture of the world");
+    let id = dirt["id"].as_str().unwrap();
+    let (class, layer) = id.split_once(':').unwrap();
+    let world = &player.package().tile_classes[class.parse::<usize>().unwrap()]
+        [layer.parse::<usize>().unwrap()];
+    assert!(
+        world.normal().is_some(),
+        "the dirt has a normal picture in the world"
+    );
+    let picture: Vec<u8> = (0..16 * 16).flat_map(|_| [1u8, 2, 3, 255]).collect();
+    let specular: Vec<u8> = (0..16 * 16).flat_map(|_| [50u8, 60, 70, 80]).collect();
+
+    // A welcome that names the game's convention is only said; another one is told to the player.
+    tool.say(json!({"type": "welcome", "protocol": 1, "tool": "A tool", "tile_size": 16, "profile": "labpbr_1_3"}));
+    let notes = step_until_noted(&mut painter, &player, &mut applier, 1);
+    assert_eq!(notes, vec!["A tool is connected".to_owned()]);
+    tool.say(json!({"type": "welcome", "protocol": 1, "tool": "A tool", "tile_size": 16, "profile": "some_other_pbr"}));
+    let notes = step_until_noted(&mut painter, &player, &mut applier, 2);
+    assert!(
+        notes[1].contains("some_other_pbr") && notes[1].contains("labpbr_1_3"),
+        "{notes:?}"
+    );
+
+    // Only a specular picture: that is the specular, and the normal the world had is gone (the tool's file for it would not exist).
+    tool.say(json!({
+        "type": "tile", "id": id, "size": 16, "pixels": encode_base64(&picture),
+        "companions": {"_s": encode_base64(&specular)},
+    }));
+    step_until(&mut painter, &player, &mut applier, |applier| {
+        applier.written.len() == 1
+    });
+    let (_, _, rgba, written_specular, written_normal) = applier.written[0].clone();
+    assert_eq!(rgba, picture);
+    assert_eq!(written_specular.as_deref(), Some(&specular[..]));
+    assert_eq!(written_normal, None);
+
+    // A picture that says nothing of companions keeps the ones it last had, and not the world's.
+    tool.say(json!({"type": "tile", "id": id, "size": 16, "pixels": encode_base64(&picture)}));
+    step_until(&mut painter, &player, &mut applier, |applier| {
+        applier.written.len() == 2
+    });
+    assert_eq!(applier.written[1].3.as_deref(), Some(&specular[..]));
+    assert_eq!(applier.written[1].4, None);
+
+    // An empty set clears both; a suffix the game does not read is ignored.
+    tool.say(json!({
+        "type": "tile", "id": id, "size": 16, "pixels": encode_base64(&picture),
+        "companions": {"_x": encode_base64(&specular)},
+    }));
+    step_until(&mut painter, &player, &mut applier, |applier| {
+        applier.written.len() == 3
+    });
+    assert_eq!(
+        (applier.written[2].3.clone(), applier.written[2].4.clone()),
+        (None, None)
+    );
+
+    // A new package writes the tool's pictures again with the companions it last sent.
+    let mut again = Writes::default();
+    assert!(
+        painter
+            .package_replaced(player.package(), &mut again)
+            .is_empty()
+    );
+    assert_eq!(again.written.len(), 1);
+    assert_eq!(
+        (again.written[0].3.clone(), again.written[0].4.clone()),
+        (None, None)
+    );
+
+    // Both files, as a tool under LabPBR sends them.
+    let normal: Vec<u8> = (0..16 * 16).flat_map(|_| [128u8, 128, 255, 255]).collect();
+    tool.say(json!({
+        "type": "tile", "id": id, "size": 16, "pixels": encode_base64(&picture),
+        "companions": {"_s": encode_base64(&specular), "_n": encode_base64(&normal)},
+    }));
+    step_until(&mut painter, &player, &mut applier, |applier| {
+        applier.written.len() == 4
+    });
+    assert_eq!(applier.written[3].3.as_deref(), Some(&specular[..]));
+    assert_eq!(applier.written[3].4.as_deref(), Some(&normal[..]));
+}
+
+/// Runs frames until the game has told the player `count` things.
+fn step_until_noted(
+    painter: &mut Painter,
+    player: &game_shell::session::Session<
+        Box<dyn transport::Connection>,
+        voxunami_cave::game::Cave,
+    >,
+    applier: &mut Writes,
+    count: usize,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while notes.len() < count {
+        notes.extend(painter.step(player.package(), None, Buttons::default(), applier));
+        assert!(
+            Instant::now() < deadline,
+            "what was waited for did not happen: {notes:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    notes
+}
+
 #[test]
 fn a_game_with_no_tool_listening_is_told_so() {
     let mut rig = Rig::new();

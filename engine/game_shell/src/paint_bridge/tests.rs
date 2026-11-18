@@ -64,7 +64,8 @@ fn json(line: &[u8]) -> serde_json::Value {
 fn the_games_messages_are_the_lines_the_protocol_describes() {
     assert_eq!(
         ToTool::Hello {
-            host: "A Game".into()
+            host: "A Game".into(),
+            profile: None
         }
         .to_line(),
         b"{\"host\":\"A Game\",\"protocol\":1,\"type\":\"hello\"}\n"
@@ -114,12 +115,107 @@ fn the_games_messages_are_the_lines_the_protocol_describes() {
 }
 
 #[test]
+fn the_hello_says_which_pbr_convention_the_game_reads_when_it_is_given_one() {
+    assert_eq!(PBR_PROFILE, "labpbr_1_3");
+    assert_eq!(
+        ToTool::Hello {
+            host: "A Game".into(),
+            profile: Some(PBR_PROFILE.into())
+        }
+        .to_line(),
+        b"{\"host\":\"A Game\",\"profile\":\"labpbr_1_3\",\"protocol\":1,\"type\":\"hello\"}\n"
+    );
+}
+
+#[test]
+fn a_welcome_may_say_the_tools_pbr_setting() {
+    assert_eq!(
+        FromTool::parse(
+            br#"{"type":"welcome","protocol":1,"tool":"VirtualAtlas","tile_size":16,"profile":"labpbr_1_3"}"#
+        ),
+        Ok(FromTool::Welcome {
+            tool: "VirtualAtlas".into(),
+            tile_size: 16,
+            profile: Some("labpbr_1_3".into())
+        })
+    );
+    assert!(
+        FromTool::parse(
+            br#"{"type":"welcome","protocol":1,"tool":"VirtualAtlas","tile_size":16,"profile":7}"#
+        )
+        .is_err(),
+        "a profile is text"
+    );
+}
+
+fn tile_line(size: u32, pixels: &str, companions: &str) -> Vec<u8> {
+    format!(r#"{{"type":"tile","id":"a","size":{size},"pixels":"{pixels}"{companions}}}"#)
+        .into_bytes()
+}
+
+#[test]
+fn a_tile_may_carry_companion_pictures_and_none_is_not_the_same_as_an_empty_set() {
+    let pixels = encode_base64(&[1, 2, 3, 4]);
+    let specular = encode_base64(&[5, 6, 7, 8]);
+    let normal = encode_base64(&[9, 10, 11, 12]);
+    let parsed = FromTool::parse(&tile_line(
+        1,
+        &pixels,
+        &format!(r#","companions":{{"_s":"{specular}","_n":"{normal}"}}"#),
+    ));
+    let Ok(FromTool::Tile { companions, .. }) = parsed else {
+        panic!("{parsed:?}");
+    };
+    let companions = companions.expect("the key was there");
+    assert_eq!(companions.len(), 2);
+    assert_eq!(companions["_s"], vec![5, 6, 7, 8]);
+    assert_eq!(companions["_n"], vec![9, 10, 11, 12]);
+    // An empty set is "no file would exist": the program clears its own. A missing key is "nothing said".
+    let parsed = FromTool::parse(&tile_line(1, &pixels, r#","companions":{}"#));
+    assert!(
+        matches!(&parsed, Ok(FromTool::Tile { companions: Some(set), .. }) if set.is_empty()),
+        "{parsed:?}"
+    );
+    let parsed = FromTool::parse(&tile_line(1, &pixels, ""));
+    assert!(
+        matches!(
+            &parsed,
+            Ok(FromTool::Tile {
+                companions: None,
+                ..
+            })
+        ),
+        "{parsed:?}"
+    );
+}
+
+#[test]
+fn a_companion_that_is_not_a_picture_of_the_tiles_size_is_refused_whole() {
+    let pixels = encode_base64(&[1, 2, 3, 4]);
+    let two_pixels = encode_base64(&[0; 8]);
+    for companions in [
+        format!(r#","companions":{{"_s":"{two_pixels}"}}"#),
+        r#","companions":{"_s":"!!!!"}"#.to_owned(),
+        r#","companions":{"_s":7}"#.to_owned(),
+        r#","companions":[]"#.to_owned(),
+        r#","companions":"AAAA""#.to_owned(),
+        r#","companions":null"#.to_owned(),
+    ] {
+        assert!(
+            FromTool::parse(&tile_line(1, &pixels, &companions)).is_err(),
+            "{companions}"
+        );
+    }
+}
+
+#[test]
 fn the_tools_messages_are_read_and_a_bad_one_says_what_is_wrong() {
     assert_eq!(
         FromTool::parse(br#"{"type":"welcome","protocol":1,"tool":"VirtualAtlas","tile_size":16}"#),
         Ok(FromTool::Welcome {
             tool: "VirtualAtlas".into(),
-            tile_size: 16
+            tile_size: 16,
+            profile: None
         })
     );
     assert_eq!(
@@ -137,7 +233,8 @@ fn the_tools_messages_are_read_and_a_bad_one_says_what_is_wrong() {
         Ok(FromTool::Tile {
             id: "a".into(),
             size: 1,
-            rgba: vec![1, 2, 3, 4]
+            rgba: vec![1, 2, 3, 4],
+            companions: None
         })
     );
     assert_eq!(
@@ -218,6 +315,7 @@ fn a_connection_sends_what_is_queued_and_hears_the_tool_in_lines() {
         .unwrap();
     connection.send(&ToTool::Hello {
         host: "A Game".into(),
+        profile: None,
     });
     connection.send(&ToTool::Pointer(Pointer {
         tile: None,
@@ -255,7 +353,10 @@ fn a_connection_sends_what_is_queued_and_hears_the_tool_in_lines() {
         (!connection.is_open()).then_some(())
     });
     // After that nothing is sent and nothing is heard, and nothing goes wrong.
-    connection.send(&ToTool::Hello { host: "x".into() });
+    connection.send(&ToTool::Hello {
+        host: "x".into(),
+        profile: None,
+    });
     assert!(connection.poll().is_empty());
 }
 

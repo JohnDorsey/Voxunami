@@ -2892,7 +2892,7 @@ class EditorLayoutTests(unittest.TestCase):
             self.assertGreaterEqual(areas.sidebar.left, areas.canvas.right, size)
             self.assertEqual((areas.sidebar.top, areas.sidebar.bottom), (areas.canvas.top, areas.canvas.bottom))
             self.assertLess(areas.sidebar.width, areas.canvas.width // 4, "thin")
-            self.assertEqual(list(areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid"])
+            self.assertEqual(list(areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid", "breakout"])
             buttons = list(areas.sidebar_buttons.items())
             for name, rectangle in buttons:
                 self.assertTrue(areas.sidebar.contains(rectangle), name)
@@ -5587,15 +5587,15 @@ class EditorTests(EditorDriver):
         self.application.draw()
         self.assertFalse(self.press_dialog("discard"))
 
-    def test_the_dialog_shows_the_current_tile_and_the_file_side_by_side(self):
+    def test_the_dialog_shows_the_file_and_the_current_tile_side_by_side(self):
         self.select((0, 0))
         self.drag(self.position(0, 0), self.position(1, 0))
         self.quit_event()
         self.application.draw()
         areas = self.application.dialog_areas()
         surface = self.application.surface
-        current = va.fit_picture_rectangle(areas["current"], 8)
-        disk = va.fit_picture_rectangle(areas["disk"], 8)
+        current = va.fit_picture_rectangle(areas["new0"], 8)
+        disk = va.fit_picture_rectangle(areas["old0"], 8)
         self.assertEqual(tuple(surface.get_at((current.x + 2, current.y + 2)))[:3], (0, 0, 0))
         self.assertEqual(tuple(surface.get_at((disk.x + 2, disk.y + 2)))[:3], BLUE[:3])
         self.assertEqual(tuple(surface.get_at((current.right - 3, current.bottom - 3)))[:3], BLUE[:3])
@@ -6025,9 +6025,9 @@ class GridButtonTests(EditorDriver):
     def corner(self, name):
         return (self.button(name).x + 4, self.button(name).y + 4)
 
-    def test_the_sidebar_has_a_button_each_for_wrap_assist_the_pixel_grid_and_the_tile_grid(self):
-        self.assertEqual(va.SIDEBAR_BUTTONS, {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"})
-        self.assertEqual(list(self.editor.areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid"])
+    def test_the_sidebar_has_a_button_each_for_wrap_assist_the_grids_and_the_channel_breakout(self):
+        self.assertEqual(va.SIDEBAR_BUTTONS, {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg", "breakout": "Ch"})
+        self.assertEqual(list(self.editor.areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid", "breakout"])
         for name in ("pixel_grid", "tile_grid"):
             self.assertIn("grid", va.SIDEBAR_BUTTON_HINTS[name].lower())
             self.application.pointer = self.button(name).center

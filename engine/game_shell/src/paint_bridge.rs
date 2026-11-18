@@ -20,8 +20,8 @@ pub use connection::ToolConnection;
 pub use painter::{Buttons, Painter};
 pub use path::{PaintPath, PathPoint};
 pub use protocol::{
-    CatalogueTile, DEFAULT_PORT, FromTool, LineBuffer, PROTOCOL, Pointer, ToTool, decode_base64,
-    encode_base64,
+    CatalogueTile, DEFAULT_PORT, FromTool, LineBuffer, PBR_PROFILE, PROTOCOL, Pointer, ToTool,
+    decode_base64, encode_base64,
 };
 
 #[cfg(test)]

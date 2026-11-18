@@ -8,7 +8,7 @@ use data_packs::Tile;
 use super::catalogue::{Catalogue, catalogue_of};
 use super::connection::ToolConnection;
 use super::path::PaintPath;
-use super::protocol::{FromTool, Pointer, ToTool};
+use super::protocol::{FromTool, PBR_PROFILE, Pointer, ToTool};
 use crate::package_data::PackageData;
 use crate::session::SurfaceTarget;
 use crate::texture_pack::{PictureApplier, PicturePlace, write_of};
@@ -27,7 +27,7 @@ pub struct Painter {
     catalogue: Catalogue,
     path: PaintPath,
     last_pointer: Option<Pointer>,
-    /// What each place the tool has changed was last written as: a picture the tool sends has no companions, so the picture's own are kept.
+    /// What each place the tool has changed was last written as: a picture the tool sends without `companions` keeps the ones it last had.
     written: BTreeMap<PicturePlace, Tile>,
     told_gone: bool,
 }
@@ -43,6 +43,7 @@ impl Painter {
         let catalogue = catalogue_of(package);
         connection.send(&ToTool::Hello {
             host: host.to_owned(),
+            profile: Some(PBR_PROFILE.to_owned()),
         });
         connection.send(&ToTool::Tiles(catalogue.tiles.clone()));
         Ok(Self {
@@ -74,7 +75,14 @@ impl Painter {
                 Err(problem) => notes.push(format!(
                     "the tool sent a line that is not a message: {problem}"
                 )),
-                Ok(FromTool::Welcome { tool, .. }) => notes.push(format!("{tool} is connected")),
+                Ok(FromTool::Welcome { tool, profile, .. }) => {
+                    notes.push(format!("{tool} is connected"));
+                    if let Some(profile) = profile.filter(|profile| profile != PBR_PROFILE) {
+                        notes.push(format!(
+                            "the tool's PBR setting is {profile} and the game reads {PBR_PROFILE}: it sends no companion pictures"
+                        ));
+                    }
+                }
                 Ok(FromTool::Known { ids, missing }) => notes.push(format!(
                     "the tool has files for {} of the world's {} pictures{}",
                     ids.len(),
@@ -85,8 +93,15 @@ impl Painter {
                         format!(" (not for {} of them)", missing.len())
                     }
                 )),
-                Ok(FromTool::Tile { id, size, rgba }) => {
-                    if let Some(note) = self.write_picture(package, &id, size, rgba, applier) {
+                Ok(FromTool::Tile {
+                    id,
+                    size,
+                    rgba,
+                    companions,
+                }) => {
+                    if let Some(note) =
+                        self.write_picture(package, &id, size, rgba, companions, applier)
+                    {
                         notes.push(note);
                     }
                 }
@@ -167,13 +182,15 @@ impl Painter {
         }
     }
 
-    /// Writes a picture the tool sent into the renderer, keeping the companions the picture had. Returns what is wrong, if anything.
+    /// Writes a picture the tool sent into the renderer. With `companions` the picture has exactly those (the specular `_s` and the normal `_n`: one the tool did not send is none,
+    /// whatever the world had, since the tool's file for it would not exist); without, it keeps the companions it had. Returns what is wrong, if anything.
     fn write_picture(
         &mut self,
         package: &PackageData,
         id: &str,
         size: u32,
         rgba: Vec<u8>,
+        companions: Option<BTreeMap<String, Vec<u8>>>,
         applier: &mut impl PictureApplier,
     ) -> Option<String> {
         let Some(place) = self.catalogue.place_of(id) else {
@@ -192,12 +209,19 @@ impl Painter {
             ));
         }
         let before = self.written.get(&place).unwrap_or(world);
+        let (specular, normal) = match companions {
+            Some(mut companions) => (companions.remove("_s"), companions.remove("_n")),
+            None => (
+                before.specular().map(<[u8]>::to_vec),
+                before.normal().map(<[u8]>::to_vec),
+            ),
+        };
         let mut tile = Tile::from_rgba(size, rgba);
-        if let Some(specular) = before.specular() {
-            tile = tile.with_specular(specular.to_vec());
+        if let Some(specular) = specular {
+            tile = tile.with_specular(specular);
         }
-        if let Some(normal) = before.normal() {
-            tile = tile.with_normal(normal.to_vec());
+        if let Some(normal) = normal {
+            tile = tile.with_normal(normal);
         }
         if let Err(reason) = applier.write(place.0, place.1, &write_of(&tile)) {
             return Some(format!("the picture {id} was refused: {reason}"));

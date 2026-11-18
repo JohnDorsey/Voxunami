@@ -57,6 +57,13 @@ phases; what works so far:
   the rows do not fit, and is greyed for the eraser, the rotation and the selection. The eye dropper loads the values of the pixel into the slot, not the modes. The key X swaps the two colours and the two
   sets of values. The eraser and the rotation act on the channels as described above.
   transparent and has no channel data leaves what is under it); a picture from another program leaves the channels alone; Delete and Cut reset them to neutral.
+- Channel breakout: the button "Ch" of the sidebar shows the canvas as a grid of panels (their number and shape follow the space): RGB (alpha not part of it), alpha, then each channel of the setting, in grey levels of its meaning (lowest
+  black, highest white; no tilt is the middle grey); it works under `none` too, with the two panels of the colour. Every panel shows the same canvas at the same zoom and place: the wheel zooms and the middle button pans all of them together
+  (with wrap-assist each panel repeats the canvas). A stroke (or a selection, a pan) is bound to the panel it began in: it goes on with that panel's pixels when the pointer leaves it. The brush guide, the grids and the selection
+  are in every panel. This is simpler than the plan (which had the panels inside a sheet with a zoom of its own, besides the zoom of wrap-assist): there is one zoom, shared.
+- Read-out: above the canvas, right of the name, the pixel under the pointer (a pixel of any copy with wrap-assist), its colour as `#RRGGBBAA` and the decoded value of each channel (as many as fit beside the name), in the breakout too.
+- Closing with unsaved tiles: the dialog shows one tile at a time with a row for what differs (RGB together, alpha, then each channel by name; a row that did not change is left out, rows that do not fit a small window are counted) and for each row the
+  old picture (the files), the new one, and the difference (bright red on black). The orange dot of the atlas and the `*` after a name mean that anything differs, in any channel.
 - Settings: the gear button left of the atlas title opens a window with the PBR setting (a menu: `none`, `labpbr_1_3`), "Apply" and "Reload folder" (`AtlasProject.reload`). Both are refused, with the reason on the window,
   while a tile has unsaved changes. If the new setting has no place for a channel that has data, the window lists them and needs "Switch anyway". The change cannot be undone. After it the status line says what left the atlas or became an
   error tile. The gear does nothing until `atlas.json` exists. A tile whose name ends in `_n` or `_s` gets a warning (when the program starts, on renaming, after a change of the setting): the game reads such a file as a companion of another picture.
@@ -139,7 +146,7 @@ All of the planned features are built.
 
 - Painting in a program that shows the tiles: `python VirtualAtlas.py --bridge [PORT]` lets a program on this machine (a game, say) connect and say which tile its pointer is
   over and where; VirtualAtlas then paints there with the tool, colours and sizes chosen here (a stroke that runs off one face onto the next wraps around the tile), and sends
-  each tile's pixels back as they change so that the program shows them at once. Nothing in it is about one program: the protocol is `tools/virtual_atlas/BRIDGE.md`. In
+  each tile's pixels back as they change so that the program shows them at once (with the companion pictures of the tile when the program says it reads the convention the atlas is set to: `BRIDGE.md`). Nothing in it is about one program: the protocol is `tools/virtual_atlas/BRIDGE.md`. In
   Voxunami: `.paint` in the game's command line (see `docs/world-painting-options.md`).
 
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.
