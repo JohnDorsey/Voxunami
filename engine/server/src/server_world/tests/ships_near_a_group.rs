@@ -428,3 +428,47 @@ fn the_answers_are_those_of_the_formula_on_a_crowd_of_random_ships() {
     );
     assert_eq!(found, expected);
 }
+
+/// The ships near the mechanism that `anchor` speaks for: the one ship or the group (`ServerWorld::ships_near_mechanism_lagging`, 4c-5-4c: a single ship on a rail has a frame of its
+/// own while a stranger is near it, and is a side of a ghost as a group is).
+fn near_mechanism(world: &ServerWorld, anchor: GridId, room: ContactRoom) -> Vec<GridId> {
+    world.ships_near_mechanism_lagging(anchor, room, 0.0)
+}
+
+#[test]
+fn a_ship_that_is_alone_has_the_ships_near_it_as_a_group_has() {
+    let mut world = world_for_rails();
+    let alone = ship_with_hull(&mut world, [0.0, 0.0, 0.0], [0.0; 3]);
+    let stranger = ship_with_hull(&mut world, [10.0, 0.0, 0.0], [0.0; 3]);
+    let far = ship_with_hull(&mut world, [0.0, 5_000.0, 0.0], [0.0; 3]);
+    let room = ContactRoom {
+        margin: 16.0,
+        seconds: 0.0,
+    };
+    // (Both are near each other, and neither is a group: the mechanism of each is itself.)
+    assert_eq!(near_mechanism(&world, alone, room), [stranger]);
+    assert_eq!(near_mechanism(&world, stranger, room), [alone]);
+    assert_eq!(near_mechanism(&world, far, room), []);
+    // (A ship that is not there is no mechanism, and `ships_near_group` still gives nothing for a ship that is no group.)
+    assert_eq!(near_mechanism(&world, GridId::new(9_999), room), []);
+    assert_eq!(near(&world, alone, room), []);
+}
+
+#[test]
+fn a_group_has_the_same_ships_near_it_as_a_mechanism_and_as_a_group_and_only_its_anchor_speaks_for_it()
+ {
+    let (mut world, ships) = a_group();
+    let stranger = ship_with_hull(&mut world, [10.0, 0.0, 0.0], [0.0; 3]);
+    let room = ContactRoom {
+        margin: 16.0,
+        seconds: 0.0,
+    };
+    assert_eq!(
+        near_mechanism(&world, ships[0], room),
+        near(&world, ships[0], room)
+    );
+    assert_eq!(near_mechanism(&world, ships[0], room), [stranger]);
+    // (A ship of a group that is not its anchor does not speak for it, as for `ships_near_group`.)
+    assert_eq!(near_mechanism(&world, ships[1], room), []);
+    assert_eq!(near_mechanism(&world, ships[2], room), []);
+}

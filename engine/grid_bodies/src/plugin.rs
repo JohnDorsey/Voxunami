@@ -419,11 +419,13 @@ impl Followed {
         if world.data().grids().has_partners(id) {
             return None;
         }
-        let turns_on_a_rail = !ship.held
+        // (A ship alone on a rail has a free body of its own, at the rail's point, **while it turns, and while another ship is near it**: the bodies turn it, and a touch of the
+        // other gives it its kick. A ship that does not turn and has nothing near is a fixed body in the frame everything is in, which costs nothing.)
+        let has_a_body_on_its_rail = !ship.held
             && !ship.frozen
-            && ship.angular_velocity != [0.0; 3]
-            && ship.rail.as_ref().is_some_and(|rail| rail.spin.is_none());
-        turns_on_a_rail.then_some(Self::RailPoint(id))
+            && ship.rail.as_ref().is_some_and(|rail| rail.spin.is_none())
+            && (ship.angular_velocity != [0.0; 3] || world.has_a_stranger_near_on_its_rail(id));
+        has_a_body_on_its_rail.then_some(Self::RailPoint(id))
     }
 }
 
@@ -2052,6 +2054,17 @@ impl Bodies {
         let time_step = self.config.settings.time_step;
         let mut kicked = Vec::new();
         for (key, frame) in &mut self.frames {
+            // A ship alone on a rail that a stranger hit: **the kick**, as for a group (below). Nothing else is held for it: it has no joint, and the rail holds its point.
+            if let Some(Follow {
+                followed: Followed::RailPoint(ship),
+                ..
+            }) = frame.follow
+            {
+                if self.corrected_frames.contains(key) {
+                    kicked.push(ship);
+                }
+                continue;
+            }
             let Some(Follow {
                 followed: followed @ (Followed::RailGroup(_) | Followed::Group(_)),
                 anchor,
@@ -2113,7 +2126,8 @@ impl Bodies {
     }
 
     /// Takes a group that is on a rail off it when an end of a ship that is not of it pulls on an end of its own (a joint to be coupled, a docking port): the coupling and the docking
-    /// are made between ships of one frame, so the group has to be in the frame that ship is in, as it was when anything near took a group off its rail. **A stranger that does not pull
+    /// are made between ships of one frame, so the group has to be in the frame that ship is in, as it was when anything near took a group off its rail. **So is a ship alone on a
+    /// rail that has another ship near it** (the world says which: `ServerWorld::has_a_stranger_near_on_its_rail`; a ship with nothing near it has nothing to pull on). **A stranger that does not pull
     /// is no reason**: it is the contact ghost's, and a touch takes the rail (`hold_groups_at_their_points`). It is asked at the end of the step, where every ship is at the place of
     /// the end of the tick (the group's rail is taken after the step, as `update_coasting` takes any rail, and not before: the group would be stepped again for this tick).
     fn take_railed_groups_off_for_ends_that_pull(&mut self, world: &mut ServerWorld) {
@@ -2122,9 +2136,12 @@ impl Bodies {
             grids
                 .iter()
                 .filter(|(id, _)| {
-                    grids.has_partners(*id)
-                        && grids.group_of(*id).first() == Some(id)
-                        && world.rail_group_of(*id).is_some()
+                    if grids.has_partners(*id) {
+                        grids.group_of(*id).first() == Some(id)
+                            && world.rail_group_of(*id).is_some()
+                    } else {
+                        world.has_a_stranger_near_on_its_rail(*id)
+                    }
                 })
                 .map(|(id, _)| id)
                 .collect()

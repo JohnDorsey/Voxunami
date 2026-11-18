@@ -102,7 +102,7 @@ impl Bodies {
             return false;
         }
         // (A pull is between the middles of two faces, which are on the boxes of the blocks: nearer than the hulls' spheres by what is not a sphere. A voxel more is the rounding.)
-        let near = world.ships_near_group_lagging(
+        let near = world.ships_near_mechanism_lagging(
             anchor,
             ContactRoom {
                 margin: reach + 1.0,

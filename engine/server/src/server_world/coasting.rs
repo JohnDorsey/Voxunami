@@ -936,7 +936,8 @@ impl ServerWorld {
 
     /// Whether a ship that is on a rail of this module has to come off it: it is held, is in a level with a pull of its own, goes round nothing that is there, or
     /// something is near. (Turning is no reason: the rail holds the centre of mass and the bodies turn the ship.) For a group, a ship of it that is held or is in a file, or
-    /// something near any ship of it.
+    /// something near any ship of it. **A ship is no grid that is in the way of another** (step 4c-5-4c, 2026-11-18): a ship on a rail, alone or in a group, keeps it while another
+    /// ship is near, and a touch takes it (the contact ghost's, and the rail's kick); what is in the way is a planet, a sphere of influence or a carrier.
     fn has_to_leave_its_rail(&self, known: Option<&Neighbours>, grid: GridId) -> bool {
         let Some(ship) = self.data.grids().get(grid) else {
             return false;
@@ -950,12 +951,13 @@ impl ServerWorld {
             return false;
         };
         let members = self.data.grids().group_of(grid);
-        // (A group's ships are not in its way, and no other ship is either: the contact ghost has what is near it, and a touch takes it off its rail. A ship alone has the room it
-        // always had.)
-        let in_the_way = if members.len() > 1 {
-            self.ground_near_group(known, &members, Some(parent), 1.0)
-        } else {
+        // (No ship is in the way of a ship or a group that rides a rail: the contact ghost has what is near it, and a touch takes it off its rail. **Except for a ship that is alone
+        // and frozen**: it has no body, so no frame of its own to be hit in, and a stranger would meet it as a fixed wall that goes round at the speed of its rail; it comes off its
+        // rail for a ship that is near, as every ship did.)
+        let in_the_way = if members.len() == 1 && ship.frozen {
             self.near_group(known, &members, Some(parent), 1.0)
+        } else {
+            self.ground_near_group(known, &members, Some(parent), 1.0)
         };
         members
             .iter()
@@ -1101,6 +1103,7 @@ impl ServerWorld {
         let wait = QUIET_SECONDS * u64::from(ticks_per_second);
         // What is in the way of each ship is found once: nothing it is found from changes while the ships are gone through (a rail is all that does).
         let known = Neighbours::of(self);
+        self.railed_with_a_stranger_near.clear();
         let ships: Vec<GridId> = self
             .data
             .grids()
@@ -1128,6 +1131,16 @@ impl ServerWorld {
                         self.quiet_since.remove(&id);
                         let _ = self.set_grid_rail(id, None);
                     } else {
+                        // (A ship that is alone on its rail and has another ship in its way, by the room that would have taken it off the rail before, is told to the bodies, which give
+                        // it a frame of its own for as long as it is so.)
+                        if !self.data.grids().has_partners(id)
+                            && known
+                                .ships
+                                .lowest(id, 1.0, &[id])
+                                .is_some_and(|found| found.is_some())
+                        {
+                            self.railed_with_a_stranger_near.insert(id);
+                        }
                         self.answer_a_change_of_mass(id, ticks_per_second);
                     }
                 }
@@ -1180,6 +1193,15 @@ impl ServerWorld {
         {
             ship.rail = None;
         }
+    }
+
+    /// Whether this ship is alone, rides a rail of this module, and had another ship in its way (by the room that took a ship off its rail before the rail's kick: a margin of 64
+    /// voxels and a second of the speed they close at) when the ships were last looked at, in `update_coasting`. **The bodies give such a ship a frame of its own, a free body at the
+    /// rail's point that is a side of the contact ghost, for as long as it is so** (step 4c-5-4c of `docs/decisions/joints-and-cars.md`): a ship alone on a rail has no body of its
+    /// own otherwise (a stranger meets it as a wall that cannot move), and nothing could be hit that does not have one. It is the answer of the last tick: `update_coasting` is
+    /// the last of what a tick does to the ships, and the room is a second wide, so the frame is there some ticks before anything can touch.
+    pub fn has_a_stranger_near_on_its_rail(&self, ship: GridId) -> bool {
+        self.railed_with_a_stranger_near.contains(&ship)
     }
 
     /// The group of ships coupled by joints that this ship is in, if the group is on a rail: its rail is on its anchor, and holds the centre of mass of the ships. `None` for a ship

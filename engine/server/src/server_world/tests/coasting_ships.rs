@@ -287,7 +287,8 @@ fn an_orbit_that_goes_out_of_the_sphere_of_influence_of_a_planet_that_goes_round
 }
 
 #[test]
-fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_at_half_the_room() {
+fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_and_the_world_says_a_stranger_is_near_at_half_the_room()
+ {
     let (mut world, _) = space();
     let ship = ship_in_a_circle(&mut world, 10_000.0);
     // A ship at rest 12,000 voxels from it. The ship goes round at 8,169 voxels a second, so it closes at that, and a margin of 64 and a second of the closing speed is 8,233
@@ -300,8 +301,13 @@ fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_
     let other = ship_at(&mut world, [10_000.0, 12_000.0, 0.0], [0.0; 3]);
     world.data.set_clock(0);
     world.update_coasting(TICKS);
-    assert_eq!(rail_of(&world, ship), Some(rail), "it stays");
-    // Nearer than once that and it comes off.
+    assert_eq!(rail_of(&world, ship), Some(rail.clone()), "it stays");
+    assert!(
+        !world.has_a_stranger_near_on_its_rail(ship),
+        "and nothing is near it"
+    );
+    // Nearer than once that and **it stays on its rail all the same** (step 4c-5-4c: what is near a ship that rides a rail is the contact ghost's, and a touch takes it off, as for a
+    // group), and the world says that a stranger is near it, for the bodies to give it a frame of its own.
     world
         .data_mut()
         .grids_mut()
@@ -310,7 +316,34 @@ fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_
         .pose
         .position = WorldPosition::from_voxels([10_000.0, 6_000.0, 0.0]);
     world.update_coasting(TICKS);
-    assert_eq!(rail_of(&world, ship), None);
+    assert_eq!(rail_of(&world, ship), Some(rail), "it stays");
+    assert!(
+        world.has_a_stranger_near_on_its_rail(ship),
+        "and a stranger is near it"
+    );
+    // The stranger goes away and the world says so the next time the ships are looked at.
+    world.remove_grid(other);
+    world.update_coasting(TICKS);
+    assert!(!world.has_a_stranger_near_on_its_rail(ship));
+}
+
+#[test]
+fn a_ship_that_is_frozen_comes_off_its_rail_for_a_ship_that_is_near_as_one_that_is_not_does_not() {
+    // (Step 4c-5-4c: a ship that is alone keeps its rail while another ship is near, for the bodies to give it a frame of its own and the contact ghost to kick it. A frozen ship has no
+    // body, so it is no side of a ghost, and a stranger would meet it as a fixed wall that goes round at the speed of the rail: it leaves the rail, as it did.)
+    let (mut world, _) = space();
+    let ship = ship_in_a_circle(&mut world, 10_000.0);
+    let rail = world.coasting_rail(ship, time(0)).unwrap();
+    world.set_grid_rail(ship, Some(rail.clone())).unwrap();
+    let other = ship_at(&mut world, [10_000.0, 6_000.0, 0.0], [0.0; 3]);
+    world.data.set_clock(0);
+    world.update_coasting(TICKS);
+    assert_eq!(rail_of(&world, ship), Some(rail.clone()), "it stays");
+    assert!(world.has_a_stranger_near_on_its_rail(ship));
+    world.data_mut().grids_mut().get_mut(ship).unwrap().frozen = true;
+    world.update_coasting(TICKS);
+    assert_eq!(rail_of(&world, ship), None, "frozen, it comes off");
+    let _ = other;
 }
 
 #[test]

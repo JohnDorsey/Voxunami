@@ -981,12 +981,13 @@ fn a_blow_off_the_centre_sets_a_ship_on_a_rail_tumbling_and_it_is_put_on_a_rail_
     }
 }
 
-/// **A rider is taken off its rail by a ship that comes near, and meets it as a body in the same frame.** A rider is alone in its frame, so nothing there could meet it: the world takes the rail
-/// from a ship when something is within a margin of it, and the ship is the solver's again, in the frame of whatever is near. Ship A (a cube, turning, on a rail) has ship B put 40 voxels
-/// ahead of it, going 20 metres a second slower. A loses its rail in that tick and keeps its turn; the two then meet, and B does not go through A. (A ship that is slower falls to a lower orbit, and the slower it is the longer it has to fall
+/// **A rider is taken off its rail by the touch of a ship that comes near, and meets it as a body.** (Until 2026-11-18, step 4c-5-4c, it was taken off by the ship coming near: a rider
+/// is alone in its frame, so nothing there could meet it. Now a stranger that comes near is in the contact ghost with the rider, and a touch takes the rail with the kick of the hit.) Ship A (a cube,
+/// turning, on a rail) has ship B put 40 voxels ahead of it, going 20 metres a second slower. A keeps its rail and its turn while B is near; the two then meet, A loses its rail at the
+/// touch, and B does not go through A. (A ship that is slower falls to a lower orbit, and the slower it is the longer it has to fall
 /// before they meet: at 5 metres a second B was measured passing 6.5 voxels from A without touching it, so the test would have said nothing.)
 #[test]
-fn a_ship_that_turns_on_a_rail_is_taken_off_it_by_a_ship_that_comes_near_and_the_two_meet_as_bodies()
+fn a_ship_that_turns_on_a_rail_is_taken_off_it_by_the_touch_of_a_ship_that_comes_near_and_the_two_meet_as_bodies()
  {
     let mut scene = Scene::in_a_new_world();
     let speed = circular_speed(&scene, 0, DISTANCE);
@@ -1037,7 +1038,11 @@ fn a_ship_that_turns_on_a_rail_is_taken_off_it_by_a_ship_that_comes_near_and_the
             .unwrap();
     });
     scene.ticks(1);
-    assert!(!on_a_rail(&scene, a), "B is near: A is taken off its rail");
+    // (Step 4c-5-4c, 2026-11-18: B is near and does not touch, so A keeps its rail, with its turn, and a touch is what takes it: below.)
+    assert!(
+        on_a_rail(&scene, a),
+        "B is near, not touching: A keeps its rail"
+    );
     let found = turn_of(&scene, a);
     assert!(
         length(common::minus(found.spin, spin)) < 1e-9,
@@ -1056,6 +1061,10 @@ fn a_ship_that_turns_on_a_rail_is_taken_off_it_by_a_ship_that_comes_near_and_the
         closest = closest.min(length(apart));
     }
     let last_spin = turn_of(&scene, a).spin;
+    assert!(
+        !on_a_rail(&scene, a),
+        "the touch took A off its rail, with the kick of the hit"
+    );
     // (Measured: the middles came to 4.19 voxels, which fits a corner of A (up to 2.6 from its middle) against a face of B (1.5); A's spin became (0.9, 1.2, -3.1) from (0, 0.3, 0.1); B and A closed at
     // 7.5 metres a second at the end, from 20.)
     assert!(

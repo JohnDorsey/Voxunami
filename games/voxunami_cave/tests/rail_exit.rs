@@ -102,9 +102,11 @@ fn make_a_neighbour(scene: &mut Scene, ship: GridId, offset: f64) {
     });
 }
 
-/// The rail is dropped by a ship that comes near (not by a push): the ship goes on at the speed it had.
+/// A ship that comes near does not drop the rail (step 4c-5-4c, 2026-11-18: what is near a ship that rides a rail is the contact ghost's, and a touch takes the rail, with the exact
+/// kick of the hit: `ship_on_a_rail_is_hit.rs`): the ship goes on at the speed the rail gives it, the neighbour being given a frame of its own to be hit in. Before it, a neighbour 30
+/// voxels away took the ship off its rail, and this test was that the ship kept its speed when it came off; the push that follows is that control still.
 #[test]
-fn a_ship_taken_off_its_rail_by_a_neighbour_keeps_its_speed() {
+fn a_ship_that_a_neighbour_is_near_keeps_its_rail_and_its_speed() {
     let (mut scene, ship, speed) = a_coasting_ship();
     let on_the_rail = speed_of(&scene, ship);
     assert!(
@@ -112,24 +114,18 @@ fn a_ship_taken_off_its_rail_by_a_neighbour_keeps_its_speed() {
         "the rail gives the speed the ship went with: {speed} m/s, and {on_the_rail} m/s on the rail"
     );
     make_a_neighbour(&mut scene, ship, 30.0);
-    let mut dropped_at = None;
     for tick in 1..=12 {
         scene.ticks(1);
-        if dropped_at.is_none() && !on_a_rail(&scene, ship) {
-            dropped_at = Some(tick);
-        }
-        if dropped_at.is_some() {
-            let now = speed_of(&scene, ship);
-            assert!(
-                (now - speed).abs() < 0.01 * speed,
-                "tick {tick}: the ship went at {speed} m/s on its rail and goes at {now} m/s off it"
-            );
-        }
+        assert!(
+            on_a_rail(&scene, ship),
+            "tick {tick}: a ship 30 voxels away, and not touching it, leaves the ship on its rail"
+        );
+        let now = speed_of(&scene, ship);
+        assert!(
+            (now - speed).abs() < 0.01 * speed,
+            "tick {tick}: the ship went at {speed} m/s on its rail and goes at {now} m/s"
+        );
     }
-    assert!(
-        dropped_at.is_some(),
-        "a ship 30 voxels away takes the ship off its rail"
-    );
 }
 
 /// The control: a push that drops the rail gives the plugin a changed velocity, and the speed was kept before the fix too. The test keeps it so.

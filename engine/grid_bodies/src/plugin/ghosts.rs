@@ -21,13 +21,18 @@
 //! (a rail puts a group at its place of the end of the tick at the start of it) **and a free body is at its place of the start**: the ghost puts the first back by a tick of its speed
 //! (`Follow::at_the_start_of_the_tick`), and so does the search for what is near (`ServerWorld::ships_near_group_lagging`).
 //!
+//! **A ship alone on a rail** (2026-11-18, step 4c-5-4c) is a mechanism too, while another ship is near it: the world says which (`ServerWorld::has_a_stranger_near_on_its_rail`, by
+//! the room that used to take a ship off its rail), and `Followed::of` gives such a ship a `Followed::RailPoint` frame, a free body at the rail's point, **made when a stranger comes
+//! near and dropped when it has gone**. It is a side of the ghost like a group's, and a touch gives it the same kick (`hold_groups_at_their_points`). A ship that is frozen has no body
+//! and keeps no rail near a ship; a ship with ports or joint ends that pull is taken off its rail for them, as a group is.
+//!
 //! **A frame that falls.** The frame of a group that is alone falls with it, in the pull of the world at its point (`Follow::advance`): nothing pulls on what is in it. What is in the
 //! frame everything is in is pulled by the whole of it. In the ghost, which is in the frame of the first group, the second is pulled by the difference only, which is what the pull
 //! on a body here is, less what is applied to it there, and less what the ghost's frame falls with (`apply_gravity` is what a body had applied; nothing that a ghost knows of).
 //!
 //! **Not done:** the ground in the ghost (a ghost has none: a group has the ground in its own frame until it touches it, 4c-5-3, and a stranger that rests on the ground rests in the frame everything is in), a coupling that is made
-//! or pulled by a ship in a ghost (a group is not alone when the ends of a ship pull on its own: `alone.rs`, and a group on a rail comes off it for them: `Bodies::take_railed_groups_off_for_ends_that_pull`), a single ship on a rail
-//! that is hit (it leaves its rail when anything is near, as before), and a group that goes on a rail with a stranger near (it is not put on one then).
+//! or pulled by a ship in a ghost (a group is not alone when the ends of a ship pull on its own: `alone.rs`, and a group on a rail comes off it for them: `Bodies::take_railed_groups_off_for_ends_that_pull`), a ship or a group that goes on a rail with a stranger near
+//! (it is not put on one then: the room to go on is twice the room to stay on).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,7 +76,9 @@ impl Bodies {
             .frames
             .iter()
             .filter_map(|(key, frame)| match frame.follow?.followed {
-                Followed::Group(anchor) | Followed::RailGroup(anchor) => Some((anchor, *key)),
+                Followed::Group(anchor)
+                | Followed::RailGroup(anchor)
+                | Followed::RailPoint(anchor) => Some((anchor, *key)),
                 _ => None,
             })
             .collect();
@@ -81,7 +88,11 @@ impl Bodies {
             .keys()
             .map(|anchor| {
                 let ships: BTreeSet<GridId> = world
-                    .ships_near_group_lagging(*anchor, GHOST_ROOM, self.config.settings.time_step)
+                    .ships_near_mechanism_lagging(
+                        *anchor,
+                        GHOST_ROOM,
+                        self.config.settings.time_step,
+                    )
                     .into_iter()
                     .flat_map(|ship| {
                         if grids.has_partners(ship) {
@@ -253,7 +264,10 @@ impl Bodies {
         // What the body is pulled by: the world's, at its place (a group that is alone is pulled as a whole, at its point, by what its frame falls with).
         let pull = match frame.follow {
             Some(follow)
-                if matches!(follow.followed, Followed::Group(_) | Followed::RailGroup(_)) =>
+                if matches!(
+                    follow.followed,
+                    Followed::Group(_) | Followed::RailGroup(_) | Followed::RailPoint(_)
+                ) =>
             {
                 world.gravity_at(frame.level, follow.world(follow.anchor)?)
             }
@@ -327,7 +341,9 @@ impl Bodies {
                 if matches!(
                     frame.follow,
                     Some(Follow {
-                        followed: Followed::Group(_) | Followed::RailGroup(_),
+                        followed: Followed::Group(_)
+                            | Followed::RailGroup(_)
+                            | Followed::RailPoint(_),
                         ..
                     })
                 ) {

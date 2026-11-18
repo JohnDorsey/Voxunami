@@ -231,6 +231,8 @@ pub struct ServerWorld {
     carried_entities: BTreeMap<EntityId, Displacement>,
     /// The tick of the clock at which each free ship that could coast began to be left alone (see [`coasting`]).
     quiet_since: BTreeMap<GridId, u64>,
+    /// The ships that are alone, ride a rail, and have another ship in the way of them as of the last `update_coasting` (see [`ServerWorld::has_a_stranger_near_on_its_rail`]).
+    railed_with_a_stranger_near: BTreeSet<GridId>,
     /// What the orbits of the rails said at the time of the last putting of ships on them, so that the second putting of a tick works out nothing twice.
     rail_memo: RailMemo,
     /// How many orbits were made from a state (see [`ServerWorld::rail_work`]).
@@ -297,6 +299,7 @@ impl ServerWorld {
             carried_ships: BTreeMap::new(),
             carried_entities: BTreeMap::new(),
             quiet_since: BTreeMap::new(),
+            railed_with_a_stranger_near: BTreeSet::new(),
             rail_memo: RailMemo::default(),
             orbit_fits: Cell::new(0),
             ship_pairs_asked: Cell::new(0),

@@ -112,6 +112,31 @@ impl ServerWorld {
         if members.len() < 2 || members[0] != anchor {
             return Vec::new();
         }
+        self.ships_near_members_lagging(&members, room, lag)
+    }
+
+    /// As [`ServerWorld::ships_near_group_lagging`], **for a ship that is alone as well**: the ship that `anchor` speaks for is the one or the group (`anchor` is the ship of it with
+    /// the lowest number), and nothing is given for a ship that is not the anchor of what it is in or that is not there. A single ship on a rail has a frame of its own while a
+    /// stranger is near it (step 4c-5-4c of `docs/decisions/joints-and-cars.md`), and is a mechanism of a ghost as a group is.
+    pub fn ships_near_mechanism_lagging(
+        &self,
+        anchor: GridId,
+        room: ContactRoom,
+        lag: f64,
+    ) -> Vec<GridId> {
+        let members = self.data.grids().group_of(anchor);
+        if members.first() != Some(&anchor) {
+            return Vec::new();
+        }
+        self.ships_near_members_lagging(&members, room, lag)
+    }
+
+    fn ships_near_members_lagging(
+        &self,
+        members: &[GridId],
+        room: ContactRoom,
+        lag: f64,
+    ) -> Vec<GridId> {
         let group: Vec<_> = members
             .iter()
             .filter_map(|member| {
