@@ -244,6 +244,7 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
     BrickMesh {
         quads,
         detailed: Vec::new(),
+        shade_from_volume: false,
     }
 }
 
@@ -285,6 +286,7 @@ fn mesh_uniform_cube(cell: CoarseCell, neighbours: &[Option<&CoarseNode>; 6]) ->
     BrickMesh {
         quads,
         detailed: Vec::new(),
+        shade_from_volume: false,
     }
 }
 

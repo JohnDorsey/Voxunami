@@ -53,6 +53,16 @@ Light, levels of detail, planets, orbits, the great rivers, `/tp`, the sun and i
   carry some shade on this rough ground, so the rule takes back about 40 percent of what the merge saves (merge factor 2.36 down to 1.48). The earlier synthetic figures above (hash terrain) overstate it on gentle ground and
   understate it on rough. Elsewhere: 0fps's article on Minecraft-like AO merges only faces with equal levels at every vertex, the same rule, and calls the cost a modest rise in meshing time; Sodium's chunk vertex is 20 bytes
   (80 per quad, four vertices), stb_voxel_render's quad is 20 or 32 bytes with 6 bits per vertex for light or shade, a binary greedy mesher writes 8 bytes per quad (as reported by its README; not read by me).
+  **Prototype: the shade worked out by the fragment shader from the voxels that block the sun (branch `graphics-ao-from-volume-prototype`, 2026-11-17; not a decision).** `VOX_SHADE_MODE=volume` makes the mesher merge as if nothing were
+  shaded and flag each brick quad (bit 31 of `shade`); `volume_shade_level` in `contact_on.wgsl` then reads the 3 by 3 cells in front of the face from the occupancy volume the renderer already holds for the sun's ray (no new upload, the same
+  rule: cubes that hide what is behind them) and blends the four corner levels over the voxel the pixel is on. Pinned by a GPU test that draws a scene both ways and requires the same picture (`volume_shade.rs`; two mutants of the shader fail it;
+  all four adapters). **Measured** (release, Cave from the start, view radius 12, shadows on, `--benchmark`, three runs of each, the modes interleaved): quads 7.68 M against 12.39 M loaded (the mesher's mode: the same count as no shade at all) and
+  2.25 M against 3.60 M drawn in a frame; meshing time on the hills of the earlier probe back to that of no shade (2.2 to 2.4 s against 2.6 to 2.7 s). Frame time at 1280 x 720: **RTX 3090 3.68 ms with no shade, 3.85 with the mesher's levels
+  (+4.6 percent), 3.66 with the shader's (about nothing); the integrated AMD GPU 26.0 ms with none, 35.0 with the mesher's levels (+34 percent), 29.8 with the shader's (+14 percent)**, runs within 0.3 ms of each other. At 1920 x 1080 on the RTX the clean
+  rounds were all within 2 percent of each other; two rounds in six were far slower (one volume run at 14 ms; one round with both shaded modes at 8.4 ms), which I put down to the machine and did not explain. Not measured: 1920 x 1080 on the
+  integrated GPU, a moving camera, ships. **What it costs in design:** the shade exists only where the sun's-ray shader is used (shadows on, occupancy told, a window for the grid; at most four grids); the neighbours' bits must have reached the
+  renderer, or the layer round a brick shades as open until they do; the quad could be 8 bytes again (the third attribute is not removed in the prototype, so the bytes of the prototype are still 12); and since the mesher no longer reads the layer
+  round the brick, the 26 bricks it waits for and an edit's 27 remeshes could go back to the 6 faces and 7 (not done).
 
 ## Decided (levels of detail; Phase 38, owner 2026-10-23; specified in `lod-spec.md`)
 - One level-of-detail system for terrain and every grid, ships included, so that the ground can one day be a ship (a planet: a rough sphere of cubes in ordinary

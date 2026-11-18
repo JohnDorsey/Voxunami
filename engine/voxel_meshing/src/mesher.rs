@@ -5,6 +5,7 @@ use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
 use crate::neighbourhood::BrickNeighbourhood;
 use crate::occlusion::{CornerOcclusion, corner_occlusion};
 use crate::quad::{BrickMesh, DetailedQuad, FULL_LIGHT, Quad, quad_axes};
+use crate::shade_mode::{ShadeMode, shade_mode};
 
 pub(crate) const EDGE: usize = BRICK_EDGE_LENGTH;
 
@@ -75,6 +76,7 @@ pub fn mesh_brick(input: &BrickNeighbourhood<'_>, table: &BlockTable) -> BrickMe
         brick.mesh_whole_faces(face, &mut mesh.quads);
     }
     brick.mesh_partial_blocks(&mut mesh.detailed);
+    mesh.shade_from_volume = shade_mode() == ShadeMode::Volume;
     mesh
 }
 
@@ -216,6 +218,9 @@ impl<'a> MeshedBrick<'a> {
 
     /// How much the cubes round the face of the voxel at `p` that looks `face` shade its corners.
     fn occlusion_of(&self, p: [usize; 3], face: FaceDirection) -> CornerOcclusion {
+        if shade_mode() != ShadeMode::Vertex {
+            return CornerOcclusion::NONE;
+        }
         corner_occlusion(|place| self.occludes(place), p.map(|c| c as i64), face)
     }
 
@@ -391,6 +396,9 @@ fn shade_index(place: [i64; 3]) -> usize {
 /// Which of the cells of the brick and of the layer round it are cubes that shade the faces beside them: made once for a brick, so that looking at the cells round a face
 /// is a lookup in a list and not a search through the neighbourhood. `models` is what the voxels of the brick are.
 fn shading_of(input: &BrickNeighbourhood<'_>, models: &[ModelId], table: &BlockTable) -> Vec<bool> {
+    if shade_mode() != ShadeMode::Vertex {
+        return Vec::new();
+    }
     let mut shading = vec![false; SHADED_EDGE * SHADED_EDGE * SHADED_EDGE];
     for z in -1..=EDGE as i64 {
         for y in -1..=EDGE as i64 {

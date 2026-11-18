@@ -62,6 +62,8 @@ mod scatter;
 mod settings;
 #[path = "gpu_rendering/shader_packs.rs"]
 mod shader_packs;
+#[path = "gpu_rendering/volume_shade.rs"]
+mod volume_shade;
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];

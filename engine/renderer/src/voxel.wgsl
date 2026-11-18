@@ -365,6 +365,10 @@ struct Corner {
 
 // The levels of the four corners of a whole-voxel quad from its `shade` word.
 fn shade_levels_of(shade: u32) -> vec4<f32> {
+    // PROTOTYPE: bit 31 says the fragment shader works the levels out from the voxels that block the sun (`volume_shade_level`); a negative level is how it is passed on.
+    if ((shade >> 31u) != 0u) {
+        return vec4<f32>(-1.0);
+    }
     return vec4<f32>(f32(shade & 3u), f32((shade >> 2u) & 3u), f32((shade >> 4u) & 3u), f32((shade >> 6u) & 3u));
 }
 
@@ -578,7 +582,10 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.shading_normal = tilted_normal(in.normal, bump);
     // The picture's ambient occlusion, and the shade of the corners of the face (blended across it; a detailed quad has none): both cut the ambient light, so they are one
     // share. It is the pack's to use (the default one cuts the lamps', the ambient and the sky's light by it, and not the sun's).
-    let shade_level = mix(mix(in.shade_levels.x, in.shade_levels.y, in.shade_across.x), mix(in.shade_levels.z, in.shade_levels.w, in.shade_across.x), in.shade_across.y);
+    var shade_level = mix(mix(in.shade_levels.x, in.shade_levels.y, in.shade_across.x), mix(in.shade_levels.z, in.shade_levels.w, in.shade_across.x), in.shade_across.y);
+    if (in.shade_levels.x < 0.0) {
+        shade_level = volume_shade_level(in);
+    }
     surface.ambient_occlusion = relief.open * (1.0 - SHADE_PER_LEVEL * shade_level);
     surface.subsurface = material.subsurface;
     surface.sun_behind = 0.0;

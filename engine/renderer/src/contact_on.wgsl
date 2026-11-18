@@ -282,6 +282,53 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     return 1.0;
 }
 
+// PROTOTYPE: whether the voxel at `cell` (voxels from the window's origin) blocks the sun whole (a cube that hides what is behind it: the cubes that shade), 0 or 1.
+fn blocks_cell(window: Window, cell: vec3<i32>) -> f32 {
+    let entry = brick_entry(window, cell >> vec3<u32>(5u));
+    return f32(cell_state(entry, cell) == CELL_BLOCKS);
+}
+
+// PROTOTYPE: the level of shade (0 to 3) of the voxel face the pixel is on, worked out from the voxels that block the sun in the window of the face's grid, as `corner_occlusion`
+// of `voxel_meshing` does for the corners of a quad: at each corner of the face's voxel, the number of cubes among the two cells beside the cell in front of the face and the one
+// diagonal to it, or 3 when both beside it are cubes; blended bilinearly across the voxel, so two faces beside each other agree about the corner they share.
+fn volume_shade_level(in: VertexOutput) -> f32 {
+    if (in.volume == 0u) {
+        return 0.0;
+    }
+    let window = contact_windows.windows[in.volume - 1u];
+    let normal = window.to_local * in.normal;
+    let place = window.to_local * (in.relative - window.origin.xyz);
+    let magnitude = abs(normal);
+    var axis = 0u;
+    if (magnitude.y > magnitude.x && magnitude.y >= magnitude.z) {
+        axis = 1u;
+    } else if (magnitude.z > magnitude.x && magnitude.z > magnitude.y) {
+        axis = 2u;
+    }
+    let on_axis = axis_unit(axis);
+    let looks = select(-1.0, 1.0, dot(normal, on_axis) > 0.0);
+    let u_unit = axis_unit((axis + 1u) % 3u);
+    let v_unit = axis_unit((axis + 2u) % 3u);
+    let u_step = vec3<i32>(u_unit);
+    let v_step = vec3<i32>(v_unit);
+    // The cell in front of the face: along the axis half a voxel out of the plane (whatever rounding the plane has), across it the cell the place is in.
+    let front = vec3<i32>(floor(place + looks * 0.5 * on_axis));
+    let low_low = blocks_cell(window, front - u_step - v_step);
+    let mid_low = blocks_cell(window, front - v_step);
+    let high_low = blocks_cell(window, front + u_step - v_step);
+    let low_mid = blocks_cell(window, front - u_step);
+    let high_mid = blocks_cell(window, front + u_step);
+    let low_high = blocks_cell(window, front - u_step + v_step);
+    let mid_high = blocks_cell(window, front + v_step);
+    let high_high = blocks_cell(window, front + u_step + v_step);
+    let level_00 = select(low_mid + mid_low + low_low, 3.0, low_mid + mid_low > 1.5);
+    let level_10 = select(high_mid + mid_low + high_low, 3.0, high_mid + mid_low > 1.5);
+    let level_01 = select(low_mid + mid_high + low_high, 3.0, low_mid + mid_high > 1.5);
+    let level_11 = select(high_mid + mid_high + high_high, 3.0, high_mid + mid_high > 1.5);
+    let across = vec2<f32>(fract(dot(place, u_unit)), fract(dot(place, v_unit)));
+    return mix(mix(level_00, level_10, across.x), mix(level_01, level_11, across.x), across.y);
+}
+
 // How much of the sun the voxels let through to the place of this face, `distance` from the camera, in the first few cells of the ray: 0 or 1.
 fn contact_light(in: VertexOutput, distance: f32) -> f32 {
     return contact_walk(in, distance, 0u);

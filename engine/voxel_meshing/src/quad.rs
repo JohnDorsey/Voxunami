@@ -96,7 +96,7 @@ impl PackedQuad {
                 .expect("packed quad has a valid face index"),
             material: self.material & MAXIMUM_MATERIAL,
             light: (self.material >> 24) as u8,
-            occlusion: CornerOcclusion::from_bits(self.shade),
+            occlusion: CornerOcclusion::from_bits(self.shade & 0xFF),
         }
     }
 }
@@ -187,6 +187,8 @@ impl PackedDetailedQuad {
 pub struct BrickMesh {
     pub quads: Vec<Quad>,
     pub detailed: Vec<DetailedQuad>,
+    /// PROTOTYPE: the quads' shade is worked out by the fragment shader (bit 31 of `PackedQuad::shade`).
+    pub shade_from_volume: bool,
 }
 
 impl BrickMesh {
@@ -196,7 +198,17 @@ impl BrickMesh {
 
     pub fn pack(&self) -> PackedBrickMesh {
         PackedBrickMesh {
-            quads: self.quads.iter().map(|quad| quad.pack()).collect(),
+            quads: self
+                .quads
+                .iter()
+                .map(|quad| {
+                    let mut packed = quad.pack();
+                    if self.shade_from_volume {
+                        packed.shade |= 1 << 31;
+                    }
+                    packed
+                })
+                .collect(),
             detailed: self.detailed.iter().map(|quad| quad.pack()).collect(),
         }
     }
@@ -429,6 +441,7 @@ mod tests {
                 material: 3,
                 light: 9,
             }],
+            shade_from_volume: false,
         };
         assert!(!mesh.is_empty());
         let packed = mesh.pack();
