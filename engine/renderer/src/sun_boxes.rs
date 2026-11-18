@@ -10,7 +10,7 @@ use crate::voxel_renderer::{Avatar, EntityBox};
 /// How many boxes the shader is given: the nearest to the camera. A face tests the ray against all of them, so the number is a cost; the rest are left to the shadow map.
 pub(crate) const MAXIMUM_SUN_BOXES: usize = 16;
 
-/// One box as the shader has it (`SunBox` in `contact_on.wgsl`): the lowest and the highest corner, in voxels from the camera, along the axes of the world.
+/// One box as the shader has it (`SunBox` in `volume_table.wgsl`): the lowest and the highest corner, in voxels from the camera, along the axes of the world.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct SunBoxUniform {

@@ -400,8 +400,8 @@ pub struct RenderStatistics {
     pub shadow_casters_drawn: usize,
     /// How many cascades of the sky's maps (the terrain seen from straight above, for [`Atmosphere::sky_light_under_cover`]) were drawn again this frame.
     pub sky_cascades_drawn: usize,
-    /// How many windows of voxels that block the sun the faces were traced in this frame (0: the picture was drawn with the shader that has no walk of the sun's ray, which is
-    /// the case while no voxel that blocks the sun was told of, and while there are no shadows).
+    /// How many windows of voxels that block the sun the faces were walked in this frame (0: the picture was drawn with the shader that has no walk of the sun's ray, which is
+    /// the case while no voxel that blocks the sun was told of, and while there are no shadows; the faces are shaded at their corners all the same where some voxel was told of).
     pub traced_windows: usize,
     /// Whether the walk was the one that goes through the eighths of voxels that block the sun in part (some brick has such voxels), which is a shader of its own and slower.
     pub walked_shapes: bool,
@@ -457,7 +457,13 @@ struct FrameUniform {
     /// x: how far from the camera a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn), z: 1 if each pixel of
     /// a picture is wholly in the light or wholly in the shade (`pixelated_place` in `pictures_on.wgsl`), 0 if not.
     pictures: [f32; 4],
+    /// x: how much one level of the shade of the corners of a face darkens it (`SHADE_PER_LEVEL`'s place, [`VoxelRenderer::set_corner_shade`]).
+    shade: [f32; 4],
 }
+
+/// How much a level of the shade of the corners of a face darkens its ambient light, unless [`VoxelRenderer::set_corner_shade`] says another: a fifth, so that the darkest corner
+/// (level 3) keeps two fifths.
+pub const DEFAULT_CORNER_SHADE: f32 = 0.2;
 
 /// A cascade of the shadow map as the shader has it: the matrix from a place relative to the camera to the map, how far from the camera the cascade is looked in,
 /// the width of a texel in voxels, the depth range in voxels and half the width of the map in voxels.
@@ -919,6 +925,8 @@ pub struct VoxelRenderer {
     picture_distance: f32,
     /// Whether the shadow of a face is looked up at the middle of the picture's pixel each pixel of the screen is in ([`VoxelRenderer::set_pixelated_shadows`]).
     pixelated_shadows: bool,
+    /// How much one level of the shade of the corners of a face darkens its ambient light ([`VoxelRenderer::set_corner_shade`]).
+    corner_shade: f32,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -1244,6 +1252,7 @@ impl VoxelRenderer {
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
             pixelated_shadows: false,
+            corner_shade: DEFAULT_CORNER_SHADE,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1557,6 +1566,19 @@ impl VoxelRenderer {
     /// default size of the maps) and steps in the map's texels beyond; faces with no picture (beyond the picture distance, coarse nodes, avatars, boxes) are as they were.
     pub fn set_pixelated_shadows(&mut self, on: bool) {
         self.pixelated_shadows = on;
+    }
+
+    /// Chooses how much each level of the shade of the corners of a face (0 to 3, from the voxels beside it: ambient occlusion) cuts the ambient light that reaches it: the share
+    /// of its brightness a face loses at level 1, so that a corner at level 3 keeps one minus three times this. 0 is no shade, and the most is a third (level 3 is black). The
+    /// default is [`DEFAULT_CORNER_SHADE`]. The sun's light is not cut. (Untuned: the default was a guess.)
+    ///
+    /// Panics if it is not from 0 to a third.
+    pub fn set_corner_shade(&mut self, per_level: f32) {
+        assert!(
+            (0.0..=1.0 / 3.0).contains(&per_level),
+            "a level of shade cuts from nothing to a third, not {per_level}"
+        );
+        self.corner_shade = per_level;
     }
 
     fn remake_frame_bind_group(&mut self) {
@@ -2639,16 +2661,16 @@ impl VoxelRenderer {
             self.shadow_target = ShadowTarget::new(&self.device, true);
             self.remake_frame_bind_group();
         }
-        // The faces are traced (the shader with the walk of the sun's ray is used) while some window of voxels that block the sun is in view, and there are shadows for the
-        // walk to correct, or its answer is asked for.
+        // The faces are walked (the shader with the walk of the sun's ray is used) while some window of voxels that block the sun is in view, and there are shadows for the
+        // walk to correct, or its answer is asked for. Whenever a window is in view the shader has the voxels, for the shade of the corners of faces (`volume_shade_level`); with no
+        // walk it is the shader that has them and nothing more.
         let traced_windows = volume_frame
             .numbers
             .iter()
             .filter(|&&number| number != 0)
             .count();
-        let tracing = self.contact.is_some()
-            && traced_windows > 0
-            && (shadows.is_some() || self.contact_debug != ContactDebug::Off);
+        let tracing = self.contact.is_some() && traced_windows > 0;
+        let walking = tracing && (shadows.is_some() || self.contact_debug != ContactDebug::Off);
         let with_pictures = self.pictures_in_use && self.picture_distance > 0.0;
         // The walk goes through the eighths of voxels that block the sun in part only while some brick has such voxels: the code for it makes the shader slower even where there
         // are none.
@@ -2662,10 +2684,14 @@ impl VoxelRenderer {
             Vec::new()
         };
         let with_entities = !sun_boxes.is_empty();
-        let walk = SunWalk::Voxels {
-            shapes: with_shapes,
-            other_windows: with_other_windows,
-            entities: with_entities,
+        let walk = if walking {
+            SunWalk::Voxels {
+                shapes: with_shapes,
+                other_windows: with_other_windows,
+                entities: with_entities,
+            }
+        } else {
+            SunWalk::Shade
         };
         if tracing && let Some(contact) = &mut self.contact {
             contact.ensure_pipelines(&self.device, self.color_format, with_pictures, walk);
@@ -2703,10 +2729,10 @@ impl VoxelRenderer {
                 })
                 .count(),
             bricks_culled: pieces - visible.len(),
-            traced_windows: if tracing { traced_windows } else { 0 },
-            walked_shapes: tracing && with_shapes,
-            walked_other_windows: tracing && with_other_windows,
-            walked_entities: tracing && with_entities,
+            traced_windows: if walking { traced_windows } else { 0 },
+            walked_shapes: walking && with_shapes,
+            walked_other_windows: walking && with_other_windows,
+            walked_entities: walking && with_entities,
             quads_drawn: visible
                 .iter()
                 .map(|&index| self.mesh(drawables[index].mesh).quad_total())
@@ -3295,6 +3321,7 @@ impl VoxelRenderer {
             } else {
                 [0.0; 4]
             },
+            shade: [self.corner_shade, 0.0, 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3329,13 +3356,17 @@ impl VoxelRenderer {
 }
 
 /// The voxel shader: `voxel.wgsl` and, for what a face looks like where it may have a picture, either `pictures_on.wgsl` (the pictures are read from their textures) or
-/// `pictures_off.wgsl` (they are not, and the shader uses no texture at all); and for the walk of the sun's ray through the voxels that block it, either `contact_on.wgsl` (it is
-/// walked, in the buffers of the third bind group) or `contact_off.wgsl` (it is not, and the shader uses no buffer for it).
+/// `pictures_off.wgsl` (they are not, and the shader uses no texture at all); and for the voxels that block the sun, `volume_table.wgsl` (in the buffers of the third bind group: for
+/// the shade of the corners of faces) with either `contact_on.wgsl` (the sun's ray is walked through them) or `contact_none.wgsl` (it is not), or `contact_off.wgsl` alone (there are
+/// no voxels, and the shader uses no buffer for them).
 /// How much of the walk of the sun's ray the fragment shader has: none, or the walk through voxels that block the sun whole, with, as each is wanted, the walk through the eighths
 /// of those that block it in part, and the walk through the windows of other grids than the face's own. Each is code the shader is slower for, even where it has nothing to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SunWalk {
+    /// The shader has no voxels that block the sun: no walk, and no shade of the corners of a face.
     None,
+    /// The shader has the voxels, for the shade of the corners of a face, and no walk of the sun's ray (there are no shadows to correct).
+    Shade,
     Voxels {
         shapes: bool,
         other_windows: bool,
@@ -3375,12 +3406,28 @@ pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading
     };
     let (contact, shapes, windows, entities) = match walk {
         SunWalk::None => (include_str!("contact_off.wgsl"), "", "", ""),
+        SunWalk::Shade => (
+            concat!(
+                include_str!("volume_table.wgsl"),
+                "
+",
+                include_str!("contact_none.wgsl")
+            ),
+            "",
+            "",
+            "",
+        ),
         SunWalk::Voxels {
             shapes,
             other_windows,
             entities,
         } => (
-            include_str!("contact_on.wgsl"),
+            concat!(
+                include_str!("volume_table.wgsl"),
+                "
+",
+                include_str!("contact_on.wgsl")
+            ),
             if shapes {
                 include_str!("shapes_on.wgsl")
             } else {
@@ -3472,6 +3519,7 @@ pub(crate) fn voxel_shader(
         },
         match walk {
             SunWalk::None => "",
+            SunWalk::Shade => " and the shade of faces",
             SunWalk::Voxels { .. } => " and the sun's ray",
         },
         match walk {
@@ -4067,7 +4115,8 @@ mod tests {
     fn the_walk_of_the_suns_ray_and_the_books_of_the_volume_agree_on_sizes_and_on_what_an_entry_says()
      {
         use crate::occupancy_volume::{ENTRY_EMPTY, ENTRY_FULL, ENTRY_UNKNOWN, FIRST_SLOT_ENTRY};
-        let walk = include_str!("contact_on.wgsl");
+        let walk = include_str!("volume_table.wgsl");
+        let walk_alone = include_str!("contact_on.wgsl");
         for declaration in [
             format!("const WINDOW_BRICKS: u32 = {WINDOW_BRICKS}u;"),
             format!("const ENTRY_UNKNOWN: u32 = {ENTRY_UNKNOWN}u;"),
@@ -4087,13 +4136,14 @@ mod tests {
                 "const PARTIAL_ENTRY_SHIFT: u32 = {}u;",
                 crate::occupancy_volume::PARTIAL_ENTRY_SHIFT
             ),
-            format!(
-                "const CASTER_SLOPE_BIAS: f32 = {:?};",
-                crate::shadow::CASTER_SLOPE_BIAS
-            ),
         ] {
             assert!(walk.contains(&declaration), "{declaration}");
         }
+        let declaration = format!(
+            "const CASTER_SLOPE_BIAS: f32 = {:?};",
+            crate::shadow::CASTER_SLOPE_BIAS
+        );
+        assert!(walk_alone.contains(&declaration), "{declaration}");
         // And the pool's slots are the words the shader reads, four bytes each.
         assert_eq!(SLOT_BYTES, voxel_meshing::OCCUPANCY_WORDS * 4);
     }

@@ -1,5 +1,5 @@
 //! The graphics card's side of the voxels that block the sun: the tables of the windows, the pool of slots, the pool of partial slots, the shapes, the uniform that says where each window is, and the variant of the voxel
-//! shader that walks them (`contact_on.wgsl`). The books are kept by [`crate::occupancy_volume::Volume`]; this writes what it hands over.
+//! shader that walks them (`volume_table.wgsl`). The books are kept by [`crate::occupancy_volume::Volume`]; this writes what it hands over.
 //!
 //! It is made when the first voxel that blocks the sun is told of, and not before: a renderer without such voxels draws with the shader that has no walk in it (a binding the
 //! default fragment shader uses made two shadow tests flake on the integrated AMD GPU: `docs/specs/contact-trace-spec.md`, 4.4).
@@ -15,7 +15,7 @@ use crate::shader_pack::Shading;
 use crate::sun_boxes::{MAXIMUM_SUN_BOXES, SunBoxUniform};
 use crate::voxel_renderer::{SunWalk, voxel_pipelines, voxel_shader};
 
-/// Where a window is, as the shader has it (`Window` in `contact_on.wgsl`).
+/// Where a window is, as the shader has it (`Window` in `volume_table.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct WindowUniform {
@@ -30,7 +30,7 @@ pub(crate) struct WindowUniform {
     pub bounds_high: [f32; 4],
 }
 
-/// The windows, and what to draw of the walk (`Windows` in `contact_on.wgsl`).
+/// The windows, and what to draw of the walk (`Windows` in `volume_table.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct WindowsUniform {
@@ -70,10 +70,10 @@ pub(crate) struct ContactGpu {
     /// The voxel shader with the walk, with and without the pictures, the walk through shapes, the walk through the windows of other grids and the test against the boxes of
     /// entities, and the pipelines made with each (the number of the kind is `usize::from(with_pictures) + 2 * usize::from(with_shapes) + 4 * usize::from(with_other_windows) +
     /// 8 * usize::from(with_entities)`): made when they are first wanted.
-    shaders: [Option<wgpu::ShaderModule>; 16],
+    shaders: [Option<wgpu::ShaderModule>; 18],
     /// What the shaders are made with besides the engine's text: the pack's lighting, how the shaders with pictures draw their relief, and the values of the settings.
     shading: Shading,
-    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 16],
+    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 18],
 }
 
 fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -391,7 +391,9 @@ impl ContactGpu {
             entities,
         } = walk
         else {
-            panic!("a variant with the walk has a walk");
+            assert_eq!(walk, SunWalk::Shade, "a variant with the voxels has them");
+            // (After the sixteen kinds of the walk.)
+            return 16 + usize::from(with_pictures);
         };
         usize::from(with_pictures)
             + 2 * usize::from(shapes)

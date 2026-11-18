@@ -51,6 +51,9 @@ struct Frame {
     avatars: array<vec4<f32>, 16>,
     // x: how far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
     pictures: vec4<f32>,
+    // x: how much one level of the shade of the corners of a face darkens it: the colour is multiplied by one minus this times the level (the default, a fifth, leaves the darkest
+    // corner, level 3, with two fifths of what it was).
+    shade: vec4<f32>,
 }
 
 // What a shader pack is told of a face at a pixel (`docs/specs/shader-pack-spec.md`): the engine works out what is lit and what is not, and the pack's `pack_shade` makes a colour
@@ -174,6 +177,8 @@ struct VertexOutput {
     @location(6) @interpolate(flat) picture: u32,
     // The window of voxels that block the sun that the face is traced in (`Placement::volume`).
     @location(7) @interpolate(flat) volume: u32,
+    // Whether the face is a whole voxel's, whose corners are shaded by the cubes beside it (`volume_shade_level`): 1 for a whole quad, 0 for a detailed one.
+    @location(8) @interpolate(flat) shaded: u32,
 }
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
@@ -300,7 +305,7 @@ fn along(local: vec3<f32>, face_index: u32) -> f32 {
     return select(-1.0, 1.0, (face_index & 1u) == 1u) * dot(local, axis_unit(face_index / 2u));
 }
 
-fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
+fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32, shaded: u32) -> VertexOutput {
     // The face's normal in the grid's own axes, turned to the world's, where the sun is.
     let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
@@ -323,6 +328,7 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
     var out: VertexOutput;
     out.picture = picture;
     out.volume = placement.volume.x;
+    out.shaded = shaded;
     out.uv = vec2<f32>(0.0);
     if (picture != 0u) {
         // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
@@ -379,13 +385,13 @@ fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let corner = whole_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u, 1u);
 }
 
 @vertex
 fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
     let corner = detailed_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u, 0u);
 }
 
 // The same quads for the shadow map: where they are in the cascade (the frame's matrix is the cascade's) and nothing else.
@@ -554,7 +560,14 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.reflectance = material.reflectance;
     surface.metal = material.metal;
     surface.shading_normal = tilted_normal(in.normal, bump);
-    surface.ambient_occlusion = relief.open;
+    // The picture's ambient occlusion, and the shade of the corners of the voxel the face is (worked out from the voxels that block the sun, blended across the voxel; a detailed
+    // quad has none): both cut the ambient light, so they are one share. It is the pack's to use (the default one cuts the lamps', the ambient and the sky's light by it, and not
+    // the sun's).
+    var shade_level = 0.0;
+    if (in.shaded != 0u) {
+        shade_level = volume_shade_level(in);
+    }
+    surface.ambient_occlusion = relief.open * (1.0 - frame.shade.x * shade_level);
     surface.subsurface = material.subsurface;
     surface.sun_behind = 0.0;
     surface.relief_sun = relief.sun;

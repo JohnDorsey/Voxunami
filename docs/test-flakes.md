@@ -54,6 +54,10 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   `adapter 1: 1 pixels differ, such as [(157, 68)]` (screen.rs:386), the same pixel as 3, 4 and 5. **Reruns: 5 alone and 5 as the whole binary, 0 failures in 10.** Nothing the branch changed is on this test's path, which is why it is recorded here as this entry's and not as the branch's.
 - **Occurrence 7: 2026-11-11**, the full gate of step 4c-4 (a frame of its own for a group that is alone: `server`, `grid_bodies`, new Cave tests; nothing that draws a form), `cargo test --workspace --no-fail-fast`
   on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel again**. **Reruns: 3 as the whole binary (5 tests), 0 failures in 3.**
+- **Occurrence 8: 2026-11-17**, the full gate of phase 3 of smooth lighting (`voxel_meshing`: a quad carries corner shade; `world_view` meshers; a packed quad is unchanged, so nothing that draws a form),
+  `cargo test --workspace --no-fail-fast` on **Windows**: `adapter 3: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel, on a different adapter** (all before were adapter 1 or unrecorded). **Reruns: 1 alone and
+  1 as the whole binary (5 tests), 0 failures in 2.** The same gate's first run (without `--no-fail-fast`) also had one unrelated GPU timeout in `renderer/tests/gpu_rendering.rs`
+  (`the_pictures_of_coarse_nodes_are_the_same_to_the_pixel_...`, "the picture never settled", in a 1013 s binary with many tests over 60 s): it passed alone in 4 s and in the next whole run; not entered separately, noted here as load.
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
   first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4, 5 and 6 are the same pixel, (157, 68), on the same adapter: a first
@@ -90,6 +94,14 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   believed not).
 - **What would settle it.** Add that check in `read_varint` with a test of `[0x81, 0x00]`, `[0x80, 0x80, 0x00]` and the ten-byte forms, and run the whole gate (saves and replays are the risk). The owner's to decide, since it changes what a shared decoder accepts.
 
+
+### `renderer/tests/gpu_rendering/shader_packs.rs`: `giving_a_pack_and_taking_it_away_leaves_the_pictures_as_they_were_and_the_default_text_draws_as_the_default_does`
+
+- **The test.** It renders the block scene with the default pack (`before`, the first frame of a fresh renderer, taken with `render`, not `settled`), gives a pack, takes it away, and requires the picture to equal `before` byte for byte.
+- **Occurrence 1: 2026-11-17**, the full gate of phase 4 of smooth lighting (a third word in the packed quad, a shade attribute in the voxel and shadow pipelines, shade through `Surface::ambient_occlusion`), `cargo test --workspace --no-fail-fast`, Windows:
+  `AMD Radeon(TM) Graphics (IntegratedGpu, Vulkan): the default is not what it was` (`shader_packs.rs:206`). **Reruns:** the first rerun alone (right after the build) failed again; then 2 alone passed, 12 alone passed, and the whole binary passed (196 tests): **2 failures in 17**, both on the integrated AMD adapter.
+- **Beliefs.** **Believed, not checked for this test:** the known family of cause (the register's sister tests): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave pixels out, and this test compares the first frame (`before`) with a later one, where the sister tests now take `settled` pictures. **Not excluded:** that phase 4's change to the vertex layout made it likelier (it was not seen before, in the gates since the entry above of 2026-11-07; no baseline run of this test was made in a loop).
+- **What would settle it.** Take `before` with `settled`; run the test in a loop on that adapter with and without the phase 4 commit and count failures.
 
 ## Explained and fixed
 

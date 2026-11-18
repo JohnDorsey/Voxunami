@@ -9,27 +9,8 @@
 // none to walk). A brick that has such voxels has a partial slot too, 16 bits for each voxel, the number of its shape plus one (0:
 // none), and the shapes are 512 bits each, one for each eighth of a voxel, in a list. The walk goes through the eighths a ray crosses in such a voxel as it goes through voxels.
 //
-// The voxels are in windows, one for each grid with bricks in view (the terrain of the level, a planet, a ship): a table of 64 by 64 by 64 entries, one for each brick, indexed by
-// the brick's coordinates modulo 64, and a pool of slots of one bit for each voxel of a brick (see `occupancy_volume.rs`, the same numbers). A face is traced in the window of its own
-// grid, in the grid's own axes, so a planet that turns is walked in its own lattice.
-
-const WINDOW_BRICKS: u32 = 64u;
-// What an entry of a table says.
-const ENTRY_UNKNOWN: u32 = 0u;
-const ENTRY_EMPTY: u32 = 1u;
-const ENTRY_FULL: u32 = 2u;
-const FIRST_SLOT_ENTRY: u32 = 3u;
-// An entry's lower half says what it says of the bits, its upper half is the number of the brick's partial slot plus one (0: it has none).
-const BITS_ENTRY_MASK: u32 = 0xFFFFu;
-const PARTIAL_ENTRY_SHIFT: u32 = 16u;
-
-// The words of a slot: 32 voxels each, x along the bits, then y, then z along the words.
-const SLOT_WORDS: u32 = 1024u;
-
-// What the walk finds in a cell.
-const CELL_CLEAR: u32 = 0u;
-const CELL_BLOCKS: u32 = 1u;
-const CELL_UNKNOWN: u32 = 2u;
+// The windows, their tables and the cells are in `volume_table.wgsl`, which comes before this in the shader. A face is walked in the window of its own grid, in the grid's own axes,
+// so a planet that turns is walked in its own lattice.
 
 // The most cells the walk searches by its own rule, and the most it is asked to search.
 const MOST_CELLS: u32 = 24u;
@@ -38,67 +19,6 @@ const MOST_ASKED_CELLS: u32 = 64u;
 const LEAST_SINE: f32 = 1.0e-3;
 // How many texels the slope bias of the shadow map's casters adds to the strip, per unit of the sine (`CASTER_SLOPE_BIAS` in `shadow.rs`).
 const CASTER_SLOPE_BIAS: f32 = 1.5;
-
-struct Window {
-    // Where the window's origin (the lowest corner of its first brick) is relative to the camera, in voxels (xyz); w: 1 if the window is traced, 0 if it is not (a window not in
-    // use, or one that holds nothing that blocks the sun, or whose grid has no pose).
-    origin: vec4<f32>,
-    // From a vector in the world to the same in the grid's own axes: the turn of the grid, undone.
-    to_local: mat3x3<f32>,
-    // x, y, z: the brick coordinates of the first brick modulo the width of a window; w: where the window's table begins in `tables`.
-    brick: vec4<u32>,
-    // The lowest and the highest corner of the box that holds the window's bricks that block the sun, in voxels from the window's origin and in the grid's own axes (xyz).
-    bounds_low: vec4<f32>,
-    bounds_high: vec4<f32>,
-}
-
-// The box of an entity, in voxels from the camera, along the axes of the world (`entities_on.wgsl`).
-struct SunBox {
-    low: vec4<f32>,
-    high: vec4<f32>,
-}
-
-struct Windows {
-    windows: array<Window, 4>,
-    // x: how many cells to search whatever the rule says (0: by the rule), y: 1 to draw the walk's answer and nothing else.
-    debug: vec4<u32>,
-    // x: how many of the boxes are set.
-    entities: vec4<u32>,
-    // The boxes of the nearest entities, nearest first.
-    boxes: array<SunBox, 16>,
-}
-
-@group(2) @binding(0) var<uniform> contact_windows: Windows;
-// The tables of the windows, one after the other.
-@group(2) @binding(1) var<storage, read> tables: array<u32>;
-@group(2) @binding(2) var<storage, read> pool: array<u32>;
-
-// What the table says of the brick at `brick` (bricks from the window's origin, in the grid's own axes): one of the `ENTRY_` numbers, or a slot of the pool.
-fn brick_entry(window: Window, brick: vec3<i32>) -> u32 {
-    // (Beyond half a window from the origin a place of the table may be another brick's.)
-    if (any(brick < vec3<i32>(-32)) || any(brick >= vec3<i32>(32))) {
-        return ENTRY_UNKNOWN;
-    }
-    let place = (window.brick.xyz + vec3<u32>(brick)) & vec3<u32>(WINDOW_BRICKS - 1u);
-    return tables[window.brick.w + (place.z * WINDOW_BRICKS + place.y) * WINDOW_BRICKS + place.x];
-}
-
-// What the voxel at `cell` (voxels from the window's origin) says about the sun, given the entry of the brick it is in: it blocks it, it does not, or nothing is known of its brick.
-fn cell_state(entry: u32, cell: vec3<i32>) -> u32 {
-    let bits = entry & BITS_ENTRY_MASK;
-    if (bits == ENTRY_EMPTY) {
-        return CELL_CLEAR;
-    }
-    if (bits == ENTRY_FULL) {
-        return CELL_BLOCKS;
-    }
-    if (bits == ENTRY_UNKNOWN) {
-        return CELL_UNKNOWN;
-    }
-    let inside = vec3<u32>(cell & vec3<i32>(31));
-    let word = pool[(bits - FIRST_SLOT_ENTRY) * SLOT_WORDS + inside.z * 32u + inside.y];
-    return (word >> inside.x) & 1u;
-}
 
 // The cell the ray enters next, across the nearest boundary of the one it is in: on a tie the lowest axis (as the reference in `world_view::sun_blocked`).
 fn advance(cell: ptr<function, vec3<i32>>, boundary: ptr<function, vec3<f32>>, direction: vec3<i32>, next: vec3<f32>) {
