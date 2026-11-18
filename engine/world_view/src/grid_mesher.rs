@@ -2,7 +2,7 @@
 //! that asks (a ship is small beside the world around the viewer, and nothing has to be generated).
 //!
 //! Where [`crate::WorldMesher`] loads bricks around a viewer, this is told which bricks changed ([`GridMesher::brick_changed`]) and meshes
-//! those, and the bricks that touch them (across a face, along an edge or at a corner) whose faces or shade may have changed, when [`GridMesher::update`] is called. A brick that is not in
+//! those, and their neighbours whose faces against them may have changed, when [`GridMesher::update`] is called. A brick that is not in
 //! the ship is empty, which is what a ship's voxels are where nothing was sent, so a face against it is drawn.
 
 use std::collections::BTreeSet;
@@ -10,12 +10,10 @@ use std::sync::Arc;
 
 use block_models::BlockTable;
 use voxel_grid::{Brick, ChannelStorage, Grid};
-use voxel_meshing::{
-    BrickNeighbourhood, BrickOccupancy, NEIGHBOUR_COUNT, NEIGHBOUR_OFFSETS, mesh_brick,
-};
+use voxel_meshing::{BrickNeighbourhood, BrickOccupancy, mesh_brick};
 use voxel_space::{BrickCoordinate, FaceDirection, GridId};
 
-use crate::mesher::{MeshUpdate, ViewChannels, brick_channels, bricks_touching};
+use crate::mesher::{MeshUpdate, ViewChannels, brick_channels};
 use crate::occupancy::{OccupancyChange, OccupancyLog, OccupancyStatistics};
 
 pub struct GridMesher {
@@ -73,11 +71,14 @@ impl GridMesher {
         self.dirty.len()
     }
 
-    /// Tells the mesher a brick of a ship arrived or changed (or went), so it and the twenty-six bricks that touch it are meshed again.
+    /// Tells the mesher a brick of a ship arrived or changed (or went), so it and the bricks around it are meshed again.
     pub fn brick_changed(&mut self, grid: GridId, brick: BrickCoordinate) {
         self.dirty.insert((grid, brick));
-        self.dirty
-            .extend(bricks_touching(brick).map(|neighbour| (grid, neighbour)));
+        for face in FaceDirection::ALL {
+            if let Some(neighbour) = brick.neighbour(face) {
+                self.dirty.insert((grid, neighbour));
+            }
+        }
     }
 
     /// Forgets a ship that is gone. Nothing is returned for the meshes it had: whoever draws them drops the ship whole.
@@ -155,23 +156,17 @@ impl GridMesher {
         coordinate: BrickCoordinate,
     ) -> voxel_meshing::PackedBrickMesh {
         let center_light = self.channels.bulk_brightness(brick, coordinate);
-        // A brick the ship does not have is empty. Only the bricks across the faces are lit for: the shade of a corner reads which cells are there and not how bright
-        // they are, so the bricks along the edges and at the corners have no light worked out for them.
-        let neighbours: [Option<(&Arc<Brick>, Option<ChannelStorage>)>; NEIGHBOUR_COUNT] =
-            std::array::from_fn(|slot| {
-                let [dx, dy, dz] = NEIGHBOUR_OFFSETS[slot];
-                let neighbour =
-                    coordinate.checked_offset(i128::from(dx), i128::from(dy), i128::from(dz))?;
+        let neighbours: [Option<(Arc<Brick>, Option<ChannelStorage>)>; 6] =
+            std::array::from_fn(|face| {
+                let neighbour = coordinate.neighbour(FaceDirection::ALL[face])?;
                 let held = voxels.brick(neighbour)?;
-                let light = (slot < FaceDirection::ALL.len())
-                    .then(|| self.channels.bulk_brightness(held, neighbour))
-                    .flatten();
-                Some((held, light))
+                let light = self.channels.bulk_brightness(held, neighbour);
+                Some((Arc::clone(held), light))
             });
         let neighbourhood = BrickNeighbourhood {
             center: brick_channels(brick, center_light.as_ref(), &self.channels),
-            neighbours: std::array::from_fn(|slot| {
-                neighbours[slot]
+            neighbours: std::array::from_fn(|face| {
+                neighbours[face]
                     .as_ref()
                     .map(|(held, light)| brick_channels(held, light.as_ref(), &self.channels))
             }),
@@ -252,8 +247,8 @@ mod tests {
         fixture.set([1, 2, 3], 1);
         assert_eq!(
             fixture.mesher.pending(),
-            27,
-            "the brick and the twenty-six that touch it"
+            7,
+            "the brick and its six neighbours"
         );
         let updates = fixture.update(100);
         // Only the brick that exists has a mesh; its neighbours have nothing to draw.

@@ -7,8 +7,7 @@ use block_models::{BlockTable, ModelId, SUBDIVISIONS};
 use coarse_cells::{CELLS_PER_NODE, CoarseCell, CoarseNode, FULL_LIGHT};
 use voxel_space::{FaceDirection, LocalVoxelIndex};
 
-use crate::mesher::{BrickChannels, EDGE, merge_slice, uniform_model};
-use crate::neighbourhood::BrickNeighbourhood;
+use crate::mesher::{BrickChannels, BrickNeighbourhood, EDGE, merge_slice, uniform_model};
 use crate::quad::{BrickMesh, quad_axes};
 
 /// Sub-faces in a face of a voxel (it is cut into `SUBDIVISIONS` by `SUBDIVISIONS`).
@@ -376,10 +375,10 @@ mod tests {
 
     fn node(center: &Parts, neighbours: [Option<&Parts>; 6]) -> CoarseNode {
         coarse_node_of_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                center.channels(),
-                neighbours.map(|neighbour| neighbour.map(Parts::channels)),
-            ),
+            &BrickNeighbourhood {
+                center: center.channels(),
+                neighbours: neighbours.map(|neighbour| neighbour.map(Parts::channels)),
+            },
             &table(),
             AIR,
         )
@@ -519,7 +518,10 @@ mod tests {
             ..alone.channels()
         };
         let found = coarse_node_of_brick(
-            &BrickNeighbourhood::with_face_neighbours(channels, [None; 6]),
+            &BrickNeighbourhood {
+                center: channels,
+                neighbours: [None; 6],
+            },
             &table(),
             AIR,
         );

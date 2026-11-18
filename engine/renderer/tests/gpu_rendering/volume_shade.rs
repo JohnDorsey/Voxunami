@@ -336,10 +336,10 @@ fn pictures_of_bricks(
         }
         let storage = ChannelStorage::from_values(&values);
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels::blocks_only(&storage),
-                [None; 6],
-            ),
+            &BrickNeighbourhood {
+                center: BrickChannels::blocks_only(&storage),
+                neighbours: [None; 6],
+            },
             &table,
         )
         .pack();

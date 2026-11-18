@@ -45,15 +45,15 @@ fn color_of_block_seen_from_the_front(context: &GraphicsContext, block: Numbered
     );
     assert!(channels.states.is_some(), "the game draws by number");
     let mesh = mesh_brick(
-        &BrickNeighbourhood::with_face_neighbours(
-            BrickChannels {
+        &BrickNeighbourhood {
+            center: BrickChannels {
                 blocks: &blocks,
                 states: Some(&numbers),
                 orientations: None,
                 light: None,
             },
-            [None; 6],
-        ),
+            neighbours: [None; 6],
+        },
         &table,
     );
     let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);

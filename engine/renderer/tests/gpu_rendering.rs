@@ -136,7 +136,10 @@ fn mesh_of(voxels: &[([u8; 3], u32)]) -> voxel_meshing::PackedBrickMesh {
     let mut opaque = vec![true; 256];
     opaque[0] = false;
     let mesh = mesh_brick(
-        &BrickNeighbourhood::with_face_neighbours(BrickChannels::blocks_only(&storage), [None; 6]),
+        &BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&storage),
+            neighbours: [None; 6],
+        },
         &BlockTable::of_cubes(&opaque),
     );
     mesh.pack()
@@ -1169,15 +1172,15 @@ fn mesh_of_blocks(
     );
     let light = light.map(ChannelStorage::uniform);
     let mesh = mesh_brick(
-        &BrickNeighbourhood::with_face_neighbours(
-            BrickChannels {
+        &BrickNeighbourhood {
+            center: BrickChannels {
                 blocks: &blocks,
                 states: Some(&states),
                 orientations: None,
                 light: light.as_ref(),
             },
-            [None; 6],
-        ),
+            neighbours: [None; 6],
+        },
         table,
     );
     mesh.pack()
@@ -1626,7 +1629,10 @@ fn place_wide_cube(renderer: &mut VoxelRenderer, material: u32) {
     let mut opaque = vec![true; material as usize + 1];
     opaque[0] = false;
     let mesh = mesh_brick(
-        &BrickNeighbourhood::with_face_neighbours(BrickChannels::blocks_only(&storage), [None; 6]),
+        &BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&storage),
+            neighbours: [None; 6],
+        },
         &BlockTable::of_cubes(&opaque),
     );
     renderer.upload_brick(ORIGIN_BRICK, &mesh.pack());
@@ -2009,7 +2015,10 @@ fn mesh_of_slabs(voxels: &[[u8; 3]], from: [u8; 3], to: [u8; 3]) -> voxel_meshin
     let air = BlockDefinition::air();
     let definitions: Vec<Option<&BlockDefinition>> = vec![Some(&air), Some(&slab)];
     mesh_brick(
-        &BrickNeighbourhood::with_face_neighbours(BrickChannels::blocks_only(&storage), [None; 6]),
+        &BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&storage),
+            neighbours: [None; 6],
+        },
         &BlockTable::from_definitions(&definitions),
     )
     .pack()
@@ -5363,10 +5372,10 @@ fn a_picture_on_a_block_of_a_turned_ship_reads_the_same_from_outside_as_on_the_g
         block[LocalVoxelIndex::new(16, 16, 16).index()] = 1;
         let storage = ChannelStorage::from_values(&block);
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels::blocks_only(&storage),
-                [None; 6],
-            ),
+            &BrickNeighbourhood {
+                center: BrickChannels::blocks_only(&storage),
+                neighbours: [None; 6],
+            },
             &table,
         );
         renderer.upload_grid_brick(a_ship(), ORIGIN_BRICK, &mesh.pack());

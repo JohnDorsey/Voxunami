@@ -2,7 +2,6 @@ use block_models::{BlockTable, ModelId, SUBDIVISIONS};
 use voxel_grid::ChannelStorage;
 use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
 
-use crate::neighbourhood::BrickNeighbourhood;
 use crate::quad::{BrickMesh, DetailedQuad, FULL_LIGHT, Quad, quad_axes};
 
 pub(crate) const EDGE: usize = BRICK_EDGE_LENGTH;
@@ -44,6 +43,18 @@ impl<'a> BrickChannels<'a> {
         self.light
             .map_or(FULL_LIGHT, |light| light.get(voxel).min(255) as u8)
     }
+}
+
+/// The voxels a brick's mesh depends on: its own, and the six bricks that touch its faces (only
+/// the layer next to the brick matters).
+///
+/// `neighbours` is indexed by [`FaceDirection::index`]. A missing neighbour is treated as empty,
+/// so faces next to it are drawn; callers that stream bricks should mesh only once the
+/// neighbours exist, or remesh when they arrive.
+#[derive(Clone, Copy, Debug)]
+pub struct BrickNeighbourhood<'a> {
+    pub center: BrickChannels<'a>,
+    pub neighbours: [Option<BrickChannels<'a>>; 6],
 }
 
 /// The mesh of a brick: a greedy-meshed rectangle for every maximal run of identical, exposed faces
@@ -481,15 +492,15 @@ mod tests {
 
     fn leafy_mesh(blocks: &ChannelStorage, light: Option<&ChannelStorage>) -> BrickMesh {
         mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks,
                     states: None,
                     orientations: None,
                     light,
                 },
-                [None; 6],
-            ),
+                neighbours: [None; 6],
+            },
             &leaf_table(),
         )
     }
@@ -512,7 +523,10 @@ mod tests {
 
     fn isolated_mesh(center: &ChannelStorage) -> BrickMesh {
         mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(only(center), [None; 6]),
+            &BrickNeighbourhood {
+                center: only(center),
+                neighbours: [None; 6],
+            },
             &table(),
         )
     }
@@ -529,10 +543,10 @@ mod tests {
         neighbours: [Option<&ChannelStorage>; 6],
     ) -> BrickMesh {
         mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                only(center),
-                neighbours.map(|neighbour| neighbour.map(only)),
-            ),
+            &BrickNeighbourhood {
+                center: only(center),
+                neighbours: neighbours.map(|neighbour| neighbour.map(only)),
+            },
             &table(),
         )
     }
@@ -680,7 +694,10 @@ mod tests {
         neighbours[usize::from(FaceDirection::PositiveY.index())] = slab(&top_slab);
         neighbours[usize::from(FaceDirection::NegativeY.index())] = slab(&bottom_slab);
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(only(&stone), neighbours.map(Some)),
+            &BrickNeighbourhood {
+                center: only(&stone),
+                neighbours: neighbours.map(Some),
+            },
             &table(),
         );
         assert!(mesh.detailed.is_empty());
@@ -701,15 +718,15 @@ mod tests {
         let dark = ChannelStorage::uniform(10);
         let air = ChannelStorage::uniform(AIR);
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks: &stone,
                     states: None,
                     orientations: None,
                     light: Some(&dark),
                 },
-                [Some(only(&air)); 6],
-            ),
+                neighbours: [Some(only(&air)); 6],
+            },
             &table(),
         );
         assert_eq!(mesh.quads.len(), 6);
@@ -782,15 +799,15 @@ mod tests {
 
     fn mesh_marked(blocks: &ChannelStorage, orientations: &ChannelStorage) -> BrickMesh {
         mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks,
                     states: None,
                     orientations: Some(orientations),
                     light: None,
                 },
-                [None; 6],
-            ),
+                neighbours: [None; 6],
+            },
             &marked_table(),
         )
     }
@@ -880,15 +897,15 @@ mod tests {
 
     fn with_states(blocks: &ChannelStorage, states: &ChannelStorage) -> BrickMesh {
         mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks,
                     states: Some(states),
                     orientations: None,
                     light: None,
                 },
-                [None; 6],
-            ),
+                neighbours: [None; 6],
+            },
             &table(),
         )
     }
@@ -1241,15 +1258,15 @@ mod tests {
         let states = ChannelStorage::uniform(1);
         let stone = ChannelStorage::uniform(STONE);
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks: &blocks,
                     states: Some(&states),
                     orientations: None,
                     light: None,
                 },
-                [Some(only(&stone)); 6],
-            ),
+                neighbours: [Some(only(&stone)); 6],
+            },
             &table(),
         );
         // Every slab's top is exposed, half way up its voxel, even where the slab above closes it off
@@ -1263,9 +1280,9 @@ mod tests {
         );
         // A stone brick next to a brick of slabs is not hidden either: the slabs only half hide it.
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                only(&stone),
-                [
+            &BrickNeighbourhood {
+                center: only(&stone),
+                neighbours: [
                     None,
                     Some(BrickChannels {
                         blocks: &blocks,
@@ -1278,7 +1295,7 @@ mod tests {
                     None,
                     None,
                 ],
-            ),
+            },
             &table(),
         );
         assert!(
@@ -1292,15 +1309,15 @@ mod tests {
 
     fn lit(blocks: &ChannelStorage, light: &ChannelStorage) -> BrickMesh {
         mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks,
                     states: None,
                     orientations: None,
                     light: Some(light),
                 },
-                [None; 6],
-            ),
+                neighbours: [None; 6],
+            },
             &table(),
         )
     }
@@ -1348,9 +1365,9 @@ mod tests {
         let neighbour_blocks = ChannelStorage::uniform(AIR);
         let neighbour_light = brick_from(|x, _, _| if x == 0 { 90 } else { 10 });
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                only(&blocks),
-                [
+            &BrickNeighbourhood {
+                center: only(&blocks),
+                neighbours: [
                     None,
                     Some(BrickChannels {
                         blocks: &neighbour_blocks,
@@ -1363,7 +1380,7 @@ mod tests {
                     None,
                     None,
                 ],
-            ),
+            },
             &table(),
         );
         let east: Vec<&Quad> = mesh
@@ -1387,15 +1404,15 @@ mod tests {
             _ => 20,
         });
         let mesh = mesh_brick(
-            &BrickNeighbourhood::with_face_neighbours(
-                BrickChannels {
+            &BrickNeighbourhood {
+                center: BrickChannels {
                     blocks: &blocks,
                     states: Some(&states),
                     orientations: None,
                     light: Some(&light),
                 },
-                [None; 6],
-            ),
+                neighbours: [None; 6],
+            },
             &table(),
         );
         let light_of = |face| {
@@ -1697,7 +1714,10 @@ mod tests {
                 .iter()
                 .map(|brick| brick.as_ref().map(|(blocks, states, light)| storages(blocks, states, light)))
                 .collect();
-            let input = BrickNeighbourhood::with_face_neighbours(channels_of(&center_storages), std::array::from_fn(|index| neighbour_storages[index].as_ref().map(channels_of)));
+            let input = BrickNeighbourhood {
+                center: channels_of(&center_storages),
+                neighbours: std::array::from_fn(|index| neighbour_storages[index].as_ref().map(channels_of)),
+            };
             let mesh = mesh_brick(&input, &table);
             let (covered, total) = mesh_pieces(&mesh);
             let world = World {

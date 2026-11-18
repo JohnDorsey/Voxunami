@@ -376,19 +376,19 @@ mod tests {
         let table = table();
         let stone = ChannelStorage::uniform(STONE);
         let air = ChannelStorage::uniform(AIR);
-        let around_stone = BrickNeighbourhood::with_face_neighbours(
-            BrickChannels::blocks_only(&stone),
-            [Some(BrickChannels::blocks_only(&stone)); 6],
-        );
+        let around_stone = BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&stone),
+            neighbours: [Some(BrickChannels::blocks_only(&stone)); 6],
+        };
         assert!(mesh_brick(&around_stone, &table).is_empty());
         assert_eq!(
             BrickOccupancy::of(&around_stone.center, &table),
             BrickOccupancy::Full
         );
-        let around_air = BrickNeighbourhood::with_face_neighbours(
-            BrickChannels::blocks_only(&air),
-            [Some(BrickChannels::blocks_only(&air)); 6],
-        );
+        let around_air = BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&air),
+            neighbours: [Some(BrickChannels::blocks_only(&air)); 6],
+        };
         assert!(mesh_brick(&around_air, &table).is_empty());
         assert_eq!(
             BrickOccupancy::of(&around_air.center, &table),

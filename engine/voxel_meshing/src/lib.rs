@@ -17,13 +17,11 @@
 
 mod coarse;
 mod mesher;
-mod neighbourhood;
 mod occupancy;
 mod quad;
 
 pub use coarse::{coarse_node_of_brick, mesh_coarse_node};
-pub use mesher::{BrickChannels, mesh_brick};
-pub use neighbourhood::{BrickNeighbourhood, NEIGHBOUR_COUNT, NEIGHBOUR_OFFSETS, neighbour_slot};
+pub use mesher::{BrickChannels, BrickNeighbourhood, mesh_brick};
 pub use occupancy::{BrickOccupancy, OCCUPANCY_WORDS, PartialVoxel};
 pub use quad::{
     BrickMesh, DetailedQuad, FULL_LIGHT, MAXIMUM_MATERIAL, PackedBrickMesh, PackedDetailedQuad,
