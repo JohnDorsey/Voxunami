@@ -44,6 +44,11 @@ phases; what works so far:
   all of a tile's files change or none, and a tile whose files cannot all change becomes an error tile with its files as they were. A channel
   that has data and has no place in the new setting needs a confirm. A picture that has files in two formats (its own setting's and another's)
   is an error tile, before and after a change, until one set is removed and the folder is read again (`AtlasProject.reload`).
+- A tile that has no PNG file yet keeps its channels too: `coordinates_to_channel_data` holds them (base64 of the bytes of all eight planes,
+  row by row, a pixel's channels together) for such a tile when they differ from what its companion files hold, and the entry goes when the tile is saved. The key is
+  not written when no tile needs it. An entry that does not fit makes its tile an error tile and is kept as it was. Editing the channels (undo and redo included)
+  is part of the tile's history; the strokes, blend modes and controls that change them are not in the window yet (`ChannelStroke`, `blend_channel` and
+  the codecs of `CHANNEL_CODECS` are the code for them, tested).
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
 - The right half edits the selected tiles. With several selected they appear as one canvas in their atlas

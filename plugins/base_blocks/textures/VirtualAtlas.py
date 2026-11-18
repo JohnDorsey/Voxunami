@@ -574,6 +574,9 @@ class AtlasFile:
     other_settings: dict[str, object] = dataclasses.field(default_factory=dict)
     # The name of a profile of PBR_PROFILES: which companion files (dirt_n.png, dirt_s.png) belong to a tile.
     pbr_profile: str = NO_PBR_PROFILE
+    # Base64 of the channels (the planes) of a tile that has no PNG file yet, kept like its pixels: only for such a tile
+    # whose channels differ from what its companion files hold.
+    coordinates_to_channel_data: dict[Coordinate, str] = dataclasses.field(default_factory=dict)
 
 
 class _DuplicateKeyError(Exception):
@@ -670,9 +673,18 @@ def parse_atlas_file(text: str) -> AtlasFile:
         if coordinate not in names:
             problems.append(f"coordinates_to_data: {format_coordinate(coordinate)} has data but no name")
 
+    channel_data = _read_coordinate_mapping(
+        "coordinates_to_channel_data", other_settings.pop("coordinates_to_channel_data", {}), "channel data", problems
+    )
+    for coordinate in sorted(channel_data, key=reading_order_key):
+        if coordinate not in names:
+            problems.append(f"coordinates_to_channel_data: {format_coordinate(coordinate)} has data but no name")
+
     if problems:
         raise AtlasFileError(problems)
-    return AtlasFile(tile_size, dict(names), dict(data), other_settings, pbr_profile)  # type: ignore[arg-type]
+    return AtlasFile(
+        tile_size, dict(names), dict(data), other_settings, pbr_profile, dict(channel_data)  # type: ignore[arg-type]
+    )
 
 
 def serialize_atlas_file(atlas_file: AtlasFile) -> str:
@@ -690,6 +702,11 @@ def serialize_atlas_file(atlas_file: AtlasFile) -> str:
         format_coordinate(coordinate): atlas_file.coordinates_to_data[coordinate]
         for coordinate in sorted(atlas_file.coordinates_to_data, key=reading_order_key)
     }
+    if atlas_file.coordinates_to_channel_data:
+        document["coordinates_to_channel_data"] = {
+            format_coordinate(coordinate): atlas_file.coordinates_to_channel_data[coordinate]
+            for coordinate in sorted(atlas_file.coordinates_to_channel_data, key=reading_order_key)
+        }
     document.update(atlas_file.other_settings)
     return json.dumps(document, indent=4, ensure_ascii=False) + "\n"
 
@@ -819,6 +836,24 @@ def decode_tile_data(text: str, tile_size: int) -> numpy.ndarray:
     return numpy.frombuffer(raw, dtype=numpy.uint8).reshape(tile_size, tile_size, 4).copy()
 
 
+def encode_channel_data(planes: numpy.ndarray) -> str:
+    """Base64 of the raw bytes of the planes of a tile, row by row, the channels of a pixel together."""
+    return base64.b64encode(numpy.ascontiguousarray(planes, dtype=numpy.uint8).tobytes()).decode("ascii")
+
+
+def decode_channel_data(text: str, tile_size: int, channel_count: int) -> numpy.ndarray:
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        raise TileDataError("is not valid base64") from None
+    expected_length = tile_size * tile_size * channel_count
+    if len(raw) != expected_length:
+        raise TileDataError(
+            f"holds {len(raw)} bytes but {channel_count} channels of a {tile_size}x{tile_size} tile need {expected_length}"
+        )
+    return numpy.frombuffer(raw, dtype=numpy.uint8).reshape(tile_size, tile_size, channel_count).copy()
+
+
 def read_image_size(path: Path) -> tuple[int, int]:
     """(width, height) of an image file, read from its header."""
     try:
@@ -868,6 +903,8 @@ class TileRecord:
     revision: int = 0
     # The stored base64 of an error tile whose data could not be used, kept so that saving does not drop it.
     preserved_data_text: Optional[str] = None
+    # The same for the stored channel data of an error tile.
+    preserved_channel_text: Optional[str] = None
     # The channels of the PBR profile, as (height, width, channels) bytes (None when the profile has no channels).
     # disk_planes is what the companion files hold; a companion file that does not exist counts as every channel
     # neutral, so a tile whose channels are all neutral is the same as its files whether or not they exist.
@@ -1018,6 +1055,7 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
     for coordinate in sorted(atlas_file.coordinates_to_names, key=reading_order_key):
         name = atlas_file.coordinates_to_names[coordinate]
         data_text = atlas_file.coordinates_to_data.get(coordinate)
+        channel_text = atlas_file.coordinates_to_channel_data.get(coordinate)
         split = split_companion_name(name, profile)
         if split is not None:
             tiles[coordinate] = TileRecord(
@@ -1026,11 +1064,14 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
                 None,
                 f"the name is that of a companion of {split[0]} under {profile.name}, not of a picture of its own",
                 preserved_data_text=data_text,
+                preserved_channel_text=channel_text,
             )
             continue
         planes, disk_suffixes, companion_problem = read_companions(name)
         if companion_problem is not None:
-            tiles[coordinate] = TileRecord(name, None, None, companion_problem, preserved_data_text=data_text)
+            tiles[coordinate] = TileRecord(
+                name, None, None, companion_problem, preserved_data_text=data_text, preserved_channel_text=channel_text
+            )
             continue
         actual_name = find_actual_name(name)
         if actual_name is None:
@@ -1051,10 +1092,22 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
         try:
             data_pixels = decode_tile_data(data_text, tile_size)
         except TileDataError as error:
-            tiles[coordinate] = TileRecord(name, None, None, f"the stored pixel data {error}", preserved_data_text=data_text)
+            tiles[coordinate] = TileRecord(
+                name, None, None, f"the stored pixel data {error}",
+                preserved_data_text=data_text, preserved_channel_text=channel_text,
+            )
             continue
         if actual_name is None:
-            tiles[coordinate] = make_record(name, data_pixels, None, planes, disk_suffixes)
+            record = make_record(name, data_pixels, None, planes, disk_suffixes)
+            if channel_text is not None and record.planes is not None:
+                try:
+                    record.planes = decode_channel_data(channel_text, tile_size, len(profile.channels))
+                except TileDataError as error:
+                    record = TileRecord(
+                        name, None, None, f"the stored channel data {error}",
+                        preserved_data_text=data_text, preserved_channel_text=channel_text,
+                    )
+            tiles[coordinate] = record
         elif disk_pixels is None:
             tiles[coordinate] = TileRecord(
                 name,
@@ -1062,6 +1115,7 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
                 None,
                 f"stored pixel data exists, but the file on disk {disk_problem}",
                 preserved_data_text=data_text,
+                preserved_channel_text=channel_text,
             )
         elif numpy.array_equal(data_pixels, disk_pixels):
             stale_data_coordinates.append(coordinate)
@@ -1251,9 +1305,14 @@ class CanvasLayout:
     first_row: int
     tile_size: int
     tile_coordinates: frozenset[Coordinate]
+    # The channels of the tiles, laid out like the pixels: (height, width, channels), zero over empty places. None when
+    # the tiles have none (the profile has no channels).
+    planes: Optional[numpy.ndarray] = None
 
 
-def compose_canvas(tiles: dict[Coordinate, numpy.ndarray], tile_size: int) -> CanvasLayout:
+def compose_canvas(
+    tiles: dict[Coordinate, numpy.ndarray], tile_size: int, planes: Optional[dict[Coordinate, numpy.ndarray]] = None
+) -> CanvasLayout:
     if not tiles:
         raise ValueError("no tiles to compose")
     first_column = min(column for column, _ in tiles)
@@ -1266,7 +1325,14 @@ def compose_canvas(tiles: dict[Coordinate, numpy.ndarray], tile_size: int) -> Ca
         top, left = (row - first_row) * tile_size, (column - first_column) * tile_size
         pixels[top : top + tile_size, left : left + tile_size] = tile_pixels
         editable_mask[top : top + tile_size, left : left + tile_size] = True
-    return CanvasLayout(pixels, editable_mask, first_column, first_row, tile_size, frozenset(tiles))
+    canvas_planes = None
+    if planes:
+        channel_count = next(iter(planes.values())).shape[2]
+        canvas_planes = numpy.zeros((*pixels.shape[:2], channel_count), dtype=numpy.uint8)
+        for (column, row), tile_planes in planes.items():
+            top, left = (row - first_row) * tile_size, (column - first_column) * tile_size
+            canvas_planes[top : top + tile_size, left : left + tile_size] = tile_planes
+    return CanvasLayout(pixels, editable_mask, first_column, first_row, tile_size, frozenset(tiles), canvas_planes)
 
 
 def extract_canvas_tiles(layout: CanvasLayout, canvas_pixels: numpy.ndarray) -> dict[Coordinate, numpy.ndarray]:
@@ -1279,6 +1345,11 @@ def extract_canvas_tiles(layout: CanvasLayout, canvas_pixels: numpy.ndarray) -> 
         ].copy()
         for column, row in layout.tile_coordinates
     }
+
+
+def extract_canvas_planes(layout: CanvasLayout, canvas_planes: numpy.ndarray) -> dict[Coordinate, numpy.ndarray]:
+    """The same for the channels: `canvas_planes` is an edited copy of layout.planes. The pieces are copies."""
+    return extract_canvas_tiles(layout, canvas_planes)
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1923,17 +1994,24 @@ class AtlasProject:
     def build_atlas_file(self) -> AtlasFile:
         """What atlas.json should contain for the current state."""
         data: dict[Coordinate, str] = {}
+        channel_data: dict[Coordinate, str] = {}
         for coordinate, record in self.tiles.items():
             if record.is_new:
                 data[coordinate] = encode_tile_data(record.pixels)
-            elif record.preserved_data_text is not None:
-                data[coordinate] = record.preserved_data_text
+                if record.planes is not None and not numpy.array_equal(record.planes, record.disk_planes):
+                    channel_data[coordinate] = encode_channel_data(record.planes)
+            else:
+                if record.preserved_data_text is not None:
+                    data[coordinate] = record.preserved_data_text
+                if record.preserved_channel_text is not None:
+                    channel_data[coordinate] = record.preserved_channel_text
         return AtlasFile(
             self.tile_size,
             {coordinate: record.name for coordinate, record in self.tiles.items()},
             data,
             dict(self.other_settings),
             self.pbr_profile,
+            channel_data,
         )
 
     def save_atlas_file(self) -> None:
@@ -2114,28 +2192,46 @@ class AtlasProject:
             if self.tiles[coordinate].error is None
         ]
 
-    def _replace_pixels(self, new_pixels: dict[TileRecord, numpy.ndarray]) -> None:
-        """Give tiles new pixels. New tiles keep their pixels in atlas.json, so it is rewritten; if that fails
-        the old pixels come back and the OSError is raised."""
-        old_pixels = {record: record.pixels for record in new_pixels}
-        for record, pixels in new_pixels.items():
-            record.pixels = pixels.copy()
+    @staticmethod
+    def _content_of(record: TileRecord) -> numpy.ndarray:
+        """What an edit changes and the history keeps of a tile: its pixels, and its channels after them if it has any."""
+        if record.planes is None:
+            return record.pixels
+        return numpy.concatenate([record.pixels, record.planes], axis=2)
+
+    def _replace_pixels(self, new_content: dict[TileRecord, numpy.ndarray]) -> None:
+        """Give tiles new content: pixels (height x width x 4), followed by the channels if the tile has channels and the
+        array has them (an array of pixels alone leaves the channels as they are). New tiles keep their pixels and
+        channels in atlas.json, so it is rewritten; if that fails the old content comes back and the OSError is raised."""
+        old_content = {record: (record.pixels, record.planes) for record in new_content}
+        for record, content in new_content.items():
+            record.pixels = content[:, :, :4].copy()
+            if record.planes is not None and content.shape[2] > 4:
+                record.planes = content[:, :, 4:].copy()
             record.revision += 1
         try:
-            if any(record.is_new for record in new_pixels):
+            if any(record.is_new for record in new_content):
                 self.save_atlas_file()
         except BaseException:
-            for record, pixels in old_pixels.items():
-                record.pixels = pixels
+            for record, (pixels, planes) in old_content.items():
+                record.pixels, record.planes = pixels, planes
             raise
 
-    def apply_canvas_edit(self, layout: CanvasLayout, new_canvas_pixels: numpy.ndarray) -> bool:
-        """Make an edited canvas the new content of its tiles, as one step in the history. False if nothing changed."""
+    def apply_canvas_edit(
+        self, layout: CanvasLayout, new_canvas_pixels: numpy.ndarray, new_canvas_planes: Optional[numpy.ndarray] = None
+    ) -> bool:
+        """Make an edited canvas the new content of its tiles, as one step in the history. False if nothing changed.
+        `new_canvas_planes` is the edited channels of the canvas; left out, the channels stay as they are."""
         changes: dict[TileRecord, tuple[numpy.ndarray, numpy.ndarray]] = {}
+        new_planes = {} if new_canvas_planes is None else extract_canvas_planes(layout, new_canvas_planes)
         for coordinate, pixels in extract_canvas_tiles(layout, new_canvas_pixels).items():
             record = self.tiles[coordinate]
-            if not numpy.array_equal(record.pixels, pixels):
-                changes[record] = (record.pixels, pixels)
+            before = self._content_of(record)
+            after = pixels if record.planes is None else numpy.concatenate(
+                [pixels, new_planes.get(coordinate, record.planes)], axis=2
+            )
+            if not numpy.array_equal(before, after):
+                changes[record] = (before, after)
         if not changes:
             return False
         self._replace_pixels({record: after for record, (_, after) in changes.items()})
