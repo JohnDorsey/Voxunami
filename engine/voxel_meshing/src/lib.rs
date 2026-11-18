@@ -18,18 +18,14 @@
 mod coarse;
 mod mesher;
 mod neighbourhood;
-mod occlusion;
 mod occupancy;
 mod quad;
-mod shade_mode;
 
 pub use coarse::{coarse_node_of_brick, mesh_coarse_node};
 pub use mesher::{BrickChannels, mesh_brick};
 pub use neighbourhood::{BrickNeighbourhood, NEIGHBOUR_COUNT, NEIGHBOUR_OFFSETS, neighbour_slot};
-pub use occlusion::{CornerOcclusion, corner_occlusion};
 pub use occupancy::{BrickOccupancy, OCCUPANCY_WORDS, PartialVoxel};
 pub use quad::{
     BrickMesh, DetailedQuad, FULL_LIGHT, MAXIMUM_MATERIAL, PackedBrickMesh, PackedDetailedQuad,
     PackedQuad, Quad, quad_axes,
 };
-pub use shade_mode::{ShadeMode, shade_mode};

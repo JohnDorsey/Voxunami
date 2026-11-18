@@ -171,7 +171,7 @@ impl ShadowPipelines {
                 wgpu::VertexBufferLayout {
                     array_stride: size_of::<PackedQuad>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32, 2 => Uint32],
+                    attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
                 },
             ),
             detailed: make(

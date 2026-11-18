@@ -145,9 +145,6 @@ struct Instance {
     @location(0) geometry: u32,
     // Bits 0-23: the block. Bits 24-31: the light.
     @location(1) material: u32,
-    // Bits 0-7: how much the cubes beside the face shade each of its corners (`voxel_meshing::CornerOcclusion`): two bits each, corner 0 (lowest along both axes) first, corner 1
-    // the highest along the first axis, corner 2 along the second, corner 3 along both.
-    @location(2) shade: u32,
 }
 
 struct DetailedInstance {
@@ -177,11 +174,8 @@ struct VertexOutput {
     @location(6) @interpolate(flat) picture: u32,
     // The window of voxels that block the sun that the face is traced in (`Placement::volume`).
     @location(7) @interpolate(flat) volume: u32,
-    // The level of shade (0 to 3) at each corner of the quad, in the order of the bits of `Instance::shade`: the same for every pixel of the quad.
-    @location(8) @interpolate(flat) shade_levels: vec4<f32>,
-    // How far across the quad the pixel is, 0 to 1 along each of its two axes: the levels are blended by it, bilinearly, so the shade is smooth across the face and does not
-    // depend on how the quad is cut into triangles.
-    @location(9) shade_across: vec2<f32>,
+    // Whether the face is a whole voxel's, whose corners are shaded by the cubes beside it (`volume_shade_level`): 1 for a whole quad, 0 for a detailed one.
+    @location(8) @interpolate(flat) shaded: u32,
 }
 
 // How much one level of shade darkens a face: the colour is multiplied by one minus this times the level (so the darkest corner, level 3, is 0.4 of what it was).
@@ -311,7 +305,7 @@ fn along(local: vec3<f32>, face_index: u32) -> f32 {
     return select(-1.0, 1.0, (face_index & 1u) == 1u) * dot(local, axis_unit(face_index / 2u));
 }
 
-fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32, shade_levels: vec4<f32>, shade_across: vec2<f32>) -> VertexOutput {
+fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32, shaded: u32) -> VertexOutput {
     // The face's normal in the grid's own axes, turned to the world's, where the sun is.
     let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
@@ -334,8 +328,7 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
     var out: VertexOutput;
     out.picture = picture;
     out.volume = placement.volume.x;
-    out.shade_levels = shade_levels;
-    out.shade_across = shade_across;
+    out.shaded = shaded;
     out.uv = vec2<f32>(0.0);
     if (picture != 0u) {
         // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
@@ -359,17 +352,6 @@ struct Corner {
     // Where it is in the brick, in the brick's own axes (in voxels, for the bricks that have pictures).
     local: vec3<f32>,
     face: u32,
-    // Where the corner is on the quad, 0 or 1 along each of its two axes.
-    across: vec2<f32>,
-}
-
-// The levels of the four corners of a whole-voxel quad from its `shade` word.
-fn shade_levels_of(shade: u32) -> vec4<f32> {
-    // PROTOTYPE: bit 31 says the fragment shader works the levels out from the voxels that block the sun (`volume_shade_level`); a negative level is how it is passed on.
-    if ((shade >> 31u) != 0u) {
-        return vec4<f32>(-1.0);
-    }
-    return vec4<f32>(f32(shade & 3u), f32((shade >> 2u) & 3u), f32((shade >> 4u) & 3u), f32((shade >> 6u) & 3u));
 }
 
 fn whole_corner(vertex_index: u32, instance: Instance) -> Corner {
@@ -384,9 +366,7 @@ fn whole_corner(vertex_index: u32, instance: Instance) -> Corner {
     // The voxel owns its face; a positive face is on the voxel's far side.
     let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
     let local = corner_position(vertex_index, face, plane, width, height);
-    let corner = corner_of(vertex_index, (face & 1u) == 1u);
-    let across = vec2<f32>(f32(corner == 1u || corner == 2u), f32(corner == 2u || corner == 3u));
-    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face, across);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face);
 }
 
 fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
@@ -399,19 +379,19 @@ fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
     let height = f32(instance.third & 0xFFFFu) / 8.0;
     let face = (instance.third >> 16u) & 7u;
     let local = corner_position(vertex_index, face, origin, width, height);
-    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face, vec2<f32>(0.0));
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face);
 }
 
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let corner = whole_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u, shade_levels_of(instance.shade), corner.across);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u, 1u);
 }
 
 @vertex
 fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
     let corner = detailed_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u, vec4<f32>(0.0), vec2<f32>(0.0));
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u, 0u);
 }
 
 // The same quads for the shadow map: where they are in the cascade (the frame's matrix is the cascade's) and nothing else.
@@ -580,10 +560,11 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.reflectance = material.reflectance;
     surface.metal = material.metal;
     surface.shading_normal = tilted_normal(in.normal, bump);
-    // The picture's ambient occlusion, and the shade of the corners of the face (blended across it; a detailed quad has none): both cut the ambient light, so they are one
-    // share. It is the pack's to use (the default one cuts the lamps', the ambient and the sky's light by it, and not the sun's).
-    var shade_level = mix(mix(in.shade_levels.x, in.shade_levels.y, in.shade_across.x), mix(in.shade_levels.z, in.shade_levels.w, in.shade_across.x), in.shade_across.y);
-    if (in.shade_levels.x < 0.0) {
+    // The picture's ambient occlusion, and the shade of the corners of the voxel the face is (worked out from the voxels that block the sun, blended across the voxel; a detailed
+    // quad has none): both cut the ambient light, so they are one share. It is the pack's to use (the default one cuts the lamps', the ambient and the sky's light by it, and not
+    // the sun's).
+    var shade_level = 0.0;
+    if (in.shaded != 0u) {
         shade_level = volume_shade_level(in);
     }
     surface.ambient_occlusion = relief.open * (1.0 - SHADE_PER_LEVEL * shade_level);

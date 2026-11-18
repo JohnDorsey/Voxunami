@@ -6,7 +6,7 @@ fn contact_light(in: VertexOutput, distance: f32) -> f32 {
     return 1.0;
 }
 
-// PROTOTYPE: without the voxels that block the sun there is nothing to work the shade out from.
+// Without the voxels that block the sun there is nothing to work the shade of a face's corners out from: a face is not shaded.
 fn volume_shade_level(in: VertexOutput) -> f32 {
     return 0.0;
 }

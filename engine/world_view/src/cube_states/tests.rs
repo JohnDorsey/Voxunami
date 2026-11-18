@@ -17,7 +17,6 @@ fn picture() -> PackedBrickMesh {
         quads: vec![PackedQuad {
             geometry: 1,
             material: 1,
-            shade: 0,
         }],
         detailed: Vec::new(),
     }

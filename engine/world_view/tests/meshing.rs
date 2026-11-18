@@ -9,7 +9,7 @@ use terrain::{TerrainGenerator, WorldTerrain};
 
 use region_octree::BrickCube;
 use voxel_grid::{Brick, Grid, GridLayout};
-use voxel_meshing::{CornerOcclusion, FULL_LIGHT, PackedBrickMesh, Quad};
+use voxel_meshing::{FULL_LIGHT, PackedBrickMesh, Quad};
 use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, VoxelCoordinate};
 use world_storage::test_support::{Game, Plugin, brick, id};
 use world_storage::{LevelData, WorldData};
@@ -87,7 +87,6 @@ fn flat_ground_streams_in_exactly_one_top_quad_per_surface_brick() {
                 face: FaceDirection::PositiveY,
                 material: grass,
                 light: FULL_LIGHT,
-                occlusion: CornerOcclusion::NONE,
             }],
             "{coordinate}"
         );

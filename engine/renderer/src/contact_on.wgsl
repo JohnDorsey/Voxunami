@@ -282,15 +282,23 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     return 1.0;
 }
 
-// PROTOTYPE: whether the voxel at `cell` (voxels from the window's origin) blocks the sun whole (a cube that hides what is behind it: the cubes that shade), 0 or 1.
-fn blocks_cell(window: Window, cell: vec3<i32>) -> f32 {
-    let entry = brick_entry(window, cell >> vec3<u32>(5u));
+// Whether the voxel at `cell` (voxels from the window's origin) blocks the sun whole (a cube that hides what is behind it: the cubes that shade the faces beside them), 0 or 1.
+// `near_entry` is the table's entry of the brick `near_brick` (bricks from the window's origin), which most of the cells asked about in a row are in: only a cell of another brick
+// looks the table up.
+fn blocks_cell(window: Window, cell: vec3<i32>, near_brick: vec3<i32>, near_entry: u32) -> f32 {
+    let brick = cell >> vec3<u32>(5u);
+    var entry = near_entry;
+    if (any(brick != near_brick)) {
+        entry = brick_entry(window, brick);
+    }
     return f32(cell_state(entry, cell) == CELL_BLOCKS);
 }
 
-// PROTOTYPE: the level of shade (0 to 3) of the voxel face the pixel is on, worked out from the voxels that block the sun in the window of the face's grid, as `corner_occlusion`
-// of `voxel_meshing` does for the corners of a quad: at each corner of the face's voxel, the number of cubes among the two cells beside the cell in front of the face and the one
-// diagonal to it, or 3 when both beside it are cubes; blended bilinearly across the voxel, so two faces beside each other agree about the corner they share.
+// The level of shade (0 to 3) of the voxel face the pixel is on (ambient occlusion), worked out from the voxels that block the sun in the window of the face's grid. At each corner
+// of the face's voxel the level is the number of cubes among the two cells beside the cell in front of the face and the one diagonal to it, or 3 when both beside it are cubes
+// (nothing gets round a corner that is shut on both sides); the four are blended bilinearly across the voxel, so two faces beside each other agree about the corner they share and
+// the shade has no seam where one meets the next, however the faces are cut into quads. A cell whose brick is not known counts as open. 0 where the face has no window.
+// The reference is `corner_levels` in the tests (`tests/gpu_rendering/volume_shade.rs`), which the shader is held to by pictures.
 fn volume_shade_level(in: VertexOutput) -> f32 {
     if (in.volume == 0u) {
         return 0.0;
@@ -313,14 +321,16 @@ fn volume_shade_level(in: VertexOutput) -> f32 {
     let v_step = vec3<i32>(v_unit);
     // The cell in front of the face: along the axis half a voxel out of the plane (whatever rounding the plane has), across it the cell the place is in.
     let front = vec3<i32>(floor(place + looks * 0.5 * on_axis));
-    let low_low = blocks_cell(window, front - u_step - v_step);
-    let mid_low = blocks_cell(window, front - v_step);
-    let high_low = blocks_cell(window, front + u_step - v_step);
-    let low_mid = blocks_cell(window, front - u_step);
-    let high_mid = blocks_cell(window, front + u_step);
-    let low_high = blocks_cell(window, front - u_step + v_step);
-    let mid_high = blocks_cell(window, front + v_step);
-    let high_high = blocks_cell(window, front + u_step + v_step);
+    let near_brick = front >> vec3<u32>(5u);
+    let near_entry = brick_entry(window, near_brick);
+    let low_low = blocks_cell(window, front - u_step - v_step, near_brick, near_entry);
+    let mid_low = blocks_cell(window, front - v_step, near_brick, near_entry);
+    let high_low = blocks_cell(window, front + u_step - v_step, near_brick, near_entry);
+    let low_mid = blocks_cell(window, front - u_step, near_brick, near_entry);
+    let high_mid = blocks_cell(window, front + u_step, near_brick, near_entry);
+    let low_high = blocks_cell(window, front - u_step + v_step, near_brick, near_entry);
+    let mid_high = blocks_cell(window, front + v_step, near_brick, near_entry);
+    let high_high = blocks_cell(window, front + u_step + v_step, near_brick, near_entry);
     let level_00 = select(low_mid + mid_low + low_low, 3.0, low_mid + mid_low > 1.5);
     let level_10 = select(high_mid + mid_low + high_low, 3.0, high_mid + mid_low > 1.5);
     let level_01 = select(low_mid + mid_high + low_high, 3.0, low_mid + mid_high > 1.5);
