@@ -493,6 +493,11 @@ class ChannelStroke:
         numpy.maximum(self.coverage, coverage, out=self.coverage)
         self._planes = self._worked_out()
 
+    def set_coverage(self, coverage: numpy.ndarray) -> None:
+        """Say what the whole stroke covers, instead of adding a pass: a line that is still being dragged."""
+        self.coverage = coverage.astype(numpy.float64)
+        self._planes = self._worked_out()
+
     @property
     def planes(self) -> numpy.ndarray:
         return self._planes
@@ -502,26 +507,37 @@ class ChannelStroke:
         return not numpy.array_equal(self._planes, self.planes_before)
 
     def _worked_out(self) -> numpy.ndarray:
+        """The planes after the stroke. Only the box around the pixels with coverage is worked out (the rest cannot
+        change), so a small stroke on a big canvas costs what the small stroke costs."""
         planes = self.planes_before.copy()
+        covered = self.coverage > 0.0
+        if not covered.any():
+            return planes
+        rows = numpy.flatnonzero(covered.any(axis=1))
+        columns = numpy.flatnonzero(covered.any(axis=0))
+        window = (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(columns[0]), int(columns[-1]) + 1))
+        coverage = self.coverage[window]
+        before = self.planes_before[window]
+        inside = before.copy()
         identities = [channel.identity for channel in self.profile.channels]
         painted = False
         for index, identity in enumerate(identities):
             blend = self.blends.get(identity)
             if blend is not None and blend.mode != "none":
-                planes[:, :, index] = blend_channel(
-                    identity, self.planes_before[:, :, index], blend.value, blend.mode, self.coverage
-                )
+                inside[:, :, index] = blend_channel(identity, before[:, :, index], blend.value, blend.mode, coverage)
                 painted = True
         if painted and "normal_x" in identities and "normal_y" in identities:
-            self._shorten_normals(planes, identities.index("normal_x"), identities.index("normal_y"))
+            self._shorten_normals(inside, coverage, identities.index("normal_x"), identities.index("normal_y"))
+        planes[window] = inside
         return planes
 
-    def _shorten_normals(self, planes: numpy.ndarray, x_index: int, y_index: int) -> None:
+    @staticmethod
+    def _shorten_normals(planes: numpy.ndarray, coverage: numpy.ndarray, x_index: int, y_index: int) -> None:
         x_codec, y_codec = CHANNEL_CODECS["normal_x"], CHANNEL_CODECS["normal_y"]
         x_meaning = x_codec.decode(planes[:, :, x_index])
         y_meaning = y_codec.decode(planes[:, :, y_index])
         length = numpy.sqrt(x_meaning * x_meaning + y_meaning * y_meaning)
-        too_long = (self.coverage > 0.0) & (length > 1.0)
+        too_long = (coverage > 0.0) & (length > 1.0)
         if not too_long.any():
             return
         divisor = numpy.where(too_long, length, 1.0)
@@ -1721,8 +1737,8 @@ def noise_stamp(
     random_source: "RandomSource",
     editable_mask: Optional[numpy.ndarray] = None,
     wrap: bool = False,
-) -> None:
-    """One stamp of the noise brush, applied in place.
+) -> numpy.ndarray:
+    """One stamp of the noise brush, applied in place. Returns the mask of the pixels it hit.
 
     Each pixel of the brush area becomes `color` with probability `density`, rolled separately for every stamp,
     so pixels rolled true by several stamps of one stroke build up. At opacity 1 the color is written exactly;
@@ -1745,6 +1761,7 @@ def noise_stamp(
     elif hit.any():
         layer = color_layer((height, width), color, hit * opacity)
         pixels[...] = alpha_over(pixels, layer)
+    return hit
 
 
 class AirbrushStroke:
@@ -3066,11 +3083,25 @@ def slider_fraction(rectangle: pygame.Rect, x: int) -> float:
     return round(max(0.0, min(1.0, position)), 2)
 
 
+@dataclasses.dataclass(frozen=True)
+class ChannelPaint:
+    """The channels a stroke paints: the profile whose channels the canvas has, and for each channel (by identity) what
+    it paints. A channel with no entry, or the mode none, is not painted."""
+
+    profile: PbrProfile
+    blends: dict[str, ChannelBlend]
+
+
 class CanvasSession:
     """One press, drag and release of a drawing tool on the canvas.
 
     `pixels` is what the canvas should look like now; the layout's own pixels are not touched, so the stroke
     can be shown as a preview and thrown away.
+
+    A layout that has planes (the channels of the tiles) gives the session `planes`, the same for the channels. With
+    `channels` the stroke paints them where it paints the pixels, with the blend modes and values given (a pixel passed
+    over many times is blended once), and the eraser resets them to neutral. The fill stops where a channel differs, and
+    the rotation carries them. Without `channels` they are carried along unchanged.
 
     With `wrap` (wrap-assist) the canvas repeats in every direction: the positions given are positions in that
     endless canvas, and a stroke changes the same pixels of every copy, so it can leave the canvas on one side and
@@ -3086,9 +3117,17 @@ class CanvasSession:
         start: Coordinate,
         random_source: Optional[RandomSource] = None,
         wrap: bool = False,
+        channels: Optional[ChannelPaint] = None,
     ):
         if tool not in STROKE_TOOLS:
             raise ValueError(f"{tool!r} does not draw")
+        self.channels = channels
+        self.planes: Optional[numpy.ndarray] = None if layout.planes is None else layout.planes.copy()
+        # How much of each pixel the stroke has covered so far (0 to 1), which is what the channels are painted by.
+        self.coverage = numpy.zeros(layout.pixels.shape[:2], dtype=numpy.float64)
+        self._channel_stroke: Optional[ChannelStroke] = None
+        if layout.planes is not None and channels is not None and tool not in ("eraser", "rotate"):
+            self._channel_stroke = ChannelStroke(channels.profile, layout.planes, channels.blends)
         self.wrap = wrap
         self.layout = layout
         self.tool = tool
@@ -3120,7 +3159,9 @@ class CanvasSession:
             )
             self._stamp_air_path(start, start)
         elif tool == "fill":
-            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask, wrap))
+            # Pixels count as alike only if their channels are alike too.
+            alike = self.base if layout.planes is None else numpy.concatenate([self.base, layout.planes], axis=2)
+            self._paint(flood_fill_mask(alike, start[0], start[1], layout.editable_mask, wrap))
         elif tool == "rotate":
             self._find_rotation_line()
             self._preview_rotation(start)
@@ -3145,19 +3186,41 @@ class CanvasSession:
         when equally far), else its column, by as many pixels as the pointer is away. Always worked out from the
         pixels as they were, so moving back undoes it."""
         self.pixels = self.base.copy()
+        if self.planes is not None:
+            self.planes = self.layout.planes.copy()
         if self._rotated_pixel is None:
             return
         column, row = self._rotated_pixel
         left, top = self._tile_left_top
         size = self.layout.tile_size
         delta_column, delta_row = pixel[0] - self.start[0], pixel[1] - self.start[1]
-        if abs(delta_column) >= abs(delta_row):
-            self.pixels[row, left : left + size] = numpy.roll(self.base[row, left : left + size], delta_column, axis=0)
-        else:
-            self.pixels[top : top + size, column] = numpy.roll(self.base[top : top + size, column], delta_row, axis=0)
+        for before, after in [(self.base, self.pixels)] + ([] if self.planes is None else [(self.layout.planes, self.planes)]):
+            if abs(delta_column) >= abs(delta_row):
+                after[row, left : left + size] = numpy.roll(before[row, left : left + size], delta_column, axis=0)
+            else:
+                after[top : top + size, column] = numpy.roll(before[top : top + size, column], delta_row, axis=0)
 
     def _paint(self, mask: numpy.ndarray) -> None:
-        apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
+        mask = mask & self.layout.editable_mask
+        apply_color_to_mask(self.pixels, mask, self.color)
+        self._cover(mask.astype(numpy.float64))
+
+    def _cover(self, strength: numpy.ndarray) -> None:
+        """The stroke covers pixels with this strength (0 to 1 per pixel); each pixel keeps the strongest it was given."""
+        if self.planes is None or not (strength > self.coverage).any():
+            return
+        numpy.maximum(self.coverage, strength, out=self.coverage)
+        self._refresh_planes()
+
+    def _refresh_planes(self) -> None:
+        """Work out the channels again from what the stroke covers."""
+        if self.planes is None:
+            return
+        if self.tool == "eraser" and self.channels is not None:
+            self.planes = reset_channels(self.channels.profile, self.layout.planes, self.coverage)
+        elif self._channel_stroke is not None:
+            self._channel_stroke.set_coverage(self.coverage)
+            self.planes = self._channel_stroke.planes.copy()
 
     def _mask_between(
         self,
@@ -3190,7 +3253,7 @@ class CanvasSession:
 
     def _stamp_noise(self, pixel: Coordinate) -> None:
         settings = self.settings
-        noise_stamp(
+        hit = noise_stamp(
             self.pixels,
             pixel[0],
             pixel[1],
@@ -3203,11 +3266,13 @@ class CanvasSession:
             self.layout.editable_mask,
             self.wrap,
         )
+        self._cover(hit * min(settings.fractions["noise_opacity"], 1.0))
 
     def _stamp_air_path(self, start: Coordinate, end: Coordinate) -> None:
         assert self.airbrush is not None
         self.airbrush.stamp_path(start, end)
         self.pixels = self.airbrush.result()
+        self._cover(self.airbrush.coverage)
 
     def _shape_mask(self, pixel: Coordinate) -> numpy.ndarray:
         def build(shape: tuple[int, int], start: Coordinate, end: Coordinate) -> numpy.ndarray:
@@ -3229,7 +3294,9 @@ class CanvasSession:
 
     def _preview_shape(self, pixel: Coordinate) -> None:
         self.pixels = self.base.copy()
+        self.coverage[:] = 0.0  # the shape is worked out again from the start, so what it covered before does not count
         self._paint(self._shape_mask(pixel))
+        self._refresh_planes()
 
     def move(self, pixel: Coordinate) -> None:
         if pixel == self.last:
@@ -3250,6 +3317,8 @@ class CanvasSession:
 
     @property
     def changed(self) -> bool:
+        if self.planes is not None and not numpy.array_equal(self.planes, self.layout.planes):
+            return True
         return not numpy.array_equal(self.pixels, self.base)
 
 
@@ -4379,6 +4448,8 @@ class EditorPanel:
         self.view = CanvasView()
         self.layout: Optional[CanvasLayout] = None
         self.session: Optional[CanvasSession] = None
+        # What a stroke paints in the channels of the tiles (by identity of the channel); the controls for it come later.
+        self.channel_blends: dict[str, ChannelBlend] = {}
         self.random_source = random.Random()
         self.clipboard = SystemImageClipboard()
         # The pixels of the last copy made here, used when the system clipboard cannot hold or give a picture.
@@ -4487,7 +4558,10 @@ class EditorPanel:
             self._coordinate_signature = None
             self._forget_selection()
             return
-        self.layout = compose_canvas({coordinate: record.pixels for coordinate, record in entries}, self.project.tile_size)
+        planes = {coordinate: record.planes for coordinate, record in entries if record.planes is not None}
+        self.layout = compose_canvas(
+            {coordinate: record.pixels for coordinate, record in entries}, self.project.tile_size, planes or None
+        )
         coordinate_signature = tuple(coordinate for coordinate, _ in entries)
         if coordinate_signature != self._coordinate_signature:
             self._coordinate_signature = coordinate_signature
@@ -4706,8 +4780,11 @@ class EditorPanel:
                 self.colors.set_color(color, slot)
             self.color_drag = f"dropper_{slot}"
             return
+        channels = None
+        if self.layout is not None and self.layout.planes is not None:
+            channels = ChannelPaint(self.project.profile, dict(self.channel_blends))
         self.session = CanvasSession(
-            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist
+            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist, channels
         )
 
     # A pointer from elsewhere -----------------------------------------------------------------------------
@@ -4826,7 +4903,7 @@ class EditorPanel:
         if not session.changed:
             return
         try:
-            self.project.apply_canvas_edit(session.layout, session.pixels)
+            self.project.apply_canvas_edit(session.layout, session.pixels, session.planes)
         except OSError as error:
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
             return

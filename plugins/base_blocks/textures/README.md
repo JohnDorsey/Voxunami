@@ -47,8 +47,11 @@ phases; what works so far:
 - A tile that has no PNG file yet keeps its channels too: `coordinates_to_channel_data` holds them (base64 of the bytes of all eight planes,
   row by row, a pixel's channels together) for such a tile when they differ from what its companion files hold, and the entry goes when the tile is saved. The key is
   not written when no tile needs it. An entry that does not fit makes its tile an error tile and is kept as it was. Editing the channels (undo and redo included)
-  is part of the tile's history; the strokes, blend modes and controls that change them are not in the window yet (`ChannelStroke`, `blend_channel` and
-  the codecs of `CHANNEL_CODECS` are the code for them, tested).
+  is part of the tile's history. Every drawing tool carries the channels (`CanvasSession`): a stroke paints the channels it is given with a blend mode each (none, replace,
+  add, subtract, multiply, min, max, worked out on the meaning of the channel, once per pixel however often the stroke passes it, at the stroke's coverage; a normal
+  longer than 1 is shortened on the pixels the stroke covered), the eraser resets them to neutral, the fill stops where a channel differs, and rotating a row or column
+  rotates them. No control sets the modes or values yet, so no stroke paints a channel in the window; the eraser and the rotation already act on them. Select, cut, paste
+  and Delete do not carry or reset them yet.
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
 - The right half edits the selected tiles. With several selected they appear as one canvas in their atlas

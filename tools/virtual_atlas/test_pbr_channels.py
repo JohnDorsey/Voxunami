@@ -317,6 +317,46 @@ class StrokeTests(unittest.TestCase):
         self.assertFalse(stroke.changed)
 
 
+class WindowedWorkTests(unittest.TestCase):
+    """A stroke works out only the box around what it covers; the result must be what working out every pixel gives."""
+
+    PROFILE = va.PBR_PROFILES[LABPBR]
+
+    def test_the_planes_are_what_blending_each_whole_channel_gives_for_random_strokes(self):
+        generator = numpy.random.default_rng(7)
+        modes = ("replace", "add", "subtract", "multiply", "min", "max")
+        not_normals = [c.identity for c in self.PROFILE.channels if not c.identity.startswith("normal")]
+        for trial in range(30):
+            planes = generator.integers(0, 256, size=(9, 11, 8), dtype=numpy.uint8)
+            coverage = numpy.zeros((9, 11))
+            row, column = generator.integers(0, 6), generator.integers(0, 8)
+            coverage[row : row + 3, column : column + 4] = generator.random((3, 4))
+            blends = {
+                identity: va.ChannelBlend(str(generator.choice(modes)), float(generator.random()))
+                for identity in not_normals
+            }
+            stroke = va.ChannelStroke(self.PROFILE, planes, blends)
+            stroke.set_coverage(coverage)
+            for index, channel in enumerate(self.PROFILE.channels):
+                if channel.identity in blends:
+                    blend = blends[channel.identity]
+                    expected = va.blend_channel(channel.identity, planes[:, :, index], blend.value, blend.mode, coverage)
+                else:
+                    expected = planes[:, :, index]
+                if channel.identity.startswith("normal"):
+                    continue
+                self.assertTrue(numpy.array_equal(stroke.planes[:, :, index], expected), f"trial {trial}: {channel.identity}")
+
+    def test_a_stroke_in_the_middle_of_a_canvas_changes_nothing_outside_its_box(self):
+        planes = numpy.full((9, 11, 8), 77, dtype=numpy.uint8)
+        stroke = va.ChannelStroke(self.PROFILE, planes, {"smoothness": va.ChannelBlend("replace", 0.0)})
+        coverage = numpy.zeros((9, 11))
+        coverage[4, 5] = 1.0
+        stroke.add_coverage(coverage)
+        changed = numpy.argwhere(numpy.any(stroke.planes != planes, axis=2))
+        self.assertEqual(changed.tolist(), [[4, 5]])
+
+
 class ResetTests(unittest.TestCase):
     PROFILE = va.PBR_PROFILES[LABPBR]
 
