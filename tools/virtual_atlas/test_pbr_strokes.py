@@ -312,7 +312,8 @@ class WindowStrokeTests(EditorDriver):
         self.assertEqual(self.editor.layout.planes.shape, (8, 16, 8))
 
     def test_a_pencil_stroke_paints_the_channels_chosen_and_ctrl_z_takes_them_back(self):
-        self.editor.channel_blends = {"smoothness": va.ChannelBlend("replace", 0.2)}
+        self.editor.controls.set_mode("smoothness", "replace")
+        self.editor.controls.set_value("smoothness", "primary", 0.2)
         self.select((0, 0))
         self.click_tool("pencil")
         self.drag(self.position(2, 2), self.position(4, 2))
@@ -341,7 +342,8 @@ class WindowStrokeTests(EditorDriver):
         self.assertEqual([self.planes_at(c, 2)[SMOOTHNESS] for c in range(1, 5)], [200, 200, 200, 200])
 
     def test_a_stroke_that_only_paints_a_channel_makes_the_tile_unsaved_and_saving_writes_the_file(self):
-        self.editor.channel_blends = {"emission": va.ChannelBlend("replace", 0.2)}
+        self.editor.controls.set_mode("emission", "replace")
+        self.editor.controls.set_value("emission", "primary", 0.2)
         self.select((0, 0))
         self.click_tool("pencil")
         self.send("down", self.position(2, 2))

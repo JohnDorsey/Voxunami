@@ -184,7 +184,8 @@ class SessionColorModeTests(unittest.TestCase):
 
 class WindowColorModeTests(EditorDriver):
     def test_the_modes_of_the_editor_are_the_ones_the_stroke_uses_and_ctrl_z_takes_it_back(self):
-        self.editor.color_blend = va.ColorBlend("add", "none")
+        self.editor.controls.set_mode("rgb", "add")
+        self.editor.controls.set_mode("alpha", "none")
         self.editor.colors.set_color((51, 51, 51, 255), "primary")
         self.select((0, 0))
         self.click_tool("pencil")

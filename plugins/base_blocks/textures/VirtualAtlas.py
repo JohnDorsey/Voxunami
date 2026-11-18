@@ -3177,6 +3177,138 @@ class ChannelPaint:
     blends: dict[str, ChannelBlend]
 
 
+class ChannelControls:
+    """The state behind the channel controls: for each channel of the profile a blend mode and two values (primary and
+    secondary, like the two colours), and the blend modes of RGB and alpha. The values are meanings (see
+    CHANNEL_CODECS), or a `Metal` for reflectance. The rows follow the profile: a channel that stays when the profile
+    changes keeps its state."""
+
+    SLOTS = ("primary", "secondary")
+    NUMBER = re.compile(r"-?(\d+(\.\d*)?|\.\d+)")
+    METAL = re.compile(r"[mM](\d+)")
+
+    def __init__(self) -> None:
+        self.rows: list[str] = []
+        self._modes: dict[str, str] = {"rgb": "replace", "alpha": "replace"}
+        self._values: dict[str, dict[str, ChannelValue]] = {}
+
+    def follow(self, profile: PbrProfile) -> None:
+        """Make the rows the channels of `profile`; rows that were there keep their mode and values, new ones start with
+        mode none and the neutral meaning of the channel."""
+        modes = {"rgb": self._modes["rgb"], "alpha": self._modes["alpha"]}
+        values: dict[str, dict[str, ChannelValue]] = {}
+        for channel in profile.channels:
+            identity = channel.identity
+            neutral = float(CHANNEL_CODECS[identity].decode(numpy.array([channel.neutral], dtype=numpy.uint8))[0])
+            modes[identity] = self._modes.get(identity, "none")
+            values[identity] = self._values.get(identity, {slot: neutral for slot in self.SLOTS})
+        self.rows = [channel.identity for channel in profile.channels]
+        self._modes, self._values = modes, values
+
+    def _check(self, key: str, slot: Optional[str] = None) -> None:
+        if key not in self._modes or (slot is not None and key not in self._values):
+            raise ValueError(f"no row {key!r}")
+        if slot is not None and slot not in self.SLOTS:
+            raise ValueError(f"no slot {slot!r}")
+
+    def mode(self, key: str) -> str:
+        self._check(key)
+        return self._modes[key]
+
+    def set_mode(self, key: str, mode: str) -> None:
+        self._check(key)
+        if mode not in BLEND_MODES:
+            raise ValueError(f"unknown blend mode {mode!r}")
+        self._modes[key] = mode
+
+    def value(self, identity: str, slot: str) -> ChannelValue:
+        self._check(identity, slot)
+        return self._values[identity][slot]
+
+    def set_value(self, identity: str, slot: str, value: ChannelValue) -> None:
+        """Set a value: a meaning is kept in the range of the channel; a Metal is for reflectance only."""
+        self._check(identity, slot)
+        if isinstance(value, Metal):
+            if identity != "reflectance":
+                raise ValueError(f"only reflectance has metals, not {identity}")
+            self._values[identity][slot] = value
+            return
+        codec = CHANNEL_CODECS[identity]
+        self._values[identity][slot] = max(codec.lowest, min(codec.highest, float(value)))
+
+    def blends(self, slot: str) -> dict[str, ChannelBlend]:
+        """What a stroke made with the button of `slot` paints, for every channel."""
+        return {identity: ChannelBlend(self._modes[identity], self._values[identity][slot]) for identity in self.rows}
+
+    def color_blend(self) -> ColorBlend:
+        return ColorBlend(self._modes["rgb"], self._modes["alpha"])
+
+    def swap(self) -> None:
+        """Exchange the primary and secondary values of every channel (the modes stay)."""
+        for values in self._values.values():
+            values["primary"], values["secondary"] = values["secondary"], values["primary"]
+
+    def load(self, values: dict[str, ChannelValue], slot: str) -> None:
+        """Take the values of a pixel (the eye dropper) into a slot; the modes stay, and unknown channels are ignored."""
+        for identity, value in values.items():
+            if identity in self._values:
+                self.set_value(identity, slot, value)
+
+    def value_text(self, identity: str, slot: str) -> str:
+        value = self.value(identity, slot)
+        return f"m{value.index}" if isinstance(value, Metal) else f"{value:.2f}"
+
+    @classmethod
+    def parse_value(cls, identity: str, text: str) -> Optional[ChannelValue]:
+        """The value a typed text means, or None if it is not one: a number (kept in the range of the channel), or for
+        reflectance m0 to m25 for a metal."""
+        text = text.strip()
+        metal = cls.METAL.fullmatch(text)
+        if metal is not None:
+            number = int(metal.group(1))
+            return Metal(number) if identity == "reflectance" and number < METAL_COUNT else None
+        if cls.NUMBER.fullmatch(text) is None:
+            return None
+        codec = CHANNEL_CODECS[identity]
+        return max(codec.lowest, min(codec.highest, float(text)))
+
+    def fraction(self, identity: str, slot: str) -> float:
+        """Where a slider shows the value, 0 to 1 over the range of the channel (a metal: its place among the 26)."""
+        value = self.value(identity, slot)
+        if isinstance(value, Metal):
+            return value.index / (METAL_COUNT - 1)
+        codec = CHANNEL_CODECS[identity]
+        return (value - codec.lowest) / (codec.highest - codec.lowest)
+
+    @staticmethod
+    def value_at(identity: str, fraction: float) -> float:
+        """The meaning at a place of the slider (0 to 1)."""
+        codec = CHANNEL_CODECS[identity]
+        return codec.lowest + max(0.0, min(1.0, fraction)) * (codec.highest - codec.lowest)
+
+    def step(self, identity: str, slot: str, direction: int, large: bool) -> None:
+        """The arrow keys: a hundredth up or down per step, a tenth with shift; a metal goes to the next metal."""
+        value = self.value(identity, slot)
+        if isinstance(value, Metal):
+            self.set_value(identity, slot, Metal(max(0, min(METAL_COUNT - 1, value.index + direction))))
+            return
+        self.set_value(identity, slot, round(value + direction * (0.1 if large else 0.01), 2))
+
+
+def pick_channel_values(
+    layout: CanvasLayout, pixel: Coordinate, profile: PbrProfile, wrap: bool = False
+) -> Optional[dict[str, ChannelValue]]:
+    """The channel values of a canvas pixel (the eye dropper), or None outside the canvas, over an empty place, or on a
+    canvas with no channels. With `wrap` the canvas repeats, so `pixel` may be in any copy of it."""
+    if layout.planes is None:
+        return None
+    height, width = layout.pixels.shape[:2]
+    column, row = wrap_pixel(pixel, (height, width)) if wrap else pixel
+    if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
+        return None
+    return sample_channel_values(profile, layout.planes, row, column)
+
+
 class CanvasSession:
     """One press, drag and release of a drawing tool on the canvas.
 
@@ -3511,6 +3643,11 @@ class ColorState:
         red, green, blue = (int(round(channel * 255)) for channel in colorsys.hsv_to_rgb(hue, saturation, value))
         self.colors[slot] = (red, green, blue, int(round(alpha * 255)))
         self.hsv[slot] = (hue, saturation, value)
+
+    def swap(self) -> None:
+        """Exchange the primary and the secondary color (the key X)."""
+        self.colors["primary"], self.colors["secondary"] = self.colors["secondary"], self.colors["primary"]
+        self.hsv["primary"], self.hsv["secondary"] = self.hsv["secondary"], self.hsv["primary"]
 
     def remember(self, color: Color) -> None:
         """Add a color that was used to the front of the history of recent colors."""
@@ -4544,10 +4681,10 @@ class EditorPanel:
         self.view = CanvasView()
         self.layout: Optional[CanvasLayout] = None
         self.session: Optional[CanvasSession] = None
-        # What a stroke paints in the channels of the tiles (by identity of the channel); the controls for it come later.
-        self.channel_blends: dict[str, ChannelBlend] = {}
-        # The blend modes of the colour (red, green and blue together, and alpha).
-        self.color_blend = ColorBlend()
+        # The blend modes and values of the channels, and the blend modes of the colour; the rows follow the profile.
+        self.controls = ChannelControls()
+        self.controls.follow(project.profile)
+        self._controls_profile = project.pbr_profile
         self.random_source = random.Random()
         self.clipboard = SystemImageClipboard()
         # The pixels of the last copy made here, used when the system clipboard cannot hold or give a picture.
@@ -4641,6 +4778,9 @@ class EditorPanel:
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
+        if self._controls_profile != self.project.pbr_profile:
+            self._controls_profile = self.project.pbr_profile
+            self.controls.follow(self.project.profile)
         entries = [
             (coordinate, self.project.tiles[coordinate])
             for coordinate in sorted(self.project.selection, key=reading_order_key)
@@ -4870,21 +5010,30 @@ class EditorPanel:
             return
         self._press_pixel(button, self.view.pixel_at(position))
 
+    def _pick(self, pixel: Coordinate, slot: str) -> None:
+        """The eye dropper: the colour of the pixel goes into the slot, and so do its channel values (not the modes)."""
+        if self.layout is None:
+            return
+        color = pick_color(self.layout, pixel, self.wrap_assist)
+        if color is not None:
+            self.colors.set_color(color, slot)
+        values = pick_channel_values(self.layout, pixel, self.project.profile, self.wrap_assist)
+        if values is not None:
+            self.controls.load(values, slot)
+
     def _press_pixel(self, button: int, pixel: Coordinate) -> None:
         """Start what the current tool does with a press of `button` on a canvas pixel: a stroke, or picking a color."""
         slot = "primary" if button == 1 else "secondary"
         if self.tool == "eyedropper":
-            color = pick_color(self.layout, pixel, self.wrap_assist)
-            if color is not None:
-                self.colors.set_color(color, slot)
+            self._pick(pixel, slot)
             self.color_drag = f"dropper_{slot}"
             return
         channels = None
         if self.layout is not None and self.layout.planes is not None:
-            channels = ChannelPaint(self.project.profile, dict(self.channel_blends))
+            channels = ChannelPaint(self.project.profile, self.controls.blends(slot))
         self.session = CanvasSession(
             self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist, channels,
-            self.color_blend,
+            self.controls.color_blend(),
         )
 
     # A pointer from elsewhere -----------------------------------------------------------------------------
@@ -4904,9 +5053,7 @@ class EditorPanel:
     def external_move(self, pixel: Coordinate) -> None:
         """Move the pointer, with the button still down, to a canvas pixel."""
         if self.color_drag is not None and self.color_drag.startswith("dropper_") and self.layout is not None:
-            color = pick_color(self.layout, pixel, self.wrap_assist)
-            if color is not None:
-                self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
+            self._pick(pixel, self.color_drag.removeprefix("dropper_"))
         elif self.session is not None:
             self.session.move(pixel)
 
@@ -4954,9 +5101,7 @@ class EditorPanel:
         self.pointer = position
         if self.color_drag is not None:
             if self.color_drag.startswith("dropper_") and self.layout is not None:
-                color = pick_color(self.layout, self.view.pixel_at(position), self.wrap_assist)
-                if color is not None:
-                    self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
+                self._pick(self.view.pixel_at(position), self.color_drag.removeprefix("dropper_"))
             else:
                 self._drag_color(position)
         elif self.slider_drag is not None:
@@ -5203,6 +5348,10 @@ class EditorPanel:
             return True
         if control and key == pygame.K_x:
             self.cut_selection()
+            return True
+        if key == pygame.K_x and not (control or alt):
+            self.colors.swap()
+            self.controls.swap()
             return True
         if control and key == pygame.K_v:
             self.paste()
