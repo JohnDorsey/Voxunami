@@ -35,8 +35,15 @@ phases; what works so far:
   occlusion, top height), and saving creates a companion file only for a file with a channel that is not neutral, and rewrites
   only the files that changed. Renaming, deleting (purging) and copying a tile do the same to all its files, all or none. A companion
   that cannot be read, or has another size, makes its tile an error tile naming the file; a picture that has only companion
-  files is a tile with blank pixels. No control paints the channels yet (the setting is edited in `atlas.json` by hand);
-  names that end in `_n` or `_s` are what the game reads as companions whatever the setting says, since the game never reads `atlas.json`.
+  files is a tile with blank pixels. No control paints the channels yet, and the window has no settings page yet (the setting is
+  edited in `atlas.json` by hand); names that end in `_n` or `_s` are what the game reads as companions whatever the setting says, since
+  the game never reads `atlas.json`.
+- Changing the setting (built in `AtlasProject.switch_pbr_profile`, no window for it yet) is refused while any tile has unsaved changes. Tiles
+  whose names are companion names under the new setting leave the atlas first (their files stay, and are read as companions). Each tile that has
+  files in the old format gets them rewritten in the new one by the identity of each channel (smoothness stays smoothness), and the old ones removed:
+  all of a tile's files change or none, and a tile whose files cannot all change becomes an error tile with its files as they were. A channel
+  that has data and has no place in the new setting needs a confirm. A picture that has files in two formats (its own setting's and another's)
+  is an error tile, before and after a change, until one set is removed and the folder is read again (`AtlasProject.reload`).
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
 - The right half edits the selected tiles. With several selected they appear as one canvas in their atlas

@@ -238,9 +238,9 @@ PBR_PROFILES: dict[str, PbrProfile] = {
     ),
 }
 # The endings the game reads as companions whatever the setting is (the game does not read atlas.json).
-RESERVED_COMPANION_SUFFIXES: tuple[str, ...] = tuple(
-    dict.fromkeys(suffix for profile in PBR_PROFILES.values() for suffix in profile.suffixes)
-)
+def reserved_companion_suffixes() -> tuple[str, ...]:
+    """The ending of every companion file of every profile, in the order of the profiles."""
+    return tuple(dict.fromkeys(suffix for profile in PBR_PROFILES.values() for suffix in profile.suffixes))
 
 
 def companion_name(base_name: str, suffix: str) -> str:
@@ -268,7 +268,7 @@ def split_companion_name(name: str, profile: PbrProfile) -> Optional[tuple[str, 
 def reserved_ending_warning(name: str) -> Optional[str]:
     """A warning for a tile name that ends as a companion file does, under any setting, or None. The game reads
     atlas.json never, so it takes such a file for the companion of another picture whatever the setting says."""
-    split = _split_ending(name, RESERVED_COMPANION_SUFFIXES)
+    split = _split_ending(name, reserved_companion_suffixes())
     if split is None:
         return None
     base, suffix = split
@@ -308,6 +308,22 @@ def planes_from_companions(
         for index in profile.channel_indices(suffix):
             planes[:, :, index] = picture[:, :, profile.channels[index].byte]
     return planes
+
+
+def convert_planes(old: PbrProfile, new: PbrProfile, planes: numpy.ndarray) -> tuple[numpy.ndarray, list[str]]:
+    """The planes of a tile under another profile: each channel moves to the channel of the new profile with the same
+    identity, and the others are neutral. Also returns the identities of the channels that have data (not everywhere
+    neutral) and have no place in the new profile. The bytes are copied as they are: two profiles that give one
+    identity different bytes for the same meaning need a conversion of their own, which they must bring with them."""
+    new_planes = neutral_planes(new, planes.shape[0])
+    new_indices = {channel.identity: index for index, channel in enumerate(new.channels)}
+    dropped: list[str] = []
+    for index, channel in enumerate(old.channels):
+        if channel.identity in new_indices:
+            new_planes[:, :, new_indices[channel.identity]] = planes[:, :, index]
+        elif (planes[:, :, index] != channel.neutral).any():
+            dropped.append(channel.identity)
+    return new_planes, dropped
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -496,13 +512,15 @@ def write_bytes_atomically(path: Path, content: bytes) -> None:
         raise
 
 
-def write_files_all_or_none(writes: list[tuple[Path, bytes]]) -> None:
-    """Write several files so that, if one cannot be written, none of them has changed: a file that was replaced is
-    given its old content back and one that was new is removed again. Each file is itself written atomically.
-    Raises the OSError of the first failure. (A crash in the middle can still leave some files new and some old.)"""
+def write_files_all_or_none(writes: list[tuple[Path, bytes]], deletions: Iterable[Path] = ()) -> None:
+    """Write several files and delete others so that, if one step cannot be made, nothing has changed: a file that was
+    replaced is given its old content back, one that was new is removed again, and a deleted one comes back. Each file
+    is itself written atomically. Raises the OSError of the first failure. (A crash in the middle can still leave some
+    files new and some old.)"""
     staged: list[tuple[Path, str]] = []
     backups: dict[Path, str] = {}
     replaced: list[Path] = []
+    held_aside: list[tuple[Path, Path]] = []
     try:
         for path, content in writes:
             staged.append((path, _write_temporary_file(path.parent, content)))
@@ -512,7 +530,17 @@ def write_files_all_or_none(writes: list[tuple[Path, bytes]]) -> None:
         for path, temporary_name in staged:
             os.replace(temporary_name, path)
             replaced.append(path)
+        for path in deletions:
+            if path.exists():
+                held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+                os.rename(path, held)
+                held_aside.append((path, held))
     except BaseException:
+        for path, held in reversed(held_aside):
+            try:
+                os.rename(held, path)
+            except OSError:
+                logger.warning("could not give %s back its name %s after a failed change", held.name, path.name)
         for path in reversed(replaced):
             try:
                 if path in backups:
@@ -528,6 +556,8 @@ def write_files_all_or_none(writes: list[tuple[Path, bytes]]) -> None:
         raise
     for backup_name in backups.values():
         _remove_quietly(backup_name)
+    for _, held in held_aside:
+        _remove_quietly(held)
 
 
 def write_atlas_file(path: Path, atlas_file: AtlasFile) -> None:
@@ -695,6 +725,16 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
             companion_files_of.setdefault(base_name.casefold(), {}).setdefault(suffix, actual_name)
             base_name_of.setdefault(base_name.casefold(), base_name)
             companion_file_names.add(actual_name)
+    # Files that end as the companions of another profile do, by the picture they go with. A picture that has these and
+    # also files in the format of this profile has no clear channels, so it is an error until one set is removed.
+    other_files_of: dict[str, list[str]] = {}
+    if profile.channels:
+        other_endings = tuple(suffix for suffix in reserved_companion_suffixes() if suffix not in profile.suffixes)
+        for actual_name in png_names:
+            if actual_name not in companion_file_names:
+                other_split = _split_ending(actual_name, other_endings)
+                if other_split is not None:
+                    other_files_of.setdefault(other_split[0].casefold(), []).append(actual_name)
 
     def find_actual_name(listed_name: str) -> Optional[str]:
         if listed_name in png_names:
@@ -719,6 +759,12 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
         if not profile.channels:
             return None, frozenset(), None
         found = companion_files_of.get(picture_name.casefold(), {})
+        others = other_files_of.get(picture_name.casefold(), [])
+        if found and others:
+            return None, frozenset(), (
+                f"the companion files are in two formats ({', '.join(list(found.values()) + others)}): "
+                f"keep one set, then reload"
+            )
         pictures: dict[str, numpy.ndarray] = {}
         for suffix in profile.suffixes:
             if suffix in found:
@@ -1554,6 +1600,35 @@ class EditHistory:
 # ----------------------------------------------------------------------------------------------------------
 
 
+@dataclasses.dataclass
+class PbrConversion:
+    """What changing the PBR setting does to the companion files of one tile: files to write, files to delete."""
+
+    writes: list[tuple[Path, bytes]]
+    deletions: list[Path]
+
+
+@dataclasses.dataclass
+class PbrSwitchPlan:
+    """What changing the PBR setting would do (AtlasProject.plan_pbr_switch). Nothing happens while `problem` is set."""
+
+    profile_name: str
+    problem: Optional[str] = None
+    # Tiles whose names are companion names under the new setting: they leave the atlas, their files stay.
+    ejected: list[Coordinate] = dataclasses.field(default_factory=list)
+    # Tiles with files in the old format, and what happens to them.
+    conversions: dict[Coordinate, PbrConversion] = dataclasses.field(default_factory=dict)
+    # The identities of the channels with data that the new setting has no place for, by tile. Changing needs a confirm.
+    dropped: dict[Coordinate, list[str]] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class PbrSwitchResult:
+    ejected_names: list[str]
+    # What the user should be told: tiles that left the atlas, tiles that became error tiles.
+    warnings: list[str]
+
+
 class AtlasProject:
     """The tiles of one folder, which of them are selected, and the saving of atlas.json after every change.
 
@@ -1660,6 +1735,148 @@ class AtlasProject:
         self.tile_size = tile_size
         self._scan(atlas_file)
         return True
+
+    def reload(self) -> bool:
+        """Read atlas.json and the folder again, as if the program had just been started on it. False (nothing
+        happens) while a tile has unsaved changes, which reading again would lose. Raises AtlasFileError if atlas.json
+        is not usable now. The edit history is forgotten, since its tiles are replaced."""
+        if self.unsaved_tiles():
+            return False
+        atlas_file = read_atlas_file(self.folder / ATLAS_FILE_NAME)
+        loaded = atlas_file if atlas_file is not None else AtlasFile(None)
+        self.atlas_file_exists = atlas_file is not None
+        self.tile_size_is_saved = loaded.tile_size is not None
+        if loaded.tile_size is not None:
+            self.tile_size = loaded.tile_size
+        self.other_settings = dict(loaded.other_settings)
+        self.pbr_profile = loaded.pbr_profile
+        self.history = EditHistory()
+        self._scan(loaded)
+        return True
+
+    # Changing the PBR setting ------------------------------------------------------------------------------
+
+    def plan_pbr_switch(self, profile_name: str) -> PbrSwitchPlan:
+        """What changing the PBR setting to `profile_name` would do, without doing it (see PbrSwitchPlan)."""
+        plan = PbrSwitchPlan(profile_name)
+        if profile_name not in PBR_PROFILES:
+            plan.problem = f"{profile_name!r} is not a PBR setting"
+            return plan
+        unsaved = self.unsaved_tiles()
+        if unsaved:
+            plan.problem = (
+                f"{len(unsaved)} tile{'s' if len(unsaved) != 1 else ''} have unsaved changes: "
+                "save or discard them before changing the PBR setting"
+            )
+            return plan
+        old, new = self.profile, PBR_PROFILES[profile_name]
+        for coordinate in sorted(self.tiles, key=reading_order_key):
+            record = self.tiles[coordinate]
+            if split_companion_name(record.name, new) is not None:
+                if record.preserved_data_text is not None:
+                    plan.problem = f"{record.name} holds pixel data in atlas.json that leaving the atlas would drop"
+                    return plan
+                plan.ejected.append(coordinate)
+        if old.channels and new.channels:
+            for coordinate in sorted(self.tiles, key=reading_order_key):
+                record = self.tiles[coordinate]
+                if coordinate not in plan.ejected and record.error is None and record.disk_suffixes:
+                    self._plan_conversion(plan, coordinate, record, old, new)
+        return plan
+
+    def _plan_conversion(
+        self, plan: PbrSwitchPlan, coordinate: Coordinate, record: TileRecord, old: PbrProfile, new: PbrProfile
+    ) -> None:
+        """Plan the files of a tile that has files in the old format: written in the new format, the old ones deleted.
+        (A tile that also has files in the new format only is an error tile already, since the scan refuses two formats
+        at once, and error tiles are not planned: no file of it changes.)"""
+        new_planes, dropped = convert_planes(old, new, record.planes)
+        if dropped:
+            plan.dropped[coordinate] = dropped
+        pictures = companions_from_planes(new, new_planes)
+        neutral = neutral_planes(new, self.tile_size)
+        writes: list[tuple[Path, bytes]] = []
+        for suffix in new.suffixes:
+            existing = self._find_tile_file(companion_name(record.name, suffix))
+            if existing is not None:
+                try:
+                    if numpy.array_equal(read_image_pixels(existing), pictures[suffix]):
+                        continue
+                except TileImageError:
+                    pass
+            else:
+                indices = new.channel_indices(suffix)
+                if numpy.array_equal(new_planes[:, :, indices], neutral[:, :, indices]):
+                    continue
+            path = existing or self.folder / companion_name(record.name, suffix)
+            writes.append((path, encode_png(pictures[suffix])))
+        deletions = [
+            found
+            for suffix in old.suffixes
+            if suffix not in new.suffixes
+            for found in [self._find_tile_file(companion_name(record.name, suffix))]
+            if found is not None
+        ]
+        plan.conversions[coordinate] = PbrConversion(writes, deletions)
+
+    def switch_pbr_profile(self, profile_name: str, confirm_dropped: bool = False) -> Optional[PbrSwitchResult]:
+        """Change the PBR setting, and so the companion files that belong to a tile. None if it is that already.
+
+        Raises ValueError (nothing changes) if a tile has unsaved changes, the setting is unknown, or channels with data
+        would be lost and `confirm_dropped` is not set (plan_pbr_switch tells which). OSError (nothing changes) if
+        atlas.json cannot be written. Then, in this order:
+        - tiles named as companions under the new setting leave the atlas (their files stay);
+        - atlas.json is written with the new setting;
+        - the files of each tile that has files in the old format are rewritten in the new one, all of a tile's files
+          or none (a tile whose files cannot be changed becomes an error tile, its files as they were);
+        - the folder is read again. A tile that has files in two formats is an error tile (the scan makes it one,
+          before and after the change, until the user removes one set and reloads), and no file of it is changed.
+        """
+        if profile_name == self.pbr_profile:
+            return None
+        plan = self.plan_pbr_switch(profile_name)
+        if plan.problem is not None:
+            raise ValueError(plan.problem)
+        if plan.dropped and not confirm_dropped:
+            lost = "; ".join(f"{self.tiles[coordinate].name}: {', '.join(names)}" for coordinate, names in plan.dropped.items())
+            raise ValueError(f"{profile_name} has no place for channels that have data ({lost})")
+        names = {coordinate: record.name for coordinate, record in self.tiles.items()}
+        had_error = {coordinate for coordinate, record in self.tiles.items() if record.error is not None}
+        old_profile_name = self.pbr_profile
+
+        def change() -> None:
+            self.pbr_profile = profile_name
+            for coordinate in plan.ejected:
+                del self.tiles[coordinate]
+                self.selection.discard(coordinate)
+
+        try:
+            self._commit(change)
+        except BaseException:
+            self.pbr_profile = old_profile_name
+            raise
+        failures: dict[Coordinate, str] = {}
+        for coordinate, conversion in plan.conversions.items():
+            try:
+                write_files_all_or_none(conversion.writes, conversion.deletions)
+            except OSError as error:
+                failures[coordinate] = str(error)
+        self.history = EditHistory()
+        self._scan(self.build_atlas_file())
+        for coordinate, reason in failures.items():
+            self.tiles[coordinate] = TileRecord(
+                names[coordinate], None, None, f"its companion files could not be changed to {profile_name}: {reason}"
+            )
+        warnings = [
+            f"{names[coordinate]} is a companion file under {profile_name}, so it left the atlas (the file is unchanged)"
+            for coordinate in plan.ejected
+        ]
+        warnings += [
+            f"{record.name}: {record.error}"
+            for coordinate, record in sorted(self.tiles.items(), key=lambda item: reading_order_key(item[0]))
+            if record.error is not None and coordinate not in had_error
+        ]
+        return PbrSwitchResult([names[coordinate] for coordinate in plan.ejected], warnings)
 
     # Editing the pixels --------------------------------------------------------------------------------
 
