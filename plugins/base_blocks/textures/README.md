@@ -149,4 +149,8 @@ All of the planned features are built.
   each tile's pixels back as they change so that the program shows them at once (with the companion pictures of the tile when the program says it reads the convention the atlas is set to: `BRIDGE.md`). Nothing in it is about one program: the protocol is `tools/virtual_atlas/BRIDGE.md`. In
   Voxunami: `.paint` in the game's command line (see `docs/world-painting-options.md`).
 
+- Seeing the files in the game: Voxunami started from the repository folder (`cargo run --release -p launcher -- cave`) draws blocks with the pictures of this folder (and their `_s` and `_n`
+  companions) instead of the copies built into the program, because it reads the `plugins` folder when there is one; `.reload pictures` (or `--watch`) reads them again after a save, and
+  `--no-texture-pack` turns it off. This is for now: the folder structures are to be reviewed (`docs/future-goals.md`, Unscheduled).
+
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.

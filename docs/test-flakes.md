@@ -36,6 +36,15 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   CPU thread per core) until it fails, and look at the listener's `accept`. If the order is not guaranteed by the listener, the test should send a value that says which client it is and not
   depend on the order (`accept` twice, and match frames to clients by what they carry).
 
+### `engine/renderer/tests/gpu_rendering.rs`: `a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_from_a_brick_to_a_mountain_range`
+
+- **Occurrence 1: 2026-11-18**, the full gate (`cargo test --workspace --no-fail-fast`, dev profile) on **Windows**, with a change to the command-line options of `game_shell` in the tree (no renderer change).
+  The message: `AMD Radeon(TM) Graphics (IntegratedGpu, Dx12) roof level 20: [16.0, 1.0, 12.0] at pixel (52, 41) is lit but is 20.783 of the light` (line 2968; the whole binary: `202 passed; 1 failed; 3 ignored ... finished in 1075.40s`).
+  The same adapter, the same point and the same pixel as the entry just below (a different test of the same file, 'roof level 15' there).
+- **Reruns.** Alone twice, in a clean copy of HEAD plus the change, with `VOX_REQUIRE_GPU=1`: 0 failures in 2. The whole binary was not run again.
+- **Beliefs about the cause.** **Believed, not tested**: the same as the entry below (the integrated AMD GPU leaving out pixels of a fresh renderer's first frames; two tests failing on one point of one adapter in two gate runs makes a shared cause likelier than two). **Not checked**: how this test takes its picture.
+- **What would settle it.** As the entry below: read how both tests take their pictures and take them with `settled`.
+
 ### `engine/renderer/tests/gpu_rendering.rs`: `the_ground_of_a_planet_casts_shadows_at_every_distance_as_terrain_does_though_a_planet_is_a_grid`
 
 - **The test.** It draws a planet's ground and a roof and asserts, at each roof level, that the pixels that should be in shadow are (line 3036).

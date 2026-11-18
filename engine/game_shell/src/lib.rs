@@ -76,10 +76,16 @@ pub fn run_play<G: GameDefinition>(
             println!("{}", play_usage::<G>());
             Ok(())
         }
-        Parsed::Run(options) if options.view.screenshot.is_some() || options.benchmark => {
-            headless::play::<G>(&options)
+        Parsed::Run(mut options) => {
+            options
+                .view
+                .use_default_texture_pack(default_texture_pack_exists());
+            if options.view.screenshot.is_some() || options.benchmark {
+                headless::play::<G>(&options)
+            } else {
+                windowed::play::<G>(options)
+            }
         }
-        Parsed::Run(options) => windowed::play::<G>(options),
     }
 }
 
@@ -115,9 +121,20 @@ pub fn run_replay<G: GameDefinition>(
             println!("{}", replay_usage());
             Ok(())
         }
-        Parsed::Run(options) if options.view.screenshot.is_some() => {
-            headless::replay::<G>(&options)
+        Parsed::Run(mut options) => {
+            options
+                .view
+                .use_default_texture_pack(default_texture_pack_exists());
+            if options.view.screenshot.is_some() {
+                headless::replay::<G>(&options)
+            } else {
+                windowed::replay::<G>(options)
+            }
         }
-        Parsed::Run(options) => windowed::replay::<G>(options),
     }
+}
+
+/// Whether the folder that is the texture pack by default is there, as seen from the folder the program was started in.
+fn default_texture_pack_exists() -> bool {
+    std::path::Path::new(options::DEFAULT_TEXTURE_PACK).is_dir()
 }
