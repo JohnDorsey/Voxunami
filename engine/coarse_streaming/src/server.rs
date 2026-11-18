@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use block_models::BlockTable;
 use coarse_cells::{
-    CoarseCell, CoarseNode, EditedCubes, ViewSelection, far_ship_nodes_to_send, select_around_brick,
+    CoarseCell, CoarseNode, EditedCubes, ViewSelection, far_ship_empty_cubes,
+    far_ship_nodes_to_send, select_around_brick,
 };
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
@@ -122,6 +123,10 @@ impl CoarseConfig {
     }
 }
 
+/// What `sent` holds for a cube the client was told is empty (a node with nothing in it, said of a cube of a far ship's box that holds no brick of it): no node has
+/// this version.
+const EMPTY_VERSION: u64 = u64::MAX;
+
 /// The least a client may be allowed to save up of what it asks for: enough for the biggest node, so that a slow rate still gets one through.
 const BURST_MINIMUM_BYTES: f64 = 200_000.0;
 
@@ -140,6 +145,8 @@ struct ClientState {
     selected_far_from: Vec<(GridId, BrickCoordinate)>,
     selected_for: Option<SetDetail>,
     leaves: Vec<(GridId, BrickCube)>,
+    /// The cubes of the far ships' boxes that the client is to be told are empty (see [`far_ship_empty_cubes`]).
+    empties: Vec<(GridId, BrickCube)>,
     /// Which set of places with an override the leaves were last worked out for ([`State::edit_epoch`]).
     selected_edit_epoch: u64,
     /// What the client has been sent: the version of each node.
@@ -885,6 +892,7 @@ impl State {
         let Some((position, level)) = pose.filter(|_| wanted) else {
             state.pending.clear();
             state.leaves.clear();
+            state.empties.clear();
             state.selected_from = None;
             return;
         };
@@ -914,6 +922,12 @@ impl State {
                     select_far_leaves(config, &self.edited, grid, brick, &state.detail)
                 }))
                 .collect();
+            state.empties = far_from
+                .iter()
+                .flat_map(|&(grid, brick)| {
+                    select_far_empties(config, &self.edited, data, grid, brick, &state.detail)
+                })
+                .collect();
             state.selected_far_from = far_from;
             state.selected_from = Some(from);
             state.selected_for = Some(state.detail);
@@ -921,7 +935,8 @@ impl State {
             state.pending_epoch = u64::MAX;
         }
         if state.pending_epoch != self.epoch {
-            state.pending = pending_updates(&self.overrides, &state.sent, &state.leaves);
+            state.pending =
+                pending_updates(&self.overrides, &state.sent, &state.leaves, &state.empties);
             state.pending_epoch = self.epoch;
         }
     }
@@ -941,8 +956,12 @@ impl State {
             let Some((key, version)) = state.pending.pop_front() else {
                 break;
             };
-            let node =
-                version.and_then(|_| self.overrides.get(&key).map(|stored| stored.node.clone()));
+            let node = match version {
+                Some(version) if version != EMPTY_VERSION => {
+                    self.overrides.get(&key).map(|stored| stored.node.clone())
+                }
+                _ => None,
+            };
             let update = CoarseNodeUpdate {
                 grid: key.1,
                 cube: cube_of(key),
@@ -981,13 +1000,15 @@ fn in_messages(updates: Vec<CoarseNodeUpdate>) -> Vec<Vec<u8>> {
 }
 
 /// What is left to tell a client: first the nodes it was sent that are no longer overridden (to be taken back), then the nodes of its `leaves` that have an
-/// override it has not been sent in its latest version, coarsest first (the order of the walk otherwise, which is near to far).
+/// override it has not been sent in its latest version, and the `empties` it has not been told (a cube of a far ship's box that holds nothing: a node with nothing
+/// in it, sent as [`EMPTY_VERSION`]), coarsest first (the order of the walk otherwise, which is near to far).
 fn pending_updates(
     overrides: &BTreeMap<Key, Stored>,
     sent: &BTreeMap<Key, u64>,
     leaves: &[(GridId, BrickCube)],
+    empties: &[(GridId, BrickCube)],
 ) -> VecDeque<(Key, Option<u64>)> {
-    let mut wanted: Vec<Key> = leaves
+    let mut wanted: Vec<(Key, u64)> = leaves
         .iter()
         .map(|&(grid, cube)| key_of(grid, cube))
         .filter(|key| {
@@ -995,15 +1016,23 @@ fn pending_updates(
                 .get(key)
                 .is_some_and(|stored| sent.get(key) != Some(&stored.version))
         })
+        .map(|key| (key, overrides[&key].version))
         .collect();
-    wanted.sort_by_key(|key| std::cmp::Reverse(key.0));
-    sent.keys()
-        .filter(|key| !overrides.contains_key(key))
-        .map(|key| (*key, None))
+    wanted.extend(
+        empties
+            .iter()
+            .map(|&(grid, cube)| key_of(grid, cube))
+            .filter(|key| !overrides.contains_key(key) && sent.get(key) != Some(&EMPTY_VERSION))
+            .map(|key| (key, EMPTY_VERSION)),
+    );
+    wanted.sort_by_key(|(key, _)| std::cmp::Reverse(key.0));
+    sent.iter()
+        .filter(|(key, version)| !overrides.contains_key(key) && **version != EMPTY_VERSION)
+        .map(|(key, _)| (*key, None))
         .chain(
             wanted
                 .into_iter()
-                .map(|key| (key, Some(overrides[&key].version))),
+                .map(|(key, version)| (key, Some(version))),
         )
         .collect()
 }
@@ -1062,6 +1091,42 @@ fn select_far_leaves(
     far_ship_nodes_to_send(
         brick,
         &view,
+        &|cube| edited.holds(grid, cube),
+        config.maximum_override_level,
+    )
+    .into_iter()
+    .map(|cube| (grid, cube))
+    .collect()
+}
+
+/// The cubes of a far ship's box that a client in `brick` of the ship is to be told are empty, because they have no brick of the ship (see
+/// [`far_ship_empty_cubes`]). None for a ship that is not in the world or has no brick.
+fn select_far_empties(
+    config: &CoarseConfig,
+    edited: &EditedCubes,
+    data: &WorldData,
+    grid: GridId,
+    brick: BrickCoordinate,
+    detail: &SetDetail,
+) -> Vec<(GridId, BrickCube)> {
+    let Some(bounds) = data
+        .grids()
+        .get(grid)
+        .and_then(|ship| ship.brick_extent())
+        .and_then(|(low, high)| BrickBox::new(low, high))
+    else {
+        return Vec::new();
+    };
+    let view = ViewSelection {
+        detail: detail.settings(),
+        zoom: detail.zoom(),
+        fine_radius: u32::from(detail.fine_radius),
+        maximum_distance: config.view_distance,
+    };
+    far_ship_empty_cubes(
+        brick,
+        &view,
+        bounds,
         &|cube| edited.holds(grid, cube),
         config.maximum_override_level,
     )
@@ -1229,6 +1294,7 @@ impl Plugin for CoarseServerPlugin {
                             selected_far_from: Vec::new(),
                             selected_for: None,
                             leaves: Vec::new(),
+                            empties: Vec::new(),
                             selected_edit_epoch: 0,
                             sent: BTreeMap::new(),
                             pending: VecDeque::new(),
@@ -1361,7 +1427,7 @@ mod tests {
         cubes: &[BrickCube],
     ) -> Vec<(Key, Option<u64>)> {
         let sent: BTreeMap<Key, u64> = sent.iter().copied().collect();
-        pending_updates(overrides, &sent, &leaves(cubes)).into()
+        pending_updates(overrides, &sent, &leaves(cubes), &[]).into()
     }
 
     #[test]
@@ -1441,8 +1507,48 @@ mod tests {
         .collect();
         let sent: BTreeMap<Key, u64> = [(key_of(GridId::MAIN, cube(0, 3)), 1)].into();
         let wanted = [(GridId::MAIN, cube(0, 3)), (other, cube(0, 3))];
-        let order: Vec<_> = pending_updates(&held, &sent, &wanted).into();
+        let order: Vec<_> = pending_updates(&held, &sent, &wanted, &[]).into();
         assert_eq!(order, [(key_of(other, cube(0, 3)), Some(2))]);
+    }
+
+    #[test]
+    fn a_cube_said_to_be_empty_is_sent_as_a_node_with_nothing_in_it_once_and_is_not_taken_back() {
+        let held: BTreeMap<Key, Stored> = BTreeMap::new();
+        let empty = key_of(GridId::MAIN, cube(0, 3));
+        let first = pending_updates(&held, &BTreeMap::new(), &[], &[(GridId::MAIN, cube(0, 3))]);
+        assert_eq!(first, [(empty, Some(EMPTY_VERSION))]);
+        // It is sent: it is not sent again, and it is not taken back for having no override.
+        let sent: BTreeMap<Key, u64> = [(empty, EMPTY_VERSION)].into();
+        assert!(pending_updates(&held, &sent, &[], &[(GridId::MAIN, cube(0, 3))]).is_empty());
+        assert!(pending_updates(&held, &sent, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_cube_that_has_an_override_is_sent_as_the_node_it_is_and_not_as_empty() {
+        let held: BTreeMap<Key, Stored> = [(key_of(GridId::MAIN, cube(0, 3)), stored(5))].into();
+        let order = pending_updates(&held, &BTreeMap::new(), &[], &[(GridId::MAIN, cube(0, 3))]);
+        assert!(order.is_empty(), "{order:?}");
+        // One that was said to be empty and has a node now is sent the node.
+        let sent: BTreeMap<Key, u64> = [(key_of(GridId::MAIN, cube(0, 3)), EMPTY_VERSION)].into();
+        let order = pending_updates(&held, &sent, &[(GridId::MAIN, cube(0, 3))], &[]);
+        assert_eq!(order, [(key_of(GridId::MAIN, cube(0, 3)), Some(5))]);
+    }
+
+    #[test]
+    fn nodes_and_empty_cubes_are_sent_together_coarsest_first() {
+        let held: BTreeMap<Key, Stored> = [
+            (key_of(GridId::MAIN, cube(0, 2)), stored(1)),
+            (key_of(GridId::MAIN, cube(32, 4)), stored(2)),
+        ]
+        .into();
+        let order = pending_updates(
+            &held,
+            &BTreeMap::new(),
+            &[(GridId::MAIN, cube(0, 2)), (GridId::MAIN, cube(32, 4))],
+            &[(GridId::MAIN, cube(8, 3)), (GridId::MAIN, cube(16, 1))],
+        );
+        let levels: Vec<u8> = order.iter().map(|(key, _)| key.0).collect();
+        assert_eq!(levels, [4, 3, 2, 1]);
     }
 
     fn config() -> CoarseConfig {
@@ -1477,6 +1583,7 @@ mod tests {
             selected_far_from: Vec::new(),
             selected_for: None,
             leaves: Vec::new(),
+            empties: Vec::new(),
             selected_edit_epoch: 0,
             sent: sent.into_iter().collect(),
             pending: pending.into(),

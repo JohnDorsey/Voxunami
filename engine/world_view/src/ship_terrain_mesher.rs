@@ -14,7 +14,7 @@ use terrain::{SolidBall, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
 
-use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
+use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
 use crate::mesher::{MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher};
 use crate::occupancy::{OccupancyChange, OccupancyStatistics};
 
@@ -113,6 +113,11 @@ impl CoarseTerrainSource for ShipTerrainSource<'_> {
 
     fn solid_core(&self) -> Option<SolidBall> {
         self.generator.as_ref()?.solid_core()
+    }
+
+    /// A far ship has no generator: what it is drawn from is what the server says (see [`ShipTerrainSource::far`]).
+    fn waits_for_nodes(&self) -> bool {
+        self.far
     }
 }
 
@@ -277,6 +282,15 @@ impl ShipTerrainMesher {
         match &mut self.drawn {
             Drawn::Bricks(_) => None,
             Drawn::Detailed { view, .. } => view.take_stall_report(),
+        }
+    }
+
+    /// The cubes that are wanted and not drawn, as of the last time the planet's view came to rest ([`LodView::stalled`]); always empty for a mesher of the bricks
+    /// alone.
+    pub fn stalled(&self) -> &[Stalled] {
+        match &self.drawn {
+            Drawn::Bricks(_) => &[],
+            Drawn::Detailed { view, .. } => view.stalled(),
         }
     }
 

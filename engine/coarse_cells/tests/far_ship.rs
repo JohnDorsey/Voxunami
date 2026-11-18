@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use coarse_cells::{
-    DetailSettings, ViewSelection, far_ship_nodes_to_send, select_around_brick, select_far_ship,
+    DetailSettings, ViewSelection, far_ship_empty_cubes, far_ship_nodes_to_send,
+    select_around_brick, select_far_ship,
 };
 use region_octree::BrickCube;
 use voxel_space::{BrickBox, BrickCoordinate};
@@ -126,4 +127,134 @@ fn a_cube_that_may_hold_nothing_is_neither_drawn_nor_sent_nor_are_the_cubes_insi
     let nowhere = |_: BrickCube| false;
     assert!(select_far_ship(brick(0, 0, 0), &view(), &nowhere).is_empty());
     assert!(far_ship_nodes_to_send(brick(0, 0, 0), &view(), &nowhere, COARSEST).is_empty());
+}
+
+/// A ship of two blocks of bricks, far from each other: its box is much bigger than what is in it.
+fn two_blocks() -> (BrickBox, Vec<BrickCoordinate>) {
+    let bricks = vec![brick(30, 0, 0), brick(37, 7, 7)];
+    (BrickBox::new(bricks[0], bricks[1]).unwrap(), bricks)
+}
+
+fn holds(bricks: &[BrickCoordinate], cube: BrickCube) -> bool {
+    bricks.iter().any(|brick| cube.contains(*brick))
+}
+
+/// Whether the cube is one of `empty` or inside one.
+fn is_inside_one_of(cube: BrickCube, empty: &[BrickCube]) -> bool {
+    empty
+        .iter()
+        .any(|e| e.level() >= cube.level() && BrickCube::containing(cube.origin(), e.level()) == *e)
+}
+
+#[test]
+fn the_server_says_empty_every_cube_the_client_may_draw_or_go_on_to_draw_that_it_does_not_send_and_that_has_no_brick()
+ {
+    let (bounds, bricks) = two_blocks();
+    let holds = |cube: BrickCube| holds(&bricks, cube);
+    // A client knows where a ship may have something by its box alone.
+    let by_box = |cube: BrickCube| cube.meets(bounds);
+    let mut some_empty_cube_was_needed = false;
+    for viewer in [
+        brick(0, 0, 0),
+        brick(33, 3, 3),
+        brick(34, 30, 3),
+        brick(200, -40, 5),
+    ] {
+        let sent: HashSet<BrickCube> = far_ship_nodes_to_send(viewer, &view(), &holds, COARSEST)
+            .into_iter()
+            .collect();
+        let empty = far_ship_empty_cubes(viewer, &view(), bounds, &holds, COARSEST);
+        let drawn_by_the_client = select_far_ship(viewer, &view(), &by_box);
+        for cube in &drawn_by_the_client {
+            if holds(*cube) {
+                assert!(
+                    sent.contains(cube),
+                    "{viewer:?}: {cube:?} is drawn and held and not sent"
+                );
+                // The halves it may be split into when the viewer comes nearer.
+                if cube.level() >= 2 {
+                    let half = 1i128 << (cube.level() - 1);
+                    for octant in 0..8i128 {
+                        let origin = brick(
+                            cube.origin().x() + (octant & 1) * half,
+                            cube.origin().y() + (octant >> 1 & 1) * half,
+                            cube.origin().z() + (octant >> 2) * half,
+                        );
+                        let child = BrickCube::new(origin, cube.level() - 1).unwrap();
+                        if child.meets(bounds) {
+                            assert!(
+                                sent.contains(&child) || is_inside_one_of(child, &empty),
+                                "{viewer:?}: {child:?}, a half of {cube:?}, is neither sent nor said to be empty"
+                            );
+                        }
+                    }
+                }
+            } else {
+                some_empty_cube_was_needed = true;
+                assert!(
+                    is_inside_one_of(*cube, &empty),
+                    "{viewer:?}: {cube:?} is drawn by a client, holds no brick and is not said to be empty ({empty:?})"
+                );
+            }
+        }
+    }
+    assert!(
+        some_empty_cube_was_needed,
+        "the viewers do not test anything"
+    );
+}
+
+#[test]
+fn the_empty_cubes_are_the_biggest_that_hold_no_brick_each_once_coarsest_first_and_none_is_sent_or_holds_a_sent_one()
+ {
+    let (bounds, bricks) = two_blocks();
+    let holds = |cube: BrickCube| holds(&bricks, cube);
+    for viewer in [brick(0, 0, 0), brick(33, 3, 3), brick(34, 30, 3)] {
+        let empty = far_ship_empty_cubes(viewer, &view(), bounds, &holds, COARSEST);
+        let sent = far_ship_nodes_to_send(viewer, &view(), &holds, COARSEST);
+        assert_eq!(
+            empty.iter().collect::<HashSet<_>>().len(),
+            empty.len(),
+            "once each"
+        );
+        let levels: Vec<u8> = empty.iter().map(|cube| cube.level()).collect();
+        assert!(
+            levels.windows(2).all(|pair| pair[0] >= pair[1]),
+            "{levels:?}"
+        );
+        assert_eq!(
+            empty,
+            far_ship_empty_cubes(viewer, &view(), bounds, &holds, COARSEST),
+            "the same every time"
+        );
+        for cube in &empty {
+            assert!(!holds(*cube), "{cube:?} holds a brick");
+            assert!(cube.meets(bounds), "{cube:?} is outside the box");
+            // The biggest: what holds it holds a brick (or is the coarsest there is).
+            if cube.level() < COARSEST {
+                let parent = BrickCube::containing(cube.origin(), cube.level() + 1);
+                assert!(
+                    holds(parent),
+                    "{cube:?} is inside {parent:?}, which is empty too"
+                );
+            }
+            assert!(
+                sent.iter().all(|node| !is_inside_one_of(*node, &[*cube])),
+                "{cube:?} is empty and a node inside it is sent"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_ship_that_fills_its_box_has_no_empty_cube_to_say() {
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(37, 7, 7)).unwrap();
+    let holds = |cube: BrickCube| cube.meets(bounds);
+    for viewer in [brick(0, 0, 0), brick(33, 3, 3)] {
+        assert_eq!(
+            far_ship_empty_cubes(viewer, &view(), bounds, &holds, COARSEST),
+            Vec::<BrickCube>::new(),
+            "{viewer:?}"
+        );
+    }
 }

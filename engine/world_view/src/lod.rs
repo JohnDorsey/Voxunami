@@ -60,6 +60,13 @@ pub trait CoarseTerrainSource: TerrainSource {
     fn solid_core(&self) -> Option<SolidBall> {
         None
     }
+
+    /// Whether the nodes the server sends are all there is of this terrain: no generator makes the rest, so a cube that has no node is empty only if the server has said
+    /// so ([`LodView::set_override`] with `None`), and until it has the view waits to draw the cube (and what is to be drawn with it), and goes on drawing what it draws.
+    /// False, the default: a cube with no node is made by the generator, or is empty if there is none.
+    fn waits_for_nodes(&self) -> bool {
+        false
+    }
 }
 
 impl CoarseTerrainSource for LevelData {
@@ -177,6 +184,12 @@ pub struct LodView {
     grid: GridId,
     /// What the server has said differs from the generators', by grid and cube.
     overrides: HashMap<(GridId, BrickCube), Override>,
+    /// The cubes the server has said are empty (a `None` for a cube that had no node), and the biggest level of them: a cube inside one of these is empty too.
+    /// Only a terrain that [`waits_for_nodes`](CoarseTerrainSource::waits_for_nodes) asks.
+    told_empty: HashSet<(GridId, BrickCube)>,
+    told_empty_top: u8,
+    /// The cubes that are wanted, have no node and have not been said to be empty, in a terrain that waits for nodes: they are made when the server says.
+    waiting_for_the_server: HashSet<BrickCube>,
     next_version: u64,
     /// Where the overrides are, for leaving out only the cubes that hold no edit and have none beside them.
     edited: EditedCubes,
@@ -266,6 +279,9 @@ impl LodView {
             mesher,
             grid: GridId::MAIN,
             overrides: HashMap::new(),
+            told_empty: HashSet::new(),
+            told_empty_top: 0,
+            waiting_for_the_server: HashSet::new(),
             next_version: 0,
             edited: EditedCubes::new(),
             new_edits: false,
@@ -322,13 +338,15 @@ impl LodView {
     }
 
     /// The node the server says is the node of a cube instead of what the generators give (a `None` takes back what was said). Bricks have none, and
-    /// what is said of one is ignored.
+    /// what is said of one is ignored. For a terrain that waits for nodes ([`CoarseTerrainSource::waits_for_nodes`]) a `None` is the server saying the cube is
+    /// empty, as is everything inside it.
     pub fn set_override(&mut self, grid: GridId, cube: BrickCube, node: Option<CoarseNode>) {
         if cube.level() == 0 {
             return;
         }
         match node {
             Some(node) => {
+                self.told_empty.remove(&(grid, cube));
                 self.next_version += 1;
                 let replaced = self.overrides.insert(
                     (grid, cube),
@@ -347,11 +365,37 @@ impl LodView {
                     // Cubes that were kept for being beside the edit may be left out again.
                     self.new_edits = true;
                 }
+                self.told_empty.insert((grid, cube));
+                self.told_empty_top = self.told_empty_top.max(cube.level());
             }
         }
         if grid == self.grid && self.cubes.has_node(cube) {
             self.queue.push(cube);
         }
+        // What waited for the server to say what is in it, and is the cube or inside it, is made now.
+        if grid == self.grid {
+            let now_known: Vec<BrickCube> = self
+                .waiting_for_the_server
+                .iter()
+                .copied()
+                .filter(|waiting| {
+                    waiting.level() <= cube.level()
+                        && BrickCube::containing(waiting.origin(), cube.level()) == cube
+                })
+                .collect();
+            for waiting in now_known {
+                self.waiting_for_the_server.remove(&waiting);
+                self.queue.push(waiting);
+            }
+        }
+    }
+
+    /// Whether the server has said that the cube, or a cube that holds it, is empty.
+    fn is_told_empty(&self, cube: BrickCube) -> bool {
+        (cube.level()..=self.told_empty_top).any(|level| {
+            self.told_empty
+                .contains(&(self.grid, BrickCube::containing(cube.origin(), level)))
+        })
     }
 
     /// The version of the data a node is made from: that of its override, or 0 if the generators make it.
@@ -374,6 +418,7 @@ impl LodView {
         self.wanted_for = None;
         self.may_show.clear();
         self.queue.clear();
+        self.waiting_for_the_server.clear();
         self.plan_needed = false;
         self.epoch += 1;
         self.in_flight = 0;
@@ -489,13 +534,20 @@ impl LodView {
                 reason: self.why_not_ready(source, cube),
             })
             .collect();
-        let stalled: HashSet<BrickCube> = self.stalls.iter().map(|stall| stall.cube).collect();
+        // (A cube that waits for the server to say what is in it is not stuck for good, and is not said: the stall of a view is a defect of the program's.)
+        let stalled: HashSet<BrickCube> = self
+            .stalls
+            .iter()
+            .map(|stall| stall.cube)
+            .filter(|cube| !self.waiting_for_the_server.contains(cube))
+            .collect();
         if stalled.is_empty() {
             self.stall_reported.clear();
         } else if stalled != self.stall_reported {
             let first: Vec<String> = self
                 .stalls
                 .iter()
+                .filter(|stall| stalled.contains(&stall.cube))
                 .take(STALL_REPORT_CUBES)
                 .map(|stall| format!("{} ({})", describe(stall.cube), stall.reason))
                 .collect();
@@ -516,6 +568,9 @@ impl LodView {
                 .mesher
                 .why_not_ready(source, cube.origin())
                 .unwrap_or_else(|| "it is ready".to_string());
+        }
+        if self.waiting_for_the_server.contains(&cube) {
+            return "the server has not said what is in it".to_string();
         }
         match self.cubes.node(cube) {
             None => "nothing asked for its picture".to_string(),
@@ -588,10 +643,13 @@ impl LodView {
         let (grid, edited) = (self.grid, &self.edited);
         let core = source.solid_core();
         let viewer_in_voxels = voxels_of(viewer);
+        // (A terrain that has only the nodes the server sends has cubes beside a cube with a node that nobody says anything of: the server tells of the cubes of the box
+        // of the ship and no more.)
+        let draws_beside_edits = !source.waits_for_nodes();
         let memo = RefCell::new(&mut self.may_show);
         let may_hold = |cube: BrickCube| {
             let may_show = memo.borrow_mut().get_or_ask(cube, || source.may_show(cube))
-                || edited.near(grid, cube);
+                || (draws_beside_edits && edited.near(grid, cube));
             may_show
                 && !core
                     .is_some_and(|core| is_hidden_by(&core, viewer_in_voxels, cube, VIEWER_MARGIN))
@@ -612,6 +670,8 @@ impl LodView {
         self.cubes.want(&cubes);
         self.wanted_for = Some((centre, *settings));
         // The nearest are made first: they are the last in the queue.
+        // (What was waited for is waited for again, by the cubes that are still wanted.)
+        self.waiting_for_the_server.clear();
         self.queue = cubes.into_iter().filter(|cube| cube.level() > 0).collect();
         self.queue
             .sort_by_key(|cube| std::cmp::Reverse(squared_distance_to_middle(*cube, centre)));
@@ -619,6 +679,7 @@ impl LodView {
     }
 
     fn start_jobs(&mut self, source: &impl CoarseTerrainSource) {
+        let source_waits = source.waits_for_nodes();
         let limit = self.workers.len() * JOBS_PER_WORKER;
         while self.in_flight < limit {
             let Some(cube) = self.queue.pop() else {
@@ -632,6 +693,11 @@ impl LodView {
                 Some(held) => Source::Override(Arc::clone(&held.node)),
                 None => match source.coarse_generator(cube) {
                     Some(generator) => Source::Generator(generator),
+                    None if source_waits && !self.is_told_empty(cube) => {
+                        // Nothing is made of it: it is not known to be empty, and what is drawn in its place stays until the server says.
+                        self.waiting_for_the_server.insert(cube);
+                        continue;
+                    }
                     None => Source::Nothing,
                 },
             };

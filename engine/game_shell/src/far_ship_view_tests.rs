@@ -97,20 +97,44 @@ impl Screen {
     }
 }
 
-/// A ship nobody generates: a slab of stone along its four bricks, standing still.
+/// What a ship is made of.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// A slab of stone along four bricks: `ship_bounds`.
+    Slab,
+    /// A block of stone in each of two corners of a box of 4 by 4 bricks (the bricks (0, 0, 0) and (3, 3, 0)): the cubes of the box that are between them are empty.
+    Corners,
+}
+
+/// The bricks a [`Shape::Corners`] ship has.
+fn corners_bounds() -> BrickBox {
+    BrickBox::new(BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(3, 3, 0)).unwrap()
+}
+
+/// A ship nobody generates, standing still.
 fn ship(
     world: &world_storage::WorldData,
     block: ChannelIndex,
     stone: u32,
     at: [i128; 3],
+    shape: Shape,
 ) -> MovingGrid {
     let layout = Arc::clone(world.main().overrides.layout());
     let mut voxels = Grid::new(layout);
-    for x in 0..128 {
-        for y in 0..16 {
-            for z in 0..16 {
-                voxels.set(block, VoxelCoordinate::new(x, y, z), stone);
+    let mut fill = |from: [i128; 3], to: [i128; 3]| {
+        for x in from[0]..to[0] {
+            for y in from[1]..to[1] {
+                for z in from[2]..to[2] {
+                    voxels.set(block, VoxelCoordinate::new(x, y, z), stone);
+                }
             }
+        }
+    };
+    match shape {
+        Shape::Slab => fill([0, 0, 0], [128, 16, 16]),
+        Shape::Corners => {
+            fill([0, 0, 0], [16, 16, 16]);
+            fill([96, 96, 0], [112, 112, 16]);
         }
     }
     MovingGrid {
@@ -141,8 +165,13 @@ struct Rig {
 }
 
 impl Rig {
-    /// A server with the ship at the brick `at`.
+    /// A server with a slab ship at the brick `at`.
     fn new(at: [i128; 3]) -> Self {
+        Self::shaped(at, Shape::Slab)
+    }
+
+    /// A server with a ship of `shape` at the brick `at`.
+    fn shaped(at: [i128; 3], shape: Shape) -> Self {
         let content: ExampleContent = ExampleGame::new_content();
         let mut world = content.new_world(7);
         let block = content.view_channels().blocks;
@@ -152,6 +181,7 @@ impl Rig {
             block,
             content.game.raw_block("base_blocks:stone"),
             at,
+            shape,
         );
         let ship = world.grids_mut().create(made);
         let players = PlayersPlugin::new(true);
@@ -386,4 +416,95 @@ fn a_recording_of_a_player_who_saw_a_ship_far_away_shows_the_same_nodes() {
         assert_eq!(replay_screen.nodes.get(cube), Some(mesh), "{cube:?}");
     }
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Which of `bricks` have a node over them.
+fn bricks_with_a_node(screen: &Screen, bricks: &[BrickCoordinate]) -> usize {
+    bricks
+        .iter()
+        .filter(|brick| screen.nodes.keys().any(|cube| holds(*cube, **brick)))
+        .count()
+}
+
+/// A player flies at `bricks_per_round` along x towards a ship at the brick 140 on x, from 120 bricks to 12 bricks short of it, while the server hears of where
+/// the player was `lag` rounds ago (the client acts on where it is at once; the server answers after it has heard). Returns how many rounds some brick of the
+/// ship had no node over it, and the screen at the end.
+fn fly_to_a_ship(
+    shape: Shape,
+    bricks_to_look_at: &[BrickCoordinate],
+    bricks_per_round: f64,
+    lag: i64,
+) -> (usize, Screen, Rig, Player) {
+    let mut rig = Rig::shaped([140, 0, 0], shape);
+    let start = 20.0 * 32.0 + 16.0;
+    let end = 128.0 * 32.0 + 16.0;
+    let at = |round: i64| (start + bricks_per_round * 32.0 * (round + 1).max(0) as f64).min(end);
+    let mut player = rig.join([start, 14.0, 16.0]);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert_eq!(
+        bricks_with_a_node(&screen, bricks_to_look_at),
+        bricks_to_look_at.len(),
+        "it starts with a picture"
+    );
+    let mut rounds_with_a_hole = 0;
+    let mut round = 0;
+    while at(round - 1) < end || round < 40 {
+        player.camera.position = WorldPosition::from_voxels([at(round), 14.0, 16.0]);
+        let updates = player.settle(|| {}).unwrap();
+        // What the server hears is where the player was some rounds ago.
+        player.camera.position = WorldPosition::from_voxels([at(round - lag), 14.0, 16.0]);
+        player.send_pose();
+        player.camera.position = WorldPosition::from_voxels([at(round), 14.0, 16.0]);
+        rig.nodes.step(&mut rig.server);
+        screen.apply(rig.ship, updates);
+        if bricks_with_a_node(&screen, bricks_to_look_at) < bricks_to_look_at.len() {
+            rounds_with_a_hole += 1;
+        }
+        round += 1;
+        assert!(round < 400);
+    }
+    (rounds_with_a_hole, screen, rig, player)
+}
+
+#[test]
+fn a_ship_a_player_closes_on_faster_than_the_server_hears_of_it_does_not_vanish_while_the_finer_nodes_are_on_their_way()
+ {
+    let bricks: Vec<BrickCoordinate> = (0..4).map(|x| BrickCoordinate::new(x, 0, 0)).collect();
+    // (Measured before the fix: 6 bricks a round with the server ten rounds behind left a hole for six rounds, 20 a round and three behind for two, and a jump of
+    // a hundred bricks for one round, whatever the lag.)
+    for (speed, lag) in [(6.0, 10), (20.0, 3), (20.0, 10), (200.0, 0), (200.0, 3)] {
+        let (holes, screen, ..) = fly_to_a_ship(Shape::Slab, &bricks, speed, lag);
+        assert_eq!(
+            holes, 0,
+            "speed {speed} bricks a round, the server {lag} rounds behind"
+        );
+        // And the picture is the finest there is once the server has answered.
+        assert!(
+            screen.nodes.keys().all(|cube| cube.level() == 1),
+            "speed {speed}, lag {lag}: {:?}",
+            screen.nodes.keys()
+        );
+    }
+}
+
+#[test]
+fn a_ship_with_empty_cubes_in_its_box_is_drawn_in_its_finest_nodes_when_the_player_is_near_and_has_no_hole_on_the_way()
+ {
+    // The cubes of level 1 that are in the box and have no brick of the ship are empty, and the server has to say so: the client cannot tell that from a node that
+    // has not come yet, and does not draw the finer picture until it knows what is in every cube of it.
+    let looked_at = [BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(3, 3, 0)];
+    for (speed, lag) in [(2.0, 0), (20.0, 3)] {
+        let (holes, screen, rig, player) = fly_to_a_ship(Shape::Corners, &looked_at, speed, lag);
+        assert_eq!(holes, 0, "speed {speed}, lag {lag}");
+        let held = player.client().world().grids().get(rig.ship).unwrap();
+        assert_eq!(held.far, Some(corners_bounds()));
+        assert_eq!(
+            screen.nodes.len(),
+            2,
+            "speed {speed}, lag {lag}: {:?}",
+            screen.nodes.keys()
+        );
+        assert!(screen.nodes.keys().all(|cube| cube.level() == 1));
+    }
 }

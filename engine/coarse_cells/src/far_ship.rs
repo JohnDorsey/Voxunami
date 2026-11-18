@@ -3,7 +3,7 @@
 //! work them out from the brick the viewer is in, in the ship's own coordinates, so that what the server sends is what the client draws.
 
 use region_octree::BrickCube;
-use voxel_space::BrickCoordinate;
+use voxel_space::{BrickBox, BrickCoordinate};
 
 use crate::selection::{ViewSelection, select_around_brick};
 
@@ -57,6 +57,59 @@ pub fn far_ship_nodes_to_send(
         }
     }
     let mut cubes: Vec<BrickCube> = wanted.into_iter().collect();
+    cubes.sort_by_key(|cube| (std::cmp::Reverse(cube.level()), cube.origin()));
+    cubes
+}
+
+/// The cubes of a far ship that the server must say are empty (they have no brick of the ship), for a viewer in `brick`: the client does not hold a brick of
+/// the ship, so it can tell where the ship may have something by its box alone (`bounds`, the bricks the ship has, in its own coordinates), and a cube of the
+/// box that has nothing in it looks the same to it as a node that has not come yet. It draws the finer picture only when it knows what is in every cube of it, so
+/// the server says which are empty.
+///
+/// Those are the cubes the client may draw (the selection by the box alone), and the cubes it goes on to draw when the viewer comes nearer (the eight halves of
+/// each cube drawn that holds a brick, as [`far_ship_nodes_to_send`] sends them), that hold no brick, each said as the biggest cube that holds none: the cubes
+/// inside an empty cube are empty as well, and are not said again. `holds` says whether a cube holds a brick of the ship (what a server knows; a cube that does
+/// has its ancestors up to `coarsest_level` holding one too). Coarsest first, each once.
+pub fn far_ship_empty_cubes(
+    brick: BrickCoordinate,
+    view: &ViewSelection,
+    bounds: BrickBox,
+    holds: &dyn Fn(BrickCube) -> bool,
+    coarsest_level: u8,
+) -> Vec<BrickCube> {
+    let mut to_know: std::collections::HashSet<BrickCube> = std::collections::HashSet::new();
+    for cube in select_far_ship(brick, view, &|cube| cube.meets(bounds)) {
+        if !holds(cube) {
+            to_know.insert(cube);
+        } else if cube.level() >= 2 {
+            let half = 1i128 << (cube.level() - 1);
+            let origin = cube.origin();
+            for step in 0..8i128 {
+                let offset = |bit: i128| (step >> bit & 1) * half;
+                let Some(inner) = origin.checked_offset(offset(0), offset(1), offset(2)) else {
+                    continue;
+                };
+                if let Ok(child) = BrickCube::new(inner, cube.level() - 1)
+                    && child.meets(bounds)
+                    && !holds(child)
+                {
+                    to_know.insert(child);
+                }
+            }
+        }
+    }
+    let mut biggest: std::collections::HashSet<BrickCube> = std::collections::HashSet::new();
+    for mut cube in to_know {
+        while cube.level() < coarsest_level {
+            let parent = BrickCube::containing(cube.origin(), cube.level() + 1);
+            if holds(parent) {
+                break;
+            }
+            cube = parent;
+        }
+        biggest.insert(cube);
+    }
+    let mut cubes: Vec<BrickCube> = biggest.into_iter().collect();
     cubes.sort_by_key(|cube| (std::cmp::Reverse(cube.level()), cube.origin()));
     cubes
 }

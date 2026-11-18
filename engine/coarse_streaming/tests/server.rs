@@ -1310,3 +1310,180 @@ fn a_ship_that_comes_near_and_goes_far_again_is_sent_its_nodes_again_for_the_cli
     let again = cubes_of(&rig.client.coarse_nodes().1, ship);
     assert_eq!(again, first);
 }
+
+// ---- the cubes of a far ship's box that are empty ----
+
+/// The far ship with a block of stone in a far corner of its box as well, a brick (3, 3, 0) of it: the cubes of its box between the two blocks are empty.
+fn rig_with_a_far_ship_with_a_gap() -> (Rig, GridId) {
+    let (mut rig, ship) = rig_with_a_far_ship();
+    rig.settle();
+    rig.set_channel_in(ship, [100, 100, 2], [101, 101, 3], rig.block, STONE);
+    rig.settle();
+    (rig, ship)
+}
+
+/// The cubes of a ship that the nodes sent give a node for, in the order they came.
+fn nodes_of(updates: &[CoarseNodeUpdate], ship: GridId) -> Vec<BrickCube> {
+    updates
+        .iter()
+        .filter(|update| update.grid == ship && update.node.is_some())
+        .map(|update| update.cube)
+        .collect()
+}
+
+/// The cubes of a ship that the nodes sent say are empty.
+fn empties_of(updates: &[CoarseNodeUpdate], ship: GridId) -> Vec<BrickCube> {
+    updates
+        .iter()
+        .filter(|update| update.grid == ship && update.node.is_none())
+        .map(|update| update.cube)
+        .collect()
+}
+
+/// The cubes of a far ship a client in `brick` is to be told are empty, as the shared function says (the ship's box is that of its bricks).
+fn expected_empty_cubes(
+    rig: &Rig,
+    ship: GridId,
+    brick: [i128; 3],
+    asked: &SetDetail,
+) -> Vec<BrickCube> {
+    let data = rig.server.world();
+    let moving = data.grids().get(ship).unwrap();
+    let at = WorldPosition::new(
+        BrickCoordinate::new(brick[0], brick[1], brick[2]),
+        [16.0, 20.0, 16.0],
+    );
+    let local = moving.pose.world_to_local(at).unwrap().brick();
+    let (low, high) = moving.brick_extent().unwrap();
+    let view = coarse_cells::ViewSelection {
+        detail: asked.settings(),
+        zoom: asked.zoom(),
+        fine_radius: u32::from(asked.fine_radius),
+        maximum_distance: 20_000.0,
+    };
+    coarse_cells::far_ship_empty_cubes(
+        local,
+        &view,
+        BrickBox::new(low, high).unwrap(),
+        &|cube| {
+            rig.handle.overrides_of(ship).iter().any(|(held, _)| {
+                held.level() <= cube.level()
+                    && BrickCube::containing(held.origin(), cube.level()) == cube
+            })
+        },
+        12,
+    )
+}
+
+fn sorted(mut cubes: Vec<BrickCube>) -> Vec<BrickCube> {
+    cubes.sort_by_key(|cube| (cube.level(), cube.origin()));
+    cubes
+}
+
+#[test]
+fn a_client_is_told_which_cubes_in_the_box_of_a_far_ship_are_empty_with_its_nodes_coarsest_first_and_each_once()
+ {
+    let (mut rig, ship) = rig_with_a_far_ship_with_a_gap();
+    rig.client.stand_at([88, 0, 0]);
+    rig.client.watch([88, 0, 0], 2);
+    let asked = detail(10_000_000);
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    let (_, updates) = rig.client.coarse_nodes();
+    let expected = expected_empty_cubes(&rig, ship, [88, 0, 0], &asked);
+    assert!(!expected.is_empty(), "the viewer does not test anything");
+    assert_eq!(
+        nodes_of(&updates, ship),
+        expected_far_nodes(&rig, ship, [88, 0, 0], &asked)
+    );
+    let empties = empties_of(&updates, ship);
+    assert_eq!(sorted(empties.clone()), sorted(expected));
+    // All of it coarsest first, and no cube twice.
+    let all: Vec<BrickCube> = cubes_of(&updates, ship);
+    let levels: Vec<u8> = all.iter().map(|cube| cube.level()).collect();
+    assert!(
+        levels.windows(2).all(|pair| pair[0] >= pair[1]),
+        "{levels:?}"
+    );
+    assert_eq!(
+        sorted(all.clone()).len(),
+        all.iter().collect::<std::collections::HashSet<_>>().len()
+    );
+    // Nothing more comes while nothing changes.
+    rig.step(10);
+    assert!(rig.client.coarse_nodes().1.is_empty());
+}
+
+#[test]
+fn a_client_that_comes_nearer_to_a_far_ship_is_told_what_is_empty_there_and_not_what_it_was_told_before()
+ {
+    let (mut rig, ship) = rig_with_a_far_ship_with_a_gap();
+    let asked = detail(10_000_000);
+    rig.client.set_detail(&asked);
+    let mut told: Vec<CoarseNodeUpdate> = Vec::new();
+    for brick in [[60, 0, 0], [80, 0, 0], [88, 0, 0], [91, 0, 0]] {
+        rig.client.stand_at(brick);
+        rig.client.watch(brick, 2);
+        rig.step(10);
+        let (_, updates) = rig.client.coarse_nodes();
+        for update in &updates {
+            assert!(
+                !told
+                    .iter()
+                    .any(|before| before.grid == update.grid && before.cube == update.cube),
+                "{brick:?}: {:?} was told before",
+                update.cube
+            );
+        }
+        told.extend(updates);
+    }
+    // Everything it needs at the last place, it was told at one place or another.
+    let last = [91, 0, 0];
+    for cube in expected_far_nodes(&rig, ship, last, &asked) {
+        assert!(nodes_of(&told, ship).contains(&cube), "{cube:?}");
+    }
+    let expected = expected_empty_cubes(&rig, ship, last, &asked);
+    assert!(!expected.is_empty());
+    for cube in expected {
+        assert!(empties_of(&told, ship).contains(&cube), "{cube:?}");
+    }
+}
+
+#[test]
+fn what_is_empty_is_told_again_when_a_ship_that_came_near_goes_far_again_for_the_client_forgot_it()
+{
+    let (mut rig, ship) = rig_with_a_far_ship_with_a_gap();
+    rig.client.stand_at([88, 0, 0]);
+    rig.client.watch([88, 0, 0], 2);
+    rig.client.set_detail(&detail(10_000_000));
+    rig.step(10);
+    let first: Vec<(BrickCube, bool)> = rig
+        .client
+        .coarse_nodes()
+        .1
+        .iter()
+        .filter(|update| update.grid == ship)
+        .map(|update| (update.cube, update.node.is_some()))
+        .collect();
+    assert!(first.iter().any(|(_, node)| !node), "{first:?}");
+    // Near: its bricks are sent instead.
+    rig.client.stand_at([97, 0, 0]);
+    rig.client.watch([97, 0, 0], 8);
+    rig.step(3);
+    rig.client.coarse_nodes();
+    rig.step(10);
+    assert!(cubes_of(&rig.client.coarse_nodes().1, ship).is_empty());
+    // Far again: the same, the empty cubes too.
+    rig.client.stand_at([88, 0, 0]);
+    rig.client.watch([88, 0, 0], 2);
+    rig.step(10);
+    let again: Vec<(BrickCube, bool)> = rig
+        .client
+        .coarse_nodes()
+        .1
+        .iter()
+        .filter(|update| update.grid == ship)
+        .map(|update| (update.cube, update.node.is_some()))
+        .collect();
+    assert_eq!(again, first);
+}

@@ -1011,11 +1011,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     mesher
                 };
                 // (What the server said of the planet before its mesher was made: it says nothing twice.)
-                for (grid, cube, node) in self.coarse_overrides.in_order() {
-                    if grid == id {
-                        mesher.set_override(cube, Some(node.clone()));
-                    }
-                }
+                // (The cubes it said are empty too: a far ship waits to be told.)
+                self.coarse_overrides
+                    .tell_of_a_grid(id, |cube, node| mesher.set_override(cube, node));
                 mesher
             });
             if let Some((_, settings)) = detail {
