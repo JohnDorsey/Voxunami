@@ -5,8 +5,8 @@
 //! it** since step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame and its bits whatever is near (`ghosts.rs`). What the bodies add is the one
 //! thing that needs a shared frame: **ends that pull on each other**. Joints are made and pulled, and ships are docked, between ships of one frame (`couple_and_pull_in`,
 //! `port_pairs`), so a group that has an end within the range of a pull of the end of a ship that is not of it (a coupling or a docking that is about to be made, not a touch)
-//! is in the frame that ship is in, as it was before the ghost for everything that was near. (**Not for the ports of a ship that rides a rail, alone or in a
-//! group**: step 4c-5-4b pulls those over the rails, `rail_ports.rs`.)
+//! is in the frame that ship is in, as it was before the ghost for everything that was near. (**Not for the ports or the joint ends of a ship that rides a
+//! rail, alone or in a group**: step 4c-5-4b pulls those over the rails, `rail_ports.rs` and `rail_joints.rs`.)
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -124,7 +124,7 @@ impl Bodies {
         let members = world.data().grids().group_of(anchor);
         // **A ship on a rail, alone or in a group, is not taken off it for a port that pulls** (step 4c-5-4b), and no ship is taken out of the frame it is in for a port that pulls a ship on
         // a rail: the pull is a force on the rail and a torque on the bodies, which give it to the ship in the frame it is in (see `rail_ports.rs`), and only the dock, which is a touch,
-        // takes the rail. The ports that count here are those of ships of which neither rides a rail (and joint ends count always: a coupling is made in one frame).
+        // takes the rail. The ends that count here are those of ships of which neither rides a rail (a coupling and a dock are made in one frame).
         for stranger in near {
             let (Some(other), Some(other_record)) =
                 (world.data().grids().get(stranger), self.record_of(stranger))
@@ -147,6 +147,7 @@ impl Bodies {
                 }
                 let pair = (*member.min(&stranger), *member.max(&stranger));
                 if let Some(settings) = joints
+                    && !is_a_rail_pair(world, *member, stranger)
                     && any_pull(
                         (&pose, &record.joint_ends),
                         (&other_pose, &other_record.joint_ends),

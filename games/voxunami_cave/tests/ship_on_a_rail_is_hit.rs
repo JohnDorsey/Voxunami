@@ -400,8 +400,9 @@ fn a_hit_on_another_ship_far_off_does_not_kick_a_ship_on_its_rail() {
 #[test]
 fn a_ship_on_a_rail_whose_joint_end_pulls_on_the_joint_end_of_another_ship_leaves_the_rail_and_is_coupled()
  {
-    // Ports do not take a ship alone on a rail off it any more (`ports_on_rails.rs`), but joint ends do: a coupling is made between ships of one frame and a joint is a body's, so the
-    // ship goes off its rail for the ends that pull, as it always did (and a group does, `group_on_a_rail_is_hit.rs`).
+    // Neither ports nor joint ends take a ship alone on a rail off it while they pull (`ports_on_rails.rs`, `joints_on_rails.rs`): a coupling is a touch, as a dock is, and takes the
+    // rail at the moment the ends meet (a coupling is made between ships of one frame, and a joint is a body's). This is the old test, which only asks that it does and that the cars
+    // are coupled.
     let (mut scene, report) = Scene::reporting_in_a_new_world();
     let speed = circular_speed(&scene, 0, DISTANCE);
     let (first, length) = car(false, 3, true);

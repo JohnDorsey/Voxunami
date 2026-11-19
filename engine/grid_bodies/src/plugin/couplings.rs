@@ -26,6 +26,7 @@ use server::ServerWorld;
 use voxel_space::GridId;
 use world_storage::MovingGrid;
 
+use super::rail_ports::is_a_rail_pair;
 use super::{Bodies, Frame, FrameKey, Ship};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
 use crate::joints::{JointSettings, effective_mass};
@@ -418,8 +419,10 @@ impl Bodies {
             .collect();
         for (index, &(first_id, first, first_ship)) in bearers.iter().enumerate() {
             for &(second_id, second, second_ship) in &bearers[index + 1..] {
+                // (A pair of which a ship rides a rail is pulled over the rails, and coupled when it touches: `rail_joints.rs`.)
                 if (first.kind == BodyKind::Fixed && second.kind == BodyKind::Fixed)
                     || self.couplings.contains_key(&(first_id, second_id))
+                    || is_a_rail_pair(world, first_id, second_id)
                 {
                     continue;
                 }

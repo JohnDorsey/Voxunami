@@ -24,7 +24,7 @@
 //! **A ship alone on a rail** (2026-11-18, step 4c-5-4c) is a mechanism too, while another ship is near it: the world says which (`ServerWorld::has_a_stranger_near_on_its_rail`, by
 //! the room that used to take a ship off its rail), and `Followed::of` gives such a ship a `Followed::RailPoint` frame, a free body at the rail's point, **made when a stranger comes
 //! near and dropped when it has gone**. It is a side of the ghost like a group's, and a touch gives it the same kick (`hold_groups_at_their_points`). A ship that is frozen has no body
-//! and keeps no rail near a ship; a ship with ports or joint ends that pull is taken off its rail for them, as a group is.
+//! and keeps no rail near a ship; a ship with ports or joint ends that pull is not taken off its rail for them (step 4c-5-4b: `rail_ports.rs`, `rail_joints.rs`), and the dock or the coupling takes it.
 //!
 //! **A frame that falls.** The frame of a group that is alone falls with it, in the pull of the world at its point (`Follow::advance`): nothing pulls on what is in it. What is in the
 //! frame everything is in is pulled by the whole of it. In the ghost, which is in the frame of the first group, the second is pulled by the difference only, which is what the pull

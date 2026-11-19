@@ -18,8 +18,8 @@
 //!   where it docks and made one ship with it that goes as the two did together.
 //!
 //! **Two ships of one group are not a pair here** (a group is in one frame, and its ports pull as they always did, in `port_pairs`); **nor are the planets' ports** (a planet is held, and
-//! a ship on a rail docks with one as before). **Joint ends are not here either**: a coupling is made between ships of one body world, so a ship, or a group, on a rail is still taken off it
-//! for a joint end that pulls on its own (`ends_pull_on_the_group`).
+//! a ship on a rail docks with one as before). **Joint ends are not here but in `rail_joints.rs`** (the same over the rails, and the coupling, which needs the one body
+//! world, is a touch that takes the rails).
 
 use std::collections::BTreeSet;
 
@@ -52,12 +52,12 @@ struct Bearer<'a> {
 }
 
 /// Whether this ship rides a rail that a push leaves it on: alone (`ServerWorld::rides_a_rail_alone`) or in a group (`ServerWorld::rides_a_rail_in_a_group`).
-fn rides_a_rail(world: &ServerWorld, ship: GridId) -> bool {
+pub(super) fn rides_a_rail(world: &ServerWorld, ship: GridId) -> bool {
     world.rides_a_rail_alone(ship) || world.rides_a_rail_in_a_group(ship).is_some()
 }
 
 /// Whether two ships are of one group (coupled by joint ends, directly or through others).
-fn are_of_one_group(world: &ServerWorld, first: GridId, second: GridId) -> bool {
+pub(super) fn are_of_one_group(world: &ServerWorld, first: GridId, second: GridId) -> bool {
     let grids = world.data().grids();
     grids.has_partners(first) && grids.group_of(first).contains(&second)
 }
