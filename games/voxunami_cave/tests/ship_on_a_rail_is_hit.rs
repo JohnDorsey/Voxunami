@@ -8,8 +8,10 @@
 
 mod common;
 
-use common::chains::{a_wall, centre_of, mass_of, most_apart, orientation_of, origins_of, spin_of};
-use common::docking::make_all_going;
+use common::chains::{
+    a_wall, car, centre_of, mass_of, most_apart, orientation_of, origins_of, spin_of,
+};
+use common::docking::{make, make_all_going, make_going};
 use common::rails::put_on_its_rail_in;
 use common::{Scene, circular_speed, make_ship, pose_at, ship_id};
 use voxel_space::{GridId, GridPose, Orientation, WorldPosition};
@@ -396,13 +398,15 @@ fn a_hit_on_another_ship_far_off_does_not_kick_a_ship_on_its_rail() {
 }
 
 #[test]
-fn a_ship_on_a_rail_whose_port_pulls_on_the_port_of_another_ship_leaves_the_rail_and_docks() {
-    // Ports that pull on each other need the one frame (a pull is made between ships of one frame, `Bodies::attract`), and a stranger that pulls is not the ghost's: a ship alone on a
-    // rail is taken off it for them, as a group is, and docks. (Without it the ship keeps its frame of its own and the pair is never found.)
+fn a_ship_on_a_rail_whose_joint_end_pulls_on_the_joint_end_of_another_ship_leaves_the_rail_and_is_coupled()
+ {
+    // Ports do not take a ship alone on a rail off it any more (`ports_on_rails.rs`), but joint ends do: a coupling is made between ships of one frame and a joint is a body's, so the
+    // ship goes off its rail for the ends that pull, as it always did (and a group does, `group_on_a_rail_is_hit.rs`).
     let (mut scene, report) = Scene::reporting_in_a_new_world();
     let speed = circular_speed(&scene, 0, DISTANCE);
-    let (first, second) = common::docking::a_pair();
-    common::docking::make(&mut scene, pose_at(0.0, DISTANCE, 0.0), false, first);
+    let (first, length) = car(false, 3, true);
+    let (second, _) = car(true, 3, false);
+    make(&mut scene, pose_at(0.0, DISTANCE, 0.0), false, first);
     scene.ticks(2);
     let ship = ship_id(1);
     scene.run(move |world| {
@@ -412,30 +416,32 @@ fn a_ship_on_a_rail_whose_port_pulls_on_the_port_of_another_ship_leaves_the_rail
         put_on_its_rail_in(world, ship);
     });
     scene.ticks(3);
-    let rail = rail_of(&scene, ship).expect("the first ship rides a rail");
-    // The second ship is made going as the first goes, with its port 3 voxels from the first's (the range of a pull is 6); the first has gone round its orbit in the ticks that put it on its rail.
+    assert!(
+        rail_of(&scene, ship).is_some(),
+        "the first car rides a rail"
+    );
+    // The second car is made going as the first goes, 3 voxels from the end of it (the range of a pull is 6); the first has gone round its orbit in the ticks that put it on its rail.
     let origin = origins_of(&scene, &[ship])[0];
-    common::docking::make_going(
+    make_going(
         &mut scene,
-        pose_at(origin[0] + 4.0 + 3.0, origin[1], origin[2]),
+        pose_at(origin[0] + length + 3.0, origin[1], origin[2]),
         second,
         [0.0, 0.0, speed],
     );
-    assert_eq!(rail_of(&scene, ship), Some(rail), "it is on its rail still");
-    let mut docked_at = None;
+    let mut coupled_at = None;
     for tick in 0..200 {
         scene.ticks(1);
-        if report().dockings_made > 0 {
-            docked_at = Some(tick);
+        if report().couplings > 0 {
+            coupled_at = Some(tick);
             break;
         }
     }
-    assert!(docked_at.is_some(), "the two ships docked");
+    assert!(coupled_at.is_some(), "the two cars were coupled");
     assert!(
         report().rails_left_for_ends >= 1,
-        "the first ship was taken off its rail for the port that pulled on it"
+        "the first car was taken off its rail for the joint end that pulled on it"
     );
-    assert_eq!(report().rail_kicks, 0, "and no hit was made");
+    assert_eq!(rail_of(&scene, ship), None, "and it is off it");
 }
 
 /// What a push (a force or a torque, asked of the world as an engine or a seat asks it) does to a ship in its orbit, on its rail or not: its velocity and its spin after the tick that
@@ -525,7 +531,7 @@ fn a_force_on_a_ship_on_its_rail_changes_its_speed_as_it_changes_that_of_a_ship_
     );
 }
 
-// ---- Step 4c-5-4b (built for a ship alone on its rail; a port that pulls is not built): a push does not take a ship off its rail. The force changes the rail; the torque is the bodies'. ----
+// ---- Step 4c-5-4b (built for a ship alone on its rail): a push does not take a ship off its rail. The force changes the rail; the torque is the bodies'. A port that pulls is a push too: see `ports_on_rails.rs`. ----
 //
 // These say what the split of `docs/decisions/joints-and-cars.md` (4c-5-4b) does, written before it was built (each was run with `--ignored` and failed for the reason in its message).
 
@@ -664,70 +670,6 @@ fn a_torque_on_a_ship_on_its_rail_turns_it_as_it_turns_one_that_was_never_on_one
             "the spin of the ship on its rail, {spin:?}, is that of the one that was never on one, {spin_free:?}"
         );
     }
-}
-
-#[test]
-#[ignore = "4c-5-4b is not built: a port that pulls takes the ship off its rail"]
-fn a_ship_on_a_rail_whose_port_pulls_on_the_port_of_another_ship_stays_on_the_rail_until_they_dock_and_the_ship_they_make_goes_on_in_the_orbit()
- {
-    // The test above of the ends rule (`..._leaves_the_rail_and_docks`) is what this replaces: the pull is a force on the rail and a torque on the bodies, so it never takes the ship off
-    // its rail; the snap is a touch, and only a touch does.
-    let (mut scene, report) = Scene::reporting_in_a_new_world();
-    let speed = circular_speed(&scene, 0, DISTANCE);
-    let (first, second) = common::docking::a_pair();
-    common::docking::make(&mut scene, pose_at(0.0, DISTANCE, 0.0), false, first);
-    scene.ticks(2);
-    let ship = ship_id(1);
-    scene.run(move |world| {
-        world
-            .set_grid_velocity(ship, [0.0, 0.0, speed], [0.0; 3])
-            .unwrap();
-        put_on_its_rail_in(world, ship);
-    });
-    scene.ticks(3);
-    let origin = origins_of(&scene, &[ship])[0];
-    common::docking::make_going(
-        &mut scene,
-        pose_at(origin[0] + 4.0 + 3.0, origin[1], origin[2]),
-        second,
-        [0.0, 0.0, speed],
-    );
-    let mut docked_at = None;
-    for tick in 0..200 {
-        scene.ticks(1);
-        if report().dockings_made > 0 {
-            docked_at = Some(tick);
-            break;
-        }
-        assert!(
-            rail_of(&scene, ship).is_some(),
-            "the ship is on its rail in tick {tick}, while its port pulls"
-        );
-    }
-    assert!(docked_at.is_some(), "the two ships docked");
-    assert_eq!(
-        report().rails_left_for_ends,
-        0,
-        "no rail was left for the ends that pull"
-    );
-    assert_eq!(report().rail_kicks, 0, "and no hit was made");
-    // The ship they make has the speed of the orbit (the docking reads both ships' speeds; where it cannot it gives the ship none, and the ship falls).
-    scene.ticks(5);
-    let merged = scene
-        .rig
-        .server
-        .world()
-        .grids()
-        .iter()
-        .map(|(id, grid)| (id, grid.linear_velocity))
-        .max_by_key(|(id, _)| *id)
-        .expect("a ship");
-    let along = merged.1[2];
-    assert!(
-        (along - speed).abs() < 5.0,
-        "the docked ship goes at the speed of its orbit, {speed}: {:?}",
-        merged
-    );
 }
 
 /// Whether a stranger that goes with the ship (the same velocity, 20 voxels off its east face), `offset` voxels along the way the ship goes from the ship's middle, is in a ghost with

@@ -1172,8 +1172,9 @@ impl ServerWorld {
     }
 
     /// Whether a ship rides a rail of this module **alone**, so that a push does not take it off: it has a coasting rail (an orbit round a planet that is still there, no spin of its
-    /// own), no partners (a group's rail is its anchor's and holds the centre of mass of all of them: pushing a group is not built), is no terrain, and weighs something.
-    pub(super) fn rides_a_rail_alone(&self, grid: GridId) -> bool {
+    /// own), no partners (a group's rail is its anchor's and holds the centre of mass of all of them: pushing a group is not built), is no terrain, and weighs something. A force or a torque
+    /// asked of such a ship leaves it on its rail ([`ServerWorld::apply_grid_force`]), and so does the pull of a docking port (the bodies ask it in the same way).
+    pub fn rides_a_rail_alone(&self, grid: GridId) -> bool {
         let grids = self.data.grids();
         grids.get(grid).is_some_and(|ship| {
             ship.terrain.is_none()

@@ -5,7 +5,8 @@
 //! it** since step 4c-5-2: what is near a group is the contact ghost's, and the group keeps its frame and its bits whatever is near (`ghosts.rs`). What the bodies add is the one
 //! thing that needs a shared frame: **ends that pull on each other**. Joints are made and pulled, and ships are docked, between ships of one frame (`couple_and_pull_in`,
 //! `port_pairs`), so a group that has an end within the range of a pull of the end of a ship that is not of it (a coupling or a docking that is about to be made, not a touch)
-//! is in the frame that ship is in, as it was before the ghost for everything that was near.
+//! is in the frame that ship is in, as it was before the ghost for everything that was near. (**Not for the ports of a ship that rides a rail alone and is not of a group**: step 4c-5-4b
+//! pulls those over the rails, `rail_ports.rs`.)
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -120,6 +121,10 @@ impl Bodies {
             .map(|docking| docking.released())
             .unwrap_or_default();
         let members = world.data().grids().group_of(anchor);
+        // **A ship alone on a rail is not taken off it for a port that pulls** (step 4c-5-4b): the pull is a force on the rail and a torque on the bodies (see `rail_ports.rs`), and
+        // only the dock, which is a touch, takes it. It is for joint ends, and for the ports of a group (whose ships are pulled in the frame they are in, so the ship has to be there
+        // too: see `railed_port_pairs`).
+        let rides_alone = world.rides_a_rail_alone(anchor);
         for stranger in near {
             let (Some(other), Some(other_record)) =
                 (world.data().grids().get(stranger), self.record_of(stranger))
@@ -151,6 +156,7 @@ impl Bodies {
                     return true;
                 }
                 if let Some(settings) = docking
+                    && !(rides_alone && !world.data().grids().has_partners(stranger))
                     && !released.contains(&pair)
                     && !self
                         .refused
@@ -172,7 +178,12 @@ impl Bodies {
 
 /// Where a ship is at the start of the tick that is about to be stepped: the world has a ship that the rails place at its place of the end of it (`ServerWorld::is_placed_by_a_rail`),
 /// so it is put back by `lag` seconds of its speed, and a ship that is free is as it is.
-fn pose_at_the_start(world: &ServerWorld, id: GridId, ship: &MovingGrid, lag: f64) -> GridPose {
+pub(super) fn pose_at_the_start(
+    world: &ServerWorld,
+    id: GridId,
+    ship: &MovingGrid,
+    lag: f64,
+) -> GridPose {
     if lag > 0.0 && world.is_placed_by_a_rail(id) {
         GridPose::new(
             ship.pose

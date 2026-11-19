@@ -24,6 +24,9 @@ mod alone;
 mod clusters;
 mod couplings;
 mod ghosts;
+mod rail_ports;
+
+use rail_ports::is_a_rail_pair;
 
 use couplings::{Coupled, CouplingKey};
 use ghosts::MechanismGhost;
@@ -1239,6 +1242,8 @@ impl Bodies {
         self.split_ships(world, changed_voxels);
         self.follow_points(world);
         self.alone = self.alone_groups(world);
+        // (Before the ships are given their bodies below: a torque that waits gives a ship alone on a rail one, to turn.)
+        self.pull_ports_of_ships_on_rails(world);
         // (A ship with terrain, a planet, is no ship here: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.
         // It is a fixed body, which ships collide with, below.)
         let present: Vec<(GridId, LevelIndex)> = world
@@ -1395,7 +1400,10 @@ impl Bodies {
             report.group_ground_bricks = group_ground_bricks;
         });
         self.write_back(world);
-        // (After the step, where the world has every ship at the place of the end of the tick: a group taken off its rail before it would be stepped a second time in this tick.)
+        // (After the step, where the world has every ship at the place of the end of the tick: a ship on a rail is no tick ahead of the others, and a ship that docks with it does not
+        // have to be put back a tick to be measured against it.)
+        self.dock_ships_on_rails(world);
+        // (And a group taken off its rail before it would be stepped a second time in this tick.)
         self.take_railed_groups_off_for_ends_that_pull(world);
     }
 
@@ -2130,7 +2138,9 @@ impl Bodies {
 
     /// Takes a group that is on a rail off it when an end of a ship that is not of it pulls on an end of its own (a joint to be coupled, a docking port): the coupling and the docking
     /// are made between ships of one frame, so the group has to be in the frame that ship is in, as it was when anything near took a group off its rail. **So is a ship alone on a
-    /// rail that has another ship near it** (the world says which: `ServerWorld::has_a_stranger_near_on_its_rail`; a ship with nothing near it has nothing to pull on). **A stranger that does not pull
+    /// rail that has another ship near it** (the world says which: `ServerWorld::has_a_stranger_near_on_its_rail`; a ship with nothing near it has nothing to pull on), **for joint
+    /// ends and for the ports of a group; not for the ports of a ship that is not of a group** (step 4c-5-4b: their pull is a force on the rail and a torque on the bodies, and the dock
+    /// takes the rail: `rail_ports.rs`). **A stranger that does not pull
     /// is no reason**: it is the contact ghost's, and a touch takes the rail (`hold_groups_at_their_points`). It is asked at the end of the step, where every ship is at the place of
     /// the end of the tick (the group's rail is taken after the step, as `update_coasting` takes any rail, and not before: the group would be stepped again for this tick).
     fn take_railed_groups_off_for_ends_that_pull(&mut self, world: &mut ServerWorld) {
@@ -2223,6 +2233,95 @@ impl Bodies {
     }
 }
 
+/// The docking ports of a ship by the brick they are in (a ship's record keeps them so).
+type Ports = BTreeMap<BrickCoordinate, Vec<BlockFace>>;
+
+/// The velocity and the spin of the ship that two ships make by docking: what the two did together (the momentum of both), or none if either is held (a held ship does not move, and
+/// the ship is held) or either has no motion to join.
+fn joined_motion(held: bool, motions: [Option<BodyMotion>; 2]) -> ([f64; 3], [f64; 3]) {
+    match (held, motions) {
+        (false, [Some(one), Some(other)]) => match BodyMotion::join(&[one, other]) {
+            Some(whole) => (whole.linear_velocity, whole.angular_velocity),
+            None => ([0.0; 3], [0.0; 3]),
+        },
+        _ => ([0.0; 3], [0.0; 3]),
+    }
+}
+
+/// The motion of a ship that weighs something, with positions measured from `from`: what it weighs, where its centre of mass is and how it goes (`linear` and `angular`, in the
+/// world's axes). `None` for a ship that weighs nothing.
+fn motion_of_a_ship(
+    record: &Ship,
+    pose: &GridPose,
+    from: WorldPosition,
+    linear: [f64; 3],
+    angular: [f64; 3],
+) -> Option<BodyMotion> {
+    let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
+    let rotation = pose.rotation_matrix();
+    let origin = pose.origin_relative_to(from);
+    let centre_of_mass = properties.centre_of_mass.map(f64::from);
+    let centre = [0, 1, 2].map(|axis| {
+        origin[axis]
+            + (0..3)
+                .map(|column| rotation[axis][column] * centre_of_mass[column])
+                .sum::<f64>()
+    });
+    Some(BodyMotion::of_body(
+        &properties,
+        rotation,
+        centre,
+        linear,
+        angular,
+    ))
+}
+
+/// The closest pair of ports, a port of each of two ships with these poses, that pull on each other, if there is one: the ports and how they are placed to each other (measured from
+/// the first ship's place). The first of those at the same distance in order of brick and voxel is the one.
+fn closest_pulling_ports(
+    settings: &crate::docking::DockingSettings,
+    first: (&GridPose, &Ports),
+    second: (&GridPose, &Ports),
+) -> Option<(BlockFace, BlockFace, crate::docking::Approach)> {
+    let from = first.0.position;
+    let mut best: Option<(BlockFace, BlockFace, crate::docking::Approach)> = None;
+    for first_port in first.1.values().flatten() {
+        let first_view = BlockFaceView::of(*first_port, first.0, from);
+        for second_port in second.1.values().flatten() {
+            let second_view = BlockFaceView::of(*second_port, second.0, from);
+            let how = approach(&first_view, &second_view);
+            if settings.pulls(&first_view, &second_view, &how)
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, _, top)| how.distance < top.distance)
+            {
+                best = Some((*first_port, *second_port, how));
+            }
+        }
+    }
+    best
+}
+
+/// What a pull at a port does to a ship: the force on its centre of mass and the torque about it. The force is `force` toward the other port, `sign` times (1 for the first ship
+/// of a pair, -1 for the second); the torque is that of the force at the port, from the lever worked out from `record`'s centre of mass (the one this plugin keeps), less `sign`
+/// times the twist that turns the ship into line.
+fn pull_and_turn(
+    record: &Ship,
+    pose: &GridPose,
+    port: BlockFace,
+    force: [f64; 3],
+    twist: [f64; 3],
+    sign: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let pull = force.map(|component| component * sign);
+    let (at, centre) = (port.local_centre(), record.centre_of_mass);
+    let arm = [0, 1, 2].map(|axis| at[axis] - centre[axis]);
+    let lever = torque_of_force(pose.rotation_matrix(), arm, pull);
+    // The second ship turns toward line and the first the other way.
+    let turn = [0, 1, 2].map(|axis| lever[axis] - twist[axis] * sign);
+    (pull, turn)
+}
+
 /// What `port_pairs` needs of a ship or a planet that has docking ports.
 struct Bearer<'a> {
     id: GridId,
@@ -2279,40 +2378,31 @@ impl Bodies {
                 for second in &bearers[index + 1..] {
                     let (first_id, second_id) = (&first.id, &second.id);
                     let (first_ship, second_ship) = (first.ship, second.ship);
+                    // (A ship that rides a rail alone is pulled by the ports of ships that are not in its frame, and has its own pairs: `railed_port_pairs`.)
                     if !(first.moves || second.moves)
                         || released.contains(&(*first_id, *second_id))
                         || self
                             .refused
                             .get(&(*first_id, *second_id))
                             .is_some_and(|until| self.tick < *until)
+                        || is_a_rail_pair(world, *first_id, *second_id)
                     {
                         continue;
                     }
-                    let from = first_ship.pose.position;
-                    let mut best: Option<PortPair> = None;
-                    for first_port in first.ports.values().flatten() {
-                        let first_view = BlockFaceView::of(*first_port, &first_ship.pose, from);
-                        for second_port in second.ports.values().flatten() {
-                            let second_view =
-                                BlockFaceView::of(*second_port, &second_ship.pose, from);
-                            let how = approach(&first_view, &second_view);
-                            if settings.pulls(&first_view, &second_view, &how)
-                                && best
-                                    .as_ref()
-                                    .is_none_or(|top| how.distance < top.approach.distance)
-                            {
-                                best = Some(PortPair {
-                                    frame: frame_key,
-                                    first: *first_id,
-                                    second: *second_id,
-                                    first_port: *first_port,
-                                    second_port: *second_port,
-                                    approach: how,
-                                });
-                            }
-                        }
+                    if let Some((first_port, second_port, how)) = closest_pulling_ports(
+                        &settings,
+                        (&first_ship.pose, first.ports),
+                        (&second_ship.pose, second.ports),
+                    ) {
+                        pairs.push(PortPair {
+                            frame: frame_key,
+                            first: *first_id,
+                            second: *second_id,
+                            first_port,
+                            second_port,
+                            approach: how,
+                        });
                     }
-                    pairs.extend(best);
                 }
             }
         }
@@ -2373,24 +2463,14 @@ impl Bodies {
         let mut state = level.bodies.state(BodyId(id.get()))?;
         // (Its velocity in the world, and not against the planet the frame goes with.)
         state.linear_velocity = velocity_from(level.follow, state.linear_velocity);
-        let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
         let pose = world.data().grids().get(id)?.pose;
-        let rotation = pose.rotation_matrix();
-        let origin = pose.origin_relative_to(from);
-        let centre_of_mass = properties.centre_of_mass.map(f64::from);
-        let centre = [0, 1, 2].map(|axis| {
-            origin[axis]
-                + (0..3)
-                    .map(|column| rotation[axis][column] * centre_of_mass[column])
-                    .sum::<f64>()
-        });
-        Some(BodyMotion::of_body(
-            &properties,
-            rotation,
-            centre,
+        motion_of_a_ship(
+            record,
+            &pose,
+            from,
             state.linear_velocity.map(f64::from),
             state.angular_velocity.map(f64::from),
-        ))
+        )
     }
 
     /// Docks two ships that are close enough and in line: the lighter (never a held one) is put exactly where it docks, and they are made one
@@ -2443,28 +2523,46 @@ impl Bodies {
         } else {
             (pair.first, pair.first_port, pair.second, pair.second_port)
         };
-        let still_pose = world.data().grids().get(still).expect("checked above").pose;
-        let moving_pose = world
+        let from = world
             .data()
             .grids()
-            .get(moving)
+            .get(still)
             .expect("checked above")
-            .pose;
-        let from = still_pose.position;
+            .pose
+            .position;
         let held = first.kind == BodyKind::Fixed || second.kind == BodyKind::Fixed;
         // The motion of both, before one is moved.
         let motions = [still, moving].map(|id| self.motion_of(world, pair.frame, id, from));
-        let (linear, angular) = match (held, motions) {
-            (false, [Some(one), Some(other)]) => match BodyMotion::join(&[one, other]) {
-                Some(whole) => (
-                    whole.linear_velocity.map(|speed| speed),
-                    whole.angular_velocity.map(|speed| speed),
-                ),
-                None => ([0.0; 3], [0.0; 3]),
-            },
-            _ => ([0.0; 3], [0.0; 3]),
+        let (linear, angular) = joined_motion(held, motions);
+        self.make_one_ship_of_two(
+            world,
+            (still, still_port),
+            (moving, moving_port),
+            (pair.first, pair.second),
+            (linear, angular),
+        )
+    }
+
+    /// Puts the ship `moving` where it docks with `still` (exactly, port against port) and makes one ship of the two that goes as `motion` says (the velocity and the spin of it, in the world's
+    /// axes). Whether it was done: it is not when blocks of the two would be in one place; the ship is put back where it was, and the pair, which is `pair` (the lower identifier first), is
+    /// not tried again for a while.
+    fn make_one_ship_of_two(
+        &mut self,
+        world: &mut ServerWorld,
+        (still, still_port): (GridId, BlockFace),
+        (moving, moving_port): (GridId, BlockFace),
+        pair: (GridId, GridId),
+        (linear, angular): ([f64; 3], [f64; 3]),
+    ) -> bool {
+        let (Some(still_ship), Some(moving_ship)) = (
+            world.data().grids().get(still),
+            world.data().grids().get(moving),
+        ) else {
+            return false;
         };
-        // Where the lighter ship is when it has docked exactly.
+        let (still_pose, moving_pose) = (still_ship.pose, moving_ship.pose);
+        let from = still_pose.position;
+        // Where the ship that moves is when it has docked exactly.
         let still_view = BlockFaceView::of(still_port, &still_pose, from);
         let moving_view = BlockFaceView::of(moving_port, &moving_pose, from);
         let turn = approach(&still_view, &moving_view).turn;
@@ -2486,14 +2584,13 @@ impl Bodies {
         };
         match world.merge_grids(still, moving, &plan) {
             Ok(_) => {
-                self.refused.remove(&(pair.first, pair.second));
+                self.refused.remove(&pair);
                 self.count(|report| report.dockings_made += 1);
                 true
             }
             Err(_) => {
                 let _ = world.set_grid_pose(moving, moving_pose);
-                self.refused
-                    .insert((pair.first, pair.second), self.tick + REFUSED_RETRY_TICKS);
+                self.refused.insert(pair, self.tick + REFUSED_RETRY_TICKS);
                 self.count(|report| report.dockings_refused += 1);
                 false
             }
@@ -2584,19 +2681,10 @@ impl Bodies {
                 // The force is at the port (the owner, 2026-10-22: a ship whose centre is far from its port is swung by it). It is put on the centre of
                 // mass, and the turn it gives by being at the port is added as a torque worked out here from the centre of mass this plugin keeps:
                 // Rapier works out a lever from a centre of mass it updates when it steps, which is not the one just set for a ship made this tick.
-                let pull = force.map(|component| component * sign);
-                let (at, centre) = (port.local_centre(), record.centre_of_mass);
-                let arm = [0, 1, 2].map(|axis| at[axis] - centre[axis]);
-                let lever = torque_of_force(ship.pose.rotation_matrix(), arm, pull);
-                // The second ship turns toward line and the first the other way.
-                let turn = [0, 1, 2].map(|axis| lever[axis] - twist[axis] * sign);
+                let (pull, turn) = pull_and_turn(record, &ship.pose, port, force, twist, sign);
                 let body = BodyId(id.get());
-                let _ = level
-                    .bodies
-                    .apply_force(body, pull.map(|component| component), None);
-                let _ = level
-                    .bodies
-                    .apply_torque(body, turn.map(|component| component));
+                let _ = level.bodies.apply_force(body, pull, None);
+                let _ = level.bodies.apply_torque(body, turn);
             }
         }
     }

@@ -37,6 +37,24 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   CPU thread per core) until it fails, and look at the listener's `accept`. If the order is not guaranteed by the listener, the test should send a value that says which client it is and not
   depend on the order (`accept` twice, and match frames to clients by what they carry).
 
+### `engine/renderer/tests/gpu_rendering/shader_packs.rs`: `giving_a_pack_and_taking_it_away_leaves_the_pictures_as_they_were_and_the_default_text_draws_as_the_default_does`
+
+- **The test.** For each adapter, renders a block scene, gives a pack that paints green, renders, takes the pack away and asserts that the render is **byte for byte the one from before the pack** (line 194,
+  `the default is not what it was`).
+- **Occurrence 1: 2026-11-19**, the full gate (`cargo test --workspace --no-fail-fast`, dev profile, Windows) on the working tree of the ports on rails (`grid_bodies`, `server`, tests and docs; `renderer` depends on
+  none of what was changed, `cargo tree -p renderer` names only `world_storage`, which was unchanged in that tree). The renderer binary reported `155 passed; 1 failed ... finished in 528.27s`; the full gate before
+  the last tidying had passed it (3,707 tests, none failed). **The message was kept**, and the two images were compared: the adapter was **AMD Radeon(TM) Graphics (IntegratedGpu, Vulkan)**; of 64 x 64 pixels
+  **two differ**: pixel (39, 28) is `[3, 68, 3]` after the pack is taken away and `[23, 192, 23]` before it (a pixel of the ground's green that came out dark), and pixel (45, 30) differs by 1 in green (191 against
+  192). Every other pixel is the same.
+- **Reruns.** 5 times alone (`cargo test -p renderer --test gpu_rendering giving_a_pack_and_taking_it_away`) and once as the whole binary (`cargo test -p renderer --test gpu_rendering`, 156 tests, 462 s): **0 failures in 6**.
+- **What it depends on [read].** The GPU, and nothing of the engine's simulation: two renders of one scene by one renderer, the pack set and taken away between them; the integrated AMD adapter is the one the shadow
+  tests of 2026-11-07 failed on (see *Explained and fixed*).
+- **Beliefs about the cause.** **Believed, not tested**: the same kind of fault as the shadow tests' on this adapter, a pixel at an edge that the GPU does not render the same way twice (a depth or shadow-map edge,
+  or a pipeline that was made again when the pack was taken away). **Checked**: it is two pixels of 4,096, not a changed picture. **Not known**: whether the other adapters would have failed: the test loops over the adapters and stops at the first that fails,
+  so the ones after the AMD one in the loop were not run in that test in that run.
+- **What would settle it.** Run the test in a loop (alone and as the binary) with nothing else running and with the machine loaded, and save both images when it fails, to see whether the pixels are on an edge of the
+  ground's block and whether the dark pixel is a shadow value; compare with the shadow tests' explanation.
+
 ### `games/voxunami_cave/tests/screen.rs`: `a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_closed`
 
 - **The test.** It draws a form live and again from a replay and compares them pixel for pixel.
