@@ -91,8 +91,12 @@ impl TerrainSource for ShipTerrainSource<'_> {
 }
 
 impl CoarseTerrainSource for ShipTerrainSource<'_> {
-    /// (The generator and the extent of a planet do not change, so the answers never go stale.)
+    /// (The generator and the extent of a planet do not change, so the answers never go stale. The box of a far ship does: an edit makes the ship bigger, and the
+    /// server tells of it again with the new box.)
     fn version(&self) -> u64 {
+        if self.far {
+            return version_of_box(self.extent);
+        }
         0
     }
 
@@ -119,6 +123,18 @@ impl CoarseTerrainSource for ShipTerrainSource<'_> {
     fn waits_for_nodes(&self) -> bool {
         self.far
     }
+}
+
+/// A number that is the same for the same box and, but for a chance in 2^64, another for another: the version of the answers of a far ship (FNV-1a over the six coordinates).
+fn version_of_box(bounds: BrickBox) -> u64 {
+    let (low, high) = (bounds.min(), bounds.max());
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for value in [low.x(), low.y(), low.z(), high.x(), high.y(), high.z()] {
+        for byte in value.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 /// How a planet is drawn.

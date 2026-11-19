@@ -557,3 +557,94 @@ fn ships_in_files_and_in_memory_are_far_nearest_first_together_up_to_the_most_th
     told(&world, &mut known, None, 1000, Some(settings()), &[]);
     assert_eq!(known.keys().copied().collect::<Vec<_>>(), ships[..3]);
 }
+
+#[test]
+fn a_far_ship_whose_box_changes_is_told_of_again_with_the_new_one_in_the_same_tick_and_one_that_only_moves_is_not()
+ {
+    let (mut world, block, _) = counting_world();
+    let ship = ship_at_brick(&mut world, block, 100);
+    let mut known = KnownGrids::new();
+    let first = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    let old_box =
+        BrickBox::new(BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(1, 0, 0)).unwrap();
+    assert_eq!(
+        contents_of(&first),
+        [(ship, GridContent::Far { bounds: old_box })]
+    );
+
+    // It grows by a brick along x: told of again, the old one forgotten first, in one tick.
+    world
+        .grid(ship)
+        .unwrap()
+        .set(block, VoxelCoordinate::new(70, 0, 0), 2)
+        .unwrap();
+    let new_box =
+        BrickBox::new(BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(2, 0, 0)).unwrap();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert_eq!(despawned(&messages), [ship]);
+    assert_eq!(
+        contents_of(&messages),
+        [(ship, GridContent::Far { bounds: new_box })]
+    );
+    assert_eq!(bricks_sent_for(&messages, ship), 0);
+    // And nothing more while it stays as it is.
+    assert!(told(&world, &mut known, None, 1000, Some(settings()), &[]).is_empty());
+
+    // Digging the block away leaves the brick (an empty one is still the ship's), and so the box: nothing is said.
+    world
+        .grid(ship)
+        .unwrap()
+        .set(block, VoxelCoordinate::new(70, 0, 0), 0)
+        .unwrap();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(despawned(&messages).is_empty() && contents_of(&messages).is_empty());
+
+    // A brick that is taken out of the ship, which is what makes the box smaller: told of again.
+    world
+        .data_mut()
+        .grids_mut()
+        .get_mut(ship)
+        .unwrap()
+        .voxels
+        .remove_brick(BrickCoordinate::new(2, 0, 0))
+        .expect("the brick was there");
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert_eq!(despawned(&messages), [ship]);
+    assert_eq!(
+        contents_of(&messages),
+        [(ship, GridContent::Far { bounds: old_box })]
+    );
+
+    // A ship that only moves is not told of again, and its box is the same.
+    world
+        .set_grid_pose(
+            ship,
+            GridPose::new(
+                WorldPosition::new(BrickCoordinate::new(101, 0, 0), [0.0; 3]),
+                Orientation::IDENTITY,
+            ),
+        )
+        .unwrap();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(despawned(&messages).is_empty() && contents_of(&messages).is_empty());
+}
+
+#[test]
+fn a_ship_in_the_picture_that_grows_is_not_told_of_again_for_its_box_which_only_a_far_ship_is_told_of()
+ {
+    let (mut world, block, _) = counting_world();
+    // A ship at the origin, in the region the client watches: told of with its bricks.
+    let ship = ship_at_brick(&mut world, block, 1);
+    let mut known = KnownGrids::new();
+    let first = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert_eq!(contents_of(&first), [(ship, GridContent::Bricks)]);
+    // It grows by a brick: the client is not told of the ship again (its new brick is an edit, and comes as one).
+    world
+        .grid(ship)
+        .unwrap()
+        .set(block, VoxelCoordinate::new(70, 0, 0), 2)
+        .unwrap();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(despawned(&messages).is_empty(), "{messages:?}");
+    assert!(contents_of(&messages).is_empty());
+}

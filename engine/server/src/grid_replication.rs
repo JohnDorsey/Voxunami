@@ -97,6 +97,15 @@ pub(crate) struct ShipLimits {
 pub(crate) struct KnownGrid {
     pose: GridPose,
     pub far: bool,
+    /// The box of the ship's own bricks it was told of with (what a far ship is drawn within): a far ship whose box changes is told of again.
+    own_bounds: BrickBox,
+}
+
+/// Whether what a client was told of a ship still holds, so that it is not told of again: it is in the tier it was told of in, and a far ship has the box it was told of with
+/// (a client draws a far ship within its box, and a box that it was told is bigger or smaller than the ship is would leave a part of the ship undrawn, or cubes it waits for
+/// the server to speak of for ever).
+fn is_as_told(view: &ShipView, far: bool, before: &KnownGrid) -> bool {
+    before.far == far && (!far || before.own_bounds == view.own_bounds)
 }
 
 /// What one client has been told of the ships, by id.
@@ -195,7 +204,7 @@ pub(crate) fn grid_messages(
         .filter(|(id, before)| {
             !wanted
                 .iter()
-                .any(|(view, far)| view.id == **id && *far == before.far)
+                .any(|(view, far)| view.id == **id && is_as_told(view, *far, before))
         })
         .map(|(id, _)| *id)
         .collect();
@@ -204,7 +213,7 @@ pub(crate) fn grid_messages(
     let mut kept = Vec::new();
     for &(view, far) in &wanted {
         match known.get(&view.id) {
-            Some(before) if before.far == far => {
+            Some(before) if is_as_told(view, far, before) => {
                 // (A far ship has no bricks, so no edit of one is sent.)
                 if !far {
                     kept.push(view.id);
@@ -278,6 +287,7 @@ pub(crate) fn grid_messages(
                 KnownGrid {
                     pose: view.pose,
                     far,
+                    own_bounds: view.own_bounds,
                 },
             )
         })

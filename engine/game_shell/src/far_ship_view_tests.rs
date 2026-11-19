@@ -10,7 +10,7 @@ use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
 use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
 use region_octree::BrickCube;
-use server::{FarShipSettings, Server};
+use server::{FarShipSettings, GridView, Server};
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_grid::{ChannelIndex, Grid};
@@ -158,10 +158,16 @@ fn ship(
     }
 }
 
-/// A plugin that puts the ships a test names into their files, in the next tick (what the lifecycle of a game does to a ship nobody is near).
+/// A box of voxels of a ship to set to a block: `[low, high)` along each axis.
+type Fill = (GridId, [i128; 3], [i128; 3], u32);
+
+/// A plugin that puts the ships a test names into their files, and edits the ships as a test says, in the next tick (what the lifecycle of a game does to a ship nobody is
+/// near, and what a player or a rule does to a ship).
 #[derive(Debug)]
 struct Parker {
     ships: Arc<Mutex<Vec<GridId>>>,
+    fills: Arc<Mutex<Vec<Fill>>>,
+    block: ChannelIndex,
 }
 
 impl Plugin for Parker {
@@ -171,9 +177,22 @@ impl Plugin for Parker {
 
     fn register(&self, registrar: &mut Registrar<'_>) {
         let ships = Arc::clone(&self.ships);
+        let fills = Arc::clone(&self.fills);
+        let block = self.block;
         registrar.system(
-            SystemSpec::new("test:parker", Phase::Rules),
+            SystemSpec::new("test:parker", Phase::Rules).writes(&[block]),
             move |context| {
+                for (ship, low, high, value) in std::mem::take(&mut *fills.lock().unwrap()) {
+                    let mut view = context.grid(ship).unwrap();
+                    for x in low[0]..high[0] {
+                        for y in low[1]..high[1] {
+                            for z in low[2]..high[2] {
+                                view.set(block, VoxelCoordinate::new(x, y, z), value)
+                                    .unwrap();
+                            }
+                        }
+                    }
+                }
                 for ship in std::mem::take(&mut *ships.lock().unwrap()) {
                     context.world().park_ship(ship, false).unwrap();
                 }
@@ -188,6 +207,7 @@ struct Rig {
     nodes: CoarseWatch,
     ship: GridId,
     ships_to_park: Arc<Mutex<Vec<GridId>>>,
+    fills: Arc<Mutex<Vec<Fill>>>,
 }
 
 impl Rig {
@@ -223,8 +243,11 @@ impl Rig {
         let coarse = CoarseServerPlugin::new(config);
         let nodes = CoarseWatch::of(coarse.handle());
         let ships_to_park = Arc::new(Mutex::new(Vec::new()));
+        let fills = Arc::new(Mutex::new(Vec::new()));
         let parker = Parker {
             ships: Arc::clone(&ships_to_park),
+            fills: Arc::clone(&fills),
+            block,
         };
         let plugins: Vec<Box<dyn Plugin>> =
             vec![Box::new(players), Box::new(coarse), Box::new(parker)];
@@ -245,7 +268,16 @@ impl Rig {
             nodes,
             ship,
             ships_to_park,
+            fills,
         }
+    }
+
+    /// Sets the voxels of the ship in `[low, high)` to the block `value`, in the next tick.
+    fn fill(&mut self, low: [i128; 3], high: [i128; 3], value: u32) {
+        self.fills
+            .lock()
+            .unwrap()
+            .push((self.ship, low, high, value));
     }
 
     /// Lets the server make the nodes of the ship, and then puts the ship into its file, out of memory.
@@ -264,11 +296,16 @@ impl Rig {
 
     /// A player at `position` who draws what is far away in detail.
     fn join(&mut self, position: [f64; 3]) -> Player {
+        self.join_as(1, position)
+    }
+
+    /// The same, as the install numbered `who`.
+    fn join_as(&mut self, who: u8, position: [f64; 3]) -> Player {
         let connection: Box<dyn Connection> = Box::new(self.connector.connect().unwrap());
         let (server, nodes) = (&mut self.server, &self.nodes);
         let mut player = Session::<_, ExampleGame>::connect(
             connection,
-            &Identity::from_secret([1; 32]),
+            &Identity::from_secret([who; 32]),
             Mode::Playing,
             3,
             camera_at(position, 0.0, 0.0),
@@ -627,4 +664,140 @@ fn a_ship_in_its_file_is_flown_to_with_no_hole_and_drawn_in_its_finest_nodes_at_
         assert_eq!(held.far, Some(corners_bounds()));
         assert!(rig.server.world().grids().get(rig.ship).is_none());
     }
+}
+
+// ---- edits to a far ship ----
+
+/// What a player's renderer holds of the ship's nodes, in order.
+fn picture(screen: &Screen) -> Vec<(BrickCube, PackedBrickMesh)> {
+    let mut nodes: Vec<(BrickCube, PackedBrickMesh)> = screen
+        .nodes
+        .iter()
+        .map(|(cube, mesh)| (*cube, mesh.clone()))
+        .collect();
+    nodes.sort_by_key(|(cube, _)| (cube.level(), cube.origin()));
+    nodes
+}
+
+/// A player who was there when the ship was edited, and one who comes after, see the same of it; and what they see of the places that were edited is not what the first
+/// saw before.
+fn two_players_see_the_same_after(
+    shape: Shape,
+    at: [i128; 3],
+    edit: impl FnOnce(&mut Rig),
+) -> (Rig, Player, Screen, Vec<(BrickCube, PackedBrickMesh)>) {
+    let mut rig = Rig::shaped(at, shape);
+    let mut watcher = rig.join(FAR_FROM_THE_SHIP);
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    let before = picture(&screen);
+    assert!(!before.is_empty());
+    edit(&mut rig);
+    rig.settle(&mut watcher, &mut screen);
+    let mut newcomer = rig.join_as(2, FAR_FROM_THE_SHIP);
+    let mut newcomers = Screen::default();
+    rig.settle(&mut newcomer, &mut newcomers);
+    assert_eq!(
+        picture(&screen),
+        picture(&newcomers),
+        "the player who saw the edit and the one who came after do not see the same"
+    );
+    (rig, watcher, screen, before)
+}
+
+#[test]
+fn an_edit_inside_a_far_ship_is_seen_by_the_player_who_watches_and_the_one_who_comes_after() {
+    // A hole is dug in the second brick of the slab (not an end brick, so the box of the ship stays).
+    let (rig, watcher, screen, before) =
+        two_players_see_the_same_after(Shape::Slab, SHIP_BESIDE, |rig| {
+            rig.fill([40, 2, 2], [56, 12, 12], 0);
+        });
+    assert_ne!(picture(&screen), before, "the edit changed what is drawn");
+    let held = watcher.client().world().grids().get(rig.ship).unwrap();
+    assert_eq!(held.far, Some(ship_bounds()));
+}
+
+#[test]
+fn an_edit_that_fills_a_cube_that_was_empty_in_the_box_of_a_far_ship_draws_it() {
+    // The ship has a block in two corners of its box of 4 by 4 bricks, so that two of the cubes of level 1 are empty; a block put in one of them makes it held.
+    let at = SHIP_BESIDE;
+    let (_, _, screen, before) = two_players_see_the_same_after(Shape::Corners, at, |rig| {
+        rig.fill([100, 5, 5], [108, 13, 13], 2);
+    });
+    let brick = BrickCoordinate::new(3, 0, 0);
+    assert!(
+        !before.iter().any(|(cube, _)| holds(*cube, brick)),
+        "the cube was empty"
+    );
+    assert!(
+        screen.nodes.keys().any(|cube| holds(*cube, brick)),
+        "and is drawn now: {:?}",
+        screen.nodes.keys()
+    );
+}
+
+#[test]
+fn an_edit_that_makes_a_far_ship_bigger_is_drawn_where_it_grew() {
+    // A block put a brick beyond the end of the slab: the box of the ship is 6 bricks long now, and the player was told of 4.
+    let (rig, watcher, screen, before) =
+        two_players_see_the_same_after(Shape::Slab, SHIP_BESIDE, |rig| {
+            rig.fill([170, 2, 2], [178, 10, 10], 2);
+        });
+    let grown = BrickCoordinate::new(5, 0, 0);
+    assert!(!before.iter().any(|(cube, _)| holds(*cube, grown)));
+    assert!(
+        screen.nodes.keys().any(|cube| holds(*cube, grown)),
+        "{:?}",
+        screen.nodes.keys()
+    );
+    let held = watcher.client().world().grids().get(rig.ship).unwrap();
+    assert_eq!(
+        held.far,
+        Some(BrickBox::new(BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(5, 0, 0)).unwrap())
+    );
+}
+
+#[test]
+fn digging_away_an_end_brick_of_a_far_ship_leaves_its_box_and_the_two_players_see_the_same() {
+    // The last brick of the slab is dug to air. An empty brick is still the ship's, so the box is what it was; and what the player who was there sees is the finest, as a
+    // new player's is.
+    let (rig, watcher, screen, before) =
+        two_players_see_the_same_after(Shape::Slab, SHIP_BESIDE, |rig| {
+            rig.fill([96, 0, 0], [128, 16, 16], 0);
+        });
+    assert!(
+        screen.nodes.keys().all(|cube| cube.level() == 1),
+        "{:?}",
+        screen.nodes.keys()
+    );
+    assert_ne!(picture(&screen), before, "the dig changed what is drawn");
+    let held = watcher.client().world().grids().get(rig.ship).unwrap();
+    assert_eq!(held.far, Some(ship_bounds()));
+}
+
+#[test]
+fn digging_away_all_that_is_in_a_cube_of_a_far_ship_takes_its_picture_away_for_both_players() {
+    // The block in the first corner of the ship is dug away: the cube of level 1 that held it has nothing to draw, and the server says it is empty (the node it had is taken
+    // back, which for a ship that nothing generates is the same).
+    let first = BrickCoordinate::new(0, 0, 0);
+    let (_, _, screen, before) =
+        two_players_see_the_same_after(Shape::Corners, SHIP_BESIDE, |rig| {
+            rig.fill([0, 0, 0], [16, 16, 16], 0);
+        });
+    assert!(
+        before.iter().any(|(cube, _)| holds(*cube, first)),
+        "it was drawn"
+    );
+    assert!(
+        !screen.nodes.keys().any(|cube| holds(*cube, first)),
+        "and is not now: {:?}",
+        screen.nodes.keys()
+    );
+    // What is left of the ship is drawn.
+    assert!(
+        screen
+            .nodes
+            .keys()
+            .any(|cube| holds(*cube, BrickCoordinate::new(3, 3, 0)))
+    );
 }

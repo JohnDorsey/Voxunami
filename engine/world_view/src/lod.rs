@@ -202,6 +202,9 @@ pub struct LodView {
     /// worked out for.
     cubes: CubeStates,
     wanted_for: Option<(BrickCoordinate, LodSettings)>,
+    /// The version of the terrain ([`CoarseTerrainSource::version`]) the cubes were last worked out for: when it is another, the answers that the cubes were chosen by are
+    /// not the terrain's any more (a far ship's box changed), and they are worked out again though the viewer has not moved.
+    selected_version: Option<u64>,
     /// Nodes to be made, the most wanted last.
     queue: Vec<BrickCube>,
     plan_needed: bool,
@@ -289,6 +292,7 @@ impl LodView {
             may_show: MayShowMemo::default(),
             cubes: CubeStates::new(),
             wanted_for: None,
+            selected_version: None,
             queue: Vec::new(),
             plan_needed: false,
             seen_ready_serial: 0,
@@ -444,7 +448,8 @@ impl LodView {
         let mut updates = self.mesher.update(source, centre);
         self.collect_nodes(&mut updates);
         self.updates_since_selection = self.updates_since_selection.saturating_add(1);
-        let moved = self.wanted_for != Some((centre, *settings));
+        let moved = self.wanted_for != Some((centre, *settings))
+            || self.selected_version != Some(source.version());
         let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
         if moved || new_edits {
             self.reselect(centre, viewer, settings, source);
@@ -669,6 +674,7 @@ impl LodView {
         self.updates_since_selection = 0;
         self.cubes.want(&cubes);
         self.wanted_for = Some((centre, *settings));
+        self.selected_version = Some(source.version());
         // The nearest are made first: they are the last in the queue.
         // (What was waited for is waited for again, by the cubes that are still wanted.)
         self.waiting_for_the_server.clear();

@@ -904,3 +904,62 @@ fn a_far_ship_with_a_node_for_every_cube_of_its_box_is_drawn_whole_with_nothing_
         assert!(ship.stalled().is_empty(), "{at:?}: {:?}", ship.stalled());
     }
 }
+
+#[test]
+fn a_far_ship_whose_box_changes_is_drawn_within_the_new_box_though_the_viewer_has_not_moved() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let voxels = no_edits(&scene);
+    let mut ship = far_ship(&scene);
+    let viewer = viewer_in(brick(0, 0, 0));
+    let small = BrickBox::new(brick(30, 0, 0), brick(33, 3, 3)).unwrap();
+    // The ship grows along each axis, at each end, one at a time (a box that changed in only one coordinate must be seen to have changed).
+    let grown = |low: [i128; 3], high: [i128; 3]| {
+        BrickBox::new(
+            brick(low[0], low[1], low[2]),
+            brick(high[0], high[1], high[2]),
+        )
+        .unwrap()
+    };
+    let boxes = [
+        grown([30, 0, 0], [45, 3, 3]),
+        grown([20, 0, 0], [33, 3, 3]),
+        grown([30, 0, 0], [33, 15, 3]),
+        grown([30, -12, 0], [33, 3, 3]),
+        grown([30, 0, 0], [33, 3, 15]),
+        grown([30, 0, -12], [33, 3, 3]),
+    ];
+    for bounds in boxes {
+        for cube in cubes_meeting(bounds) {
+            ship.set_override(cube, Some(solid(stone)));
+        }
+    }
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&ShipTerrainSource::far(&voxels, small), viewer));
+    assert!(!screen.nodes.is_empty());
+    assert!(
+        screen.nodes.keys().all(|cube| cube.meets(small)),
+        "only what is in the box is drawn"
+    );
+    for bounds in boxes {
+        // The ship has grown, and the server says so: the same viewer, the new box.
+        screen.apply_planet(ship.settle(&ShipTerrainSource::far(&voxels, bounds), viewer));
+        assert_eq!(
+            drawn(&screen),
+            far_selection(brick(0, 0, 0), bounds),
+            "{bounds:?}"
+        );
+        assert!(
+            screen.nodes.keys().any(|cube| !cube.meets(small)),
+            "what grew is drawn: {bounds:?}"
+        );
+        // And smaller again.
+        screen.apply_planet(ship.settle(&ShipTerrainSource::far(&voxels, small), viewer));
+        assert_eq!(
+            drawn(&screen),
+            far_selection(brick(0, 0, 0), small),
+            "{bounds:?}"
+        );
+    }
+}

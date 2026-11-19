@@ -131,7 +131,9 @@ const EMPTY_VERSION: u64 = u64::MAX;
 const BURST_MINIMUM_BYTES: f64 = 200_000.0;
 
 struct Stored {
-    node: CoarseNode,
+    /// Shared: the job that makes the node of a cube holds the nodes of its eight halves, and a job is made on the tick (a copy of eight nodes of hundreds of kilobytes each, for
+    /// each of thirty-two jobs, was twenty milliseconds of a tick of fifty).
+    node: Arc<CoarseNode>,
     /// Counts up each time the node is remade differently in what is sent (not in its exposure, which is not).
     version: u64,
 }
@@ -444,7 +446,7 @@ enum Child {
     /// Nothing there to patch in.
     Absent,
     /// The override of the node of the half that is made of it.
-    Node(CoarseNode),
+    Node(Arc<CoarseNode>),
     /// A stored brick, and the six beside it.
     Brick {
         center: Arc<Brick>,
@@ -472,12 +474,16 @@ impl NodeJob {
             .and_then(|generator| generator.coarse_node(self.cube, config.unlit))
             .unwrap_or_else(|| CoarseNode::uniform(CoarseCell::empty(config.air, config.unlit)));
         for (octant, child) in self.children.iter().enumerate() {
-            let patch = match child {
+            let of_a_brick;
+            let patch: &CoarseNode = match child {
                 Child::Absent => continue,
-                Child::Node(half) => half.clone(),
-                Child::Brick { center, beside } => self.summarize_brick(config, center, beside),
+                Child::Node(half) => half,
+                Child::Brick { center, beside } => {
+                    of_a_brick = self.summarize_brick(config, center, beside);
+                    &of_a_brick
+                }
             };
-            node = node.patched_with_child(octant, &patch, parent_level, config.air);
+            node = node.patched_with_child(octant, patch, parent_level, config.air);
         }
         Some(node)
     }
@@ -566,7 +572,7 @@ fn gather(
                 BrickCube::new(child_origin, cube.level() - 1).expect("half of a cube is a cube");
             overrides
                 .get(&key_of(grid, child_cube))
-                .map(|stored| Child::Node(stored.node.clone()))
+                .map(|stored| Child::Node(Arc::clone(&stored.node)))
         };
         touched |= child.is_some();
         child.unwrap_or(Child::Absent)
@@ -665,7 +671,7 @@ impl State {
         let mut nodes = FarNodes::new();
         for (key, stored) in &self.overrides {
             if key.1 == grid {
-                nodes.insert(cube_of(*key), stored.node.clone());
+                nodes.insert(cube_of(*key), CoarseNode::clone(&stored.node));
             }
         }
         nodes
@@ -762,7 +768,7 @@ impl State {
                     self.store(
                         key_of(grid, cube),
                         Stored {
-                            node: node.clone(),
+                            node: Arc::new(node.clone()),
                             version,
                         },
                     );
@@ -868,7 +874,7 @@ impl State {
     fn keep(&mut self, maximum_level: u8, key: Key, made: Option<CoarseNode>) {
         let cube = cube_of(key);
         let changed = match (&made, self.overrides.get(&key)) {
-            (Some(new), Some(old)) => *new != old.node,
+            (Some(new), Some(old)) => *new != *old.node,
             (None, None) => false,
             _ => true,
         };
@@ -887,7 +893,13 @@ impl State {
                         self.next_version
                     }
                 };
-                self.store(key, Stored { node, version });
+                self.store(
+                    key,
+                    Stored {
+                        node: Arc::new(node),
+                        version,
+                    },
+                );
             }
             None => self.forget(key),
         }
@@ -986,15 +998,16 @@ impl State {
                 break;
             };
             let node = match version {
-                Some(version) if version != EMPTY_VERSION => {
-                    self.overrides.get(&key).map(|stored| stored.node.clone())
-                }
+                Some(version) if version != EMPTY_VERSION => self
+                    .overrides
+                    .get(&key)
+                    .map(|stored| stored.node.without_exposure()),
                 _ => None,
             };
             let update = CoarseNodeUpdate {
                 grid: key.1,
                 cube: cube_of(key),
-                node: node.map(|node| node.without_exposure()),
+                node,
             };
             // What it costs is what it takes in a message of its own.
             state.credit -= CoarseNodes(vec![update.clone()]).encode().len() as f64;
@@ -1248,7 +1261,7 @@ impl CoarseHandle {
         locked(&self.state)
             .overrides
             .get(&key_of(grid, cube))
-            .map(|stored| (stored.node.clone(), stored.version))
+            .map(|stored| (CoarseNode::clone(&stored.node), stored.version))
     }
 }
 
@@ -1436,7 +1449,7 @@ mod tests {
 
     fn stored(version: u64) -> Stored {
         Stored {
-            node: CoarseNode::uniform(CoarseCell::empty(0, 0)),
+            node: Arc::new(CoarseNode::uniform(CoarseCell::empty(0, 0))),
             version,
         }
     }
@@ -2168,7 +2181,13 @@ mod tests {
                 let (cube, grid) = (cube_of(key), key.1);
                 match remake(&self.config, &spot.overrides, &self.world, grid, cube) {
                     Some(node) => {
-                        spot.store(key, Stored { node, version: 0 });
+                        spot.store(
+                            key,
+                            Stored {
+                                node: Arc::new(node),
+                                version: 0,
+                            },
+                        );
                         if cube.level() < self.config.maximum_override_level {
                             spot.dirty.insert(key_of(
                                 grid,
@@ -2181,7 +2200,7 @@ mod tests {
             }
             spot.overrides
                 .iter()
-                .map(|(key, stored)| (*key, stored.node.clone()))
+                .map(|(key, stored)| (*key, CoarseNode::clone(&stored.node)))
                 .collect()
         }
 
@@ -2268,7 +2287,7 @@ mod tests {
             state
                 .overrides
                 .iter()
-                .map(|(key, stored)| (*key, stored.node.clone()))
+                .map(|(key, stored)| (*key, CoarseNode::clone(&stored.node)))
                 .collect()
         };
         assert!(
@@ -2340,7 +2359,7 @@ mod tests {
         let nodes: Vec<(Key, CoarseNode)> = state
             .overrides
             .iter()
-            .map(|(key, stored)| (*key, stored.node.clone()))
+            .map(|(key, stored)| (*key, CoarseNode::clone(&stored.node)))
             .collect();
         assert_eq!(
             nodes, after,
@@ -2598,7 +2617,7 @@ mod tests {
         state.store(
             key,
             Stored {
-                node: CoarseNode::uniform(CoarseCell::empty(0, 0)),
+                node: Arc::new(CoarseNode::uniform(CoarseCell::empty(0, 0))),
                 version: 1,
             },
         );
