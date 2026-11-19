@@ -99,6 +99,7 @@ fn a_turn_that_is_not_a_number_of_f32_is_read_back_bit_for_bit() {
                 Orientation::from_components([0.1, 0.2, 0.3, (1.0f64 - 0.14).sqrt()]).unwrap(),
             ),
             bounds: None,
+            extent: None,
             serial: 4,
             checksum: 0xDEAD_BEEF,
             waits_for_those_aboard: true,
@@ -151,6 +152,7 @@ fn a_coordinate_at_the_ends_of_the_range_survives_the_section_of_entities_and_th
                 )
                 .unwrap(),
             ),
+            extent: None,
             serial: 4,
             checksum: 1,
             waits_for_those_aboard: false,

@@ -231,3 +231,60 @@ fn the_numbers_of_blocks_and_their_names_are_the_formats_both_ways_for_the_chann
         None
     );
 }
+
+#[test]
+fn a_save_writes_the_far_files_it_carries_beside_the_ship_files_and_removes_those_of_ship_files_it_does_not_name()
+ {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = sample_world(&game);
+    let made = game.sample_ship(&world, 0);
+    let first = world.grids_mut().create(made);
+    let mut save = game.save_with_ships(&mut world);
+    // The ships the save made files of, with the checksums of the files: what a far file is made from is the state of the file.
+    let ships = save.new_ships();
+    assert_eq!(ships.len(), 1);
+    let (grid, file, checksum) = (ships[0].grid, ships[0].file, ships[0].checksum);
+    assert_eq!(grid, first);
+    assert!(!ships[0].has_terrain);
+    assert_eq!(checksum, crc32fast::hash(&save.new_ship_files[0].1));
+    save.new_far_files.push((
+        FarFileName::of(&file),
+        nodes().encode(checksum, name_of).unwrap(),
+    ));
+
+    let mut files = MemoryShipFiles::new();
+    // (A far file of an earlier state of the ship is left by a save that did not finish.)
+    let stale = FarFileName::new(first, file.serial + 50);
+    files.far_files_mut().write(&stale, &[1, 2, 3]).unwrap();
+    save.write_with(&mut files, |_| Ok(())).unwrap();
+    match read_far_nodes(
+        files.far_files_mut(),
+        &FarFileName::of(&file),
+        checksum,
+        number_of,
+    ) {
+        FarNodesRead::Found(read) => assert_eq!(read, nodes()),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        read_far_nodes(files.far_files_mut(), &stale, checksum, number_of),
+        FarNodesRead::Absent
+    ));
+}
+
+#[test]
+fn a_save_says_which_of_the_ships_it_made_files_of_are_planets() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = sample_world(&game);
+    let made = game.sample_ship(&world, 0);
+    let ship = world.grids_mut().create(made);
+    let made = game.sample_planet(&world, 0);
+    let planet = world.grids_mut().create(made);
+    let save = game.save_with_ships(&mut world);
+    let ships = save.new_ships();
+    assert_eq!(ships.len(), 2);
+    for saved in &ships {
+        assert_eq!(saved.has_terrain, saved.grid == planet, "{saved:?}");
+        assert!(saved.grid == ship || saved.grid == planet);
+    }
+}

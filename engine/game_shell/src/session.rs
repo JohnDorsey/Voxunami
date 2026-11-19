@@ -52,6 +52,10 @@ pub enum SessionError {
     LoadingTimedOut,
 }
 
+/// How many threads make the meshes of a far ship: the nodes it is drawn from are made by the server, and each is meshed here as it comes, so one thread does it (not measured:
+/// the number of threads was the worry, not the speed), where a planet's view has as many as the machine can spare for its generators.
+const FAR_SHIP_WORKERS: usize = 1;
+
 /// Whether the player controls the camera, or the camera follows what a recording captured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -976,11 +980,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             let Some(local) = ship.pose.world_to_local(self.camera.position) else {
                 continue;
             };
-            // (No brick of a far ship is ever drawn: the ball of bricks round the viewer has no radius.)
+            // (No brick of a far ship is ever drawn: the ball of bricks round the viewer has no radius. And it is meshed from nodes the server made, a few at a time: one
+            // thread, not a pool for each of up to sixteen ships.)
             let view_settings = if ship.far.is_some() {
                 ViewSettings {
                     view_radius_bricks: 0,
-                    ..self.view_settings
+                    worker_count: FAR_SHIP_WORKERS,
                 }
             } else {
                 self.view_settings
@@ -994,7 +999,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                         Arc::clone(&self.block_table),
                         LodConfig {
                             unlit: detail.unlit,
-                            worker_count: self.view_settings.worker_count,
+                            worker_count: view_settings.worker_count,
                         },
                         settings,
                     ),

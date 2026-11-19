@@ -38,30 +38,49 @@ pub(crate) struct ShipView {
     /// The bricks that are stored, which are all the client is sent.
     brick_count: u64,
     terrain: Option<GridTerrainState>,
+    /// The ship is in a file, not in memory: it has no brick to send, so it is never in a client's picture and can be told of as far only.
+    in_a_file: bool,
 }
 
-/// The ships that have anything to show: those with bricks, and a place in the world. In order of id.
+/// The ships that have anything to show: those with bricks, and a place in the world; the ones in memory, and the ones in files that the world can place without reading
+/// them (not a planet, which is brought in whatever the distance, nor one that was on a rail, whose place is not where it was put away; and not one put away by a program
+/// that did not keep the box of its bricks). In order of id.
 pub(crate) fn ship_views(world: &ServerWorld) -> Vec<ShipView> {
-    world
+    let in_memory = world.data().grids().iter().filter_map(|(id, ship)| {
+        Some(ShipView {
+            id,
+            level: ship.level,
+            pose: ship.pose,
+            bounds: ship.world_brick_bounds()?,
+            own_bounds: ship.own_brick_box()?,
+            brick_count: ship.voxels.brick_count() as u64,
+            terrain: ship.terrain.map(|terrain| GridTerrainState {
+                generator: terrain.generator.raw(),
+                extent: terrain.extent,
+            }),
+            in_a_file: false,
+        })
+    });
+    let in_files = world
         .data()
         .grids()
-        .iter()
-        .filter_map(|(id, ship)| {
-            let (low, high) = ship.brick_extent()?;
+        .parked()
+        .filter(|(_, parked)| !parked.has_terrain && !parked.on_a_rail)
+        .filter_map(|(id, parked)| {
             Some(ShipView {
                 id,
-                level: ship.level,
-                pose: ship.pose,
-                bounds: ship.world_brick_bounds()?,
-                own_bounds: BrickBox::new(low, high)?,
-                brick_count: ship.voxels.brick_count() as u64,
-                terrain: ship.terrain.map(|terrain| GridTerrainState {
-                    generator: terrain.generator.raw(),
-                    extent: terrain.extent,
-                }),
+                level: parked.level,
+                pose: parked.pose,
+                bounds: parked.bounds?,
+                own_bounds: parked.extent?,
+                brick_count: 0,
+                terrain: None,
+                in_a_file: true,
             })
-        })
-        .collect()
+        });
+    let mut views: Vec<ShipView> = in_memory.chain(in_files).collect();
+    views.sort_by_key(|view| view.id);
+    views
 }
 
 /// How many ships a client is told of, and how.
@@ -121,7 +140,7 @@ pub(crate) fn grid_messages(
         // (The ship the client's body is aboard takes its bricks of the budget first, and is where its id puts it among the others.)
         let forced = views
             .iter()
-            .find(|view| Some(view.id) == aboard && view.level == level)
+            .find(|view| Some(view.id) == aboard && view.level == level && !view.in_a_file)
             .map(|view| view.id);
         let mut used = views
             .iter()
@@ -134,6 +153,7 @@ pub(crate) fn grid_messages(
             }
             // (A planet is known from anywhere in its level: it is drawn from as far as there is anything to see of it, and a client has to know it to draw it.)
             if view.level == level
+                && !view.in_a_file
                 && (view.terrain.is_some() || view.bounds.intersection(region).is_some())
                 && used + view.brick_count <= limits.maximum_bricks
             {

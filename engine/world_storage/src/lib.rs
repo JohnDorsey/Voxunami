@@ -45,6 +45,7 @@ pub use ship_files::{
 pub use translation::{SourceTranslator, TranslationError};
 pub use voxel_space::LevelIndex;
 pub use world::{
-    BrickSource, LevelData, LevelError, LoadContext, LoadError, LoadReport, ParsedWorld,
-    RecipeError, SaveError, ShipLoadError, ShipParkError, WorldData, WorldSave,
+    BrickSource, FarFileMaker, LevelData, LevelError, LoadContext, LoadError, LoadReport,
+    ParsedWorld, RecipeError, SaveError, SavedShip, ShipLoadError, ShipParkError, WorldData,
+    WorldSave,
 };

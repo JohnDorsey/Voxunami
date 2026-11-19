@@ -4,6 +4,8 @@
 use protocol::{GridContent, GridTerrainState};
 use voxel_space::{Orientation, WorldPosition};
 
+use world_storage::{ParkedGrid, ShipFileName};
+
 use super::*;
 use crate::far_ship_settings::FarShipSettings;
 use crate::grid_replication::{EditedBrick, KnownGrids, ShipLimits, grid_messages, ship_views};
@@ -432,4 +434,126 @@ fn the_ships_a_client_was_told_of_as_far_are_asked_for_by_client_and_forgotten_w
     world.remove_client(first);
     assert_eq!(world.far_ships_of(first).count(), 0);
     assert_eq!(world.far_ships_of(second).count(), 1);
+}
+
+// ---- ships in files ----
+
+/// The ship put in a file: the world knows where it is and what it touched, and nothing of its bricks.
+fn put_in_a_file(world: &mut ServerWorld, ship: GridId) {
+    let moving = world.data().grids().get(ship).unwrap();
+    let record = ParkedGrid {
+        level: moving.level,
+        pose: moving.pose,
+        bounds: moving.world_brick_bounds(),
+        extent: moving.own_brick_box(),
+        file: ShipFileName::new(ship, 0),
+        checksum: 0,
+        waits_for_those_aboard: false,
+        has_terrain: false,
+        on_a_rail: false,
+    };
+    world.data_mut().grids_mut().park(ship, record).unwrap();
+}
+
+#[test]
+fn a_ship_in_a_file_is_told_of_as_far_with_the_box_of_its_own_bricks_as_it_is_in_memory_and_never_with_bricks()
+ {
+    let (mut world, block, _) = counting_world();
+    let ship = ship_at_brick(&mut world, block, 100);
+    let in_memory = {
+        let mut known = KnownGrids::new();
+        contents_of(&told(&world, &mut known, None, 1000, Some(settings()), &[]))
+    };
+    assert_eq!(in_memory.len(), 1);
+    put_in_a_file(&mut world, ship);
+    assert!(world.data().grids().get(ship).is_none());
+
+    let mut known = KnownGrids::new();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert_eq!(contents_of(&messages), in_memory);
+    assert!(matches!(in_memory[0].1, GridContent::Far { .. }));
+    assert_eq!(bricks_sent_for(&messages, ship), 0);
+    assert!(known.contains_key(&ship));
+    // Nothing is said again while nothing changes.
+    assert!(told(&world, &mut known, None, 1000, Some(settings()), &[]).is_empty());
+}
+
+#[test]
+fn a_far_ship_that_is_put_in_a_file_is_not_told_of_again_and_one_brought_back_is_not_either() {
+    let (mut world, block, _) = counting_world();
+    let ship = ship_at_brick(&mut world, block, 100);
+    let mut known = KnownGrids::new();
+    told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    let moving = world.data().grids().get(ship).unwrap().clone();
+    put_in_a_file(&mut world, ship);
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(messages.is_empty(), "{messages:?}");
+    // And back in memory, where it was.
+    world.data_mut().grids_mut().unpark(ship, moving).unwrap();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(messages.is_empty(), "{messages:?}");
+}
+
+#[test]
+fn a_ship_in_a_file_is_told_of_only_when_far_ships_are_on_and_is_never_given_bricks_even_in_the_region()
+ {
+    let (mut world, block, _) = counting_world();
+    let ship = ship_at_brick(&mut world, block, 2);
+    put_in_a_file(&mut world, ship);
+    let mut known = KnownGrids::new();
+    // (It is in the region the client watches.)
+    assert!(told(&world, &mut known, None, 1000, None, &[]).is_empty());
+    assert!(known.is_empty());
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(matches!(
+        contents_of(&messages)[..],
+        [(_, GridContent::Far { .. })]
+    ));
+    assert_eq!(bricks_sent_for(&messages, ship), 0);
+}
+
+#[test]
+fn a_ship_in_a_file_that_is_a_planet_or_was_on_a_rail_or_has_no_bricks_is_not_told_of() {
+    let (mut world, block, _) = counting_world();
+    let ships: Vec<GridId> = (0..3)
+        .map(|number| ship_at_brick(&mut world, block, 100 + 4 * number))
+        .collect();
+    for (index, ship) in ships.iter().enumerate() {
+        let moving = world.data().grids().get(*ship).unwrap();
+        let record = ParkedGrid {
+            level: moving.level,
+            pose: moving.pose,
+            bounds: moving.world_brick_bounds(),
+            extent: if index == 2 {
+                None
+            } else {
+                moving.own_brick_box()
+            },
+            file: ShipFileName::new(*ship, 0),
+            checksum: 0,
+            waits_for_those_aboard: false,
+            // (A planet is drawn from its generator, and a ship that was on a rail has no place that is known without its rail.)
+            has_terrain: index == 0,
+            on_a_rail: index == 1,
+        };
+        world.data_mut().grids_mut().park(*ship, record).unwrap();
+    }
+    let mut known = KnownGrids::new();
+    let messages = told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert!(contents_of(&messages).is_empty(), "{messages:?}");
+    assert!(known.is_empty());
+}
+
+#[test]
+fn ships_in_files_and_in_memory_are_far_nearest_first_together_up_to_the_most_there_are() {
+    let (mut world, block, _) = counting_world();
+    // Four ships at 100, 104, 108 and 112 bricks; the two in the middle are in files; three are told of, the nearest, and so not the one at 112.
+    let ships: Vec<GridId> = (0..4)
+        .map(|number| ship_at_brick(&mut world, block, 100 + 4 * number))
+        .collect();
+    put_in_a_file(&mut world, ships[1]);
+    put_in_a_file(&mut world, ships[2]);
+    let mut known = KnownGrids::new();
+    told(&world, &mut known, None, 1000, Some(settings()), &[]);
+    assert_eq!(known.keys().copied().collect::<Vec<_>>(), ships[..3]);
 }

@@ -78,6 +78,13 @@ impl MovingGrid {
         ))
     }
 
+    /// The box of the bricks that have anything in them or that its terrain makes, in the ship's own coordinates ([`MovingGrid::brick_extent`] as a box). `None` for a
+    /// ship with no bricks.
+    pub fn own_brick_box(&self) -> Option<BrickBox> {
+        let (low, high) = self.brick_extent()?;
+        BrickBox::new(low, high)
+    }
+
     /// The lowest and the highest brick that has anything in it or that its terrain makes, along each axis, in the ship's own coordinates. `None` for a ship with
     /// no bricks.
     pub fn brick_extent(&self) -> Option<(BrickCoordinate, BrickCoordinate)> {
@@ -173,6 +180,9 @@ pub struct ParkedGrid {
     pub pose: GridPose,
     /// The bricks of the level it touched then (`None` for a ship with no bricks).
     pub bounds: Option<BrickBox>,
+    /// The box of the bricks it has, in its own coordinates (`None` for a ship with no bricks, and for one put away by a program from before this was kept): what a client
+    /// is told a far ship has, which is told without reading its file ([`MovingGrid::own_brick_box`]).
+    pub extent: Option<BrickBox>,
     /// Its file, and the checksum the file had when it was written.
     pub file: ShipFileName,
     pub checksum: u32,
@@ -444,6 +454,16 @@ impl GridStore {
         match (self.grids.get(&id), self.parked.get(&id)) {
             (Some(ship), _) => Some((ship.level, ship.pose)),
             (None, Some(parked)) => Some((parked.level, parked.pose)),
+            (None, None) => None,
+        }
+    }
+
+    /// The box of the bricks a ship has, in its own coordinates, whether it is in memory or in a file (`None` for a ship that has no bricks, one that is not known, and one in a
+    /// file whose world file did not say: see [`ParkedGrid::extent`]).
+    pub fn own_brick_box_of(&self, id: GridId) -> Option<BrickBox> {
+        match (self.grids.get(&id), self.parked.get(&id)) {
+            (Some(ship), _) => ship.own_brick_box(),
+            (None, Some(parked)) => parked.extent,
             (None, None) => None,
         }
     }
@@ -1012,6 +1032,7 @@ mod tests {
             level: LevelIndex::MAIN,
             pose: GridPose::identity(),
             bounds: None,
+            extent: None,
             file: ShipFileName::new(id, 0),
             checksum: 0,
             waits_for_those_aboard: false,

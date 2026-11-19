@@ -19,7 +19,7 @@ use server::test_support::log_in;
 use server::{FarShipSettings, GridView, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
-use voxel_grid::ChannelIndex;
+use voxel_grid::{ChannelIndex, Grid};
 use voxel_space::{
     BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex, Orientation,
     VoxelCoordinate, WorldPosition,
@@ -1213,6 +1213,16 @@ fn cubes_of(updates: &[CoarseNodeUpdate], ship: GridId) -> Vec<BrickCube> {
         .collect()
 }
 
+/// Where a ship is and the box of its own bricks, whether it is in memory or in a file.
+fn place_of(rig: &Rig, ship: GridId) -> (GridPose, BrickBox) {
+    let grids = rig.server.world().grids();
+    match (grids.get(ship), grids.get_parked(ship)) {
+        (Some(moving), _) => (moving.pose, moving.own_brick_box().unwrap()),
+        (None, Some(parked)) => (parked.pose, parked.extent.unwrap()),
+        (None, None) => panic!("{ship:?} is nowhere"),
+    }
+}
+
 /// What a client standing in `brick` of the main level, asking with `detail`, is to be sent of a far ship: what the shared selection says, among the cubes that have
 /// an override.
 fn expected_far_nodes(
@@ -1221,8 +1231,7 @@ fn expected_far_nodes(
     brick: [i128; 3],
     asked: &SetDetail,
 ) -> Vec<BrickCube> {
-    let data = rig.server.world();
-    let pose = data.grids().get(ship).unwrap().pose;
+    let (pose, _) = place_of(rig, ship);
     let at = WorldPosition::new(
         BrickCoordinate::new(brick[0], brick[1], brick[2]),
         [16.0, 20.0, 16.0],
@@ -1347,14 +1356,12 @@ fn expected_empty_cubes(
     brick: [i128; 3],
     asked: &SetDetail,
 ) -> Vec<BrickCube> {
-    let data = rig.server.world();
-    let moving = data.grids().get(ship).unwrap();
+    let (pose, bounds) = place_of(rig, ship);
     let at = WorldPosition::new(
         BrickCoordinate::new(brick[0], brick[1], brick[2]),
         [16.0, 20.0, 16.0],
     );
-    let local = moving.pose.world_to_local(at).unwrap().brick();
-    let (low, high) = moving.brick_extent().unwrap();
+    let local = pose.world_to_local(at).unwrap().brick();
     let view = coarse_cells::ViewSelection {
         detail: asked.settings(),
         zoom: asked.zoom(),
@@ -1364,7 +1371,7 @@ fn expected_empty_cubes(
     coarse_cells::far_ship_empty_cubes(
         local,
         &view,
-        BrickBox::new(low, high).unwrap(),
+        bounds,
         &|cube| {
             rig.handle.overrides_of(ship).iter().any(|(held, _)| {
                 held.level() <= cube.level()
@@ -1418,6 +1425,28 @@ fn a_client_is_told_which_cubes_in_the_box_of_a_far_ship_are_empty_with_its_node
 fn a_client_that_comes_nearer_to_a_far_ship_is_told_what_is_empty_there_and_not_what_it_was_told_before()
  {
     let (mut rig, ship) = rig_with_a_far_ship_with_a_gap();
+    a_client_comes_nearer_to(&mut rig, ship);
+}
+
+#[test]
+fn a_client_that_comes_nearer_to_a_far_ship_in_a_file_is_told_the_same_from_the_ships_place_in_the_world_file()
+ {
+    let (mut rig, ship) = rig_with_a_far_ship_with_a_gap_in_a_file();
+    a_client_comes_nearer_to(&mut rig, ship);
+}
+
+/// The far ship with a gap, put in a file.
+fn rig_with_a_far_ship_with_a_gap_in_a_file() -> (Rig, GridId) {
+    let (mut rig, ship) = rig_with_a_far_ship_with_a_gap();
+    rig.ships_to_park.lock().unwrap().push(ship);
+    rig.step(1);
+    assert!(rig.server.world().grids().get(ship).is_none());
+    assert!(rig.server.world().grids().get_parked(ship).is_some());
+    (rig, ship)
+}
+
+/// A client that comes nearer to a far ship, step by step, is told what is empty there and not what it was told before.
+fn a_client_comes_nearer_to(rig: &mut Rig, ship: GridId) {
     let asked = detail(10_000_000);
     rig.client.set_detail(&asked);
     let mut told: Vec<CoarseNodeUpdate> = Vec::new();
@@ -1439,10 +1468,10 @@ fn a_client_that_comes_nearer_to_a_far_ship_is_told_what_is_empty_there_and_not_
     }
     // Everything it needs at the last place, it was told at one place or another.
     let last = [91, 0, 0];
-    for cube in expected_far_nodes(&rig, ship, last, &asked) {
+    for cube in expected_far_nodes(rig, ship, last, &asked) {
         assert!(nodes_of(&told, ship).contains(&cube), "{cube:?}");
     }
-    let expected = expected_empty_cubes(&rig, ship, last, &asked);
+    let expected = expected_empty_cubes(rig, ship, last, &asked);
     assert!(!expected.is_empty());
     for cube in expected {
         assert!(empties_of(&told, ship).contains(&cube), "{cube:?}");
@@ -1486,4 +1515,133 @@ fn what_is_empty_is_told_again_when_a_ship_that_came_near_goes_far_again_for_the
         .map(|update| (update.cube, update.node.is_some()))
         .collect();
     assert_eq!(again, first);
+}
+
+/// What a client in `brick` is sent of a ship, node or empty, in order.
+fn told_of(rig: &mut Rig, ship: GridId, brick: [i128; 3]) -> Vec<(BrickCube, bool)> {
+    rig.client.stand_at(brick);
+    rig.client.watch(brick, 2);
+    rig.step(10);
+    rig.client
+        .coarse_nodes()
+        .1
+        .iter()
+        .filter(|update| update.grid == ship)
+        .map(|update| (update.cube, update.node.is_some()))
+        .collect()
+}
+
+#[test]
+fn a_client_is_sent_the_same_of_a_far_ship_whether_it_is_in_memory_or_in_a_file() {
+    let (mut in_memory, ship) = rig_with_a_far_ship_with_a_gap();
+    in_memory.client.set_detail(&detail(10_000_000));
+    let from_memory = told_of(&mut in_memory, ship, [88, 0, 0]);
+    let (mut in_a_file, ship) = rig_with_a_far_ship_with_a_gap_in_a_file();
+    in_a_file.client.set_detail(&detail(10_000_000));
+    let from_a_file = told_of(&mut in_a_file, ship, [88, 0, 0]);
+    assert!(from_memory.iter().any(|(_, node)| *node));
+    assert!(from_memory.iter().any(|(_, node)| !*node));
+    assert_eq!(from_a_file, from_memory);
+}
+
+// ---- far files at a save ----
+
+#[test]
+fn a_world_saved_with_a_ship_in_memory_keeps_its_nodes_beside_the_ship_file_and_a_server_that_starts_again_has_them()
+ {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    let before = nodes_kept_of(&rig, ship);
+    assert!(before.len() >= 12, "a node at each of 12 levels at least");
+    let mut again = restarted(&mut rig, |_| {});
+    // The ship is in its file, and the world has its nodes without the ship having been in memory.
+    assert!(again.server.world().grids().get_parked(ship).is_some());
+    again.step(1);
+    assert!(again.server.world().grids().get(ship).is_none());
+    assert_eq!(nodes_kept_of(&again, ship), before);
+    // And the ship in memory of the server that saved is where it was.
+    assert!(rig.server.world().grids().get(ship).is_some());
+    assert_eq!(nodes_kept_of(&rig, ship), before);
+}
+
+#[test]
+fn a_ship_saved_with_nodes_still_to_be_made_has_none_written_and_the_world_it_starts_again_in_has_no_far_view_of_it()
+ {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    rig.set_channel_in(ship, [8, 8, 8], [9, 9, 9], rig.block, STONE);
+    rig.step(1);
+    assert!(rig.handle.counts().1 > 0, "nodes are still to be made");
+    let mut again = restarted(&mut rig, |_| {});
+    again.step(1);
+    assert!(again.server.world().grids().get_parked(ship).is_some());
+    assert!(nodes_kept_of(&again, ship).is_empty());
+    // The server that saved goes on and makes them, and the next save has them.
+    rig.settle();
+    let after = nodes_kept_of(&rig, ship);
+    assert!(!after.is_empty());
+    let mut later = restarted(&mut rig, |_| {});
+    later.step(1);
+    assert_eq!(nodes_kept_of(&later, ship), after);
+}
+
+#[test]
+fn what_a_save_writes_of_the_nodes_of_a_ship_is_what_it_says_of_the_file_it_made_and_a_planet_has_none()
+ {
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let mut world = game.new_world();
+    let made = game.sample_ship(&world, 0);
+    let ship = world.grids_mut().create(made);
+    let made = game.sample_planet(&world, 0);
+    let planet = world.grids_mut().create(made);
+    let mut rig = rig_over_files(&game, world, MemoryShipFiles::new(), |config, _| {
+        let mut opaque = vec![true; 16];
+        opaque[AIR as usize] = false;
+        config.table = BlockTable::of_cubes(&opaque);
+    });
+    rig.settle();
+    let save = rig.server.save(&game.registries()).unwrap();
+    let names: Vec<(GridId, u64)> = save
+        .new_far_files
+        .iter()
+        .map(|(name, _)| (name.grid, name.serial))
+        .collect();
+    let saved = save.new_ships();
+    let file_of = |grid: GridId| saved.iter().find(|saved| saved.grid == grid).unwrap().file;
+    assert_eq!(names, [(ship, file_of(ship).serial)]);
+    assert!(!names.iter().any(|(grid, _)| *grid == planet));
+}
+
+#[test]
+fn a_world_a_server_gives_back_when_it_ends_is_saved_with_the_far_files_of_its_ships_too() {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    assert!(!nodes_kept_of(&rig, ship).is_empty());
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    // (The server is gone, and what the plugin kept of the ship is still what the world is saved with.)
+    let server = rig.server;
+    let mut world = server.into_world();
+    let save = world.save_with_ships(&game.registries()).unwrap();
+    let saved = save.new_ships();
+    assert_eq!(saved.len(), 1);
+    let names: Vec<FarFileName> = save.new_far_files.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, [FarFileName::of(&saved[0].file)]);
+}
+
+#[test]
+fn a_ship_with_no_bricks_has_no_far_file_written_at_a_save() {
+    let game = Game::new(&world_storage::test_support::ALL_PLUGINS);
+    let mut world = game.new_world();
+    let mut made = game.sample_ship(&world, 0);
+    made.voxels = Grid::new(Arc::clone(world.main().overrides.layout()));
+    world.grids_mut().create(made);
+    let mut rig = rig_over_files(&game, world, MemoryShipFiles::new(), |config, _| {
+        let mut opaque = vec![true; 16];
+        opaque[AIR as usize] = false;
+        config.table = BlockTable::of_cubes(&opaque);
+    });
+    rig.settle();
+    let save = rig.server.save(&game.registries()).unwrap();
+    assert_eq!(save.new_ships().len(), 1, "the ship is saved");
+    assert!(save.new_far_files.is_empty(), "and it has no nodes to keep");
 }

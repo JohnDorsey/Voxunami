@@ -8,7 +8,8 @@ use entities::{EntityCatalog, EntityError, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Message, check_message};
 use voxel_grid::ChannelIndex;
-use world_storage::{Section, WorldData};
+use world_storage::far_nodes::FarFileName;
+use world_storage::{SavedShip, Section, ShipFormat, WorldData};
 
 use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
@@ -64,6 +65,7 @@ pub(crate) struct Builder {
     commands: BTreeMap<String, CommandEntry>,
     catalog: EntityCatalog,
     saves: Vec<SaveEntry>,
+    far_file_savers: Vec<crate::registry::FarFileSaver>,
     watched: BTreeSet<ChannelIndex>,
     errors: Vec<RegistrationError>,
 }
@@ -317,6 +319,16 @@ impl<'a> Registrar<'a> {
         );
     }
 
+    /// The far files this plugin keeps for ships (the nodes a far view is made of): called whenever the world is saved, with the ships whose files the save makes (each with the
+    /// name of its file and the checksum of its bytes, which a far file says it was made from) and the format of ship files (the names of blocks). What it returns is written beside
+    /// the ship files.
+    pub fn save_far_files(
+        &mut self,
+        write: impl Fn(&[SavedShip], &ShipFormat) -> Vec<(FarFileName, Vec<u8>)> + Send + Sync + 'static,
+    ) {
+        self.builder.far_file_savers.push(Box::new(write));
+    }
+
     /// State this plugin saves with the world: called whenever the world is saved.
     pub fn save_section(
         &mut self,
@@ -371,6 +383,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         commands,
         catalog,
         saves,
+        far_file_savers,
         watched,
         mut errors,
     } = builder;
@@ -584,6 +597,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         commands,
         catalog: Arc::new(catalog),
         saves,
+        far_file_savers: Arc::new(far_file_savers),
         watched,
     })
 }

@@ -125,6 +125,11 @@ impl Server {
         logic: Box<dyn GameLogic>,
         listener: Box<dyn Listener>,
     ) -> Result<Self, ServerError> {
+        let mut world = world;
+        // (What the plugins keep of the ships that a save writes the files of goes with the world, whoever saves it.)
+        if let Some(maker) = logic.far_file_maker() {
+            world.set_far_file_maker(maker);
+        }
         let world_description = world.describe(registries)?;
         let challenges = config
             .challenge_seed

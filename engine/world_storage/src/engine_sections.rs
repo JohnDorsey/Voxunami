@@ -280,6 +280,8 @@ pub struct GridRecord {
     pub level: NamespacedId,
     pub pose: GridPose,
     pub bounds: Option<BrickBox>,
+    /// The box of the bricks it has in its own coordinates ([`crate::ParkedGrid::extent`]).
+    pub extent: Option<BrickBox>,
     /// The number of the write that made its file (the file is named for it and the ship), and the checksum of the file's bytes.
     pub serial: u64,
     pub checksum: u32,
@@ -326,13 +328,17 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
         }
         writer.write_varint(ship.serial);
         writer.write_u32(ship.checksum);
-        // The flags of the ship: the first is that it waits for those aboard, the second that it has terrain, the third that it was on a rail. (A file from before the
-        // second or the third reads as it is: a flag it does not have is not set.)
+        // The flags of the ship: the first is that it waits for those aboard, the second that it has terrain, the third that it was on a rail, the fourth that the box of
+        // its own bricks follows. (A file from before the second, the third or the fourth reads as it is: a flag it does not have is not set.)
         writer.write_u8(
             u8::from(ship.waits_for_those_aboard)
                 | (u8::from(ship.has_terrain) << 1)
-                | (u8::from(ship.on_a_rail) << 2),
+                | (u8::from(ship.on_a_rail) << 2)
+                | (u8::from(ship.extent.is_some()) << 3),
         );
+        if let Some(extent) = ship.extent {
+            write_brick_box(&mut writer, extent);
+        }
     }
     writer.write_varint(record.tombstones.len() as u64);
     for (id, successors) in &record.tombstones {
@@ -401,18 +407,24 @@ pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
         }
         let checksum = reader.read_u32()?;
         let flags = reader.read_u8()?;
-        if flags > 0b111 {
+        if flags > 0b1111 {
             return Err(DecodeError::Invalid(
-                "the flags of a ship are more than the three there are",
+                "the flags of a ship are more than the four there are",
             ));
         }
         let (waits_for_those_aboard, has_terrain, on_a_rail) =
             (flags & 0b001 != 0, flags & 0b010 != 0, flags & 0b100 != 0);
+        let extent = if flags & 0b1000 != 0 {
+            Some(read_brick_box(&mut reader)?)
+        } else {
+            None
+        };
         ships.push(GridRecord {
             id,
             level,
             pose,
             bounds,
+            extent,
             serial,
             checksum,
             waits_for_those_aboard,

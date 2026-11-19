@@ -5,7 +5,7 @@ use std::sync::Arc;
 use entities::EntityCatalog;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
-use world_storage::Section;
+use world_storage::{FarFileMaker, Section};
 
 use crate::server_world::ServerWorld;
 
@@ -49,5 +49,10 @@ pub trait GameLogic: Debug + Send {
     /// to save with the world. A game restores it from the world's plugin sections when it is built.
     fn save_sections(&self) -> Vec<Section> {
         Vec::new()
+    }
+
+    /// What makes the far files of the ships that a save makes files of, if the game has any: put in the world, which asks it whenever it is saved. The default is none.
+    fn far_file_maker(&self) -> Option<FarFileMaker> {
+        None
     }
 }

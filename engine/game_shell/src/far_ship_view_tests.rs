@@ -2,12 +2,13 @@
 //! from, and the session draws them; and what is drawn follows the ship as it comes near (bricks) and goes far again (nodes again).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use coarse_streaming::{CoarseConfig, CoarseServerPlugin};
 use identity::Identity;
+use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
-use plugin_host::Plugin;
+use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
 use region_octree::BrickCube;
 use server::{FarShipSettings, Server};
 use transport::Connection;
@@ -157,11 +158,36 @@ fn ship(
     }
 }
 
+/// A plugin that puts the ships a test names into their files, in the next tick (what the lifecycle of a game does to a ship nobody is near).
+#[derive(Debug)]
+struct Parker {
+    ships: Arc<Mutex<Vec<GridId>>>,
+}
+
+impl Plugin for Parker {
+    fn id(&self) -> NamespacedId {
+        "test:parker".parse().expect("an identifier")
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) {
+        let ships = Arc::clone(&self.ships);
+        registrar.system(
+            SystemSpec::new("test:parker", Phase::Rules),
+            move |context| {
+                for ship in std::mem::take(&mut *ships.lock().unwrap()) {
+                    context.world().park_ship(ship, false).unwrap();
+                }
+            },
+        );
+    }
+}
+
 struct Rig {
     server: Server,
     connector: LoopbackConnector,
     nodes: CoarseWatch,
     ship: GridId,
+    ships_to_park: Arc<Mutex<Vec<GridId>>>,
 }
 
 impl Rig {
@@ -196,7 +222,12 @@ impl Rig {
         config.view_distance = detail().maximum_distance;
         let coarse = CoarseServerPlugin::new(config);
         let nodes = CoarseWatch::of(coarse.handle());
-        let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(players), Box::new(coarse)];
+        let ships_to_park = Arc::new(Mutex::new(Vec::new()));
+        let parker = Parker {
+            ships: Arc::clone(&ships_to_park),
+        };
+        let plugins: Vec<Box<dyn Plugin>> =
+            vec![Box::new(players), Box::new(coarse), Box::new(parker)];
         let (server, connector) = build_server_telling_of_far_ships::<ExampleGame>(
             &content,
             world,
@@ -213,7 +244,22 @@ impl Rig {
             connector,
             nodes,
             ship,
+            ships_to_park,
         }
+    }
+
+    /// Lets the server make the nodes of the ship, and then puts the ship into its file, out of memory.
+    fn put_the_ship_in_its_file(&mut self) {
+        let mut ticks = 0;
+        while !self.nodes.is_done() || ticks < 3 {
+            self.nodes.step(&mut self.server);
+            ticks += 1;
+            assert!(ticks < 200, "the server is still making nodes");
+        }
+        self.ships_to_park.lock().unwrap().push(self.ship);
+        self.nodes.step(&mut self.server);
+        assert!(self.server.world().grids().get(self.ship).is_none());
+        assert!(self.server.world().grids().get_parked(self.ship).is_some());
     }
 
     /// A player at `position` who draws what is far away in detail.
@@ -435,7 +481,21 @@ fn fly_to_a_ship(
     bricks_per_round: f64,
     lag: i64,
 ) -> (usize, Screen, Rig, Player) {
+    fly_to_a_ship_in(shape, false, bricks_to_look_at, bricks_per_round, lag)
+}
+
+/// [`fly_to_a_ship`], with the ship in its file (out of memory) from before the player comes if `in_a_file`.
+fn fly_to_a_ship_in(
+    shape: Shape,
+    in_a_file: bool,
+    bricks_to_look_at: &[BrickCoordinate],
+    bricks_per_round: f64,
+    lag: i64,
+) -> (usize, Screen, Rig, Player) {
     let mut rig = Rig::shaped([140, 0, 0], shape);
+    if in_a_file {
+        rig.put_the_ship_in_its_file();
+    }
     let start = 20.0 * 32.0 + 16.0;
     let end = 128.0 * 32.0 + 16.0;
     let at = |round: i64| (start + bricks_per_round * 32.0 * (round + 1).max(0) as f64).min(end);
@@ -506,5 +566,65 @@ fn a_ship_with_empty_cubes_in_its_box_is_drawn_in_its_finest_nodes_when_the_play
             screen.nodes.keys()
         );
         assert!(screen.nodes.keys().all(|cube| cube.level() == 1));
+    }
+}
+
+// ---- a ship in a file ----
+
+#[test]
+fn a_ship_in_its_file_is_drawn_from_the_nodes_the_server_kept_of_it_as_one_in_memory_is_and_in_no_brick()
+ {
+    let mut rig = Rig::new(SHIP_AT);
+    rig.put_the_ship_in_its_file();
+    let mut player = rig.join(FAR_FROM_THE_SHIP);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    let held = player.client().world().grids().get(rig.ship).unwrap();
+    assert_eq!(held.far, Some(ship_bounds()));
+    assert_eq!(held.voxels.brick_count(), 0);
+    assert_eq!(screen.bricks_ever, 0);
+    assert!(!screen.nodes.is_empty());
+    for x in 0..4 {
+        let brick = BrickCoordinate::new(x, 0, 0);
+        let covering = screen
+            .nodes
+            .keys()
+            .filter(|cube| holds(**cube, brick))
+            .count();
+        assert_eq!(covering, 1, "brick {x} is under {covering} nodes");
+    }
+}
+
+#[test]
+fn what_a_player_sees_of_a_ship_is_the_same_whether_it_is_in_memory_or_in_its_file() {
+    let picture = |in_a_file: bool| {
+        let mut rig = Rig::shaped(SHIP_BESIDE, Shape::Corners);
+        if in_a_file {
+            rig.put_the_ship_in_its_file();
+        }
+        let mut player = rig.join(FAR_FROM_THE_SHIP);
+        let mut screen = Screen::default();
+        rig.settle(&mut player, &mut screen);
+        let mut nodes: Vec<(BrickCube, PackedBrickMesh)> = screen.nodes.into_iter().collect();
+        nodes.sort_by_key(|(cube, _)| (cube.level(), cube.origin()));
+        nodes
+    };
+    let in_memory = picture(false);
+    assert!(in_memory.len() >= 2);
+    assert_eq!(picture(true), in_memory);
+}
+
+#[test]
+fn a_ship_in_its_file_is_flown_to_with_no_hole_and_drawn_in_its_finest_nodes_at_the_end() {
+    let looked_at = [BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(3, 3, 0)];
+    for (speed, lag) in [(2.0, 0), (20.0, 3)] {
+        let (holes, screen, rig, player) =
+            fly_to_a_ship_in(Shape::Corners, true, &looked_at, speed, lag);
+        assert_eq!(holes, 0, "speed {speed}, lag {lag}");
+        assert_eq!(screen.nodes.len(), 2, "{:?}", screen.nodes.keys());
+        assert!(screen.nodes.keys().all(|cube| cube.level() == 1));
+        let held = player.client().world().grids().get(rig.ship).unwrap();
+        assert_eq!(held.far, Some(corners_bounds()));
+        assert!(rig.server.world().grids().get(rig.ship).is_none());
     }
 }

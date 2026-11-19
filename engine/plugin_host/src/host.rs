@@ -8,7 +8,8 @@ use protocol::{ClientId, Message, Tick};
 use server::{Audience, CommandLine, GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
-use world_storage::{Section, WorldData};
+use world_storage::far_nodes::FarFileName;
+use world_storage::{FarFileMaker, SavedShip, Section, ShipFormat, WorldData};
 
 use entities::EntityCatalog;
 
@@ -555,6 +556,22 @@ impl GameLogic for PluginHost {
         }
         queue.delivered = 0;
         queue.halted = false;
+    }
+
+    /// What makes the far files the plugins keep for the ships a save writes the files of, in the order of the files' names: none if no plugin keeps any.
+    fn far_file_maker(&self) -> Option<FarFileMaker> {
+        if self.registry.far_file_savers.is_empty() {
+            return None;
+        }
+        let savers = Arc::clone(&self.registry.far_file_savers);
+        Some(Arc::new(move |ships: &[SavedShip], format: &ShipFormat| {
+            let mut files: Vec<(FarFileName, Vec<u8>)> = savers
+                .iter()
+                .flat_map(|saver| saver(ships, format))
+                .collect();
+            files.sort_by_key(|(name, _)| (name.grid, name.serial));
+            files
+        }))
     }
 
     /// What the plugins save, in the order of the sections' identifiers: the bytes of a saved world must

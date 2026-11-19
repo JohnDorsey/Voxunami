@@ -117,7 +117,10 @@ fn a_world_with_ships_is_a_world_file_and_a_file_for_each_ship_that_the_world_fi
 ///
 /// Moved on purpose again (the position offset is `f64`, 2026-11-02): 1_744_918_755_505_601_542 before, 34,580 bytes, now 34,604: 24 more, which is the offsets of the two poses in the ships
 /// section (3 x 4 bytes more each) and nothing else; the checksums of the ship files in the section changed with the files. The poses version is 4.
-const PINNED_WORLD: u64 = 14_058_630_622_722_535_491;
+///
+/// Moved on purpose again (the box of a ship's own bricks is in the ships section, 2026-11-18): 14_058_630_622_722_535_491 before, now 34,621 bytes: the fourth flag of each of the
+/// two ships and its box. Proved by writing the sections without the box, which gives the old hash back. A world file from before reads as it is: a ship with no box.
+const PINNED_WORLD: u64 = 8_558_503_050_747_720_060;
 
 #[test]
 fn a_world_loaded_has_its_ships_in_their_files_and_asks_for_them_one_by_one_as_they_were() {
@@ -141,6 +144,8 @@ fn a_world_loaded_has_its_ships_in_their_files_and_asks_for_them_one_by_one_as_t
         assert_eq!(parked.level, ship.level);
         assert_eq!(parked.pose, ship.pose);
         assert_eq!(parked.bounds, ship.world_brick_bounds());
+        assert!(ship.own_brick_box().is_some());
+        assert_eq!(parked.extent, ship.own_brick_box());
         assert_eq!(parked.file, name(id, serial));
         assert!(loaded.grids().knows(id));
         assert_eq!(loaded.grids().frame_of(id), Some((ship.level, ship.pose)));
@@ -785,6 +790,7 @@ fn sample_record() -> GridsRecord {
             .sample_ship(&Game::new(&ALL_PLUGINS).new_world(), 0)
             .pose,
         bounds,
+        extent: bounds,
         serial: 17,
         checksum: 0xdead_beef,
         waits_for_those_aboard: raw.is_multiple_of(2),
@@ -970,6 +976,7 @@ proptest! {
                 level: main_level_id(),
                 pose,
                 bounds: None,
+                extent: None,
                 serial,
                 checksum,
                 waits_for_those_aboard: waits,
@@ -997,6 +1004,7 @@ fn a_parked_record_is_what_a_world_needs_to_find_a_ship_without_its_file() {
         level: ship.level,
         pose: ship.pose,
         bounds: ship.world_brick_bounds(),
+        extent: ship.own_brick_box(),
         file: name(first, 1),
         checksum: 0,
         waits_for_those_aboard: false,
@@ -1022,6 +1030,7 @@ fn the_flags_of_a_ship_in_the_world_file_are_one_byte_of_three_bits_the_old_flag
             level: main_level_id(),
             pose: sample_record().ships[0].pose,
             bounds: None,
+            extent: None,
             serial: 3,
             checksum: 7,
             waits_for_those_aboard: waits,
@@ -1057,7 +1066,7 @@ fn the_flags_of_a_ship_in_the_world_file_are_one_byte_of_three_bits_the_old_flag
     // A byte with another bit set is refused.
     let mut bytes = encode_grids(&record(true, true, true));
     let at = bytes.len() - 2;
-    bytes[at] = 8;
+    bytes[at] = 0x10;
     assert!(decode_grids(&bytes).is_err());
     bytes[at] = 0xFF;
     assert!(decode_grids(&bytes).is_err());
@@ -1082,4 +1091,65 @@ fn a_ship_put_away_on_a_rail_is_a_parked_ship_on_a_rail_and_one_that_was_not_is_
     });
     world.park_ship(second, false, &mut files, &format).unwrap();
     assert!(world.grids().get_parked(second).unwrap().on_a_rail);
+}
+
+#[test]
+fn a_ship_put_away_keeps_the_box_of_its_own_bricks_and_the_world_file_says_it_and_a_file_from_before_says_none()
+ {
+    let game = Game::new(&ALL_PLUGINS);
+    let (mut world, first, _) = world_with_ships(&game);
+    let own = world.grids().get(first).unwrap().own_brick_box();
+    assert!(own.is_some());
+    let format = game.ship_format(&world);
+    let mut files = MemoryShipFiles::new();
+    assert_eq!(world.grids().own_brick_box_of(first), own);
+    world.park_ship(first, false, &mut files, &format).unwrap();
+    assert_eq!(world.grids().get_parked(first).unwrap().extent, own);
+    // (The same is asked of a ship in memory and of one in a file; one that is not known has none.)
+    assert_eq!(world.grids().own_brick_box_of(first), own);
+    assert_eq!(world.grids().own_brick_box_of(GridId::new(FIRST + 7)), None);
+    // The world file says it (for the ship in a file and the ship in memory alike), and a world loaded from it has it.
+    let save = game.save_with_ships(&mut world);
+    let records = grids_of(&save.world).ships;
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| record.extent.is_some()));
+    assert_eq!(records[0].extent, own);
+    let mut other = Game::new(&ALL_PLUGINS);
+    let (loaded, _) = other.load(&save.world).unwrap();
+    assert_eq!(loaded.grids().get_parked(first).unwrap().extent, own);
+}
+
+#[test]
+fn the_box_of_a_ships_own_bricks_is_a_flag_and_a_box_after_the_flags_and_a_ship_without_it_is_written_as_it_was()
+ {
+    let record = |extent| GridsRecord {
+        next: FIRST + 2,
+        next_serial: 5,
+        ships: vec![GridRecord {
+            id: GridId::new(FIRST),
+            level: main_level_id(),
+            pose: sample_record().ships[0].pose,
+            bounds: None,
+            extent,
+            serial: 3,
+            checksum: 7,
+            waits_for_those_aboard: false,
+            has_terrain: false,
+            on_a_rail: false,
+        }],
+        tombstones: Vec::new(),
+        couplings: Vec::new(),
+    };
+    let without = encode_grids(&record(None));
+    let bounds = voxel_space::BrickBox::new(
+        BrickCoordinate::new(-2, 0, 1),
+        BrickCoordinate::new(3, 4, 5),
+    );
+    let with = encode_grids(&record(bounds));
+    assert_eq!(decode_grids(&without).unwrap(), record(None));
+    assert_eq!(decode_grids(&with).unwrap(), record(bounds));
+    // Without it the ship is what it was: the flags byte is 0 and nothing follows it; with it the byte has the fourth bit, and the box is before what follows.
+    assert_eq!(without[without.len() - 2], 0);
+    assert!(with.len() > without.len());
+    assert_eq!(with[with.len() - 2 - (with.len() - without.len())], 8);
 }

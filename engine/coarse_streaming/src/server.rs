@@ -35,7 +35,7 @@ use voxel_space::{
 #[cfg(test)]
 use world_storage::BrickSource;
 use world_storage::far_nodes::{FarFileName, FarNodes, FarNodesRead, read_far_nodes};
-use world_storage::{LevelData, WorldData};
+use world_storage::{LevelData, SavedShip, ShipFormat, WorldData};
 
 use crate::messages::{CoarseNodeUpdate, CoarseNodes, MAXIMUM_UPDATES, SetDetail};
 
@@ -705,6 +705,35 @@ impl State {
         }
     }
 
+    /// The far files of the ships a save makes files of (see [`Registrar::save_far_files`]): the nodes kept for each plain ship, named for its new file and with its checksum, so
+    /// that the world has them when it starts again, when every ship is in its file. **Only nodes that are known to be of what the file holds** (as at [`State::put_away`]): a ship
+    /// with nodes still to be made has none written, and a ship with no nodes has none. A planet has none (its generator makes
+    /// its nodes).
+    fn far_files_for_save(
+        &self,
+        config: &CoarseConfig,
+        ships: &[SavedShip],
+        format: &ShipFormat,
+    ) -> Vec<(FarFileName, Vec<u8>)> {
+        ships
+            .iter()
+            .filter(|ship| !ship.has_terrain)
+            .filter(|ship| !self.waits_for_a_node_of(ship.grid))
+            .filter_map(|ship| {
+                let nodes = self.far_nodes_of(ship.grid);
+                if nodes.is_empty() {
+                    return None;
+                }
+                let bytes = nodes
+                    .encode(ship.checksum, |number| {
+                        format.content_identifier(config.block_channel, number)
+                    })
+                    .ok()?;
+                Some((FarFileName::of(&ship.file), bytes))
+            })
+            .collect()
+    }
+
     /// Keeps the nodes that the files of the ships that are in files hold, so that a ship that is not in memory has its far view. Done once, in the first tick (the
     /// files are the server's, which the plugin cannot see when it is registered). A file that is missing, damaged or of another state of the ship gives nothing.
     fn read_far_nodes_of_ships_in_files(&mut self, config: &CoarseConfig, world: &mut ServerWorld) {
@@ -1068,8 +1097,10 @@ fn far_viewer_bricks(
 ) -> Vec<(GridId, BrickCoordinate)> {
     far.iter()
         .filter_map(|&grid| {
-            let ship = data.grids().get(grid).filter(|ship| ship.level == level)?;
-            Some((grid, ship.pose.world_to_local(position)?.brick()))
+            // (A ship in a file has its place in the world file, which is all that is wanted of it.)
+            let (ship_level, pose) = data.grids().frame_of(grid)?;
+            (ship_level == level).then_some(())?;
+            Some((grid, pose.world_to_local(position)?.brick()))
         })
         .collect()
 }
@@ -1109,12 +1140,7 @@ fn select_far_empties(
     brick: BrickCoordinate,
     detail: &SetDetail,
 ) -> Vec<(GridId, BrickCube)> {
-    let Some(bounds) = data
-        .grids()
-        .get(grid)
-        .and_then(|ship| ship.brick_extent())
-        .and_then(|(low, high)| BrickBox::new(low, high))
-    else {
+    let Some(bounds) = data.grids().own_brick_box_of(grid) else {
         return Vec::new();
     };
     let view = ViewSelection {
@@ -1359,6 +1385,12 @@ impl Plugin for CoarseServerPlugin {
                 locked(&parking).put_away(&parking_config, context.world(), event.grid);
             },
         );
+
+        let saving = Arc::clone(&self.state);
+        let saving_config = Arc::clone(&self.config);
+        registrar.save_far_files(move |ships, format| {
+            locked(&saving).far_files_for_save(&saving_config, ships, format)
+        });
 
         let working = Arc::clone(&self.state);
         registrar.system(
