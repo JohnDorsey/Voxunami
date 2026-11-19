@@ -147,38 +147,28 @@ fn a_chain_swings_on_its_rail_for_a_simulated_hour_and_its_centre_of_mass_stays_
 }
 
 #[test]
-fn a_push_takes_a_riding_chain_off_its_rail_and_left_alone_again_it_is_put_on_another() {
+fn a_push_leaves_a_riding_chain_on_its_rail_and_the_rail_is_another_the_orbit_of_what_it_is_now() {
     let (mut scene, report, ships, _speed) = a_chain_left_alone();
     scene.ticks(30);
     let first = rail_of(&scene, ships[0]).expect("on a rail");
-    // A force on the middle car for a tick: the rail comes off the anchor in that tick.
+    // A force on the middle car for a tick: the rail is made again at the end of that tick (step 4c-5-4b), through the place the chain has with the speed that the push gives it.
     let middle = ships[1];
     scene.run(move |world| {
         world
             .apply_grid_force(middle, [0.0, 60_000.0, 0.0], None)
             .unwrap()
     });
-    assert_eq!(rail_of(&scene, ships[0]), None);
-    // It is a chain still, and in the second that it is left alone it is on a rail again: another, the orbit of what it is now.
-    let mut worst_gap: f64 = 0.0;
-    let mut second = None;
-    for tick in 1..=40 {
-        scene.ticks(1);
-        worst_gap = worst_gap.max(gaps(&scene, &ships));
-        if second.is_none() && rail_of(&scene, ships[0]).is_some() {
-            second = Some(tick);
-        }
-    }
-    let second = second.expect("it was put on a rail again");
-    assert!((19..=22).contains(&second), "after {second} ticks");
-    assert!(worst_gap < 0.05, "the joints held: {worst_gap} m");
-    let rail = rail_of(&scene, ships[0]).unwrap();
+    let rail = rail_of(&scene, ships[0]).expect("still on a rail");
     assert_ne!(
         rail, first,
         "and the orbit is not the one it had: the push changed it"
     );
-    for _ in 0..100 {
+    // It is a chain still, and rides the new rail, which no second of being left alone has to make: it is not made again.
+    let mut worst_gap: f64 = 0.0;
+    for _ in 0..140 {
         scene.ticks(1);
+        worst_gap = worst_gap.max(gaps(&scene, &ships));
+        assert_eq!(rail_of(&scene, ships[0]), Some(rail.clone()));
         close(
             centre_of(&scene, &ships).0,
             rail_point(&scene, &rail).0,
@@ -186,6 +176,7 @@ fn a_push_takes_a_riding_chain_off_its_rail_and_left_alone_again_it_is_put_on_an
             "it rides the new rail",
         );
     }
+    assert!(worst_gap < 0.05, "the joints held: {worst_gap} m");
     assert_eq!(report().couplings, 2);
 }
 

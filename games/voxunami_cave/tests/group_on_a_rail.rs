@@ -12,8 +12,8 @@ mod common;
 
 use common::chains::{
     Setting, TICKS_PER_SECOND, Vec3, a_chain, a_chain_in_orbit, a_swing, alike_in_turn, centre_of,
-    close, has_swung, how_the_chain_turns, mass_of, minus, most_apart, orientation_of, origins_of,
-    pivot_gap, put_on_its_rail, rail_point, rail_point_in, spin_of,
+    close, has_swung, how_the_chain_goes_when_pushed, how_the_chain_turns, mass_of, minus,
+    most_apart, orientation_of, origins_of, pivot_gap, put_on_its_rail, rail_point, spin_of,
 };
 use common::docking::stone;
 use common::{Player, Scene, circular_speed, length, ship_id, tick_and_follow};
@@ -94,7 +94,8 @@ fn what_a_mechanism_does_does_not_depend_on_where_the_group_is_or_how_fast_it_go
 }
 
 #[test]
-fn a_push_on_a_car_takes_the_group_off_its_rail_and_it_goes_on_from_where_it_was_with_the_push() {
+fn a_push_on_a_car_leaves_the_group_on_a_rail_that_goes_as_the_push_over_the_mass_of_all_the_cars_says_and_it_goes_on_as_a_chain()
+ {
     let (mut scene, report) = Scene::reporting_in_a_new_world();
     let distance = 70_016.0;
     let speed = circular_speed(&scene, 0, distance);
@@ -105,37 +106,80 @@ fn a_push_on_a_car_takes_the_group_off_its_rail_and_it_goes_on_from_where_it_was
         scene.rig.server.world().grids().get(ships[0]).unwrap().rail,
         Some(rail.clone())
     );
-    // A force on the middle car for a tick: 60,000 kilogram voxels a second a second on a chain of about 16,000 kilograms is 0.19 metres a second more, in a tick, and the
-    // rail comes off the anchor in the tick it is asked.
+    // A force on the middle car for a tick: 60,000 kilogram voxels a second a second on a chain of about 16,000 kilograms is 0.19 metres a second more, in a tick (step 4c-5-4b: the
+    // rail is made again at the end of it, through the place the group has with the speed changed by the push over the mass of all the cars).
     let force = [0.0, 60_000.0, 0.0];
     let mass = mass_of(&scene, &ships);
     let middle = ships[1];
     scene.run(move |world| world.apply_grid_force(middle, force, None).unwrap());
-    assert_eq!(
-        scene.rig.server.world().grids().get(ships[0]).unwrap().rail,
-        None
-    );
+    let pushed = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ships[0])
+        .unwrap()
+        .rail
+        .clone()
+        .expect("the group is on a rail still");
+    assert_ne!(pushed, rail, "and it is another: the push changed it");
     let (_, going) = centre_of(&scene, &ships);
-    // (A ship that comes off its rail in a tick has been put where the rail says at the end of it, as every ship on a rail is at the beginning of a tick, and is moved by the
-    // bodies for the tick: it is a tick ahead of the rail, as a single ship that is pushed off its rail is. So it is compared with the rail a tick on.)
-    let (_, on_the_rail) = rail_point_in(&scene, &rail, 1);
-    let pushed = minus(going, on_the_rail);
+    let (_, on_the_old_rail) = rail_point(&scene, &rail);
     close(
-        pushed,
+        minus(going, on_the_old_rail),
         [0.0, force[1] / f64::from(TICKS_PER_SECOND) / mass, 0.0],
-        5e-3,
-        "the group goes as the rail does, and a tick of the push faster",
+        1e-8,
+        "the group goes as the rail it had does, and a tick of the push faster, to the last digits (it is the rail that has the push)",
     );
-    // It goes on as a chain: coupled still, its joints holding.
+    // It goes on as a chain on its new rail: coupled still, its joints holding, its centre of mass on the rail.
     let mut worst_gap: f64 = 0.0;
     for _ in 0..40 {
         scene.ticks(1);
         worst_gap = worst_gap
             .max(pivot_gap(&scene, (ships[0], 7.0), ships[1]))
             .max(pivot_gap(&scene, (ships[1], 6.0), ships[2]));
+        close(
+            centre_of(&scene, &ships).0,
+            rail_point(&scene, &pushed).0,
+            1e-6,
+            "the centre of mass is on the rail that the push made",
+        );
+        assert_eq!(
+            scene.rig.server.world().grids().get(ships[0]).unwrap().rail,
+            Some(pushed.clone()),
+            "and the rail is not made again"
+        );
     }
     assert!(worst_gap < 0.05, "the joints hold: {worst_gap} m");
     assert_eq!(report().couplings, 2);
+}
+
+#[test]
+fn a_push_on_a_car_swings_the_chain_on_a_rail_as_it_swings_one_that_is_free() {
+    // **What the group does is the bodies' whether it rides a rail or not** (promise (a) of the joint plan), a push too: the push is on the car's body in both, and what it does to the
+    // centre of mass is the rail's on a rail and the chain's own when it is free. So the facing and the turn of each car, and how the cars stand about their centre of mass, are the same
+    // 70 ticks after a push on the middle car (that has swung the chain: the control below).
+    let push = [0.0, 60_000.0, 0.0];
+    let on_a_rail = how_the_chain_goes_when_pushed(70_016.0, Setting::OnARail, 30, 1, push, 70);
+    let free = how_the_chain_goes_when_pushed(70_016.0, Setting::Alone, 30, 1, push, 70);
+    let unpushed = how_the_chain_goes_when_pushed(70_016.0, Setting::OnARail, 30, 1, [0.0; 3], 70);
+    let turns_apart = most_apart(&on_a_rail.turns, &free.turns);
+    let standing_apart = on_a_rail
+        .standing
+        .iter()
+        .zip(&free.standing)
+        .map(|(one, other)| length(minus(*one, *other)))
+        .fold(0.0, f64::max);
+    // (Measured, 2026-11-19: 3.5e-14 in the turns and 1.2e-13 in the standing: the same bodies in the same kind of frame.)
+    assert!(
+        turns_apart < 1e-9 && standing_apart < 1e-9,
+        "on a rail and free the chain went on alike: its turns differ by {turns_apart}, its standing by {standing_apart}"
+    );
+    // (The push did something to the chain: it is not the chain that was not pushed.)
+    assert!(
+        most_apart(&on_a_rail.turns, &unpushed.turns) > 1e-3,
+        "the push changed how the chain swings"
+    );
 }
 
 #[test]

@@ -56,14 +56,19 @@ fn rail_of_the_group(world: &ServerWorld, planet: GridId, members: &[GridId]) ->
 /// Three ships in a row along z, 20 voxels apart, going round the planet, coupled one to the next, each weighed differently and each moving a little against the others and
 /// turning, with the rail of their centre of mass on the first. The planet, the ships and the rail.
 fn a_group_on_a_rail() -> (ServerWorld, GridId, [GridId; 3], Rail) {
+    a_group_on_a_rail_weighing([1000.0, 3000.0, 2000.0])
+}
+
+/// As [`a_group_on_a_rail`], the ships weighing what is said.
+fn a_group_on_a_rail_weighing(masses: [f64; 3]) -> (ServerWorld, GridId, [GridId; 3], Rail) {
     let (mut world, planet) = space();
     let speed = circular_speed();
     let ships = [0.0, 20.0, 40.0]
         .map(|along| ship_at(&mut world, [DISTANCE, 0.0, along], [0.0, 0.0, speed]));
     let weights = [
-        (1000.0, [2.0, 0.0, 0.0]),
-        (3000.0, [0.0, 1.0, 0.0]),
-        (2000.0, [1.0, 1.0, 1.0]),
+        (masses[0], [2.0, 0.0, 0.0]),
+        (masses[1], [0.0, 1.0, 0.0]),
+        (masses[2], [1.0, 1.0, 1.0]),
     ];
     for (ship, (mass, middle)) in ships.iter().zip(weights) {
         world.set_grid_mass(*ship, mass, middle).unwrap();
@@ -366,14 +371,9 @@ fn a_planet_near_a_group_on_a_rail_takes_it_off_as_it_does_a_ship() {
 #[test]
 fn anything_done_to_a_ship_of_a_group_takes_the_rail_from_its_anchor_and_leaves_the_rail_of_another_ship()
  {
+    // (A force and a torque are not among them: a push on a ship of a group that rides a rail is the rail's for the centre of mass and the bodies' for the turn, step 4c-5-4b, below.)
     type Operation = fn(&mut ServerWorld, GridId);
-    let operations: [(&str, Operation); 5] = [
-        ("a force", |world, ship| {
-            world.apply_grid_force(ship, [1.0; 3], None).unwrap()
-        }),
-        ("a torque", |world, ship| {
-            world.apply_grid_torque(ship, [1.0; 3]).unwrap()
-        }),
+    let operations: [(&str, Operation); 3] = [
         ("a move", |world, ship| {
             let pose = world.data().grids().get(ship).unwrap().pose;
             world.set_grid_pose(ship, pose).unwrap();
@@ -979,4 +979,237 @@ fn a_group_on_a_rail_answers_a_change_of_the_mass_of_its_planet_from_its_centre_
     for ship in &ships[1..] {
         assert_eq!(rail_of(&world, *ship), None);
     }
+}
+
+// ---- Step 4c-5-4b for a group: a push on a ship of a group that rides a rail does not take the rail. The force on the whole group is the rail's (the centre of mass changes its speed
+// by the force over the mass of all the ships); the bodies have the force too, for the turn and the swing of the joints, and hold the centre of mass at the rail's point whatever it did
+// to it. A torque is the bodies' alone. ----
+
+/// What the three ships of the fixture weigh together.
+const GROUP_MASS: f64 = 1000.0 + 3000.0 + 2000.0;
+
+/// Where the planet is, which the rails of the fixture go round.
+fn planet_at(world: &ServerWorld, planet: GridId) -> [f64; 3] {
+    world
+        .data()
+        .grids()
+        .get(planet)
+        .unwrap()
+        .pose
+        .position
+        .in_voxels()
+}
+
+/// The place and the speed that a rail says at a tick, from the planet.
+fn rail_says(rail: &Rail, tick: u64, planet: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let state = rail.state(time(tick), planet, [0.0; 3]);
+    (state.position.unwrap(), state.velocity)
+}
+
+#[test]
+fn a_force_on_a_ship_of_a_group_on_a_rail_makes_its_rail_again_with_the_speed_changed_by_the_force_over_the_mass_of_all_the_ships_and_the_bodies_have_it_too()
+ {
+    for target in [1, 2, 0] {
+        let (mut world, planet, ships, rail) = a_group_on_a_rail();
+        let at = planet_at(&world, planet);
+        let force = [0.0, 3.0e3, 5.0e3];
+        world.apply_grid_force(ships[target], force, None).unwrap();
+        server_tick(&mut world, 1);
+        let after = rail_of(&world, ships[0]).expect("the group is still on a rail");
+        assert_ne!(after, rail, "ship {target}: the rail is another");
+        assert_eq!(
+            after.orbit.as_ref().unwrap().since,
+            Some(time(1)),
+            "ship {target}: made at the end of the tick of the push"
+        );
+        let ((place, speed), (place_after, speed_after)) =
+            (rail_says(&rail, 1, at), rail_says(&after, 1, at));
+        let change = force.map(|part| part / GROUP_MASS / f64::from(TICKS));
+        close(
+            place_after,
+            place,
+            1e-9,
+            "the rail goes through the place it had",
+        );
+        close(
+            [0, 1, 2].map(|axis| speed_after[axis] - speed[axis]),
+            change,
+            1e-9,
+            &format!(
+                "ship {target}: the speed is the force over the mass of all the ships, for a tick"
+            ),
+        );
+        close(
+            centre_of(&world, &ships).1,
+            speed_after,
+            1e-9,
+            "and the group goes as the new rail does",
+        );
+        assert_eq!(
+            world.take_grid_forces(),
+            [GridForce {
+                grid: ships[target],
+                force,
+                at: None
+            }],
+            "ship {target}: the bodies are asked for the force too (they hold the centre of mass at the rail's point, and have the turn)"
+        );
+        for other in ships.iter().skip(1) {
+            assert_eq!(
+                rail_of(&world, *other),
+                None,
+                "a rail is the anchor's alone"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_forces_asked_of_the_ships_of_a_group_on_a_rail_in_a_tick_are_one_push_their_sum() {
+    let (mut one_world, _, one, _) = a_group_on_a_rail();
+    let (mut two_world, _, two, _) = a_group_on_a_rail();
+    one_world
+        .apply_grid_force(one[1], [1.0e3, -2.0e3, 5.0e3], None)
+        .unwrap();
+    two_world
+        .apply_grid_force(two[0], [4.0e2, 0.0, 2.0e3], None)
+        .unwrap();
+    two_world
+        .apply_grid_force(two[2], [6.0e2, -2.0e3, 3.0e3], Some([1.0, 2.0, 3.0]))
+        .unwrap();
+    server_tick(&mut one_world, 1);
+    server_tick(&mut two_world, 1);
+    let (together, apart) = (
+        rail_of(&one_world, one[0]).unwrap(),
+        rail_of(&two_world, two[0]).unwrap(),
+    );
+    let at = [0.0; 3];
+    let ((place_together, speed_together), (place_apart, speed_apart)) =
+        (rail_says(&together, 1, at), rail_says(&apart, 1, at));
+    close(place_together, place_apart, 1e-9, "the same place");
+    close(speed_together, speed_apart, 1e-9, "and the same speed");
+}
+
+#[test]
+fn a_torque_on_a_ship_of_a_group_on_a_rail_leaves_the_rail_as_it_was_and_is_the_bodies() {
+    for target in [1, 2, 0] {
+        let (mut world, _, ships, rail) = a_group_on_a_rail();
+        let torque = [0.0, 30.0, 1.0];
+        world.apply_grid_torque(ships[target], torque).unwrap();
+        server_tick(&mut world, 1);
+        assert_eq!(
+            rail_of(&world, ships[0]),
+            Some(rail),
+            "ship {target}: the rail is what it was"
+        );
+        assert_eq!(
+            world.take_grid_torques(),
+            [GridTorque {
+                grid: ships[target],
+                torque
+            }],
+            "ship {target}"
+        );
+        assert_eq!(world.take_grid_forces(), []);
+    }
+}
+
+#[test]
+fn a_group_that_has_lost_its_rail_by_the_end_of_the_tick_is_not_given_the_force_a_second_time() {
+    // The bodies were asked for the force when it was asked of the world, and they go on without the rail from there: the end of the tick has nothing to add to what they have.
+    let (mut world, _, ships, _) = a_group_on_a_rail();
+    let force = [0.0, 3.0e3, 5.0e3];
+    world.apply_grid_force(ships[1], force, None).unwrap();
+    // (Something else takes the rail in the same tick.)
+    world.set_grid_held(ships[2], true).unwrap();
+    assert_eq!(rail_of(&world, ships[0]), None);
+    server_tick(&mut world, 1);
+    assert_eq!(rail_of(&world, ships[0]), None);
+    assert_eq!(
+        world.take_grid_forces(),
+        [GridForce {
+            grid: ships[1],
+            force,
+            at: None
+        }],
+        "once"
+    );
+}
+
+#[test]
+fn a_force_on_a_group_that_has_a_ship_that_weighs_nothing_takes_its_rail_as_it_did() {
+    // (The mass of the whole is not known: the centre of mass is of the ships that weigh something, and what the force does to it is not the force over their mass.)
+    let (mut world, _, ships, rail) = a_group_on_a_rail_weighing([1000.0, 3000.0, 0.0]);
+    assert_eq!(rail_of(&world, ships[0]), Some(rail));
+    world
+        .apply_grid_force(ships[1], [0.0, 3.0e3, 5.0e3], None)
+        .unwrap();
+    assert_eq!(rail_of(&world, ships[0]), None);
+    server_tick(&mut world, 1);
+    assert_eq!(world.take_grid_forces().len(), 1, "and the bodies have it");
+}
+
+#[test]
+fn a_force_on_a_group_whose_planet_is_gone_takes_its_rail_as_it_did_and_the_bodies_have_it_once() {
+    // (No orbit is made through a planet that is not there: the rail goes and the bodies have the force, as they did before a group's rail could be pushed.)
+    let (mut world, planet, ships, rail) = a_group_on_a_rail();
+    assert_eq!(rail_of(&world, ships[0]), Some(rail));
+    world.remove_grid(planet);
+    let force = [0.0, 3.0e3, 5.0e3];
+    world.apply_grid_force(ships[1], force, None).unwrap();
+    assert_eq!(rail_of(&world, ships[0]), None);
+    server_tick(&mut world, 1);
+    assert_eq!(
+        world.take_grid_forces(),
+        [GridForce {
+            grid: ships[1],
+            force,
+            at: None
+        }],
+        "once"
+    );
+}
+
+#[test]
+fn a_ship_pushed_alone_and_then_coupled_into_a_group_on_a_rail_in_one_tick_is_given_only_the_force_that_the_bodies_have_not_had()
+ {
+    // The rail forces of one rail are one push, but the bodies were given what was asked of a ship of a group at once and what was asked of a ship alone not at all: when the rail cannot
+    // be made, the bodies are owed the second kind only.
+    let (mut world, planet) = space();
+    let speed = circular_speed();
+    let ships = [0.0, 20.0, 40.0]
+        .map(|along| ship_at(&mut world, [DISTANCE, 0.0, along], [0.0, 0.0, speed]));
+    for ship in &ships {
+        world.set_grid_mass(*ship, 1000.0, [0.0; 3]).unwrap();
+    }
+    let alone = rail_of_the_group(&world, planet, &ships[..1]);
+    world.set_grid_rail(ships[0], Some(alone)).unwrap();
+    let (first, second) = ([0.0, 1.0e3, 0.0], [0.0, 0.0, 2.0e3]);
+    world.apply_grid_force(ships[0], first, None).unwrap();
+    // It is coupled to the second ship, which takes its rail; the pair is put on one, and a push on the second is the group's.
+    world.set_ships_coupled(ships[0], ships[1], true);
+    let together = rail_of_the_group(&world, planet, &ships[..2]);
+    world.set_grid_rail(ships[0], Some(together)).unwrap();
+    world.apply_grid_force(ships[1], second, None).unwrap();
+    assert_eq!(world.rides_a_rail_in_a_group(ships[1]), Some(ships[0]));
+    // The planet is gone before the tick ends: no rail is made.
+    world.remove_grid(planet);
+    server_tick(&mut world, 1);
+    assert_eq!(rail_of(&world, ships[0]), None);
+    assert_eq!(
+        world.take_grid_forces(),
+        [
+            GridForce {
+                grid: ships[1],
+                force: second,
+                at: None
+            },
+            GridForce {
+                grid: ships[0],
+                force: first,
+                at: None
+            }
+        ],
+        "the second was given when it was asked, and the first, which was the rail's, is given now: each once"
+    );
 }

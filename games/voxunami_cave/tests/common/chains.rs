@@ -431,6 +431,50 @@ pub fn how_the_chain_turns_going(
         .collect()
 }
 
+/// What a chain that is pushed is, `ticks` after the push: the facing and the turn of each car, and where its origin is from the centre of mass of the cars (which a push moves, and
+/// the mechanism does not follow).
+pub struct PushedChain {
+    pub turns: Vec<(Orientation, Vec3)>,
+    pub standing: Vec<Vec3>,
+}
+
+/// A chain of three cars, set swinging as `a_swing` says at this distance from the planet going round it, in this setting (not `WithAStranger`), left to swing for `before` ticks,
+/// then pushed by a force of `force` on the car `car` (0 to 2), at its centre of mass, for one tick, and followed for `after` ticks more.
+pub fn how_the_chain_goes_when_pushed(
+    distance: f64,
+    setting: Setting,
+    before: u32,
+    car: usize,
+    force: Vec3,
+    after: u32,
+) -> PushedChain {
+    let planet_speed = {
+        let scene = Scene::in_a_new_world();
+        super::circular_speed(&scene, 0, distance)
+    };
+    let (mut scene, ships) = a_swinging_chain_at(distance, planet_speed, false);
+    if setting == Setting::OnARail {
+        put_on_its_rail(&mut scene, &ships, planet_speed, a_swing());
+    } else {
+        set_going(&mut scene, &ships, planet_speed, a_swing());
+    }
+    scene.ticks(before as usize);
+    let pushed = ships[car];
+    scene.run(move |world| world.apply_grid_force(pushed, force, None).unwrap());
+    scene.ticks(after as usize);
+    let (centre, _) = centre_of(&scene, &ships);
+    PushedChain {
+        turns: ships
+            .iter()
+            .map(|ship| (orientation_of(&scene, *ship), spin_of(&scene, *ship)))
+            .collect(),
+        standing: origins_of(&scene, &ships)
+            .into_iter()
+            .map(|origin| minus(origin, centre))
+            .collect(),
+    }
+}
+
 /// Whether a chain, as `how_the_chain_turns` leaves it, has swung: some car faces more than a fifth of a radian from where it began (the cars begin facing one way; the w of a
 /// facing is the cosine of half the turn from that). The control of the tests that two chains agree: two chains that did not move would agree for nothing. (It was that some car
 /// was still turning at over 0.05 radians a second at the end, until step 4c-5-A: the solver's passes make the impact at the 130th tick, where the swing turns back, lose more of the

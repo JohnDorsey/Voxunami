@@ -211,8 +211,9 @@ pub struct ServerWorld {
     grid_forces: Vec<GridForce>,
     grid_torques: Vec<GridTorque>,
     /// The forces asked of ships that ride a rail alone, at their centres of mass (what is off the centre is a torque, in `grid_torques`): not for the bodies, for the rail, which
-    /// is kicked by them in `update_coasting` (step 4c-5-4b of `docs/decisions/joints-and-cars.md`).
-    rail_forces: Vec<(GridId, [f64; 3])>,
+    /// is kicked by them in `update_coasting` (step 4c-5-4b of `docs/decisions/joints-and-cars.md`). **Or of a ship of a group that rides a rail**: the key is then the group's anchor, which
+    /// holds the rail, and the force is also in `grid_forces` (`true`: the bodies have been given it, whatever the rail does with it).
+    rail_forces: Vec<(GridId, [f64; 3], bool)>,
     gravity: GravitySettings,
     /// The pull of the levels whose own is not `gravity.base`.
     level_gravity: BTreeMap<LevelIndex, [f64; 3]>,
@@ -1160,8 +1161,11 @@ impl ServerWorld {
     ///
     /// **A ship that rides a rail alone is not taken off it** (step 4c-5-4b of `docs/decisions/joints-and-cars.md`): the force is split. What it does to the centre of mass is the rail's
     /// (the rail is made again at the end of the tick with the speed changed by the force over the mass and the tick, see `ServerWorld::update_coasting`), and what it does by its
-    /// lever, the torque of the force about the centre of mass, is the bodies', as a torque asked of the ship is. A ship in a group, and a ship that is on no rail, is disturbed as it was:
-    /// it comes off its rail where it is, and the bodies have the force.
+    /// lever, the torque of the force about the centre of mass, is the bodies', as a torque asked of the ship is. **Nor is a ship of a group that rides a rail** (see
+    /// [`ServerWorld::rides_a_rail_in_a_group`]): the rail is the centre of mass of all the ships, so the force on the group is the rail's, over the mass of all of them, and the bodies have
+    /// the force as well, because the turn of the group about its centre and the swing of its joints are theirs (they hold the centre of mass at the rail's point, so what the force does to
+    /// it in their world is not kept). A ship that is on no rail, a group of which a ship weighs nothing, and anything else is disturbed as it was: it comes off its rail where it is, and
+    /// the bodies have the force.
     pub fn apply_grid_force(
         &mut self,
         grid: GridId,
@@ -1176,7 +1180,12 @@ impl ServerWorld {
             if let Some(torque) = at.and_then(|at| self.torque_of_a_force_at(grid, force, at)) {
                 self.grid_torques.push(GridTorque { grid, torque });
             }
-            self.rail_forces.push((grid, force));
+            self.rail_forces.push((grid, force, false));
+            return Ok(());
+        }
+        if let Some(anchor) = self.rides_a_rail_in_a_group(grid) {
+            self.rail_forces.push((anchor, force, true));
+            self.grid_forces.push(GridForce { grid, force, at });
             return Ok(());
         }
         self.disturb(grid);
@@ -1186,13 +1195,14 @@ impl ServerWorld {
 
     /// Turns a ship with a torque (kilograms times voxels squared per second per second, an axis in the world's directions) about its centre of
     /// mass, for the next step of the bodies only. A torque does not push the ship's centre, so **a ship that rides a rail alone keeps it** (the bodies give it a frame of its own
-    /// while the torque waits, see [`ServerWorld::has_a_torque_waiting`]); any other ship is disturbed as it was.
+    /// while the torque waits, see [`ServerWorld::has_a_torque_waiting`]), **and so does a ship of a group that rides a rail** (its bodies are in a frame of their own already, and
+    /// turn the ship and what is coupled to it); any other ship is disturbed as it was.
     pub fn apply_grid_torque(&mut self, grid: GridId, torque: [f64; 3]) -> Result<(), AccessError> {
         self.data
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
-        if !self.rides_a_rail_alone(grid) {
+        if !self.rides_a_rail_alone(grid) && self.rides_a_rail_in_a_group(grid).is_none() {
             self.disturb(grid);
         }
         self.grid_torques.push(GridTorque { grid, torque });
