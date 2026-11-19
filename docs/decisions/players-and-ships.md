@@ -189,3 +189,10 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   frame of its ship with its place in the world.
 - **A player who comes back is told where they are** (`player_presence:placed`, in the world), because a client watches around its camera and a
   returning player may be anywhere. (Not yet done for `/tp`; a follow-up.)
+
+## Decided (a ship too big for a tick comes alive over several; the owner, 2026-11-19; built, `build-log.md`)
+
+- **A ship that comes into memory and has more bricks than a tick's budget (4, all the ships together) is made over several ticks, and held where it is meanwhile** (a fixed body whatever it is to be; the world keeps its weight and
+  speed; no docking or coupling; the terrain it needs after its own bricks, 2 costly bricks a tick); it goes on from where the world has it in the tick it is made. A ship whose bricks fit is made whole in its tick, as before. The owner's words:
+  "Spread the work out over multiple ticks, please", after the first tick of a ship of 20,480 bricks was found to stop the server for minutes. The budget is a count, never a time (the hard rule about machines). *Mine, the owner's to
+  overrule:* held rather than going on with half its colliders and weight (a half-weighed ship would fly wrongly); the order of coordinate; a brick of each ship in turn so that a small ship is not kept waiting by a big one.
