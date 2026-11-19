@@ -59,6 +59,9 @@ pub(crate) struct SaveEntry {
     pub write: Box<dyn Fn() -> Vec<Section> + Send>,
 }
 
+/// Whether a plugin has work in hand (see [`crate::Registrar::pending_work`]).
+pub(crate) type PendingWork = Box<dyn Fn() -> bool + Send + Sync>;
+
 /// What a plugin makes of the ships a save writes the files of: far files for them.
 pub(crate) type FarFileSaver =
     Box<dyn Fn(&[SavedShip], &ShipFormat) -> Vec<(FarFileName, Vec<u8>)> + Send + Sync>;
@@ -79,6 +82,8 @@ pub(crate) struct Registry {
     pub saves: Vec<SaveEntry>,
     /// The plugins that make far files for the ships a save writes the files of.
     pub far_file_savers: Arc<Vec<FarFileSaver>>,
+    /// The plugins that say whether they have work in hand.
+    pub pending_work: Vec<PendingWork>,
     /// The channels some handler asked to hear of.
     pub watched: BTreeSet<ChannelIndex>,
 }

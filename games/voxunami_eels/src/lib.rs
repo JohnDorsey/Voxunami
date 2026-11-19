@@ -49,6 +49,11 @@ pub fn run_check_packs(arguments: impl IntoIterator<Item = String>) -> Result<()
     game_shell::run_check_packs::<Eels>(arguments)
 }
 
+/// Makes the ships of a world ready to be seen from afar. `arguments` are the command line after the game's name.
+pub fn run_prepare_ships(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
+    game_shell::run_prepare_ships::<Eels>(arguments)
+}
+
 /// Writes the JSON Schemas of the game's pack files. `arguments` are the command line after the game's name.
 pub fn run_pack_schemas(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
     game_shell::run_pack_schemas::<Eels>(arguments)

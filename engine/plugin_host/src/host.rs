@@ -558,6 +558,11 @@ impl GameLogic for PluginHost {
         queue.halted = false;
     }
 
+    /// Whether any plugin has work in hand (see [`Registrar::pending_work`]).
+    fn work_pending(&self) -> bool {
+        self.registry.pending_work.iter().any(|pending| pending())
+    }
+
     /// What makes the far files the plugins keep for the ships a save writes the files of, in the order of the files' names: none if no plugin keeps any.
     fn far_file_maker(&self) -> Option<FarFileMaker> {
         if self.registry.far_file_savers.is_empty() {

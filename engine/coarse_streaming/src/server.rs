@@ -1386,6 +1386,9 @@ impl Plugin for CoarseServerPlugin {
             },
         );
 
+        let pending = Arc::clone(&self.state);
+        registrar.pending_work(move || locked(&pending).waiting() > 0);
+
         let saving = Arc::clone(&self.state);
         let saving_config = Arc::clone(&self.config);
         registrar.save_far_files(move |ships, format| {

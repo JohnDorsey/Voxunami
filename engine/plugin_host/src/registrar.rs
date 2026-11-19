@@ -66,6 +66,7 @@ pub(crate) struct Builder {
     catalog: EntityCatalog,
     saves: Vec<SaveEntry>,
     far_file_savers: Vec<crate::registry::FarFileSaver>,
+    pending_work: Vec<crate::registry::PendingWork>,
     watched: BTreeSet<ChannelIndex>,
     errors: Vec<RegistrationError>,
 }
@@ -329,6 +330,12 @@ impl<'a> Registrar<'a> {
         self.builder.far_file_savers.push(Box::new(write));
     }
 
+    /// Says whether this plugin has work in hand that goes on between ticks (nodes it is making on a thread): asked by [`crate::PluginHost`]'s `work_pending`, which a
+    /// program that wants the plugins finished (to save a world with everything made) waits on.
+    pub fn pending_work(&mut self, pending: impl Fn() -> bool + Send + Sync + 'static) {
+        self.builder.pending_work.push(Box::new(pending));
+    }
+
     /// State this plugin saves with the world: called whenever the world is saved.
     pub fn save_section(
         &mut self,
@@ -384,6 +391,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         catalog,
         saves,
         far_file_savers,
+        pending_work,
         watched,
         mut errors,
     } = builder;
@@ -598,6 +606,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         catalog: Arc::new(catalog),
         saves,
         far_file_savers: Arc::new(far_file_savers),
+        pending_work,
         watched,
     })
 }

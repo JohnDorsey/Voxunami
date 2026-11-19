@@ -1645,3 +1645,17 @@ fn a_ship_with_no_bricks_has_no_far_file_written_at_a_save() {
     assert_eq!(save.new_ships().len(), 1, "the ship is saved");
     assert!(save.new_far_files.is_empty(), "and it has no nodes to keep");
 }
+
+#[test]
+fn the_server_has_work_pending_while_nodes_are_to_be_made_and_not_when_they_are_all_made() {
+    let (mut rig, ship) = rig_with_a_ship();
+    rig.settle();
+    assert!(!rig.server.work_pending(), "everything is made");
+    // A block put in the ship makes the nodes over it dirty, and they are made a level at a time.
+    rig.set_channel_in(ship, [8, 8, 8], [9, 9, 9], rig.block, STONE);
+    rig.step(1);
+    assert!(rig.handle.counts().1 > 0, "nodes are still to be made");
+    assert!(rig.server.work_pending());
+    rig.settle();
+    assert!(!rig.server.work_pending());
+}

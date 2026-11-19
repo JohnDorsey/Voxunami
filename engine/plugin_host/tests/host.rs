@@ -1963,3 +1963,32 @@ fn a_ship_put_into_a_file_is_an_event_once_and_the_handler_finds_it_in_its_file(
         ]
     );
 }
+
+#[test]
+fn work_is_pending_while_any_plugin_says_it_has_some() {
+    let game = game();
+    let world = sample_world(&game);
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let also = Arc::clone(&busy);
+    let host = PluginHost::new(
+        vec![
+            plugin("test:idle", |registrar| {
+                registrar.pending_work(|| false);
+            }),
+            plugin("test:busy", move |registrar| {
+                let busy = Arc::clone(&also);
+                registrar.pending_work(move || busy.load(Ordering::SeqCst));
+            }),
+            plugin("test:no_work", |_| {}),
+        ],
+        &world,
+    )
+    .unwrap();
+    assert!(!host.work_pending());
+    busy.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(host.work_pending());
+    busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(!host.work_pending());
+    // And a host with no plugin that says so has none.
+    assert!(!PluginHost::new(Vec::new(), &world).unwrap().work_pending());
+}

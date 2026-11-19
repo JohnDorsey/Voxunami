@@ -242,6 +242,11 @@ impl Server {
         self.world.data_mut().save_with_ships(registries)
     }
 
+    /// Whether the game still has work in hand that a save should wait for ([`GameLogic::work_pending`]): nodes the coarse plugin is still making.
+    pub fn work_pending(&self) -> bool {
+        self.logic.work_pending()
+    }
+
     /// Ends the server and returns its world, for saving, with the game's own state in its plugin
     /// sections.
     pub fn into_world(self) -> WorldData {

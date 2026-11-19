@@ -27,6 +27,7 @@ mod packs;
 #[cfg(test)]
 mod planet_view_tests;
 mod player_identity;
+pub mod prepare;
 pub mod screen;
 pub mod serve;
 pub mod session;
@@ -92,6 +93,38 @@ pub fn run_serve<G: GameDefinition>(
             Ok(())
         }
         Parsed::Run(options) => serve::serve::<G>(&options),
+    }
+}
+
+/// Prepares the ships of a world for game `G` to be seen from afar (see [`prepare`]). `arguments` are the command line after the game's name.
+pub fn run_prepare_ships<G: GameDefinition>(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<(), String> {
+    let parsed = options::parse_prepare(arguments).map_err(|message| {
+        format!(
+            "{message}
+
+{}",
+            options::prepare_usage::<G>()
+        )
+    })?;
+    match parsed {
+        Parsed::ShowHelp => {
+            println!("{}", options::prepare_usage::<G>());
+            Ok(())
+        }
+        Parsed::Run(options) => {
+            let report = prepare::prepare_ships::<G>(&options)?;
+            println!(
+                "{} ships made ready in {} ticks; the world has {} sets of nodes",
+                report.brought_in, report.ticks, report.far_files
+            );
+            for (ship, why) in &report.left_in_files {
+                println!("{ship} was left in its file: {why}");
+            }
+            println!("the world was saved to {}", options.world_file.display());
+            Ok(())
+        }
     }
 }
 

@@ -51,6 +51,12 @@ pub trait GameLogic: Debug + Send {
         Vec::new()
     }
 
+    /// Whether the game has work in hand that a program that wants it finished should wait for (the nodes the coarse plugin is still making of ships): a program that
+    /// runs a server only to prepare a world ticks it until this is false. The default is no work.
+    fn work_pending(&self) -> bool {
+        false
+    }
+
     /// What makes the far files of the ships that a save makes files of, if the game has any: put in the world, which asks it whenever it is saved. The default is none.
     fn far_file_maker(&self) -> Option<FarFileMaker> {
         None

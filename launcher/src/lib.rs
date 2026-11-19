@@ -25,6 +25,7 @@ pub struct Game {
     pub id: fn() -> NamespacedId,
     pub play: Command,
     pub serve: Command,
+    pub prepare_ships: Command,
     pub replay: Command,
     pub check_packs: Command,
     pub pack_schemas: Command,
@@ -37,6 +38,7 @@ pub const GAMES: &[Game] = &[
         id: voxunami_cave::game_id,
         play: |arguments| voxunami_cave::run_play(arguments),
         serve: |arguments| voxunami_cave::run_serve(arguments),
+        prepare_ships: |arguments| voxunami_cave::run_prepare_ships(arguments),
         replay: |arguments| voxunami_cave::run_replay(arguments),
         check_packs: |arguments| voxunami_cave::run_check_packs(arguments),
         pack_schemas: |arguments| voxunami_cave::run_pack_schemas(arguments),
@@ -47,6 +49,7 @@ pub const GAMES: &[Game] = &[
         id: voxunami_2048::game_id,
         play: |arguments| voxunami_2048::run_play(arguments),
         serve: |arguments| voxunami_2048::run_serve(arguments),
+        prepare_ships: |arguments| voxunami_2048::run_prepare_ships(arguments),
         replay: |arguments| voxunami_2048::run_replay(arguments),
         check_packs: |arguments| voxunami_2048::run_check_packs(arguments),
         pack_schemas: |arguments| voxunami_2048::run_pack_schemas(arguments),
@@ -57,6 +60,7 @@ pub const GAMES: &[Game] = &[
         id: voxunami_eels::game_id,
         play: |arguments| voxunami_eels::run_play(arguments),
         serve: |arguments| voxunami_eels::run_serve(arguments),
+        prepare_ships: |arguments| voxunami_eels::run_prepare_ships(arguments),
         replay: |arguments| voxunami_eels::run_replay(arguments),
         check_packs: |arguments| voxunami_eels::run_check_packs(arguments),
         pack_schemas: |arguments| voxunami_eels::run_pack_schemas(arguments),
@@ -65,7 +69,7 @@ pub const GAMES: &[Game] = &[
 
 fn usage() -> String {
     let mut text = String::from(
-        "Voxunami launcher\n\nUsage:\n  voxunami GAME [options]         play a game (GAME --help for its options)\n  voxunami GAME --join HOST       play on someone else's server\n  voxunami serve GAME [options]   run a dedicated server for a game\n  voxunami replay FILE [options]  watch a recording, in the game that made it\n  voxunami check-pack GAME DIR    check data packs the way a server loads them\n  voxunami pack-schema GAME DIR   write the JSON Schemas of pack files\n  voxunami check-shader-pack DIR  check a shader pack, or a folder of them\n\nGames:\n",
+        "Voxunami launcher\n\nUsage:\n  voxunami GAME [options]         play a game (GAME --help for its options)\n  voxunami GAME --join HOST       play on someone else's server\n  voxunami serve GAME [options]   run a dedicated server for a game\n  voxunami prepare-ships GAME --world FILE\n                                  make the ships of a world ready to be seen from afar\n  voxunami replay FILE [options]  watch a recording, in the game that made it\n  voxunami check-pack GAME DIR    check data packs the way a server loads them\n  voxunami pack-schema GAME DIR   write the JSON Schemas of pack files\n  voxunami check-shader-pack DIR  check a shader pack, or a folder of them\n\nGames:\n",
     );
     for game in GAMES {
         text.push_str(&format!("  {:<8} {}\n", game.command, game.title));
@@ -88,6 +92,7 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
         }
         "replay" => replay(arguments),
         "serve" => serve(arguments),
+        "prepare-ships" => for_game(arguments, "prepare-ships", |game| game.prepare_ships),
         "check-pack" => for_game(arguments, "check-pack", |game| game.check_packs),
         "pack-schema" => for_game(arguments, "pack-schema", |game| game.pack_schemas),
         "check-shader-pack" => game_shell::run_check_shader_packs(arguments),
@@ -228,6 +233,32 @@ mod tests {
             };
             assert!(serve("--help").is_ok());
             let error = serve("--bogus").unwrap_err();
+            assert!(error.contains("--bogus"), "{error}");
+        }
+    }
+
+    #[test]
+    fn prepare_ships_needs_a_game_that_exists_and_reaches_its_options() {
+        assert!(
+            run(arguments("prepare-ships"))
+                .unwrap_err()
+                .contains("which game")
+        );
+        assert!(
+            run(arguments("prepare-ships pong"))
+                .unwrap_err()
+                .contains("pong")
+        );
+        for game in GAMES {
+            let prepare = |option: &str| {
+                run(vec![
+                    "prepare-ships".to_owned(),
+                    game.command.to_owned(),
+                    option.to_owned(),
+                ])
+            };
+            assert!(prepare("--help").is_ok());
+            let error = prepare("--bogus").unwrap_err();
             assert!(error.contains("--bogus"), "{error}");
         }
     }

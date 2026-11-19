@@ -60,6 +60,51 @@ the server and . one for the window, which the server never sees (Enter sends it
     )
 }
 
+/// The help for preparing the ships of a world.
+pub fn prepare_usage<G: GameDefinition>() -> String {
+    format!(
+        "{title}: make the ships of a world ready to be seen from afar.
+
+Usage: voxunami prepare-ships {command} --world FILE [options]
+  --world FILE                    the world to prepare (it is written again when it is done)
+  --packs DIRECTORY               load the data packs in this folder
+  --help                          show this text
+
+Brings every ship into memory in a server with no player, lets it make the nodes a far view is drawn from, and saves the world: the ships are in
+files again with their nodes beside them. Nothing moves, and the clock of the world is as it was. A ship that waits for those aboard is left as it is.
+Needed for a world that was saved before ships were kept ready, and for ships that were made by another program; a world that is saved by a game as
+it ends is ready already.",
+        title = G::title(),
+        command = G::command(),
+    )
+}
+
+/// Reads what preparing the ships of a world was asked for: the world is needed.
+pub fn parse_prepare(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<Parsed<crate::prepare::PrepareOptions>, String> {
+    let (mut world_file, mut packs) = (None, None);
+    let mut arguments = arguments.into_iter();
+    while let Some(flag) = arguments.next() {
+        let mut value = |flag: &str| {
+            arguments
+                .next()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--help" | "-h" => return Ok(Parsed::ShowHelp),
+            "--world" => world_file = Some(PathBuf::from(value(&flag)?)),
+            "--packs" => packs = Some(PathBuf::from(value(&flag)?)),
+            other => return Err(format!("unknown option {other:?}; try --help")),
+        }
+    }
+    let world_file = world_file.ok_or("which world? --world FILE is needed")?;
+    Ok(Parsed::Run(crate::prepare::PrepareOptions {
+        world_file,
+        packs,
+    }))
+}
+
 /// The help for running a server with no window.
 pub fn serve_usage<G: GameDefinition>() -> String {
     format!(
@@ -700,6 +745,30 @@ mod tests {
         assert!(error("--autosave 5").contains("--world"));
         assert!(error("--world w --autosave 0").contains("positive"));
         assert!(error("--join").contains("needs a value"));
+    }
+
+    #[test]
+    fn preparing_the_ships_of_a_world_needs_the_world_and_reads_the_packs() {
+        let parse = |text: &str| parse_prepare(arguments(text));
+        assert!(parse("").unwrap_err().contains("--world"));
+        assert_eq!(parse("--help").unwrap(), Parsed::ShowHelp);
+        assert!(parse("--bogus").unwrap_err().contains("--bogus"));
+        assert!(parse("--world").unwrap_err().contains("needs a value"));
+        let Parsed::Run(options) = parse("--world w.voxunami").unwrap() else {
+            panic!("expected options")
+        };
+        assert_eq!(
+            options,
+            crate::prepare::PrepareOptions {
+                world_file: PathBuf::from("w.voxunami"),
+                packs: None,
+            }
+        );
+        let Parsed::Run(options) = parse("--packs mods --world w.voxunami").unwrap() else {
+            panic!("expected options")
+        };
+        assert_eq!(options.packs, Some(PathBuf::from("mods")));
+        assert!(prepare_usage::<ExampleGame>().contains("voxunami prepare-ships example"));
     }
 
     #[test]
