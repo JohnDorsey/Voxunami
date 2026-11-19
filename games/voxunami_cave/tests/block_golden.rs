@@ -40,10 +40,11 @@ fn cave_numbers_its_blocks_as_it_always_did() {
     );
 }
 
-/// Dirt's bumps (2026-11-12) and the placeholder specular pictures of the lamp and the leaves (2026-11-13): the package a client is sent, as the client reads it, has exactly three
-/// companion pictures, each of the size of Cave's pictures (16 pixels across): one normal picture (`dirt_n.png`) and two specular ones (`lamp_s.png`, `leaves_s.png`).
+/// Dirt's bumps (2026-11-12), the placeholder specular pictures of the lamp and the leaves (2026-11-13) and the owner's companions painted with VirtualAtlas (2026-11-18): the package a client
+/// is sent, as the client reads it, has exactly eight companion pictures, each of the size of Cave's pictures (16 pixels across): four normal ones (`dirt_n`, `grass_n`, `stone_n`, `leaves_n`)
+/// and four specular ones (`lamp_s`, `leaves_s`, `dirt_s`, `stone_s`).
 #[test]
-fn the_package_cave_sends_carries_dirts_normal_picture_and_the_lamps_and_leaves_specular_ones_and_no_other_companion()
+fn the_package_cave_sends_carries_the_normal_and_specular_pictures_that_are_painted_and_no_other_companion()
  {
     let sent = CaveContent::new().package_data().encode();
     let received = game_shell::PackageData::decode(&sent).expect("the package reads back");
@@ -58,11 +59,11 @@ fn the_package_cave_sends_carries_dirts_normal_picture_and_the_lamps_and_leaves_
     };
     assert_eq!(
         companions(data_packs::Tile::normal),
-        [(16, Some(16 * 16 * 4))]
+        [(16, Some(16 * 16 * 4)); 4]
     );
     assert_eq!(
         companions(data_packs::Tile::specular),
-        [(16, Some(16 * 16 * 4)), (16, Some(16 * 16 * 4))]
+        [(16, Some(16 * 16 * 4)); 4]
     );
 }
 
@@ -105,7 +106,9 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// The leaves' specular picture painted again (owner, 2026-11-18, with VirtualAtlas: 31 pixels have a reflectance of 30 now, the green byte): the same length, 19,169, and the hash moved to
 /// 4_612_593_762_799_626_470. Checked: with the owner's other pictures and the old `leaves_s.png` the old hash came back, so that file alone moved it (the new `_n` and `_s` files of the
 /// owner's are not in the package: the plugin lists the pictures it carries).
-const PINNED_PACKAGE: (usize, u64) = (19169, 4_612_593_762_799_626_470);
+/// The owner's five companions are in the package (2026-11-18: `grass_n`, `stone_n`, `leaves_n`, `dirt_s`, `stone_s`): 5 pictures of 16 by 16 of four bytes, so exactly 5,120 bytes longer (predicted
+/// before the run, and seen), 19,169 to 24,289; the table is the same, and the hash moved to 8_706_316_493_947_038_325.
+const PINNED_PACKAGE: (usize, u64) = (24289, 8_706_316_493_947_038_325);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block

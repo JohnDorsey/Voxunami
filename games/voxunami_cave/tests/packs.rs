@@ -102,12 +102,12 @@ fn a_pack_may_repaint_a_picture_of_the_game_and_the_colours_that_follow_it_follo
             assert!((component - 1.0).abs() < 1e-5, "{block}: {colour:?}");
         }
     }
-    // A block whose colour was its own is left alone, and the replacement is said.
+    // A block whose colour was its own is left alone, and the replacement is said, with the loss of the stone's companions (it has a specular and a normal picture since 2026-11-18).
     assert_eq!(colour_of(&content, "base_blocks:lamp"), [1.0, 0.92, 0.65]);
     assert_eq!(
         warnings,
         [
-            "repaint/textures/base_blocks/stone.png: replaces base_blocks:stone from plugins/base_blocks/textures/stone.png"
+            "repaint/textures/base_blocks/stone.png: replaces base_blocks:stone from plugins/base_blocks/textures/stone.png (its specular and normal pictures go; the pack brings its own)"
         ]
     );
 }

@@ -137,18 +137,24 @@ const BLOCK_FILES: [(&str, &str); 10] = [
 /// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
 /// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name, and the companions of a picture (`dirt_n` is the normal picture of `dirt`: a
 /// file ending `_s` is a specular picture and one ending `_n` a normal one, `docs/specs/block-textures-spec.md` section 4.4) beside the picture they go with.
-const TEXTURE_FILES: [(&str, &[u8]); 15] = [
+const TEXTURE_FILES: [(&str, &[u8]); 20] = [
     ("grass", include_bytes!("../textures/grass.png")),
+    // (Painted by the owner with VirtualAtlas, 2026-11-18, as the companions of stone, dirt and leaves below.)
+    ("grass_n", include_bytes!("../textures/grass_n.png")),
     ("dirt", include_bytes!("../textures/dirt.png")),
     // (Noise, made by `textures/make_dirt_normals.py`: bumps in the sun's light.)
     ("dirt_n", include_bytes!("../textures/dirt_n.png")),
+    ("dirt_s", include_bytes!("../textures/dirt_s.png")),
     ("stone", include_bytes!("../textures/stone.png")),
+    ("stone_n", include_bytes!("../textures/stone_n.png")),
+    ("stone_s", include_bytes!("../textures/stone_s.png")),
     ("still_water", include_bytes!("../textures/still_water.png")),
     ("log_top", include_bytes!("../textures/log_top.png")),
     ("log_side", include_bytes!("../textures/log_side.png")),
     ("leaves", include_bytes!("../textures/leaves.png")),
     // (Placeholders, made by `textures/make_placeholder_specular.py` from the pictures: the leaves let the sun through, by how thin each pixel looks.)
     ("leaves_s", include_bytes!("../textures/leaves_s.png")),
+    ("leaves_n", include_bytes!("../textures/leaves_n.png")),
     ("glass", include_bytes!("../textures/glass.png")),
     ("lamp", include_bytes!("../textures/lamp.png")),
     // (A placeholder, from the same script: the lamp's bright pixels shine by themselves.)

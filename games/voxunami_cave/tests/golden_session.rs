@@ -399,8 +399,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 // the saved world's did not, and with the plugin taken out the old hash, 139_190_248_021_624_789, came back (run).
 // The leaves' specular picture painted again (owner, 2026-11-18; see `block_golden.rs`): the package is in the stream, with the same length, so the stream hash moved to
 // 4_187_105_416_434_774_926, and the stream's length and the saved world's hash did not.
+// The owner's five companions in the package (2026-11-18; see `block_golden.rs`): the stream is exactly 5,120 bytes longer (7,222,150 to 7,227,270), its hash moved to 2_646_309_225_932_220_837,
+// and the saved world's did not.
 const PINNED: (u64, usize, u64) = (
-    4_187_105_416_434_774_926,
-    7_222_150,
+    2_646_309_225_932_220_837,
+    7_227_270,
     15_594_210_036_057_493_535,
 );
