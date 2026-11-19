@@ -105,4 +105,42 @@ impl Orbit {
         let elements = Elements::from_state(place, velocity, mu, time.wide(), precision)?;
         Ok(Self::from_elements(around, elements)?.starting_at(time))
     }
+
+    /// The orbit that a body on this one is on once its speed is changed by `change` (voxels a second) at `time`: a push, a pull or a burn that leaves it on a rail. The place and the
+    /// speed it has at `time` are the **exact** ones (see [`Orbit::wide_state_at`], never rounded to an `f64`), the change is added to the speed against the centre (a change of
+    /// speed is the same in any frame, so a centre that moves needs nothing more), and the orbit is made again through that state at the width of the elements of this one (from
+    /// 128 bits), to the last bit of it. `mu` is the mass parameter of what the orbit goes round (the caller has it; this orbit's own is only what its period and radius say, to
+    /// the rounding of two numbers).
+    ///
+    /// The new orbit goes round the same centre, starts at `time` ([`Orbit::since`]) and has no sphere-of-influence changes after its state ([`Orbit::changes`] and
+    /// [`Orbit::predicted`] are 0), as for any orbit made from a state. Refused as [`Orbit::from_wide_state`] refuses: a change that is not a number, a speed that leaves the body
+    /// at the speed of escape or faster (or at rest or straight at the centre), and an orbit outside the limits of one.
+    pub fn with_speed_changed_at(
+        &self,
+        time: RailTime,
+        change: [f64; 3],
+        mu: f64,
+    ) -> Result<Self, RailError> {
+        let state = self.wide_state_at(time);
+        let precision = self
+            .elements
+            .radius
+            .precision()
+            .max(WIDTH_OF_A_STATE_OF_DOUBLES);
+        let mut velocity = Vec::with_capacity(3);
+        for (part, change) in state.velocity.iter().zip(change) {
+            let change = WideFloat::from_f64(change, part.precision())
+                .map_err(|_| RailError::Invalid("a change of speed is made of numbers"))?;
+            velocity.push(part + &change);
+        }
+        let velocity: [WideFloat; 3] = velocity.try_into().expect("three axes");
+        Self::from_wide_state(
+            self.around,
+            &state.position,
+            &velocity,
+            &exactly(mu)?,
+            time,
+            precision,
+        )
+    }
 }
