@@ -7,7 +7,9 @@
 //! **What is ruled out, and why.** A rail is a conic round one planet (patched conics: the planet's pull and no other, as the owner chose, 2026-11-01), so a ship is put on one only
 //! where that is the motion it would have. It is not put on one, and comes off one it is on, when:
 //! - it is held, or its level has a pull of its own (a level with a ground); (it may turn: a rail holds a ship's place and not its turn, and the turn is the bodies');
-//! - something pushes it: a force or a torque, a docking, a program that puts it somewhere, anything that is not the bodies moving it;
+//! - something pushes it: a docking, a program that puts it somewhere, anything that is not the bodies moving it, and a force or a torque on a ship that is in a group or on no rail
+//!   (**a force or a torque on a ship that rides a rail alone does not take it off it**, step 4c-5-4b: the force is the rail's, which is made again with the speed it gave, and the
+//!   torque is the bodies');
 //! - it is near what it could touch (another ship, or a planet that is not the one it goes round), nearer than a margin and the way it would go in a second at the speed it
 //!   closes at, so that nothing meets it while it is on a rail; or it is in the sphere that a planet on a rail carries what is near it with. **A group of ships coupled by their joint
 //!   ends is the exception for other ships** (the rail's kick, 2026-11-17, `docs/decisions/joints-and-cars.md`, 4c-5-4): what is near it is the contact ghost's, which the bodies make, and
@@ -1100,6 +1102,7 @@ impl ServerWorld {
     pub(crate) fn update_coasting(&mut self, ticks_per_second: u32) {
         let now = self.data.clock();
         let time = RailTime::of_tick(now, ticks_per_second);
+        self.kick_rails_by_forces(time, ticks_per_second);
         let wait = QUIET_SECONDS * u64::from(ticks_per_second);
         // What is in the way of each ship is found once: nothing it is found from changes while the ships are gone through (a rail is all that does).
         let known = Neighbours::of(self);
@@ -1166,6 +1169,106 @@ impl ServerWorld {
             .set(self.ship_pairs_asked.get() + known.ships.pairs_tested());
         let grids = self.data.grids();
         self.quiet_since.retain(|id, _| grids.get(*id).is_some());
+    }
+
+    /// Whether a ship rides a rail of this module **alone**, so that a push does not take it off: it has a coasting rail (an orbit round a planet that is still there, no spin of its
+    /// own), no partners (a group's rail is its anchor's and holds the centre of mass of all of them: pushing a group is not built), is no terrain, and weighs something.
+    pub(super) fn rides_a_rail_alone(&self, grid: GridId) -> bool {
+        let grids = self.data.grids();
+        grids.get(grid).is_some_and(|ship| {
+            ship.terrain.is_none()
+                && !grids.has_partners(grid)
+                && ship.mass.is_finite()
+                && ship.mass > 0.0
+                && ship.rail.as_ref().is_some_and(|rail| {
+                    is_a_coasting_rail(rail)
+                        && rail.orbit.as_ref().is_some_and(|orbit| {
+                            matches!(orbit.around, Centre::Grid(parent) if grids.get(parent).is_some())
+                        })
+                })
+        })
+    }
+
+    /// The torque, in the world's directions, that a force makes about the centre of mass of a ship if it is applied at `at` (a place on the ship in its own coordinates): the lever from the
+    /// centre of mass to the place, crossed with the force. `None` if the force is at the centre of mass, or the world cannot say where the place is.
+    pub(super) fn torque_of_a_force_at(
+        &self,
+        grid: GridId,
+        force: [f64; 3],
+        at: [f64; 3],
+    ) -> Option<[f64; 3]> {
+        let ship = self.data.grids().get(grid)?;
+        let point = ship
+            .pose
+            .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, at))?;
+        let lever = self.middle_of(ship)?.displacement_to(point).in_voxels();
+        let torque = [
+            lever[1] * force[2] - lever[2] * force[1],
+            lever[2] * force[0] - lever[0] * force[2],
+            lever[0] * force[1] - lever[1] * force[0],
+        ];
+        (torque != [0.0; 3]).then_some(torque)
+    }
+
+    /// Makes the rail of each ship that was pushed at its centre of mass while it rode a rail alone (see [`ServerWorld::apply_grid_force`]) again, **through the place it has at `time` and the
+    /// speed it has there, exact, with the change of speed of the force added** (the force over the mass, for the tick): `Orbit::with_speed_changed_at`. The forces asked of a ship in the tick
+    /// are one push, their sum. A ship whose rail is gone by now (something else took it off in the tick), or whose new orbit is no orbit, is disturbed as a ship that is on no rail
+    /// is, and the force is the bodies' in the next step.
+    fn kick_rails_by_forces(&mut self, time: RailTime, ticks_per_second: u32) {
+        if self.rail_forces.is_empty() {
+            return;
+        }
+        let mut sums: BTreeMap<GridId, [f64; 3]> = BTreeMap::new();
+        for (grid, force) in std::mem::take(&mut self.rail_forces) {
+            let sum = sums.entry(grid).or_insert([0.0; 3]);
+            for axis in 0..3 {
+                sum[axis] += force[axis];
+            }
+        }
+        let seconds = 1.0 / f64::from(ticks_per_second);
+        for (grid, force) in sums {
+            let kicked = self
+                .rides_a_rail_alone(grid)
+                .then(|| self.kicked_rail(grid, force, seconds, time))
+                .flatten();
+            match kicked {
+                Some(rail) => {
+                    let _ = self.set_grid_rail(grid, Some(rail));
+                }
+                None => {
+                    self.disturb(grid);
+                    self.grid_forces.push(GridForce {
+                        grid,
+                        force,
+                        at: None,
+                    });
+                }
+            }
+        }
+    }
+
+    /// The rail of a ship that rides one alone once `force` has pushed it for `seconds`, made at `time`; `None` if no orbit is made.
+    fn kicked_rail(
+        &self,
+        grid: GridId,
+        force: [f64; 3],
+        seconds: f64,
+        time: RailTime,
+    ) -> Option<Rail> {
+        let ship = self.data.grids().get(grid)?;
+        let orbit = ship.rail.as_ref()?.orbit.as_ref()?;
+        let Centre::Grid(parent) = orbit.around else {
+            return None;
+        };
+        let planet = self.data.grids().get(parent)?;
+        let change = force.map(|part| part / ship.mass * seconds);
+        let orbit = orbit
+            .with_speed_changed_at(time, change, self.mass_parameter_of(planet))
+            .ok()?;
+        Some(Rail {
+            spin: None,
+            orbit: Some(orbit),
+        })
     }
 
     /// Notes that something other than the bodies has done something to a ship: it is not quiet, and if it is on a rail of this module it comes off it, where it is (a rail

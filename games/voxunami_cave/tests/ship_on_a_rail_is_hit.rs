@@ -439,9 +439,9 @@ fn a_ship_on_a_rail_whose_port_pulls_on_the_port_of_another_ship_leaves_the_rail
 }
 
 /// What a push (a force or a torque, asked of the world as an engine or a seat asks it) does to a ship in its orbit, on its rail or not: its velocity and its spin after the tick that
-/// has the push, and whether it still rides a rail. `ServerWorld::apply_grid_force` and `apply_grid_torque` take the ship off its rail where it is, so the bodies give it a body of its
-/// own for the push, and the ship does what the one that was never on a rail does (4c-5-4b would split the push, the torque to the bodies and the force to the rail, so that it need
-/// not leave). **The speeds are compared after the push, not as a change from before it**: the speed a ship on a rail has stored is a tick behind the one that a ship with a body has
+/// has the push, and whether it still rides a rail. `ServerWorld::apply_grid_force` and `apply_grid_torque` split the push of a ship that rides a rail alone (4c-5-4b): the force at
+/// the centre of mass is the rail's, the torque (and what a force's lever makes) is the bodies', so the ship stays on its rail and does what the one that was never on a rail does.
+/// **The speeds are compared after the push, not as a change from before it**: the speed a ship on a rail has stored is a tick behind the one that a ship with a body has
 /// (-1.24 and -1.66 metres a second along y, the orbit's curve, in the same tick), so a change from before the push is a tick of the orbit's turn too much for the one that was on a rail
 /// (probed: the speeds after the push are the same to 1e-6 along y).
 fn push_the_ship_and_see(
@@ -473,6 +473,22 @@ fn force_along_z_off_the_centre(world: &mut server::ServerWorld, ship: GridId, m
         .unwrap();
 }
 
+/// A push along no axis of the world, at a point off the centre along no axis of the ship, so that the lever turns the ship about all three axes (the push above turns it about y
+/// only, which cannot say whether the other two parts of the lever's cross product are right).
+fn force_in_all_directions_off_the_centre(
+    world: &mut server::ServerWorld,
+    ship: GridId,
+    mass: f64,
+) {
+    world
+        .apply_grid_force(
+            ship,
+            [100.0 * mass, -200.0 * mass, 300.0 * mass],
+            Some([4.0, 3.0, 1.0]),
+        )
+        .unwrap();
+}
+
 /// A torque about y that turns the ship and does not push its centre.
 fn torque_about_y(world: &mut server::ServerWorld, ship: GridId, mass: f64) {
     world
@@ -481,56 +497,37 @@ fn torque_about_y(world: &mut server::ServerWorld, ship: GridId, mass: f64) {
 }
 
 #[test]
-fn a_torque_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_turns_it_as_it_turns_a_ship_that_was_never_on_one()
+fn a_force_on_a_ship_on_its_rail_changes_its_speed_as_it_changes_that_of_a_ship_that_was_never_on_one_and_leaves_it_on_the_rail()
  {
-    let (_, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, torque_about_y);
-    let (_, spin_free, _) = push_the_ship_and_see(false, torque_about_y);
-    assert!(!still_on_a_rail, "the push took the ship off its rail");
-    assert!(
-        spin_free[1] > 0.0,
-        "the ship that was never on a rail turned about y: {spin_free:?}"
-    );
-    assert!(
-        spin_free[0].abs() < 1e-9 * spin_free[1] && spin_free[2].abs() < 1e-9 * spin_free[1],
-        "and about y only: {spin_free:?}"
-    );
+    let nothing = |_: &mut server::ServerWorld, _: GridId, _: f64| {};
+    let (rail_alone, _, _) = push_the_ship_and_see(true, nothing);
+    let (free_alone, _, _) = push_the_ship_and_see(false, nothing);
+    let (rail_pushed, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, force_along_z);
+    let (free_pushed, spin_free, _) = push_the_ship_and_see(false, force_along_z);
+    assert!(still_on_a_rail, "the push left the ship on its rail");
+    // (**The change, not the speed**: a ship on a rail is a tick of the orbit's turn from one with a body in the speed it has stored, 0.41 along y here, and the push is 400 metres a
+    // second a second for the tick of a twentieth of a second, 20 metres a second along z. The free ship's own turn during the tick is a little changed by the push: 1e-2.)
     for axis in 0..3 {
+        let on_a_rail = rail_pushed[axis] - rail_alone[axis];
+        let free = free_pushed[axis] - free_alone[axis];
         assert!(
-            (spin_on_a_rail[axis] - spin_free[axis]).abs() <= 1e-9 * spin_free[1],
-            "the spin of the ship that was on a rail, {spin_on_a_rail:?}, is that of the one that was not, {spin_free:?}"
-        );
-    }
-}
-
-#[test]
-fn a_force_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_pushes_it_as_it_pushes_a_ship_that_was_never_on_one()
- {
-    let (speed_on_a_rail, spin_on_a_rail, still_on_a_rail) =
-        push_the_ship_and_see(true, force_along_z);
-    let (speed_free, spin_free, _) = push_the_ship_and_see(false, force_along_z);
-    assert!(!still_on_a_rail, "the push took the ship off its rail");
-    // (The ship went 761.39 along z; the push is 400 metres a second a second for the tick of a twentieth of a second, 20 metres a second, and a missed turn of the orbit is 0.41 along y.)
-    assert!(
-        speed_free[2] > 780.0,
-        "the push gave the free ship its speed along z: {speed_free:?}"
-    );
-    for axis in 0..3 {
-        assert!(
-            (speed_on_a_rail[axis] - speed_free[axis]).abs() <= 1e-2,
-            "the speed of the ship that was on a rail, {speed_on_a_rail:?}, is that of the one that was not, {speed_free:?}"
+            (on_a_rail - free).abs() <= 1e-2,
+            "the push changed the speed of the ship on a rail by {on_a_rail} and that of the one that was not by {free} along axis {axis}"
         );
         assert!(
             spin_on_a_rail[axis].abs() < 1e-9 && spin_free[axis].abs() < 1e-9,
             "a push at the centre of mass does not turn the ship: {spin_on_a_rail:?}, {spin_free:?}"
         );
     }
+    assert!(
+        (rail_pushed[2] - rail_alone[2] - 20.0).abs() < 1e-6,
+        "the rail's speed along z is 20 metres a second more: {rail_pushed:?} against {rail_alone:?}"
+    );
 }
 
-// ---- Step 4c-5-4b (not built): a push does not take a ship off its rail. The force changes the rail; the torque is the bodies'. ----
+// ---- Step 4c-5-4b (built for a ship alone on its rail; a port that pulls is not built): a push does not take a ship off its rail. The force changes the rail; the torque is the bodies'. ----
 //
-// These say what the split of `docs/decisions/joints-and-cars.md` (4c-5-4b) is to do, written before it is built and kept `#[ignore]`d until it is (each was run with `--ignored` and
-// fails for the reason in its message). The two tests above that say a push takes the ship off its rail are what the split replaces: they are removed when these are switched on,
-// and not before.
+// These say what the split of `docs/decisions/joints-and-cars.md` (4c-5-4b) does, written before it was built (each was run with `--ignored` and failed for the reason in its message).
 
 /// A tick of the world, in seconds (20 a second).
 const TICK: f64 = 0.05;
@@ -590,7 +587,6 @@ fn assert_the_rail_was_kicked_by(
 }
 
 #[test]
-#[ignore = "4c-5-4b is not built: a push takes the ship off its rail"]
 fn a_force_on_a_ship_on_its_rail_leaves_it_on_the_rail_and_the_rail_has_the_speed_the_force_gave() {
     let (before, after, spin) = push_the_ship_on_its_rail_and_see_its_rail(force_along_z);
     assert_the_rail_was_kicked_by(&before, &after, [0.0, 0.0, 400.0 * TICK], "a force");
@@ -601,7 +597,6 @@ fn a_force_on_a_ship_on_its_rail_leaves_it_on_the_rail_and_the_rail_has_the_spee
 }
 
 #[test]
-#[ignore = "4c-5-4b is not built: a push takes the ship off its rail"]
 fn a_force_off_the_centre_of_a_ship_on_its_rail_kicks_the_rail_the_same_and_turns_the_ship_as_it_turns_one_that_was_never_on_one()
  {
     let (before, after, spin) =
@@ -626,7 +621,33 @@ fn a_force_off_the_centre_of_a_ship_on_its_rail_kicks_the_rail_the_same_and_turn
 }
 
 #[test]
-#[ignore = "4c-5-4b is not built: a push takes the ship off its rail"]
+fn a_force_in_all_directions_off_the_centre_of_a_ship_on_its_rail_turns_it_about_every_axis_as_it_turns_one_that_was_never_on_one()
+ {
+    let (before, after, spin) =
+        push_the_ship_on_its_rail_and_see_its_rail(force_in_all_directions_off_the_centre);
+    assert_the_rail_was_kicked_by(
+        &before,
+        &after,
+        [100.0 * TICK, -200.0 * TICK, 300.0 * TICK],
+        "a force in all directions",
+    );
+    let (_, spin_free, _) = push_the_ship_and_see(false, force_in_all_directions_off_the_centre);
+    assert!(
+        spin_free.iter().all(|part| part.abs() > 1e-6),
+        "the lever turned the ship that was never on a rail about every axis: {spin_free:?}"
+    );
+    let largest = spin_free
+        .iter()
+        .fold(0.0f64, |most, part| most.max(part.abs()));
+    for axis in 0..3 {
+        assert!(
+            (spin[axis] - spin_free[axis]).abs() <= 1e-9 * largest,
+            "the spin of the ship that stayed on its rail, {spin:?}, is that of the one that was never on one, {spin_free:?}"
+        );
+    }
+}
+
+#[test]
 fn a_torque_on_a_ship_on_its_rail_turns_it_as_it_turns_one_that_was_never_on_one_and_leaves_its_rail_as_it_was()
  {
     let (before, after, spin) = push_the_ship_on_its_rail_and_see_its_rail(torque_about_y);

@@ -210,6 +210,9 @@ pub struct ServerWorld {
     /// The forces asked of ships and not yet taken.
     grid_forces: Vec<GridForce>,
     grid_torques: Vec<GridTorque>,
+    /// The forces asked of ships that ride a rail alone, at their centres of mass (what is off the centre is a torque, in `grid_torques`): not for the bodies, for the rail, which
+    /// is kicked by them in `update_coasting` (step 4c-5-4b of `docs/decisions/joints-and-cars.md`).
+    rail_forces: Vec<(GridId, [f64; 3])>,
     gravity: GravitySettings,
     /// The pull of the levels whose own is not `gravity.base`.
     level_gravity: BTreeMap<LevelIndex, [f64; 3]>,
@@ -288,6 +291,7 @@ impl ServerWorld {
             changes: Vec::new(),
             grid_forces: Vec::new(),
             grid_torques: Vec::new(),
+            rail_forces: Vec::new(),
             gravity: GravitySettings::default(),
             level_gravity: BTreeMap::new(),
             ships: None,
@@ -1153,6 +1157,11 @@ impl ServerWorld {
 
     /// Pushes a ship with a force (kilograms times voxels per second per second) for the next step of the bodies only: as if applied at
     /// a place on the ship in its own coordinates, or at its centre of mass if none is given. A force off the centre turns it too.
+    ///
+    /// **A ship that rides a rail alone is not taken off it** (step 4c-5-4b of `docs/decisions/joints-and-cars.md`): the force is split. What it does to the centre of mass is the rail's
+    /// (the rail is made again at the end of the tick with the speed changed by the force over the mass and the tick, see `ServerWorld::update_coasting`), and what it does by its
+    /// lever, the torque of the force about the centre of mass, is the bodies', as a torque asked of the ship is. A ship in a group, and a ship that is on no rail, is disturbed as it was:
+    /// it comes off its rail where it is, and the bodies have the force.
     pub fn apply_grid_force(
         &mut self,
         grid: GridId,
@@ -1163,21 +1172,37 @@ impl ServerWorld {
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
+        if self.rides_a_rail_alone(grid) {
+            if let Some(torque) = at.and_then(|at| self.torque_of_a_force_at(grid, force, at)) {
+                self.grid_torques.push(GridTorque { grid, torque });
+            }
+            self.rail_forces.push((grid, force));
+            return Ok(());
+        }
         self.disturb(grid);
         self.grid_forces.push(GridForce { grid, force, at });
         Ok(())
     }
 
     /// Turns a ship with a torque (kilograms times voxels squared per second per second, an axis in the world's directions) about its centre of
-    /// mass, for the next step of the bodies only. A torque does not push the ship's centre.
+    /// mass, for the next step of the bodies only. A torque does not push the ship's centre, so **a ship that rides a rail alone keeps it** (the bodies give it a frame of its own
+    /// while the torque waits, see [`ServerWorld::has_a_torque_waiting`]); any other ship is disturbed as it was.
     pub fn apply_grid_torque(&mut self, grid: GridId, torque: [f64; 3]) -> Result<(), AccessError> {
         self.data
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
-        self.disturb(grid);
+        if !self.rides_a_rail_alone(grid) {
+            self.disturb(grid);
+        }
         self.grid_torques.push(GridTorque { grid, torque });
         Ok(())
+    }
+
+    /// Whether a torque has been asked of a ship and the bodies have not taken it yet. A ship alone on a rail has a body of its own only while it turns or has a stranger near,
+    /// so the bodies give it one for this too: the torque would have nothing to turn.
+    pub fn has_a_torque_waiting(&self, grid: GridId) -> bool {
+        self.grid_torques.iter().any(|waiting| waiting.grid == grid)
     }
 
     /// The torques asked of ships since the last call, in the order asked. The bodies take them when they move the ships.

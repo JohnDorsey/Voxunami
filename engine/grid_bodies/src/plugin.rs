@@ -420,12 +420,14 @@ impl Followed {
         if world.data().grids().has_partners(id) {
             return None;
         }
-        // (A ship alone on a rail has a free body of its own, at the rail's point, **while it turns, and while another ship is near it**: the bodies turn it, and a touch of the
+        // (A ship alone on a rail has a free body of its own, at the rail's point, **while it turns, while a torque waits to turn it, and while another ship is near it**: the bodies turn it, and a touch of the
         // other gives it its kick. A ship that does not turn and has nothing near is a fixed body in the frame everything is in, which costs nothing.)
         let has_a_body_on_its_rail = !ship.held
             && !ship.frozen
             && ship.rail.as_ref().is_some_and(|rail| rail.spin.is_none())
-            && (ship.angular_velocity != [0.0; 3] || world.has_a_stranger_near_on_its_rail(id));
+            && (ship.angular_velocity != [0.0; 3]
+                || world.has_a_stranger_near_on_its_rail(id)
+                || world.has_a_torque_waiting(id));
         has_a_body_on_its_rail.then_some(Self::RailPoint(id))
     }
 }

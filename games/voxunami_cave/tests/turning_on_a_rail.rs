@@ -480,9 +480,9 @@ fn a_frozen_ship_on_a_rail_stops_turning_and_goes_on_round() {
     );
 }
 
-/// A push takes a ship off its rail, as it did, and the turn goes on: the ship keeps the speed the rail gave it and the spin it had.
+/// A push leaves a turning ship on its rail (4c-5-4b: the force is the rail's), and the turn goes on: the ship keeps the speed the rail gave it and the spin it had.
 #[test]
-fn a_push_takes_a_turning_ship_off_its_rail_and_the_turn_goes_on() {
+fn a_push_leaves_a_turning_ship_on_its_rail_and_the_turn_goes_on() {
     let spin = [0.0, 0.3, 0.1];
     let (mut scene, ship) = a_ship_on_a_rail(DISTANCE, 1.0, [3, 3, 3], Orientation::IDENTITY, spin);
     scene.ticks(30);
@@ -498,11 +498,10 @@ fn a_push_takes_a_turning_ship_off_its_rail_and_the_turn_goes_on() {
     scene.run(move |world| {
         world.apply_grid_force(ship, [0.0, 1.0, 0.0], None).unwrap();
     });
-    // (Ten ticks: a ship that is left alone for a second goes on a rail again.)
     scene.ticks(10);
     assert!(
-        !on_a_rail(&scene, ship),
-        "a push takes the ship off its rail"
+        on_a_rail(&scene, ship),
+        "a push leaves the ship on its rail"
     );
     let found = scene.rig.server.world().grids().get(ship).unwrap();
     let speed = length(found.linear_velocity);
@@ -872,12 +871,12 @@ fn a_ship_that_turns_on_a_rail_and_is_cut_in_two_gives_each_part_the_speed_its_o
     );
 }
 
-/// **A blow off the centre sets a ship on a rail tumbling, and the rail takes it again, still tumbling**: the blow pushes the ship and turns it (as much as a push and a torque of that size
-/// should, worked out here from the weight and the tensor), takes it off its rail, and after its second of quiet it is on a rail again, with the turn it had. Nothing jumps where the rail takes
-/// it (not its path, not its turn), and from the blow on, its angular momentum and its energy are kept as well as the step keeps them. Once from rest and once from a turn.
+/// **A blow off the centre sets a ship on a rail tumbling, and it stays on the rail**: the blow pushes the ship and turns it (as much as a push and a torque of that size should, worked
+/// out here from the weight and the tensor); the push is the rail's (made again with the speed it gave) and the turn is the bodies', so the ship never leaves its rail (4c-5-4b; until
+/// then the blow took it off and it was put on a rail again after its second of quiet). Nothing jumps at the blow (not its path, not its turn), and from the blow on, its angular momentum
+/// and its energy are kept as well as the step keeps them. Once from rest and once from a turn.
 #[test]
-fn a_blow_off_the_centre_sets_a_ship_on_a_rail_tumbling_and_it_is_put_on_a_rail_again_still_tumbling()
- {
+fn a_blow_off_the_centre_sets_a_ship_on_a_rail_tumbling_and_it_stays_on_the_rail() {
     let (centre, tensor) = centre_and_tensor(&box_of(BOX));
     for (name, facing, spin) in [
         ("from rest", Orientation::IDENTITY, [0.0; 3]),
@@ -893,8 +892,8 @@ fn a_blow_off_the_centre_sets_a_ship_on_a_rail_tumbling_and_it_is_put_on_a_rail_
         let at = [centre[0] + 1.0, centre[1] + 1.5, centre[2]];
         scene.run(move |world| world.apply_grid_force(ship, force, Some(at)).unwrap());
         assert!(
-            !on_a_rail(&scene, ship),
-            "{name}: a blow takes the ship off its rail"
+            on_a_rail(&scene, ship),
+            "{name}: a blow leaves the ship on its rail"
         );
         let (blown, sped) = (turn_of(&scene, ship), velocity_of(&scene, ship));
         let gained = sped[2] - speed[2];
@@ -916,29 +915,16 @@ fn a_blow_off_the_centre_sets_a_ship_on_a_rail_tumbling_and_it_is_put_on_a_rail_
             length(common::minus(change, expected_change)) < 0.05 * length(expected_change),
             "{name}: the spin changed by {change:?} and should have by {expected_change:?}"
         );
-        // From the blow to a rail again, tick by tick.
+        // From the blow on, tick by tick, on the rail.
         let mut path = vec![middle_of(&scene, ship, centre)];
         let mut turns = vec![blown];
-        let mut railed_at = None;
-        for tick in 1..=60 {
-            scene.ticks(1);
-            path.push(middle_of(&scene, ship, centre));
-            turns.push(turn_of(&scene, ship));
-            if on_a_rail(&scene, ship) {
-                railed_at = Some(tick);
-                break;
-            }
-        }
-        // (Measured: 20 ticks, the second of quiet.)
-        railed_at
-            .unwrap_or_else(|| panic!("{name}: the ship was not put on a rail again in 60 ticks"));
         for _ in 0..100 {
             scene.ticks(1);
             path.push(middle_of(&scene, ship, centre));
             turns.push(turn_of(&scene, ship));
         }
         assert!(on_a_rail(&scene, ship), "{name}: it keeps the rail");
-        // Where it was put on the rail nothing jumps: not the path of its centre (a kink is the change of its step from one tick to the next; a circle of this size has 0.0207 of it,
+        // At the blow and after it nothing jumps: not the path of its centre (a kink is the change of its step from one tick to the next; a circle of this size has 0.0207 of it,
         // the speed squared over the radius times the tick squared, and 0.0207 is the most that was measured, in the free flight, at the rail and after it), and not the turn (each tick turns it by its spin for a tick, give or take the wobble in
         // that tick: measured 1e-4 and 3e-4 of itself at worst).
         let kink = common::greatest_kink(&path[1..]);
