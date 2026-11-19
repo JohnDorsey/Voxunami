@@ -56,13 +56,19 @@ impl SubRect {
 
     /// The bits of a face mask (see [`Shape::face_cover`]) that this rectangle covers.
     pub fn mask(&self) -> u64 {
-        let mut mask = 0;
-        for v in self.v..self.v + self.height {
-            for u in self.u..self.u + self.width {
-                mask |= 1 << (usize::from(v) * SUBDIVISIONS + usize::from(u));
+        // One row of the rectangle (`width` bits from bit `u`), and a copy of it in each of the `height` rows from row `v`: a row is `SUBDIVISIONS` bits, and a 1 in
+        // each of the lowest `height` rows is a multiple of 1 + 2^8 + 2^16 ..., so that the product puts the row in each of them without carrying into the next.
+        const ONE_IN_EACH_ROW: [u64; SUBDIVISIONS + 1] = {
+            let mut rows = [0u64; SUBDIVISIONS + 1];
+            let mut height = 1;
+            while height <= SUBDIVISIONS {
+                rows[height] = (rows[height - 1] << SUBDIVISIONS) | 1;
+                height += 1;
             }
-        }
-        mask
+            rows
+        };
+        let row = ((1u64 << self.width) - 1) << self.u;
+        (row * ONE_IN_EACH_ROW[usize::from(self.height)]) << (usize::from(self.v) * SUBDIVISIONS)
     }
 }
 
@@ -444,6 +450,55 @@ mod tests {
 
     const DOWN: FaceDirection = FaceDirection::NegativeY;
     const UP: FaceDirection = FaceDirection::PositiveY;
+
+    /// The bits a rectangle covers, one sub-face at a time: what [`SubRect::mask`] is worked out from.
+    fn mask_sub_face_by_sub_face(rectangle: &SubRect) -> u64 {
+        let mut mask = 0;
+        for v in rectangle.v..rectangle.v + rectangle.height {
+            for u in rectangle.u..rectangle.u + rectangle.width {
+                mask |= 1 << (usize::from(v) * SUBDIVISIONS + usize::from(u));
+            }
+        }
+        mask
+    }
+
+    #[test]
+    fn the_mask_of_every_rectangle_that_fits_in_a_face_is_the_sub_faces_it_covers() {
+        let mut rectangles = 0;
+        for u in 0..SUBDIVISIONS as u8 {
+            for v in 0..SUBDIVISIONS as u8 {
+                for width in 0..=SUBDIVISIONS as u8 - u {
+                    for height in 0..=SUBDIVISIONS as u8 - v {
+                        let rectangle = SubRect {
+                            layer: 3,
+                            u,
+                            v,
+                            width,
+                            height,
+                        };
+                        assert_eq!(
+                            rectangle.mask(),
+                            mask_sub_face_by_sub_face(&rectangle),
+                            "{rectangle:?}"
+                        );
+                        rectangles += 1;
+                    }
+                }
+            }
+        }
+        assert!(rectangles > 1_000, "{rectangles}");
+        // The whole face, and nothing.
+        let whole = SubRect {
+            layer: 0,
+            u: 0,
+            v: 0,
+            width: 8,
+            height: 8,
+        };
+        assert_eq!(whole.mask(), u64::MAX);
+        assert_eq!(SubRect { width: 0, ..whole }.mask(), 0);
+        assert_eq!(SubRect { height: 0, ..whole }.mask(), 0);
+    }
 
     fn the_shapes_there_are() -> Vec<Shape> {
         let mut shapes = vec![Shape::empty(), Shape::full()];

@@ -11,7 +11,7 @@
 //! not handled yet (the far-nodes plan, `docs/specs/far-nodes-spec.md`, F4).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -85,9 +85,12 @@ pub struct CoarseConfig {
     pub maximum_override_level: u8,
     /// How far from a player, in voxels, nodes are chosen for them.
     pub view_distance: f64,
-    /// The most dirty nodes a tick takes up for remaking, and the most that the worker that remakes them has in hand at once (a tick hands over what it can
-    /// and does not wait for the worker: the nodes come back in a later tick).
+    /// The most dirty nodes a tick takes up for remaking, and the most that the workers that remake them have in hand at once (a tick hands over what it can
+    /// and does not wait for the workers: the nodes come back in a later tick).
     pub nodes_per_tick: usize,
+    /// How many threads make nodes at the same time (see `default_node_workers`, which a game need not call). The nodes of a tick's jobs are made independently: a node is handed over only
+    /// when the nodes it is made from are final, so what one thread makes is never what another is waiting for.
+    pub node_workers: usize,
     /// The levels whose own terrain has nodes kept (by their identifiers), or every level if `None`. A game leaves out a level it draws in bricks only, whose
     /// generator may be slow to make a node of for nothing. (The planets in any level are kept.)
     pub levels: Option<BTreeSet<NamespacedId>>,
@@ -96,7 +99,7 @@ pub struct CoarseConfig {
 
 impl CoarseConfig {
     /// A configuration with the usual limits: overrides up to detail level 12 (cells of 4 kilometres), nodes chosen out to a million voxels, and 32 nodes
-    /// handed to the worker in a tick.
+    /// handed to the workers in a tick.
     pub fn new(
         table: BlockTable,
         air: u32,
@@ -117,10 +120,17 @@ impl CoarseConfig {
             maximum_override_level: 12,
             view_distance: 1_048_576.0,
             nodes_per_tick: 32,
+            node_workers: default_node_workers(),
             levels: None,
             presence,
         }
     }
+}
+
+/// How many threads make nodes unless the game says: a third of the processors, but at least one and at most four. The work is a catch-up that the player
+/// waits for (a world of big ships) and is done when it is done; the threads take what the rest of the game (its ticks, its meshing, its drawing) can spare.
+pub fn default_node_workers() -> usize {
+    std::thread::available_parallelism().map_or(1, |processors| (processors.get() / 3).clamp(1, 4))
 }
 
 /// What `sent` holds for a cube the client was told is empty (a node with nothing in it, said of a cube of a far ship's box that holds no brick of it): no node has
@@ -174,7 +184,7 @@ struct State {
     edit_epoch: u64,
     /// The nodes that are with the worker: handed over, not yet taken back.
     in_flight: BTreeSet<Key>,
-    /// The thread that makes nodes, started when the first is handed over.
+    /// The threads that make nodes, started when the first is handed over.
     worker: Option<Worker>,
     /// Ticks since the nodes of ships that are gone were last swept away.
     ticks_since_sweep: u32,
@@ -190,39 +200,72 @@ struct State {
 /// How often (in ticks) the nodes of ships that are no more are looked for: every few seconds, so that a world of many ships does not pay for it in every tick.
 const SWEEP_EVERY_TICKS: u32 = 64;
 
-/// The thread that makes nodes from [`NodeJob`]s, in the order it was given them (as the thread of `prefetch` in the server does for bricks). It ends when this
-/// is dropped, after the node it is making.
+/// What a thread of the pool is given to make: the number of the job (counting from the first handed over), the node, and what to make it from.
+type Handed = (u64, Key, NodeJob);
+
+/// What a thread of the pool gives back: the number of the job it was given, and the node.
+type Made = (u64, Key, Option<CoarseNode>);
+
+/// The threads that make nodes from [`NodeJob`]s ([`CoarseConfig::node_workers`] of them, as the thread of `prefetch` in the server does for bricks), each taking the
+/// next job when it is done with one, in the order they were handed over. What they make comes back in no order, and a tick takes it in by the number of the job
+/// ([`State::take_in_finished`]). They end when this is dropped, after the nodes they are making.
 struct Worker {
-    jobs: Sender<(Key, NodeJob)>,
-    made: Receiver<(Key, Option<CoarseNode>)>,
-    /// How many jobs were handed over, and how many the thread has sent back (counted when the result is in the channel).
+    jobs: Sender<Handed>,
+    made: Receiver<Made>,
+    /// How many jobs were handed over, and how many the threads have sent back (counted when the result is in the channel).
     handed: u64,
     finished: Arc<AtomicU64>,
+    /// Set by a thread that ends in a panic. The others go on (the channel of results is closed only when the last of them has ended), so the tick must be told.
+    failed: Arc<AtomicBool>,
+}
+
+/// Sets the flag when the thread that holds it ends in a panic.
+struct SetWhenPanicking(Arc<AtomicBool>);
+
+impl Drop for SetWhenPanicking {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 impl Worker {
-    fn start(config: Arc<CoarseConfig>) -> Self {
-        let (jobs, wanted) = channel::<(Key, NodeJob)>();
+    fn start(config: &Arc<CoarseConfig>) -> Self {
+        let (jobs, wanted) = channel::<Handed>();
+        let wanted = Arc::new(Mutex::new(wanted));
         let (sender, made) = channel();
         let finished = Arc::new(AtomicU64::new(0));
-        let counted = Arc::clone(&finished);
-        std::thread::Builder::new()
-            .name("coarse nodes".to_owned())
-            .spawn(move || {
-                while let Ok((key, job)) = wanted.recv() {
-                    let node = job.run(&config);
-                    if sender.send((key, node)).is_err() {
-                        break;
+        let failed = Arc::new(AtomicBool::new(false));
+        for number in 0..config.node_workers.max(1) {
+            let (config, wanted, sender) =
+                (Arc::clone(config), Arc::clone(&wanted), sender.clone());
+            let (counted, failed) = (Arc::clone(&finished), Arc::clone(&failed));
+            std::thread::Builder::new()
+                .name(format!("coarse nodes {number}"))
+                .spawn(move || {
+                    let _tells_the_tick = SetWhenPanicking(failed);
+                    loop {
+                        // (The thread that waits for a job holds the lock, and the others wait for it: a job goes to one of them.)
+                        let next = wanted.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                        let Ok((order, key, job)) = next else {
+                            break;
+                        };
+                        let node = job.run(&config);
+                        if sender.send((order, key, node)).is_err() {
+                            break;
+                        }
+                        counted.fetch_add(1, Ordering::SeqCst);
                     }
-                    counted.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-            .expect("a thread can be started");
+                })
+                .expect("a thread can be started");
+        }
         Self {
             jobs,
             made,
             handed: 0,
             finished,
+            failed,
         }
     }
 
@@ -276,13 +319,12 @@ struct Owned {
 
 impl Owned {
     fn new(brick: Arc<Brick>, config: &CoarseConfig) -> Self {
+        // (The channel as it is stored with what the game reads from each value put in place of it: a uniform brick or a palette is read once for each of its
+        // values and not once for each voxel, and a neighbour is made for each brick that has one.)
         let light = config.brightness.as_ref().map(|brightness| {
-            let values: Vec<u32> = brick
-                .channel(brightness.channel)
-                .iter()
-                .map(|value| u32::from((brightness.brightness_of)(value)))
-                .collect();
-            ChannelStorage::from_values(&values)
+            let mut light = brick.channel(brightness.channel).clone();
+            light.remap_values(|value| u32::from((brightness.brightness_of)(value)));
+            light
         });
         Self { brick, light }
     }
@@ -778,7 +820,8 @@ impl State {
         }
     }
 
-    /// Keeps the nodes the worker has finished, in the order it was given them.
+    /// Keeps the nodes the workers have finished, in the order they were given them (the threads finish in no order: what is taken in together is put in the order
+    /// it was handed over, so that the versions the nodes are given do not depend on which thread was quicker).
     fn take_in_finished(&mut self, maximum_level: u8) {
         let Some(worker) = &self.worker else {
             return;
@@ -789,11 +832,17 @@ impl State {
                 Ok(done) => finished.push(done),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    panic!("the thread that makes coarse nodes ended (a generator panicked?)")
+                    panic!("the threads that make coarse nodes ended (a generator panicked?)")
                 }
             }
         }
-        for (key, node) in finished {
+        // (One thread of the pool that ended leaves the others making nodes, and the channel open: the flag is how the tick knows.)
+        assert!(
+            !worker.failed.load(Ordering::SeqCst),
+            "a thread that makes coarse nodes ended (a generator panicked?)"
+        );
+        finished.sort_by_key(|(order, _, _)| *order);
+        for (_, key, node) in finished {
             self.in_flight.remove(&key);
             // (Made for a ship that was put away since: the node is of a state the ship's file does not have.)
             if self.discarded.remove(&key) {
@@ -825,7 +874,7 @@ impl State {
         })
     }
 
-    /// Takes up to `nodes_per_tick` dirty nodes, the finest first, and hands the work of making them to the worker. A node waits until the nodes it is made
+    /// Takes up to `nodes_per_tick` dirty nodes, the finest first, and hands the work of making them to the workers. A node waits until the nodes it is made
     /// from are final (so none is made twice), and until the worker is done with the last time it was asked for it (an edit that comes while it is being made
     /// leaves it dirty, and it is made again from what is there then).
     fn hand_over(&mut self, config: &Arc<CoarseConfig>, data: &WorldData) {
@@ -855,14 +904,12 @@ impl State {
                     }
                 }
                 Gathered::Job(job) => {
-                    let worker = self
-                        .worker
-                        .get_or_insert_with(|| Worker::start(Arc::clone(config)));
-                    worker.handed += 1;
+                    let worker = self.worker.get_or_insert_with(|| Worker::start(config));
                     worker
                         .jobs
-                        .send((key, *job))
-                        .expect("the thread that makes coarse nodes is there");
+                        .send((worker.handed, key, *job))
+                        .expect("the threads that make coarse nodes are there");
+                    worker.handed += 1;
                     self.in_flight.insert(key);
                 }
             }
@@ -2090,14 +2137,17 @@ mod tests {
         let air = game.raw_block("base_blocks:air");
         let mut opaque = vec![true; 16];
         opaque[air as usize] = false;
-        Arc::new(CoarseConfig::new(
+        let mut config = CoarseConfig::new(
             BlockTable::of_cubes(&opaque),
             air,
             block,
             0,
             20,
             Arc::new(Mutex::new(player_presence::Presence::new())),
-        ))
+        );
+        // (Not the machine's: what a test does must not depend on how many processors it runs on.)
+        config.node_workers = 3;
+        Arc::new(config)
     }
 
     struct GatedPlanet {
@@ -2120,6 +2170,41 @@ mod tests {
                     gave_up,
                 })
             })
+        }
+
+        /// The same planet, with `workers` threads to make its nodes.
+        fn with_workers(mut self, workers: usize) -> Self {
+            self.config = Arc::new(CoarseConfig {
+                node_workers: workers,
+                ..(*self.config).clone()
+            });
+            self
+        }
+
+        /// The same planet, edited in `count` bricks that are each in a cube of their own at the finest level, so that there are that many nodes to make that do
+        /// not wait for one another (the sample planet's own edits are all in one cube).
+        fn edited_in_separate_cubes(mut self, count: i128) -> Self {
+            let extent = self
+                .world
+                .grids()
+                .get(self.planet)
+                .unwrap()
+                .terrain
+                .unwrap()
+                .extent;
+            let block = self.config.block_channel;
+            let planet = self.world.grids_mut().get_mut(self.planet).unwrap();
+            for number in 0..count {
+                let brick = BrickCoordinate::new(
+                    extent.min().x() + 2 * number,
+                    extent.min().y(),
+                    extent.min().z(),
+                );
+                assert!(extent.contains(brick), "the planet is wide enough");
+                let origin = VoxelCoordinate::new(brick.x() * 32, brick.y() * 32, brick.z() * 32);
+                planet.voxels.set(block, origin, 1);
+            }
+            self
         }
 
         /// A world with the sample planet, whose generator is what `wrap` makes of the sample's.
@@ -2380,6 +2465,167 @@ mod tests {
         }
     }
 
+    /// A generator that panics in the first node it is asked for and gives what another gives for the rest: one thread of a pool ends, and the others go on.
+    #[derive(Debug)]
+    struct PanickingOnce {
+        inner: Arc<dyn TerrainGenerator>,
+        panicked: std::sync::atomic::AtomicBool,
+    }
+
+    impl TerrainGenerator for PanickingOnce {
+        fn generate_brick(&self, layout: &voxel_grid::GridLayout, at: BrickCoordinate) -> Brick {
+            self.inner.generate_brick(layout, at)
+        }
+
+        fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+            assert!(
+                self.panicked
+                    .swap(true, std::sync::atomic::Ordering::SeqCst),
+                "a generator that cannot make the first node"
+            );
+            self.inner.coarse_node(cube, unlit)
+        }
+    }
+
+    /// Works ticks, each finished by the workers before the next begins, until every node is made: what a tick takes in and hands over does not depend on how
+    /// the threads were scheduled.
+    fn work_ticks_that_are_finished_one_by_one(
+        state: &mut State,
+        config: &Arc<CoarseConfig>,
+        world: &WorldData,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while state.waiting() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the nodes are not made"
+            );
+            work_a_tick(state, config, world);
+            while state.worker.as_ref().is_some_and(Worker::is_busy) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the workers are not done"
+                );
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
+    fn a_pool_of_workers_makes_that_many_nodes_at_the_same_time() {
+        let planet = GatedPlanet::new()
+            .with_workers(3)
+            .edited_in_separate_cubes(6);
+        let mut state = planet.state_with_the_stored_bricks_marked();
+        // Every thread that has a job is inside the generator, which waits for the gate: the planet has more nodes than there are threads.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while planet.asked() < 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {} of the 3 workers were given a node to make",
+                planet.asked()
+            );
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+        assert!(
+            state.in_flight.len() > 3,
+            "more nodes are in hand than threads"
+        );
+        for _ in 0..10 {
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            planet.asked(),
+            3,
+            "no thread takes a second node while it is in the first"
+        );
+        planet.open_the_gate();
+        work_until_done(&mut state, &planet.config, &planet.world);
+        assert!(!planet.gave_up.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn the_nodes_a_pool_of_workers_makes_are_the_nodes_made_on_the_spot() {
+        let planet = GatedPlanet::new().with_workers(4);
+        planet.open_the_gate();
+        let mut worked = planet.state_with_the_stored_bricks_marked();
+        work_until_done(&mut worked, &planet.config, &planet.world);
+        let nodes: Vec<(Key, CoarseNode)> = worked
+            .overrides
+            .iter()
+            .map(|(key, stored)| (*key, CoarseNode::clone(&stored.node)))
+            .collect();
+        assert!(nodes.len() >= 12);
+        assert_eq!(nodes, planet.settled_on_the_spot());
+    }
+
+    #[test]
+    fn a_pool_gives_the_nodes_the_versions_one_worker_gives_when_each_tick_is_finished_before_the_next()
+     {
+        let planet = GatedPlanet::new().edited_in_separate_cubes(6);
+        planet.open_the_gate();
+        let versions_with = |workers: usize| -> Vec<(Key, CoarseNode, u64)> {
+            let config = Arc::new(CoarseConfig {
+                node_workers: workers,
+                ..(*planet.config).clone()
+            });
+            let mut state = planet.state_with_the_stored_bricks_marked();
+            work_ticks_that_are_finished_one_by_one(&mut state, &config, &planet.world);
+            state
+                .overrides
+                .iter()
+                .map(|(key, stored)| (*key, CoarseNode::clone(&stored.node), stored.version))
+                .collect()
+        };
+        let one = versions_with(1);
+        assert!(one.len() >= 12);
+        assert!(
+            one.iter()
+                .map(|(_, _, version)| version)
+                .collect::<BTreeSet<_>>()
+                .len()
+                >= 12,
+            "the nodes have versions of their own"
+        );
+        let four = versions_with(4);
+        assert_eq!(four, one, "the nodes, and the versions they were given");
+        assert_eq!(versions_with(3), one);
+        // The nodes of one tick were handed over finest first and in the order of their cubes, and are given their versions in that order.
+        let of_the_finest_level: Vec<u64> = four
+            .iter()
+            .filter(|(key, _, _)| key.0 == 1)
+            .map(|(_, _, version)| *version)
+            .collect();
+        assert!(
+            of_the_finest_level.len() >= 6,
+            "the edits are in separate cubes"
+        );
+        assert!(
+            of_the_finest_level.windows(2).all(|pair| pair[0] < pair[1]),
+            "versions in the order the nodes were handed over: {of_the_finest_level:?}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ended")]
+    fn a_generator_that_panics_in_one_worker_of_a_pool_ends_the_server_though_the_others_go_on() {
+        let planet = GatedPlanet::wrapping(|inner, _, _, _| {
+            Arc::new(PanickingOnce {
+                inner,
+                panicked: std::sync::atomic::AtomicBool::new(false),
+            })
+        })
+        .with_workers(3);
+        let mut state = planet.state_with_the_stored_bricks_marked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            work_a_tick(&mut state, &planet.config, &planet.world);
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn a_node_is_not_handed_over_while_the_worker_has_it_and_waits_for_the_nodes_it_is_made_from() {
         let planet = GatedPlanet::new();
@@ -2416,6 +2662,64 @@ mod tests {
         assert!(in_hand.iter().all(|key| state.dirty.contains(key)));
         planet.open_the_gate();
         work_until_done(&mut state, &planet.config, &planet.world);
+    }
+
+    #[test]
+    fn the_brightness_of_a_brick_is_the_brightness_the_game_reads_from_each_voxel_of_the_channel_whether_it_is_stored_uniform_paletted_or_dense()
+     {
+        let game = Game::new(&ALL_PLUGINS);
+        let world = game.new_world();
+        let layout = Arc::clone(world.main().overrides.layout());
+        let channel = layout
+            .channel_index(&"core:temperature".parse().unwrap())
+            .unwrap();
+        // What the game reads from a value: not one to one (many values are as bright), as a light channel's are.
+        let brightness_of = |value: u32| (value / 3 % 200) as u8;
+        let mut config = (*config_for(&game, &world)).clone();
+        config.brightness = Some(Brightness {
+            channel,
+            brightness_of: Arc::new(brightness_of),
+        });
+        let storages = [
+            ("uniform", ChannelStorage::uniform(77)),
+            (
+                "paletted",
+                ChannelStorage::from_values(
+                    &(0..voxel_space::BRICK_VOXEL_COUNT as u32)
+                        .map(|voxel| voxel / 5000 * 31)
+                        .collect::<Vec<u32>>(),
+                ),
+            ),
+            (
+                "dense",
+                ChannelStorage::from_values(
+                    &(0..voxel_space::BRICK_VOXEL_COUNT as u32)
+                        .map(|voxel| voxel % 300)
+                        .collect::<Vec<u32>>(),
+                ),
+            ),
+        ];
+        for (name, storage) in storages {
+            let mut brick = Brick::new(&layout);
+            *brick.channel_mut(channel) = storage;
+            let owned = Owned::new(Arc::new(brick.clone()), &config);
+            let light = owned.light.as_ref().expect("the game has a brightness");
+            for voxel in voxel_space::LocalVoxelIndex::all() {
+                assert_eq!(
+                    light.get(voxel),
+                    u32::from(brightness_of(brick.get(channel, voxel))),
+                    "{name}, voxel {}",
+                    voxel.index()
+                );
+            }
+        }
+        // A game with no brightness has none.
+        let plain = config_for(&game, &world);
+        assert!(
+            Owned::new(Arc::new(Brick::new(&layout)), &plain)
+                .light
+                .is_none()
+        );
     }
 
     #[test]

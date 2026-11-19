@@ -43,11 +43,34 @@ pub fn coarse_node_of_brick(
         .map(|voxel| center.light_at(voxel))
         .collect();
     let blocks: Vec<u32> = center.blocks.iter().collect();
+    // The voxels that are whole cubes that hide what is behind them. Most of the voxels of a ship are one of these with the same all round them.
+    let opaque: Vec<bool> = models
+        .iter()
+        .map(|&model| table.is_opaque_cube(model))
+        .collect();
     let mut cells = Vec::with_capacity(CELLS_PER_NODE);
     for z in 0..EDGE {
         for y in 0..EDGE {
             for x in 0..EDGE {
                 let index = LocalVoxelIndex::new(x as u8, y as u8, z as u8).index();
+                // A whole opaque cube with a whole opaque cube against each of its six faces, inside the brick, shows nothing of itself: the face it has toward each
+                // is hidden whole, so it has no exposure and takes the light of its own place. (What is against a face outside the brick is looked at below.)
+                if opaque[index]
+                    && (1..EDGE - 1).contains(&x)
+                    && (1..EDGE - 1).contains(&y)
+                    && (1..EDGE - 1).contains(&z)
+                    && [1, EDGE, EDGE * EDGE]
+                        .iter()
+                        .all(|&stride| opaque[index - stride] && opaque[index + stride])
+                {
+                    cells.push(CoarseCell {
+                        block: blocks[index],
+                        fill: WHOLE_FILL,
+                        light: lights[index],
+                        exposure: 0,
+                    });
+                    continue;
+                }
                 let shape = table.shape(models[index]);
                 let fill = fill_of(shape.filled_cells());
                 if fill == 0 {
@@ -95,10 +118,13 @@ pub fn coarse_node_of_brick(
 }
 
 /// How much of a voxel a shape fills, 0 to 255: of the 512 sub-cells it is cut into, rounded up so that anything at all is at least 1.
-fn fill_of(filled_sub_cells: u32) -> u8 {
+const fn fill_of(filled_sub_cells: u32) -> u8 {
     let total = (SUBDIVISIONS * SUBDIVISIONS * SUBDIVISIONS) as u32;
     (filled_sub_cells * 255).div_ceil(total) as u8
 }
+
+/// What a whole block fills.
+const WHOLE_FILL: u8 = fill_of((SUBDIVISIONS * SUBDIVISIONS * SUBDIVISIONS) as u32);
 
 fn model_at(channels: &BrickChannels<'_>, table: &BlockTable, voxel: LocalVoxelIndex) -> ModelId {
     table.model_of(
@@ -118,18 +144,24 @@ fn in_front(
     at: [usize; 3],
     face: FaceDirection,
 ) -> Option<(ModelId, u8)> {
-    let step = face.offset();
-    let next = [0, 1, 2].map(|axis| at[axis] as i128 + step[axis]);
-    if next
-        .iter()
-        .all(|&component| (0..EDGE as i128).contains(&component))
-    {
-        let index = LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2] as u8).index();
+    let axis = face.axis();
+    let toward_high = face.is_positive();
+    let along = at[axis];
+    let leaves_the_brick = if toward_high {
+        along + 1 == EDGE
+    } else {
+        along == 0
+    };
+    let mut place = at;
+    if !leaves_the_brick {
+        place[axis] = if toward_high { along + 1 } else { along - 1 };
+        let index = LocalVoxelIndex::new(place[0] as u8, place[1] as u8, place[2] as u8).index();
         return Some((models[index], lights[index]));
     }
+    // The neighbour's voxel that touches this one: the same place but for the coordinate along the axis, which is at the other end.
     let neighbour = input.neighbours[usize::from(face.index())].as_ref()?;
-    let wrapped = next.map(|component| component.rem_euclid(EDGE as i128) as u8);
-    let voxel = LocalVoxelIndex::new(wrapped[0], wrapped[1], wrapped[2]);
+    place[axis] = if toward_high { 0 } else { EDGE - 1 };
+    let voxel = LocalVoxelIndex::new(place[0] as u8, place[1] as u8, place[2] as u8);
     Some((model_at(neighbour, table, voxel), neighbour.light_at(voxel)))
 }
 
@@ -289,7 +321,7 @@ fn mesh_uniform_cube(cell: CoarseCell, neighbours: &[Option<&CoarseNode>; 6]) ->
 
 #[cfg(test)]
 mod tests {
-    use block_models::{BlockDefinition, Shape};
+    use block_models::{BlockDefinition, Shape, Transparency};
     use proptest::prelude::*;
     use voxel_grid::ChannelStorage;
     use voxel_space::{BRICK_VOXEL_COUNT, LatticeRotation, LevelOfDetail};
@@ -575,6 +607,258 @@ mod tests {
         let cell = cell(&found, 3, 3, 3);
         assert_eq!((cell.block, cell.fill, cell.exposure), (LAMP, 255, 6 * ONE));
         assert_eq!(cell.light, FULL_LIGHT);
+    }
+
+    // --- the node of a brick, against the plain reading of it ---
+
+    /// What the node of a brick was before it was made quickly: every voxel on its own, every face of it worked out from its shape, as the first version of
+    /// [`coarse_node_of_brick`] did. The node that is made now must be the same cell by cell, for any brick; this stays as it was written.
+    fn reference_node_of_brick(
+        input: &BrickNeighbourhood<'_>,
+        table: &BlockTable,
+        air: u32,
+    ) -> CoarseNode {
+        if let Some(node) = uniform_node(input, table, air) {
+            return node;
+        }
+        let center = &input.center;
+        let models: Vec<ModelId> = LocalVoxelIndex::all()
+            .map(|voxel| reference_model_at(center, table, voxel))
+            .collect();
+        let lights: Vec<u8> = LocalVoxelIndex::all()
+            .map(|voxel| center.light_at(voxel))
+            .collect();
+        let blocks: Vec<u32> = center.blocks.iter().collect();
+        let mut cells = Vec::with_capacity(CELLS_PER_NODE);
+        for z in 0..EDGE {
+            for y in 0..EDGE {
+                for x in 0..EDGE {
+                    let index = LocalVoxelIndex::new(x as u8, y as u8, z as u8).index();
+                    let shape = table.shape(models[index]);
+                    let filled_sub_cells = shape.filled_cells();
+                    let fill = (filled_sub_cells * 255)
+                        .div_ceil((SUBDIVISIONS * SUBDIVISIONS * SUBDIVISIONS) as u32)
+                        as u8;
+                    if fill == 0 {
+                        cells.push(CoarseCell::empty(air, lights[index]));
+                        continue;
+                    }
+                    let mut exposure = 0u32;
+                    let mut light = None::<u8>;
+                    for face in FaceDirection::ALL {
+                        let rectangles = shape.exposed(face);
+                        if rectangles.is_empty() {
+                            continue;
+                        }
+                        let front =
+                            reference_in_front(input, table, &models, &lights, [x, y, z], face);
+                        for rectangle in rectangles {
+                            let mut mask = 0u64;
+                            for v in rectangle.v..rectangle.v + rectangle.height {
+                                for u in rectangle.u..rectangle.u + rectangle.width {
+                                    mask |= 1 << (usize::from(v) * SUBDIVISIONS + usize::from(u));
+                                }
+                            }
+                            let (visible, brightness) = if rectangle.on_boundary(face) {
+                                let hidden = front.map_or(0, |(model, _)| {
+                                    table.hidden_by_neighbour(models[index], face, model)
+                                });
+                                (
+                                    mask & !hidden,
+                                    front.map_or(lights[index], |(_, light)| light),
+                                )
+                            } else {
+                                (mask, lights[index])
+                            };
+                            let sub_faces = visible.count_ones();
+                            if sub_faces > 0 {
+                                exposure += sub_faces * EXPOSURE_PER_SUB_FACE;
+                                light =
+                                    Some(light.map_or(brightness, |found| found.max(brightness)));
+                            }
+                        }
+                    }
+                    cells.push(CoarseCell {
+                        block: blocks[index],
+                        fill,
+                        light: light.unwrap_or(lights[index]),
+                        exposure,
+                    });
+                }
+            }
+        }
+        CoarseNode::from_cells(cells)
+    }
+
+    fn reference_model_at(
+        channels: &BrickChannels<'_>,
+        table: &BlockTable,
+        voxel: LocalVoxelIndex,
+    ) -> ModelId {
+        table.model_of(
+            channels.blocks.get(voxel),
+            channels.state_at(voxel),
+            channels.orientation_at(voxel),
+        )
+    }
+
+    fn reference_in_front(
+        input: &BrickNeighbourhood<'_>,
+        table: &BlockTable,
+        models: &[ModelId],
+        lights: &[u8],
+        at: [usize; 3],
+        face: FaceDirection,
+    ) -> Option<(ModelId, u8)> {
+        let step = face.offset();
+        let next = [0, 1, 2].map(|axis| at[axis] as i128 + step[axis]);
+        if next
+            .iter()
+            .all(|&component| (0..EDGE as i128).contains(&component))
+        {
+            let index = LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2] as u8).index();
+            return Some((models[index], lights[index]));
+        }
+        let neighbour = input.neighbours[usize::from(face.index())].as_ref()?;
+        let wrapped = next.map(|component| component.rem_euclid(EDGE as i128) as u8);
+        let voxel = LocalVoxelIndex::new(wrapped[0], wrapped[1], wrapped[2]);
+        Some((
+            reference_model_at(neighbour, table, voxel),
+            neighbour.light_at(voxel),
+        ))
+    }
+
+    const GLASS: u32 = 5;
+    const LEAVES: u32 = 6;
+
+    /// The blocks of the table that the random bricks are made of: the solid ones, in the order a random number picks them.
+    const SOLIDS: [u32; 6] = [STONE, GRASS, SLAB, LAMP, GLASS, LEAVES];
+
+    /// A table with every kind of block that decides what a face shows: whole opaque cubes, a slab with two shapes, and two sight-through blocks (glass, which
+    /// shows only its outside, and leaves).
+    fn rich_table() -> BlockTable {
+        let air = BlockDefinition::air();
+        let cube = BlockDefinition::cube([0.5; 3]);
+        let slab = BlockDefinition::cube([0.5; 3])
+            .with_shapes(vec![Shape::full(), Shape::half(FaceDirection::NegativeY)]);
+        let glass = BlockDefinition::cube([0.5; 3])
+            .with_sight_through(true)
+            .with_transparency(Transparency::Glass);
+        let leaves = BlockDefinition::cube([0.5; 3])
+            .with_sight_through(true)
+            .with_light_through(true)
+            .with_transparency(Transparency::Leaves);
+        BlockTable::from_definitions(&[
+            Some(&air),
+            Some(&cube),
+            Some(&cube),
+            Some(&slab),
+            Some(&cube),
+            Some(&glass),
+            Some(&leaves),
+        ])
+    }
+
+    /// A number that looks random, from a place and a seed.
+    fn scrambled(seed: u64, a: usize, b: usize, c: usize) -> u64 {
+        let mut value = seed
+            .wrapping_add((a as u64) << 40 | (b as u64) << 20 | c as u64)
+            .wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    /// A brick of regions of 4 by 4 by 4 voxels that are each one block, with `density` voxels in a hundred filled; the slab is a whole block in some voxels and
+    /// a half in others. With `mostly_stone` the regions are stone but for a voxel in sixteen, which is any block: specks of slab, glass or leaves inside the stone.
+    fn random_brick(
+        seed: u64,
+        density: u8,
+        lit: bool,
+        turned: bool,
+        mostly_stone: bool,
+    ) -> (Parts, Option<ChannelStorage>) {
+        let parts = Parts::of(|x, y, z| {
+            let region = scrambled(seed, x / 4, y / 4, z / 4);
+            let voxel = scrambled(seed ^ 0x5555, x, y, z);
+            if voxel % 100 >= u64::from(density) {
+                return (AIR, 0);
+            }
+            let block = if mostly_stone && voxel >> 20 & 15 != 0 {
+                STONE
+            } else {
+                SOLIDS[(region % SOLIDS.len() as u64) as usize]
+            };
+            let state = if block == SLAB { (voxel >> 8) & 1 } else { 0 };
+            (block, state as u32)
+        });
+        let parts = if lit {
+            parts.lit(|x, y, z| (scrambled(seed ^ 0x7777, x, y, z) % 5 * 60) as u32)
+        } else {
+            parts
+        };
+        let orientations = turned.then(|| {
+            let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+            for z in 0..EDGE {
+                for y in 0..EDGE {
+                    for x in 0..EDGE {
+                        values[LocalVoxelIndex::new(x as u8, y as u8, z as u8).index()] =
+                            (scrambled(seed ^ 0x3333, x, y, z) % 24) as u32;
+                    }
+                }
+            }
+            ChannelStorage::from_values(&values)
+        });
+        (parts, orientations)
+    }
+
+    /// The channels of a random brick and its orientations.
+    fn channels_of(brick: &(Parts, Option<ChannelStorage>)) -> BrickChannels<'_> {
+        BrickChannels {
+            orientations: brick.1.as_ref(),
+            ..brick.0.channels()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn the_node_of_a_brick_is_what_the_plain_reading_of_every_voxel_and_face_gives(
+            seed in any::<u64>(),
+            density in prop_oneof![Just(100u8), Just(0u8), 1u8..100],
+            lit in any::<bool>(),
+            turned in any::<bool>(),
+            sides in proptest::array::uniform6(0u8..6),
+            mostly_stone in any::<bool>(),
+        ) {
+            let center = random_brick(seed, density, lit, turned, mostly_stone);
+            let uniform = |block: u32| {
+                let parts = Parts::all(block);
+                if lit { parts.lit(|_, _, _| 90) } else { parts }
+            };
+            let neighbours: Vec<Option<(Parts, Option<ChannelStorage>)>> = sides
+                .iter()
+                .enumerate()
+                .map(|(side, kind)| match kind {
+                    0 => None,
+                    1 => Some((uniform(AIR), None)),
+                    2 => Some((uniform(STONE), None)),
+                    3 => Some((uniform(GLASS), None)),
+                    4 => Some(random_brick(seed ^ side as u64, 70, lit, turned, false)),
+                    _ => Some(random_brick(seed ^ 0xabc ^ side as u64, 100, lit, false, mostly_stone)),
+                })
+                .collect();
+            let input = BrickNeighbourhood {
+                center: channels_of(&center),
+                neighbours: std::array::from_fn(|side| neighbours[side].as_ref().map(channels_of)),
+            };
+            let table = rich_table();
+            prop_assert_eq!(
+                coarse_node_of_brick(&input, &table, AIR),
+                reference_node_of_brick(&input, &table, AIR)
+            );
+        }
     }
 
     // --- meshing a node ---

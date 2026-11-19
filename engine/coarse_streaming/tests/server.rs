@@ -266,6 +266,8 @@ fn rig_over_files_telling_of_far_ships(
         players.presence(),
     );
     config.view_distance = 20_000.0;
+    // (Not the machine's: what a test does must not depend on how many processors it runs on.)
+    config.node_workers = 3;
     configure(&mut config, temperature);
     let coarse = CoarseServerPlugin::new(config);
     let handle = coarse.handle();
