@@ -397,8 +397,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 // and with the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
 // `/reload` (2026-11-16): the reply to an unknown command lists the commands, and `, /reload` is 9 bytes: the stream is exactly 9 longer, its hash moved to 2_788_844_366_013_613_380,
 // the saved world's did not, and with the plugin taken out the old hash, 139_190_248_021_624_789, came back (run).
+// The leaves' specular picture painted again (owner, 2026-11-18; see `block_golden.rs`): the package is in the stream, with the same length, so the stream hash moved to
+// 4_187_105_416_434_774_926, and the stream's length and the saved world's hash did not.
 const PINNED: (u64, usize, u64) = (
-    2_788_844_366_013_613_380,
+    4_187_105_416_434_774_926,
     7_222_150,
     15_594_210_036_057_493_535,
 );

@@ -1,5 +1,6 @@
 {
     "tile_size": 16,
+    "pbr": "labpbr_1_3",
     "coordinates_to_names": {
         "(0, 0)": "grass.png",
         "(1, 0)": "dirt.png",
@@ -7,12 +8,13 @@
         "(3, 0)": "gravel.png",
         "(4, 0)": "sand.png",
         "(5, 0)": "still_water.png",
-        "(6, 0)": "flowing_water.png",
-        "(7, 0)": "snow.png",
+        "(6, 0)": "choppy_water.png",
+        "(7, 0)": "flowing_water.png",
         "(0, 1)": "log_top.png",
         "(1, 1)": "log_side.png",
         "(2, 1)": "leaves.png",
         "(5, 1)": "ice.png",
+        "(6, 1)": "snow.png",
         "(0, 3)": "dev_docking_port_top.png",
         "(1, 3)": "dev_docking_port_side.png",
         "(2, 3)": "dev_docking_port_bottom.png",

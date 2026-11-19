@@ -561,11 +561,13 @@ mod tests {
             }
         }
         // The leaves: every pixel, the holes too (so that the smaller levels keep it), has a blue byte of scatter (from 65: below it is porosity); a leaf lets through at least 0.55;
-        // there is no emission, glint or smoothness.
+        // there is no emission or smoothness, and the reflectance (the green byte) is a level of a dielectric, below the metals' bytes from 230 (the owner painted some pixels at 30 on 2026-11-18;
+        // before that it was 0 everywhere).
         let (leaves, scatter) = (tile("leaves"), tile("leaves_s"));
         assert_eq!(scatter.size(), leaves.size());
         for (colour, specular) in leaves.rgba().chunks(4).zip(scatter.rgba().chunks(4)) {
-            assert_eq!([specular[0], specular[1], specular[3]], [0, 0, 0]);
+            assert_eq!([specular[0], specular[3]], [0, 0]);
+            assert!(specular[1] < 230, "a leaf pixel is a metal: {specular:?}");
             let share = (f64::from(specular[2]) - 64.0) / 191.0;
             assert!(share > 0.0, "a pixel lets nothing through: {specular:?}");
             if colour[3] > 0 {

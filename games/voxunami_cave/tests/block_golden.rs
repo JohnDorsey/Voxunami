@@ -102,7 +102,10 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// The lamp's picture (2026-11-13): `lamp.png`, 16 by 16, is now the lamp's texture, so the package is 1,048 bytes longer, 16,073 to 17,121 (1,024 of them the pixels; the other 24 are the picture's name and its entry, worked out by neither of us and not itemised), the lamp's faces are pictures (6 faces by 4 shades: 24 more materials, 319 to 343 colours) and every block after it has faces numbered 24 higher.
 /// The placeholder specular pictures (2026-11-13): `lamp_s.png` and `leaves_s.png`, 16 by 16 of four bytes each, so the package is 2,048 bytes longer, 17,121 to 19,169 (predicted before
 /// the run, and seen: the flag byte of each picture was there already); the table is the same (a companion makes no material), and the hash moved.
-const PINNED_PACKAGE: (usize, u64) = (19169, 2_715_168_694_325_898_240);
+/// The leaves' specular picture painted again (owner, 2026-11-18, with VirtualAtlas: 31 pixels have a reflectance of 30 now, the green byte): the same length, 19,169, and the hash moved to
+/// 4_612_593_762_799_626_470. Checked: with the owner's other pictures and the old `leaves_s.png` the old hash came back, so that file alone moved it (the new `_n` and `_s` files of the
+/// owner's are not in the package: the plugin lists the pictures it carries).
+const PINNED_PACKAGE: (usize, u64) = (19169, 4_612_593_762_799_626_470);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block
