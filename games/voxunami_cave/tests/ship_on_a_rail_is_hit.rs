@@ -459,16 +459,32 @@ fn push_the_ship_and_see(
     )
 }
 
+/// A push of 400 metres a second a second along z at the centre of mass (what an engine does), for the one tick it is asked in: 20 metres a second.
+fn force_along_z(world: &mut server::ServerWorld, ship: GridId, mass: f64) {
+    world
+        .apply_grid_force(ship, [0.0, 0.0, 400.0 * mass], None)
+        .unwrap();
+}
+
+/// The same push, along z at a point 2 voxels off the centre of mass along x: it turns the ship about y as well as pushing it.
+fn force_along_z_off_the_centre(world: &mut server::ServerWorld, ship: GridId, mass: f64) {
+    world
+        .apply_grid_force(ship, [0.0, 0.0, 400.0 * mass], Some([4.0, 2.0, 2.0]))
+        .unwrap();
+}
+
+/// A torque about y that turns the ship and does not push its centre.
+fn torque_about_y(world: &mut server::ServerWorld, ship: GridId, mass: f64) {
+    world
+        .apply_grid_torque(ship, [0.0, 30.0 * mass, 0.0])
+        .unwrap();
+}
+
 #[test]
 fn a_torque_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_turns_it_as_it_turns_a_ship_that_was_never_on_one()
  {
-    let torque = |world: &mut server::ServerWorld, ship: GridId, mass: f64| {
-        world
-            .apply_grid_torque(ship, [0.0, 30.0 * mass, 0.0])
-            .unwrap();
-    };
-    let (_, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, torque);
-    let (_, spin_free, _) = push_the_ship_and_see(false, torque);
+    let (_, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, torque_about_y);
+    let (_, spin_free, _) = push_the_ship_and_see(false, torque_about_y);
     assert!(!still_on_a_rail, "the push took the ship off its rail");
     assert!(
         spin_free[1] > 0.0,
@@ -489,13 +505,9 @@ fn a_torque_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_tu
 #[test]
 fn a_force_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_pushes_it_as_it_pushes_a_ship_that_was_never_on_one()
  {
-    let force = |world: &mut server::ServerWorld, ship: GridId, mass: f64| {
-        world
-            .apply_grid_force(ship, [0.0, 0.0, 400.0 * mass], None)
-            .unwrap();
-    };
-    let (speed_on_a_rail, spin_on_a_rail, still_on_a_rail) = push_the_ship_and_see(true, force);
-    let (speed_free, spin_free, _) = push_the_ship_and_see(false, force);
+    let (speed_on_a_rail, spin_on_a_rail, still_on_a_rail) =
+        push_the_ship_and_see(true, force_along_z);
+    let (speed_free, spin_free, _) = push_the_ship_and_see(false, force_along_z);
     assert!(!still_on_a_rail, "the push took the ship off its rail");
     // (The ship went 761.39 along z; the push is 400 metres a second a second for the tick of a twentieth of a second, 20 metres a second, and a missed turn of the orbit is 0.41 along y.)
     assert!(
@@ -512,6 +524,189 @@ fn a_force_on_a_ship_on_its_rail_with_nothing_near_takes_it_off_the_rail_and_pus
             "a push at the centre of mass does not turn the ship: {spin_on_a_rail:?}, {spin_free:?}"
         );
     }
+}
+
+// ---- Step 4c-5-4b (not built): a push does not take a ship off its rail. The force changes the rail; the torque is the bodies'. ----
+//
+// These say what the split of `docs/decisions/joints-and-cars.md` (4c-5-4b) is to do, written before it is built and kept `#[ignore]`d until it is (each was run with `--ignored` and
+// fails for the reason in its message). The two tests above that say a push takes the ship off its rail are what the split replaces: they are removed when these are switched on,
+// and not before.
+
+/// A tick of the world, in seconds (20 a second).
+const TICK: f64 = 0.05;
+
+/// The rail of the ship of [`a_ship_in_orbit`] before it is pushed, after the tick that has the push, and the ship's spin after it.
+fn push_the_ship_on_its_rail_and_see_its_rail(
+    push: impl FnOnce(&mut server::ServerWorld, GridId, f64) + Send + 'static,
+) -> (Rail, Option<Rail>, [f64; 3]) {
+    let (mut scene, _, ship, _) = a_ship_in_orbit(true);
+    let before = rail_of(&scene, ship).expect("it rides a rail");
+    let mass = mass_of(&scene, &[ship]);
+    scene.run(move |world| push(world, ship, mass));
+    (before, rail_of(&scene, ship), spin_of(&scene, ship))
+}
+
+/// What a rail says of its body (its place and its speed from the centre it goes round, which is taken to be at rest at the origin) at `time`.
+fn place_and_speed(rail: &Rail, time: world_storage::rail::RailTime) -> ([f64; 3], [f64; 3]) {
+    let state = rail.state(time, [0.0; 3], [0.0; 3]);
+    (state.position.expect("an orbit"), state.velocity)
+}
+
+/// The rail after a force is **the orbit through the same place, at the instant it was made (`since`), with the speed changed by the force over the tick and over the mass**: a kick,
+/// then the orbit goes on from there (the stopgap of 4c-5-4b, measured 2026-11-19: with the place and the speed exact it loses nothing).
+fn assert_the_rail_was_kicked_by(
+    before: &Rail,
+    after: &Option<Rail>,
+    change_of_speed: [f64; 3],
+    what: &str,
+) {
+    let after = after.as_ref().unwrap_or_else(|| {
+        panic!("{what}: the ship is still on a rail after the push, and it was taken off it")
+    });
+    let since = after
+        .orbit
+        .as_ref()
+        .and_then(|orbit| orbit.since)
+        .expect("a rail made from a state says when");
+    assert_ne!(
+        Some(since),
+        before.orbit.as_ref().and_then(|orbit| orbit.since),
+        "{what}: the rail is a new one, made at the push"
+    );
+    let ((place_before, speed_before), (place_after, speed_after)) = (
+        place_and_speed(before, since),
+        place_and_speed(after, since),
+    );
+    for axis in 0..3 {
+        assert!(
+            (place_after[axis] - place_before[axis]).abs() < 1e-9,
+            "{what}: the ship is where it was at {since:?}: {place_before:?}, {place_after:?}"
+        );
+        assert!(
+            (speed_after[axis] - speed_before[axis] - change_of_speed[axis]).abs() < 1e-9,
+            "{what}: its speed changed by {change_of_speed:?} there: {speed_before:?}, {speed_after:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "4c-5-4b is not built: a push takes the ship off its rail"]
+fn a_force_on_a_ship_on_its_rail_leaves_it_on_the_rail_and_the_rail_has_the_speed_the_force_gave() {
+    let (before, after, spin) = push_the_ship_on_its_rail_and_see_its_rail(force_along_z);
+    assert_the_rail_was_kicked_by(&before, &after, [0.0, 0.0, 400.0 * TICK], "a force");
+    assert!(
+        spin.iter().all(|part| part.abs() < 1e-9),
+        "a force at the centre of mass does not turn the ship: {spin:?}"
+    );
+}
+
+#[test]
+#[ignore = "4c-5-4b is not built: a push takes the ship off its rail"]
+fn a_force_off_the_centre_of_a_ship_on_its_rail_kicks_the_rail_the_same_and_turns_the_ship_as_it_turns_one_that_was_never_on_one()
+ {
+    let (before, after, spin) =
+        push_the_ship_on_its_rail_and_see_its_rail(force_along_z_off_the_centre);
+    assert_the_rail_was_kicked_by(
+        &before,
+        &after,
+        [0.0, 0.0, 400.0 * TICK],
+        "a force off the centre",
+    );
+    let (_, spin_free, _) = push_the_ship_and_see(false, force_along_z_off_the_centre);
+    assert!(
+        spin_free[1].abs() > 1e-6,
+        "the lever turned the ship that was never on a rail about y: {spin_free:?}"
+    );
+    for axis in 0..3 {
+        assert!(
+            (spin[axis] - spin_free[axis]).abs() <= 1e-9 * spin_free[1].abs(),
+            "the spin of the ship that stayed on its rail, {spin:?}, is that of the one that was never on one, {spin_free:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "4c-5-4b is not built: a push takes the ship off its rail"]
+fn a_torque_on_a_ship_on_its_rail_turns_it_as_it_turns_one_that_was_never_on_one_and_leaves_its_rail_as_it_was()
+ {
+    let (before, after, spin) = push_the_ship_on_its_rail_and_see_its_rail(torque_about_y);
+    let (_, spin_free, _) = push_the_ship_and_see(false, torque_about_y);
+    assert_eq!(
+        after.as_ref(),
+        Some(&before),
+        "a torque does not move the centre of mass: the rail is the very rail it was"
+    );
+    assert!(spin_free[1] > 0.0, "the free ship turned: {spin_free:?}");
+    for axis in 0..3 {
+        assert!(
+            (spin[axis] - spin_free[axis]).abs() <= 1e-9 * spin_free[1],
+            "the spin of the ship on its rail, {spin:?}, is that of the one that was never on one, {spin_free:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "4c-5-4b is not built: a port that pulls takes the ship off its rail"]
+fn a_ship_on_a_rail_whose_port_pulls_on_the_port_of_another_ship_stays_on_the_rail_until_they_dock_and_the_ship_they_make_goes_on_in_the_orbit()
+ {
+    // The test above of the ends rule (`..._leaves_the_rail_and_docks`) is what this replaces: the pull is a force on the rail and a torque on the bodies, so it never takes the ship off
+    // its rail; the snap is a touch, and only a touch does.
+    let (mut scene, report) = Scene::reporting_in_a_new_world();
+    let speed = circular_speed(&scene, 0, DISTANCE);
+    let (first, second) = common::docking::a_pair();
+    common::docking::make(&mut scene, pose_at(0.0, DISTANCE, 0.0), false, first);
+    scene.ticks(2);
+    let ship = ship_id(1);
+    scene.run(move |world| {
+        world
+            .set_grid_velocity(ship, [0.0, 0.0, speed], [0.0; 3])
+            .unwrap();
+        put_on_its_rail_in(world, ship);
+    });
+    scene.ticks(3);
+    let origin = origins_of(&scene, &[ship])[0];
+    common::docking::make_going(
+        &mut scene,
+        pose_at(origin[0] + 4.0 + 3.0, origin[1], origin[2]),
+        second,
+        [0.0, 0.0, speed],
+    );
+    let mut docked_at = None;
+    for tick in 0..200 {
+        scene.ticks(1);
+        if report().dockings_made > 0 {
+            docked_at = Some(tick);
+            break;
+        }
+        assert!(
+            rail_of(&scene, ship).is_some(),
+            "the ship is on its rail in tick {tick}, while its port pulls"
+        );
+    }
+    assert!(docked_at.is_some(), "the two ships docked");
+    assert_eq!(
+        report().rails_left_for_ends,
+        0,
+        "no rail was left for the ends that pull"
+    );
+    assert_eq!(report().rail_kicks, 0, "and no hit was made");
+    // The ship they make has the speed of the orbit (the docking reads both ships' speeds; where it cannot it gives the ship none, and the ship falls).
+    scene.ticks(5);
+    let merged = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .iter()
+        .map(|(id, grid)| (id, grid.linear_velocity))
+        .max_by_key(|(id, _)| *id)
+        .expect("a ship");
+    let along = merged.1[2];
+    assert!(
+        (along - speed).abs() < 5.0,
+        "the docked ship goes at the speed of its orbit, {speed}: {:?}",
+        merged
+    );
 }
 
 /// Whether a stranger that goes with the ship (the same velocity, 20 voxels off its east face), `offset` voxels along the way the ship goes from the ship's middle, is in a ghost with
