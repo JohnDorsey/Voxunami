@@ -273,6 +273,17 @@ fn selected<'a>(placeable: &'a [NamespacedId], selection: &Selection) -> Option<
     placeable.get(selection.block).or_else(|| placeable.first())
 }
 
+/// Moves the selection `step` places along the blocks that can be placed, round the ends (nothing to place: nothing moves). A selection that points past the end, because the
+/// list got shorter, counts from the last.
+fn step_selection(selection: &Mutex<Selection>, context: &ClientContext<'_>, step: i64) {
+    let count = context.blocks_with(&PLACEABLE).len() as i64;
+    if count > 0 {
+        let mut selection = locked(selection);
+        let current = (selection.block as i64).min(count - 1);
+        selection.block = (current + step).rem_euclid(count) as usize;
+    }
+}
+
 /// Asks the server to break the block under the crosshair.
 fn break_target(context: &mut ClientContext<'_>) {
     if let Some(hit) = context.target() {
@@ -327,12 +338,28 @@ impl ClientPlugin for ClientBlockEditing {
         ] {
             let selection = Arc::clone(&self.selection);
             registrar.key(key, ActionSpec::new(name, description), move |context| {
-                let count = context.blocks_with(&PLACEABLE).len() as i64;
-                if count > 0 {
-                    let mut selection = locked(&selection);
-                    let current = (selection.block as i64).min(count - 1);
-                    selection.block = (current + step).rem_euclid(count) as usize;
-                }
+                step_selection(&selection, context, step);
+            });
+        }
+
+        // So does the wheel, a notch at a time: turned up (away from the player) it goes back along the list as the left bracket does, and turned down it goes on as the right one does.
+        for (button, step, name, description) in [
+            (
+                MouseButton::WheelUp,
+                -1_i64,
+                "voxunami_cave:select_previous_block_with_wheel",
+                "selects the block before the selected one in the list of blocks you can place, as the wheel turns up: one for each notch",
+            ),
+            (
+                MouseButton::WheelDown,
+                1,
+                "voxunami_cave:select_next_block_with_wheel",
+                "selects the block after the selected one in the list of blocks you can place, as the wheel turns down: one for each notch",
+            ),
+        ] {
+            let selection = Arc::clone(&self.selection);
+            registrar.mouse(button, ActionSpec::new(name, description), move |context| {
+                step_selection(&selection, context, step);
             });
         }
 

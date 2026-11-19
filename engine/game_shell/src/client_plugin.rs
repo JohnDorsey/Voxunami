@@ -33,13 +33,18 @@ pub trait ClientPlugin: Any + Send + std::fmt::Debug {
     fn register(&self, registrar: &mut ClientRegistrar<'_>);
 }
 
-/// The mouse buttons that do something in a game, while the mouse is captured.
+/// The mouse buttons that do something in a game, while the mouse is captured. The wheel is two of them: each notch it turns is one press of the side it turns to (a touchpad's
+/// slide is counted in notches too, see `wheel`), so a turn of three notches runs the action three times.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     /// The left button.
     Primary,
     /// The right button.
     Secondary,
+    /// A notch of the wheel turned away from the player (up).
+    WheelUp,
+    /// A notch of the wheel turned toward the player (down).
+    WheelDown,
 }
 
 /// What an action is: an identifier (unique among all the actions, so that a later phase can rebind it by

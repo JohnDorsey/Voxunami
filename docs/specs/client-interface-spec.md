@@ -57,7 +57,7 @@ Verbs of `ClientRegistrar` (the budget: six, not a toolkit; `overlay` joined in 
 | `overlay(\|ctx\| Option<ui::Ui>)` | a panel of the screen (the hotbar): a tree of panels, labels, bars and swatches; never modal, and buttons in it do nothing | every frame, in play and replay |
 | `entity_appearance(kind, \|entity\| Option<Appearance>)` | how entities of a kind are drawn: a box (size in eighths of a voxel, a block's number for its colour, and an offset of its middle from the entity), until there are models (Phase 30, 35) | every frame, in play and replay |
 | `key(KeyCode, ActionSpec, \|ctx\| ...)` | a key action with an id and a summary | in play only |
-| `mouse(Button, ActionSpec, \|ctx\| ...)` | the primary or secondary mouse action | in play only |
+| `mouse(Button, ActionSpec, \|ctx\| ...)` | the primary or secondary mouse action, or a notch of the wheel up or down (`WheelUp`, `WheelDown`: the window counts a touchpad's slide in notches, 40 pixels each, and runs the action once for each notch) | in play only |
 | `command(CommandSpec, \|ctx, arguments\| -> String)` | a `.`-command | in play only |
 
 - The **context** is a narrow, non-generic view of the session: `send_command(text)`, `send_message(&M)`, the voxel under the crosshair and the

@@ -14,7 +14,9 @@ use transport::Connection;
 use voxel_space::GridId;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -34,6 +36,7 @@ use crate::view::{
     hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
     show_screen,
 };
+use crate::wheel::WheelNotches;
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f64 = 5.0;
@@ -196,6 +199,8 @@ struct Viewer<G: GameDefinition> {
     cursor: (f64, f64),
     /// Whether a shift key is down (for Tab backwards).
     shift: bool,
+    /// The turns of the mouse wheel that are not yet a whole notch.
+    wheel: WheelNotches,
     /// Which interface has the player's input, if one does; and which of its buttons has the keyboard focus.
     modal_source: Option<Source>,
     focus: Option<u32>,
@@ -301,6 +306,7 @@ impl<G: GameDefinition> Viewer<G> {
             mouse_captured: false,
             cursor: (0.0, 0.0),
             shift: false,
+            wheel: WheelNotches::default(),
             modal_source: None,
             focus: None,
             entry: CommandEntry::default(),
@@ -811,6 +817,26 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 (MouseButton::Right, true) => viewer.session.mouse_pressed(GameButton::Secondary),
                 _ => {}
             },
+            // The wheel is two buttons that are pressed a notch at a time, and (like the buttons) the world hears it only while the mouse is captured and no interface has the
+            // input.
+            WindowEvent::MouseWheel { delta, .. }
+                if viewer.mouse_captured && !viewer.modal_has_the_input() =>
+            {
+                let notches = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => {
+                        viewer.wheel.add_lines(f64::from(lines))
+                    }
+                    MouseScrollDelta::PixelDelta(slide) => viewer.wheel.add_pixels(slide.y),
+                };
+                let button = if notches > 0 {
+                    GameButton::WheelUp
+                } else {
+                    GameButton::WheelDown
+                };
+                for _ in 0..notches.unsigned_abs() {
+                    viewer.session.mouse_pressed(button);
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => viewer.cursor = (position.x, position.y),
             WindowEvent::ModifiersChanged(modifiers) => {
                 viewer.shift = modifiers.state().shift_key()
