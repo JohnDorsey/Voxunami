@@ -1,5 +1,5 @@
-//! Docking ports that pull on each other when a ship that has one **rides a rail alone** (step 4c-5-4b of `docs/decisions/joints-and-cars.md`): the pull is a force on the rail and a
-//! torque on the bodies, so it never takes the ship off its rail; only the dock, which is a touch, does (the owner's promise of 2026-11-09).
+//! Docking ports that pull on each other when a ship that has one **rides a rail, alone or in a group** (step 4c-5-4b of `docs/decisions/joints-and-cars.md`): the pull is a force on the
+//! rail and a torque on the bodies, so it never takes the ship, or its group, off its rail; only the dock, which is a touch, does (the owner's promise of 2026-11-09).
 //!
 //! Ships are pulled together, and docked, between ships of one frame (`port_pairs`, `attract`, `dock`), and a ship on a rail is in a frame of its own while another ship is near it
 //! (or in none), so it was taken off its rail for any port that pulled on its own. These pairs are found over all the ships instead, wherever their bodies are. What differs from a pair
@@ -9,15 +9,17 @@
 //!   step it, so the places are not of one time while the bodies are about to step (at orbital speed a tick is 38 voxels, six times the range of a pull). The pull is worked out with a ship on
 //!   a rail put back a tick of its speed (`lag`, as the rule for the ends of a group does it), and **the dock is made after the step**, when every ship is at the place of the end of the
 //!   tick and no ship has to be put back.
-//! - **The force goes where the ship is.** A ship that is free has the force in its body, as a ship in one frame has; a ship that rides a rail alone is asked of the world as an engine asks:
-//!   `ServerWorld::apply_grid_force` at its centre of mass is a change of its rail (made at the end of the tick, with the speed it has then and the change exact), and the torque (the lever
-//!   of the port and the twist that turns it into line) is the bodies', which give the ship a frame to turn in while the torque waits (`ServerWorld::has_a_torque_waiting`). So the two
-//!   ships get the same force and the opposite one, each its own change, whatever each weighs.
+//! - **The force goes where the ship is.** A ship that is free has the force in its body, as a ship in one frame has; a ship that rides a rail, alone or in a group, is asked of the world as
+//!   an engine asks: `ServerWorld::apply_grid_force` at its centre of mass is a change of its rail (made at the end of the tick, with the speed it has then and the change exact; a group's
+//!   rail is of the centre of mass of all its ships, and the bodies are given the force as well, for the turn and the swing of the joints), and the torque (the lever of the port and the
+//!   twist that turns it into line) is the bodies', which give a ship alone a frame to turn in while the torque waits (`ServerWorld::has_a_torque_waiting`). So the two ships get the same
+//!   force and the opposite one, each its own change, whatever each weighs.
 //! - **A ship that rides a rail stays where it is** in the dock: it is the one that does not move (a ship that is held, which does not move either, comes before it), and the other is put
 //!   where it docks and made one ship with it that goes as the two did together.
 //!
-//! Pairs with a ship of a group (coupled by joint ends) are not found here: a group is pulled in the frame that the ends rule gives it, and the rule takes a ship alone on a rail off it
-//! for a port of a group that pulls on its own (`ends_pull_on_the_group`), as it always did. Nor are the planets' ports: a planet is held, and a ship on a rail docks with one as before.
+//! **Two ships of one group are not a pair here** (a group is in one frame, and its ports pull as they always did, in `port_pairs`); **nor are the planets' ports** (a planet is held, and
+//! a ship on a rail docks with one as before). **Joint ends are not here either**: a coupling is made between ships of one body world, so a ship, or a group, on a rail is still taken off it
+//! for a joint end that pulls on its own (`ends_pull_on_the_group`).
 
 use std::collections::BTreeSet;
 
@@ -31,7 +33,7 @@ use super::{
 };
 use crate::docking::{Approach, BlockFace, Docking};
 
-/// A pair of ports of two ships, one of which at least rides a rail alone, that pull on each other: the closest such pair of ports of the two.
+/// A pair of ports of two ships, one of which at least rides a rail (alone or in a group), that pull on each other: the closest such pair of ports of the two.
 pub(super) struct RailPortPair {
     /// The ship with the lower identifier, and the other.
     first: GridId,
@@ -41,7 +43,7 @@ pub(super) struct RailPortPair {
     approach: Approach,
 }
 
-/// What a ship that has ports is, to the pairs: where it is at the instant the pairs are asked about, its ports, and whether it rides a rail alone.
+/// What a ship that has ports is, to the pairs: where it is at the instant the pairs are asked about, its ports, and whether it rides a rail, alone or in a group.
 struct Bearer<'a> {
     id: GridId,
     pose: GridPose,
@@ -49,19 +51,29 @@ struct Bearer<'a> {
     rides_a_rail: bool,
 }
 
-/// Whether the pair of ports of these two ships is a pair of [`Bodies::railed_port_pairs`] and not of `port_pairs`: a ship of the two rides a rail alone and neither is of a group.
-pub(super) fn is_a_rail_pair(world: &ServerWorld, first: GridId, second: GridId) -> bool {
+/// Whether this ship rides a rail that a push leaves it on: alone (`ServerWorld::rides_a_rail_alone`) or in a group (`ServerWorld::rides_a_rail_in_a_group`).
+fn rides_a_rail(world: &ServerWorld, ship: GridId) -> bool {
+    world.rides_a_rail_alone(ship) || world.rides_a_rail_in_a_group(ship).is_some()
+}
+
+/// Whether two ships are of one group (coupled by joint ends, directly or through others).
+fn are_of_one_group(world: &ServerWorld, first: GridId, second: GridId) -> bool {
     let grids = world.data().grids();
-    (world.rides_a_rail_alone(first) || world.rides_a_rail_alone(second))
-        && !grids.has_partners(first)
-        && !grids.has_partners(second)
+    grids.has_partners(first) && grids.group_of(first).contains(&second)
+}
+
+/// Whether the pair of ports of these two ships is a pair of [`Bodies::railed_port_pairs`] and not of `port_pairs`: a ship of the two rides a rail, alone or in a group, and they are
+/// not of one group.
+pub(super) fn is_a_rail_pair(world: &ServerWorld, first: GridId, second: GridId) -> bool {
+    (rides_a_rail(world, first) || rides_a_rail(world, second))
+        && !are_of_one_group(world, first, second)
 }
 
 impl Bodies {
-    /// For every two ships that have ports that pull on each other (the closest pair of ports of the two), of which one at least rides a rail alone (`ServerWorld::rides_a_rail_alone`),
-    /// in order of ship (the lower identifier first). **`lag`** is the seconds that a ship that the rails place is ahead of the others, as for `ends_pull_on_the_group`: a tick before the
-    /// bodies step, none after. Ships that are frozen, ships of a group, ships in another level, pairs that were undocked and have not yet come apart, and pairs that could not be docked
-    /// where they are, have none.
+    /// For every two ships that have ports that pull on each other (the closest pair of ports of the two), of which one at least rides a rail, alone or in a group
+    /// (`ServerWorld::rides_a_rail_alone`, `ServerWorld::rides_a_rail_in_a_group`), in order of ship (the lower identifier first). **`lag`** is the seconds that a ship that the rails place
+    /// is ahead of the others, as for `ends_pull_on_the_group`: a tick before the bodies step, none after. Ships that are frozen, two ships of one group, ships in another level, pairs that
+    /// were undocked and have not yet come apart, and pairs that could not be docked where they are, have none.
     pub(super) fn railed_port_pairs(
         &self,
         world: &ServerWorld,
@@ -79,14 +91,14 @@ impl Bodies {
                 let Some(ship) = grids.get(*id) else {
                     continue;
                 };
-                if ship.frozen || grids.has_partners(*id) {
+                if ship.frozen {
                     continue;
                 }
                 bearers.push(Bearer {
                     id: *id,
                     pose: pose_at_the_start(world, *id, ship, lag),
                     ports: &record.ports,
-                    rides_a_rail: world.rides_a_rail_alone(*id),
+                    rides_a_rail: rides_a_rail(world, *id),
                 });
             }
         }
@@ -100,6 +112,7 @@ impl Bodies {
             for second in &bearers[index + 1..] {
                 let pair = (first.id, second.id);
                 if !(first.rides_a_rail || second.rides_a_rail)
+                    || are_of_one_group(world, first.id, second.id)
                     || released.contains(&pair)
                     || self
                         .refused
@@ -128,9 +141,9 @@ impl Bodies {
         pairs
     }
 
-    /// Asks the world for the pull of every pair of ports of which a ship rides a rail alone, on each ship of it: the force at the centre of mass and the torque (the lever of the port, less
-    /// the twist that turns the ship into line), the same on both ends and the opposite. A ship that is free has the force in its body, one that rides a rail alone in its rail. It is
-    /// asked before the ships are given their bodies for the tick: a torque that waits gives a ship alone on a rail a body to turn.
+    /// Asks the world for the pull of every pair of ports of which a ship rides a rail, on each ship of it: the force at the centre of mass and the torque (the lever of the port, less
+    /// the twist that turns the ship into line), the same on both ends and the opposite. A ship that is free has the force in its body, one that rides a rail in its rail (and a ship of a
+    /// group in its body too). It is asked before the ships are given their bodies for the tick: a torque that waits gives a ship alone on a rail a body to turn.
     pub(super) fn pull_ports_of_ships_on_rails(&mut self, world: &mut ServerWorld) {
         let Some(docking) = self.config.docking.clone() else {
             return;
@@ -164,7 +177,7 @@ impl Bodies {
                         continue;
                     };
                     // (A ship that is held is not pulled.)
-                    if record.kind == BodyKind::Fixed && !world.rides_a_rail_alone(id) {
+                    if record.kind == BodyKind::Fixed && !rides_a_rail(world, id) {
                         continue;
                     }
                     let (pull, turn) = pull_and_turn(record, &ship.pose, port, force, twist, sign);
@@ -181,7 +194,7 @@ impl Bodies {
         }
     }
 
-    /// Ships whose ports have come together and are in line, of which one at least rides a rail alone, are made one ship. It is asked **after the step** (see the module): every ship
+    /// Ships whose ports have come together and are in line, of which one at least rides a rail, are made one ship. It is asked **after the step** (see the module): every ship
     /// is at its place of the end of the tick, the world's numbers for how it goes are the ones the ship has, and the ship that rides a rail does not move in the dock.
     pub(super) fn dock_ships_on_rails(&mut self, world: &mut ServerWorld) {
         let Some(docking) = self.config.docking.clone() else {
@@ -202,8 +215,9 @@ impl Bodies {
         }
     }
 
-    /// Docks two ships that are close enough and in line, of which one at least rides a rail alone: the one that stays is the one that is held, else the one that rides a rail, else the
-    /// heavier, and the other is put exactly where it docks; the two are made one ship that goes as the two did together (the momentum of both) unless one is held. Whether it was done.
+    /// Docks two ships that are close enough and in line, of which one at least rides a rail: the one that stays is the one that is held, else the one that rides a rail, else the
+    /// heavier, and the other is put exactly where it docks; the two are made one ship that goes as the two did together (the momentum of both) unless one is held. (A ship of a group that
+    /// docks is no longer coupled to it: a merge forgets the couplings of the ships it makes one, and the group's rail goes with them.) Whether it was done.
     fn dock_ships_on_rails_pair(
         &mut self,
         world: &mut ServerWorld,
@@ -226,7 +240,7 @@ impl Bodies {
             return false;
         };
         let rank = |id: GridId, record: &Ship| {
-            if world.rides_a_rail_alone(id) {
+            if rides_a_rail(world, id) {
                 1
             } else if record.kind == BodyKind::Fixed {
                 2

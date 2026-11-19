@@ -2139,8 +2139,8 @@ impl Bodies {
     /// Takes a group that is on a rail off it when an end of a ship that is not of it pulls on an end of its own (a joint to be coupled, a docking port): the coupling and the docking
     /// are made between ships of one frame, so the group has to be in the frame that ship is in, as it was when anything near took a group off its rail. **So is a ship alone on a
     /// rail that has another ship near it** (the world says which: `ServerWorld::has_a_stranger_near_on_its_rail`; a ship with nothing near it has nothing to pull on), **for joint
-    /// ends and for the ports of a group; not for the ports of a ship that is not of a group** (step 4c-5-4b: their pull is a force on the rail and a torque on the bodies, and the dock
-    /// takes the rail: `rail_ports.rs`). **A stranger that does not pull
+    /// ends only: not for ports** (step 4c-5-4b: the pull of a port on a ship that rides a rail, alone or in a group, is a force on the rail and a torque on the bodies, and the dock takes
+    /// the rail: `rail_ports.rs`; a port of a group that is off a rail still takes it into the frame of the ship that is not, as it did). **A stranger that does not pull
     /// is no reason**: it is the contact ghost's, and a touch takes the rail (`hold_groups_at_their_points`). It is asked at the end of the step, where every ship is at the place of
     /// the end of the tick (the group's rail is taken after the step, as `update_coasting` takes any rail, and not before: the group would be stepped again for this tick).
     fn take_railed_groups_off_for_ends_that_pull(&mut self, world: &mut ServerWorld) {

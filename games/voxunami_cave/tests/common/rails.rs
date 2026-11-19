@@ -4,7 +4,7 @@
 use super::{Scene, circular_speed, make_ship, ship_id};
 use server::ServerWorld;
 use voxel_space::{GridId, GridPose, Orientation, WorldPosition};
-use world_storage::rail::RailTime;
+use world_storage::rail::{Rail, RailTime};
 
 pub const TICKS_PER_SECOND: u32 = 20;
 
@@ -84,4 +84,25 @@ pub fn put_on_its_rail_in(world: &mut ServerWorld, ship: GridId) {
         .coasting_rail(ship, time)
         .expect("the ship is clear of the ground and alone, so a rail may have it");
     world.set_grid_rail(ship, Some(rail)).unwrap();
+}
+
+/// Puts a ship on the orbit that it is on, though another ship is near it: the rules of a rail (`coasting_rail`) refuse a ship with a stranger near it, and a ship on a rail has
+/// one near it all the same now (the stranger is the contact ghost's), so this is how a test makes the second of two ships near each other ride one. **The orbit is of the time of the
+/// ship's state, which is a tick before the world's clock**: a ship that is free is where the last tick left it until the bodies step it, and a rail made for the clock's time would put
+/// it a tick of its speed (38 voxels) behind the ship on a rail that it is beside, for good.
+pub fn put_on_a_rail_near_another_ship(world: &mut ServerWorld, ship: GridId) {
+    let time = RailTime::of_tick(world.data().clock() - 1, TICKS_PER_SECOND);
+    let orbit = world
+        .flight_state(ship, time)
+        .and_then(|state| state.orbit.ok())
+        .expect("the ship is in orbit");
+    world
+        .set_grid_rail(
+            ship,
+            Some(Rail {
+                spin: None,
+                orbit: Some(orbit),
+            }),
+        )
+        .unwrap();
 }
