@@ -29,7 +29,9 @@ use world_storage::MovingGrid;
 use super::rail_ports::is_a_rail_pair;
 use super::{Bodies, Frame, FrameKey, Ship};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{JointSettings, effective_mass};
+use crate::joints::{
+    Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world, mass_at_an_end,
+};
 
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
@@ -243,15 +245,34 @@ impl Bodies {
             if busy.contains(&first_group) || busy.contains(&second_group) {
                 continue;
             }
+            // (Sized by what the end answers a force with, not by the mass of the group: `mass_at_an_end`.)
+            let Some(direction) = settings.pull_direction(pair.how.gap, pair.relative_velocity)
+            else {
+                continue;
+            };
             let Some(mass) = effective_mass(
-                groups.mass_moved_by_a_pull_on(pair.first),
-                groups.mass_moved_by_a_pull_on(pair.second),
+                self.mass_at_the_end_in_a_frame(
+                    world,
+                    frame_key,
+                    &groups,
+                    pair.first,
+                    pair.first_arm,
+                    direction,
+                ),
+                self.mass_at_the_end_in_a_frame(
+                    world,
+                    frame_key,
+                    &groups,
+                    pair.second,
+                    pair.second_arm,
+                    direction,
+                ),
             ) else {
                 continue;
             };
             busy.insert(first_group);
             busy.insert(second_group);
-            self.pull(settings, frame_key, pair, mass, &groups);
+            self.pull(world, settings, frame_key, pair, mass, &groups);
         }
     }
 
@@ -564,6 +585,26 @@ impl Bodies {
         true
     }
 
+    /// What the end of a ship answers a force along `direction` with, as a mass (`mass_at_an_end`), the ship's own: `None` for a ship whose group a pull cannot move.
+    fn mass_at_the_end_in_a_frame(
+        &self,
+        world: &ServerWorld,
+        frame_key: FrameKey,
+        groups: &Groups,
+        id: GridId,
+        arm: [f64; 3],
+        direction: [f64; 3],
+    ) -> Option<f64> {
+        groups.mass_moved_by_a_pull_on(id)?;
+        let record = self.frames.get(&frame_key)?.ships.get(&id)?;
+        let ship = world.data().grids().get(id)?;
+        let tensor = MassMoments::sum(record.moments.values().copied())
+            .properties()?
+            .inertia;
+        let inertia = inertia_in_the_world(ship.pose.rotation_matrix(), tensor);
+        mass_at_an_end(record.mass, inertia, arm, direction)
+    }
+
     /// Pulls two ends toward each other: each of the two ships whose group can move gets the same force, the other way, at its end (as docking's is, owner, 2026-11-09), whatever
     /// it weighs; the group that weighs less moves more. A pull at an end that is away from the centre of mass swings the ship, and two ends side by side swing the two ships
     /// against each other, so the spin of the ships against each other is slowed by a torque against it (equal and opposite, `damping_torque_limit` at most): without it
@@ -571,6 +612,7 @@ impl Bodies {
     /// `tests/joint_coupling.rs`). Nothing turns the ships into line. A ball turns however it is.
     fn pull(
         &mut self,
+        world: &ServerWorld,
         settings: &JointSettings,
         frame_key: FrameKey,
         pair: &JointPair,
@@ -578,15 +620,17 @@ impl Bodies {
         groups: &Groups,
     ) {
         let on_second = settings.pull_on_second(pair.how.gap, pair.relative_velocity, mass);
-        // The inertia that the spin is slowed against: each ship's own, about its centre of mass, as a number (a third of the trace of the tensor).
-        let inertia_of = |id: GridId| -> Option<f64> {
+        // The inertia that the spin is slowed against: each ship's own tensor, about its centre of mass, in the world's axes.
+        let inertia_of = |id: GridId| -> Option<Inertia> {
             groups.mass_moved_by_a_pull_on(id)?;
             let record = self.frames.get(&frame_key)?.ships.get(&id)?;
-            let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
-            let tensor = properties.inertia;
-            Some((tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0)
+            let ship = world.data().grids().get(id)?;
+            let tensor = MassMoments::sum(record.moments.values().copied())
+                .properties()?
+                .inertia;
+            Some(inertia_in_the_world(ship.pose.rotation_matrix(), tensor))
         };
-        let damping = effective_mass(inertia_of(pair.first), inertia_of(pair.second))
+        let damping = effective_inertia(inertia_of(pair.first), inertia_of(pair.second))
             .map_or([0.0; 3], |inertia| {
                 settings.spin_damping_on_second(pair.relative_spin, inertia)
             });

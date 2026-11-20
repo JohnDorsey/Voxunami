@@ -3,10 +3,27 @@
 
 use grid_bodies::BlockFace;
 use grid_bodies::docking::{Approach, BlockFaceView};
-use grid_bodies::joints::{JointSettings, effective_mass};
+use grid_bodies::joints::{
+    Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world,
+    inverse_inertia_along, mass_at_an_end,
+};
 use voxel_space::{FaceDirection, LatticeRotation, VoxelCoordinate};
 
 type Vec3 = [f64; 3];
+
+/// The tensor of a body that turns as easily every way: `inertia` on the diagonal.
+fn isotropic(inertia: f64) -> Inertia {
+    diagonal([inertia; 3])
+}
+
+/// The tensor of a body with these on the diagonal (axes of its own that are the world's).
+fn diagonal(about: Vec3) -> Inertia {
+    [
+        [about[0], 0.0, 0.0],
+        [0.0, about[1], 0.0],
+        [0.0, 0.0, about[2]],
+    ]
+}
 
 fn length(a: Vec3) -> f64 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
@@ -281,18 +298,21 @@ fn the_spin_of_the_cars_against_each_other_is_slowed_by_a_torque_against_it_that
     let settings = JointSettings::default();
     assert_eq!(settings.damping_torque_limit, 10_000.0);
     // Against the spin of the second car against the first, and nothing where there is none.
-    let torque = settings.spin_damping_on_second([0.0, 0.5, 0.0], 1_000.0);
+    let torque = settings.spin_damping_on_second([0.0, 0.5, 0.0], isotropic(1_000.0));
     assert!(
         torque[1] < 0.0 && torque[0] == 0.0 && torque[2] == 0.0,
         "{torque:?}"
     );
-    assert_eq!(settings.spin_damping_on_second([0.0; 3], 1_000.0), [0.0; 3]);
     assert_eq!(
-        settings.spin_damping_on_second([0.0, 0.5, 0.0], 0.0),
+        settings.spin_damping_on_second([0.0; 3], isotropic(1_000.0)),
         [0.0; 3]
     );
     assert_eq!(
-        settings.spin_damping_on_second([0.0, 0.5, 0.0], f64::NAN),
+        settings.spin_damping_on_second([0.0, 0.5, 0.0], isotropic(0.0)),
+        [0.0; 3]
+    );
+    assert_eq!(
+        settings.spin_damping_on_second([0.0, 0.5, 0.0], isotropic(f64::NAN)),
         [0.0; 3]
     );
     // In proportion to the inertia and the spin, by the response: 1,000 kg m m times 0.5 rad/s over 0.1 s.
@@ -300,7 +320,8 @@ fn the_spin_of_the_cars_against_each_other_is_slowed_by_a_torque_against_it_that
     // Cut to the limit, for any inertia and spin.
     for inertia in [1e-3, 1.0, 1e4, 1e9] {
         for spin in [0.0, 0.3, 5.0, 1e3] {
-            let torque = settings.spin_damping_on_second([spin, -spin, spin / 2.0], inertia);
+            let torque =
+                settings.spin_damping_on_second([spin, -spin, spin / 2.0], isotropic(inertia));
             assert!(
                 length(torque) <= settings.damping_torque_limit * (1.0 + 1e-12),
                 "{inertia} {spin}"
@@ -315,7 +336,11 @@ fn a_torque_against_the_spin_takes_it_off_in_the_end_without_turning_the_other_w
     // Two cars turning against each other, slowed by the torque the rule gives, equal and opposite, with the tick of the server.
     let settings = JointSettings::default();
     let (first_inertia, second_inertia) = (3_000.0, 9_000.0);
-    let inertia = effective_mass(Some(first_inertia), Some(second_inertia)).unwrap();
+    let inertia = effective_inertia(
+        Some(isotropic(first_inertia)),
+        Some(isotropic(second_inertia)),
+    )
+    .unwrap();
     let (mut first_spin, mut second_spin) = (-0.6_f64, 0.6_f64);
     for _ in 0..100 {
         let on_second =
@@ -353,4 +378,145 @@ fn the_pull_is_the_same_on_both_ends_but_the_other_way_so_nothing_is_made_from_n
     // And the dot product of the two forces is negative: they oppose.
     let on_second = settings.pull_on_second([3.0, 0.0, 0.0], [0.0; 3], 100.0);
     assert!(dot(on_second, on_second.map(|part| -part)) < 0.0);
+}
+
+#[test]
+fn the_spin_of_two_cars_that_turn_easily_about_one_axis_is_cut_the_same_part_every_tick_on_every_axis()
+ {
+    // Two cars like long rods: little inertia about the long axis (x), a lot about the others. The old rule slowed them with one number, a third of the trace, which on the long
+    // axis took a spin of 1 radian a second to -13.8 in one tick (red, 2026-11-19, with the tick of the server); each axis is cut by its own response now.
+    let settings = JointSettings::default();
+    let (first, second) = ([50.0, 3_000.0, 3_000.0], [80.0, 5_000.0, 5_000.0]);
+    let inertia = effective_inertia(Some(diagonal(first)), Some(diagonal(second))).unwrap();
+    let (mut first_spin, mut second_spin) = ([-0.5, 0.2, 0.1], [0.5, -0.2, -0.1]);
+    let kept = 1.0 - 0.05 / settings.response_seconds;
+    for tick in 0..60 {
+        let relative = [0, 1, 2].map(|axis| second_spin[axis] - first_spin[axis]);
+        let on_second = settings.spin_damping_on_second(relative, inertia);
+        for axis in 0..3 {
+            first_spin[axis] -= on_second[axis] / first[axis] * 0.05;
+            second_spin[axis] += on_second[axis] / second[axis] * 0.05;
+            let after = second_spin[axis] - first_spin[axis];
+            assert!(
+                (after - relative[axis] * kept).abs() < 1e-9,
+                "tick {tick}, axis {axis}: {} then {after}",
+                relative[axis]
+            );
+        }
+    }
+    let end = [0, 1, 2].map(|axis| second_spin[axis] - first_spin[axis]);
+    assert!(length(end) < 1e-6, "{end:?}");
+}
+
+#[test]
+fn a_tensor_that_is_the_same_every_way_slows_a_spin_as_the_number_did() {
+    let settings = JointSettings::default();
+    for inertia in [0.5, 40.0, 3_000.0] {
+        for spin in [[0.3, -0.1, 0.2], [0.0, 2.0, 0.0], [-1e-3, 0.0, 5.0]] {
+            let torque = settings.spin_damping_on_second(spin, isotropic(inertia));
+            let size = length(spin.map(|part| -inertia * part / settings.response_seconds));
+            let scale = (settings.damping_torque_limit / size).min(1.0);
+            for axis in 0..3 {
+                let wanted = -inertia * spin[axis] / settings.response_seconds * scale;
+                assert!((torque[axis] - wanted).abs() <= 1e-9 * wanted.abs().max(1.0));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_tensor_with_a_turn_in_it_gives_a_torque_about_the_axis_it_is_turned_to() {
+    // A rod along x that is turned a quarter turn about z lies along y, and turns easily about y: a spin about y gets a small torque, a spin about x a large one.
+    let quarter = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+    let turned = inertia_in_the_world(quarter, diagonal([50.0, 3_000.0, 3_000.0]));
+    for (row, expected) in [[3_000.0, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 3_000.0]]
+        .iter()
+        .enumerate()
+    {
+        for column in 0..3 {
+            assert!(
+                (turned[row][column] - expected[column]).abs() < 1e-9,
+                "{turned:?}"
+            );
+        }
+    }
+    let unturned = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let body = [[10.0, 1.0, 0.5], [1.0, 20.0, 2.0], [0.5, 2.0, 30.0]];
+    assert_eq!(inertia_in_the_world(unturned, body), body);
+    // Turned any way, the sum of the diagonal (and so the mean the old rule used) is the same, and the tensor stays symmetric.
+    let slant = [[0.6, -0.8, 0.0], [0.8, 0.6, 0.0], [0.0, 0.0, 1.0]];
+    let slanted = inertia_in_the_world(slant, body);
+    let trace = |tensor: Inertia| tensor[0][0] + tensor[1][1] + tensor[2][2];
+    assert!((trace(slanted) - trace(body)).abs() < 1e-9);
+    for (row, line) in slanted.iter().enumerate() {
+        for (column, entry) in line.iter().enumerate() {
+            assert!((entry - slanted[column][row]).abs() < 1e-9);
+        }
+    }
+}
+
+#[test]
+fn the_inertia_of_a_pair_is_the_reduced_tensor_or_the_tensor_of_the_one_that_can_turn() {
+    let (first, second) = (
+        diagonal([50.0, 3_000.0, 3_000.0]),
+        diagonal([80.0, 5_000.0, 6_000.0]),
+    );
+    let both = effective_inertia(Some(first), Some(second)).unwrap();
+    for axis in 0..3 {
+        let (a, b) = (first[axis][axis], second[axis][axis]);
+        assert!(
+            (both[axis][axis] - a * b / (a + b)).abs() < 1e-6 * a,
+            "{both:?}"
+        );
+    }
+    // The same every way, it is the reduced mass as a number.
+    let reduced = effective_inertia(Some(isotropic(100.0)), Some(isotropic(100.0))).unwrap();
+    assert!((reduced[0][0] - 50.0).abs() < 1e-9 && reduced[0][1].abs() < 1e-12);
+    assert_eq!(effective_inertia(Some(first), None), Some(first));
+    assert_eq!(effective_inertia(None, Some(second)), Some(second));
+    assert_eq!(effective_inertia(None, None), None);
+    // A tensor that is nothing, not a number, or not positive is not usable.
+    assert_eq!(effective_inertia(Some(isotropic(0.0)), Some(second)), None);
+    assert_eq!(effective_inertia(Some(isotropic(f64::NAN)), None), None);
+    assert_eq!(
+        effective_inertia(Some(diagonal([1.0, -1.0, 1.0])), None),
+        None
+    );
+}
+
+#[test]
+fn what_a_force_at_an_end_adds_to_the_answer_of_a_body_is_the_lever_through_the_inverse_tensor() {
+    let rod = diagonal([50.0, 3_000.0, 3_000.0]);
+    // A torque of 3 about z turns the rod as 1/3,000 does.
+    assert!((inverse_inertia_along(rod, [0.0, 0.0, 3.0]).unwrap() - 9.0 / 3_000.0).abs() < 1e-12);
+    // The same torque about the long axis turns it 60 times as much.
+    assert!((inverse_inertia_along(rod, [3.0, 0.0, 0.0]).unwrap() - 9.0 / 50.0).abs() < 1e-12);
+    assert_eq!(inverse_inertia_along(isotropic(0.0), [1.0, 0.0, 0.0]), None);
+}
+
+#[test]
+fn the_mass_at_the_end_of_a_car_is_its_mass_less_what_its_lever_gives_it_to_answer_with() {
+    let rod = diagonal([50.0, 3_000.0, 3_000.0]);
+    // A force along the arm has no lever: the mass of the car.
+    let along = mass_at_an_end(100.0, rod, [0.0, 2.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+    assert!((along - 100.0).abs() < 1e-9, "{along}");
+    // A force across a 2 metre arm turns the car as well: the end answers it as 1/100 + 4/3,000 does, so as a lighter mass.
+    let across = mass_at_an_end(100.0, rod, [0.0, 2.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
+    assert!(
+        (across - 1.0 / (1.0 / 100.0 + 4.0 / 3_000.0)).abs() < 1e-9,
+        "{across}"
+    );
+    assert!(across < along);
+    // About the axis the rod turns easily about, the same lever gives the end far more to answer with.
+    let easy = mass_at_an_end(100.0, rod, [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+    assert!(
+        (easy - 1.0 / (1.0 / 100.0 + 4.0 / 50.0)).abs() < 1e-9,
+        "{easy}"
+    );
+    // Nothing that is not a mass and an inertia.
+    assert_eq!(
+        mass_at_an_end(100.0, isotropic(0.0), [0.0, 2.0, 0.0], [1.0, 0.0, 0.0]),
+        None
+    );
+    assert_eq!(mass_at_an_end(0.0, rod, [0.0; 3], [1.0, 0.0, 0.0]), None);
 }

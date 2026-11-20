@@ -7,7 +7,7 @@
 //! All of it is in metres, kilograms and seconds, the world's axes and `f64`; the one transcendental function (the cosine of the angle) is `libm`'s, so the result is the same
 //! on every machine.
 
-use crate::docking::{Approach, BlockFaceView, dot, length};
+use crate::docking::{Approach, BlockFaceView, cross, dot, length, turn};
 
 /// How ships with joint ends are drawn together and coupled. The numbers of the owner's choice are marked; the pull itself (how it slows the ends as they come) is mine.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +103,13 @@ impl JointSettings {
         approach.distance <= self.spin_waived_within
     }
 
+    /// The way the pull on the second end points: toward the first end's speed asked of them, whatever the mass (the mass only scales it). `None` where there is no pull.
+    pub fn pull_direction(&self, gap: [f64; 3], relative_velocity: [f64; 3]) -> Option<[f64; 3]> {
+        let pull = self.pull_on_second(gap, relative_velocity, 1.0);
+        let size = length(pull);
+        (size.is_finite() && size > 0.0).then(|| pull.map(|part| part / size))
+    }
+
     /// The force on the second end of a pair that pull on each other (the first has the opposite one): toward the first end, at most `pull_force`, and such that the pair
     /// arrives slowly. `gap` goes from the first end's pivot to the second's, `relative_velocity` is the second's against the first's, and `effective_mass` is that of the pair
     /// (see [`effective_mass`]).
@@ -142,18 +149,26 @@ impl JointSettings {
 }
 
 impl JointSettings {
-    /// The torque on the second car that slows its spin against the first (the first has the opposite): the inertia of the pair (see [`effective_mass`], which works for
-    /// inertias too) times the spin over the response, against it, cut to `damping_torque_limit`. None for an inertia that is nothing or not a number.
+    /// The torque on the second car that slows its spin against the first (the first has the opposite): the inertia of the pair (see [`effective_inertia`]) times the spin over the
+    /// response, against it, cut to `damping_torque_limit`. **A tensor, not a number**: a car that is a long rod turns about its length with a fraction of the inertia it has about the
+    /// others, and a torque sized by a number (a third of the trace, as this was) takes the spin about that axis through zero to many times its size every tick (measured 2026-11-19:
+    /// the cars' spin against each other alternated 0.5 to 0.8 radians a second in sign every tick on a chain of three heavy cars, and the pair hovered at 0.02 metres for a second
+    /// before it was coupled). The tensor gives each axis its own response: a free pair's spin against each other is cut by `tick / response_seconds` every tick, whatever the shape.
+    /// None for an inertia that is nothing or not a number.
     pub fn spin_damping_on_second(
         &self,
         relative_spin: [f64; 3],
-        effective_inertia: f64,
+        effective_inertia: [[f64; 3]; 3],
     ) -> [f64; 3] {
-        if !(effective_inertia.is_finite() && effective_inertia > 0.0) {
+        if !effective_inertia
+            .iter()
+            .flatten()
+            .all(|part| part.is_finite())
+        {
             return [0.0; 3];
         }
-        let torque =
-            relative_spin.map(|component| -effective_inertia * component / self.response_seconds);
+        let torque = turn(effective_inertia, relative_spin)
+            .map(|component| -component / self.response_seconds);
         let size = length(torque);
         if size > self.damping_torque_limit {
             torque.map(|component| component * self.damping_torque_limit / size)
@@ -161,6 +176,91 @@ impl JointSettings {
             torque
         }
     }
+}
+
+/// An inertia tensor, in kilograms metres metres, about a centre of mass.
+pub type Inertia = [[f64; 3]; 3];
+
+/// The inertia tensor of a body that has `body_inertia` in its own axes, in the axes that `rotation` turns them to (`rotation[row][column]`, as `GridPose::rotation_matrix` has it):
+/// `R I R^T`.
+pub fn inertia_in_the_world(rotation: [[f64; 3]; 3], body_inertia: Inertia) -> Inertia {
+    let turned =
+        [0, 1, 2].map(|row| [0, 1, 2].map(|column| dot(rotation[row], body_inertia[column])));
+    // (An inertia tensor is symmetric, so the columns of `I` are its rows: `turned` is `R I`.)
+    [0, 1, 2].map(|row| [0, 1, 2].map(|column| dot(turned[row], rotation[column])))
+}
+
+/// How much faster than its mass alone says a point at `lever` from the centre of mass of a body of `inertia` goes for a force on it: a force `F` there is a torque `lever x F`, which
+/// turns the body and adds `(lever x F) I^-1 (lever x F)` to what the point answers (`1/m` is the rest), so `torque_direction` is `lever x F` over `|F|`. `None` for an inertia that
+/// is not usable.
+pub fn inverse_inertia_along(inertia: Inertia, torque_direction: [f64; 3]) -> Option<f64> {
+    let inverse = invert(inertia)?;
+    Some(dot(torque_direction, turn(inverse, torque_direction)))
+}
+
+/// What the end of a body answers a force along `direction` with, as a mass: the body's own mass and what its lever adds (a force at an end that is away from the centre of mass
+/// turns the body, and the end goes faster than the mass alone says: `1/m + (arm x direction) I^-1 (arm x direction)`, `arm` being from the centre of mass to the end and `inertia`
+/// in the world's axes). The pull asks for a force of its mass times the error in the speed of the ends over `response_seconds`, and a car whose end is a metre or two from its
+/// centre answers it several times harder than its mass says, so the speed of the ends overshoots every tick and does not settle (measured 2026-11-19 on a chain's end car); the
+/// end's own mass is the one that makes it settle. `None` if there is no such mass.
+pub fn mass_at_an_end(
+    mass: f64,
+    inertia: Inertia,
+    arm: [f64; 3],
+    direction: [f64; 3],
+) -> Option<f64> {
+    let inverse = 1.0 / mass + inverse_inertia_along(inertia, cross(arm, direction))?;
+    (inverse.is_finite() && inverse > 0.0).then(|| 1.0 / inverse)
+}
+
+/// The inertia a pair is turned as, as [`effective_mass`] is the mass a pair is pulled as: for two bodies that can turn, `(I1^-1 + I2^-1)^-1` (a torque that is the same on both and
+/// opposite changes the spin of one against the other as one body of this inertia would), and the tensor of the one that can if the other cannot (a ship that is held). Each is
+/// `Some(tensor)` if it can turn and `None` if it cannot; `None` also if neither can, or a tensor is not usable (not a number, or not positive definite).
+pub fn effective_inertia(first: Option<Inertia>, second: Option<Inertia>) -> Option<Inertia> {
+    let usable = |tensor: Inertia| {
+        invert(tensor).is_some()
+            && tensor.iter().flatten().all(|part| part.is_finite())
+            && (0..3).all(|axis| tensor[axis][axis] > 0.0)
+    };
+    match (first, second) {
+        (Some(first), Some(second)) if usable(first) && usable(second) => {
+            let (first_inverse, second_inverse) = (invert(first)?, invert(second)?);
+            let sum = [0, 1, 2].map(|row| {
+                [0, 1, 2].map(|column| first_inverse[row][column] + second_inverse[row][column])
+            });
+            invert(sum)
+        }
+        (Some(tensor), None) | (None, Some(tensor)) if usable(tensor) => Some(tensor),
+        _ => None,
+    }
+}
+
+/// The inverse of a 3 by 3 matrix, by its cofactors; `None` if it has no inverse with a positive determinant (an inertia tensor has one).
+fn invert(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let cofactor =
+        |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+    let c = [
+        [
+            cofactor(1, 2, 1, 2),
+            -cofactor(1, 2, 0, 2),
+            cofactor(1, 2, 0, 1),
+        ],
+        [
+            -cofactor(0, 2, 1, 2),
+            cofactor(0, 2, 0, 2),
+            -cofactor(0, 2, 0, 1),
+        ],
+        [
+            cofactor(0, 1, 1, 2),
+            -cofactor(0, 1, 0, 2),
+            cofactor(0, 1, 0, 1),
+        ],
+    ];
+    let determinant = m[0][0] * c[0][0] + m[0][1] * c[0][1] + m[0][2] * c[0][2];
+    if !(determinant > 0.0 && determinant.is_finite()) {
+        return None;
+    }
+    Some([0, 1, 2].map(|row| [0, 1, 2].map(|column| c[column][row] / determinant)))
 }
 
 /// The mass a pair of ends is pulled as: the reduced mass of two ships that can move (the force is the same on both and the one that weighs less moves more, and their

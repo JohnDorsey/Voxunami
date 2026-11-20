@@ -25,8 +25,10 @@ use world_storage::MovingGrid;
 
 use super::rail_ports::{are_of_one_group, rides_a_rail};
 use super::{Bodies, Ship};
-use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, dot, length, turn};
-use crate::joints::{JointSettings, effective_mass};
+use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
+use crate::joints::{
+    Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world, mass_at_an_end,
+};
 
 /// Two ships, one of which at least rides a rail, with ends that pull on each other: the closest such pair of ends, and what the rules need to know of how the ships go.
 struct RailJointPair {
@@ -117,7 +119,7 @@ impl Bodies {
     }
 
     /// What the end of a ship answers a force along `direction` with, as a mass: the ship's own mass and what its lever adds (a force at the end of a ship that is away from its centre
-    /// of mass turns it, and the end goes faster than the mass alone says: `1/m + (arm x direction)^2 / I`, the inertia as a number as `inertia_a_pull_turns` has it). `None` for a
+    /// of mass turns it, and the end goes faster than the mass alone says: `1/m + (arm x direction) I^-1 (arm x direction)`, the tensor as `inertia_a_pull_turns` has it). `None` for a
     /// ship that a pull cannot move (`mass_a_pull_moves`).
     ///
     /// **This is not the mass the free pull is sized by** (the mass of the group, `couplings.rs`): the pull asks for a force of that mass times the error in the speed over a tenth of a second,
@@ -134,19 +136,19 @@ impl Bodies {
         self.mass_a_pull_moves(world, ship)?;
         let record = self.record_of(ship)?;
         let inertia = self.inertia_a_pull_turns(world, ship)?;
-        let lever = cross(arm, direction);
-        let inverse = 1.0 / record.mass + dot(lever, lever) / inertia;
-        (inverse.is_finite() && inverse > 0.0).then(|| 1.0 / inverse)
+        mass_at_an_end(record.mass, inertia, arm, direction)
     }
 
-    /// The inertia that the spin of two ships against each other is slowed against: each one's own, about its centre of mass, as a number (a third of the trace of the tensor).
-    fn inertia_a_pull_turns(&self, world: &ServerWorld, ship: GridId) -> Option<f64> {
+    /// The inertia that the spin of two ships against each other is slowed against: each one's own tensor, about its centre of mass, in the world's axes (a number would take the spin
+    /// about the long axis of a car through zero every tick: `JointSettings::spin_damping_on_second`).
+    fn inertia_a_pull_turns(&self, world: &ServerWorld, ship: GridId) -> Option<Inertia> {
         self.mass_a_pull_moves(world, ship)?;
         let record = self.record_of(ship)?;
         let tensor = MassMoments::sum(record.moments.values().copied())
             .properties()?
             .inertia;
-        Some((tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0)
+        let rotation = world.data().grids().get(ship)?.pose.rotation_matrix();
+        Some(inertia_in_the_world(rotation, tensor))
     }
 
     /// Pulls the joint ends of ships of which one rides a rail, or couples them: the pairs that are in line and slow enough to be coupled (`JointSettings::can_couple`) take their
@@ -203,8 +205,7 @@ impl Bodies {
                 continue;
             }
             // The way the pull will point: the way of the error in the speed asked of the ends, whatever the mass (it only scales it).
-            let Some(direction) =
-                unit(settings.pull_on_second(pair.how.gap, pair.relative_velocity, 1.0))
+            let Some(direction) = settings.pull_direction(pair.how.gap, pair.relative_velocity)
             else {
                 continue;
             };
@@ -216,7 +217,7 @@ impl Bodies {
             };
             busy.extend(groups);
             let on_second = settings.pull_on_second(pair.how.gap, pair.relative_velocity, mass);
-            let damping = effective_mass(
+            let damping = effective_inertia(
                 self.inertia_a_pull_turns(world, pair.first),
                 self.inertia_a_pull_turns(world, pair.second),
             )
@@ -307,10 +308,4 @@ fn closest_pulling_ends(
         relative_spin: [0, 1, 2]
             .map(|axis| second.ship.angular_velocity[axis] - first.ship.angular_velocity[axis]),
     })
-}
-
-/// A vector of length 1 in the direction of this one, if it has a direction.
-fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
-    let size = length(vector);
-    (size.is_finite() && size > 0.0).then(|| vector.map(|part| part / size))
 }

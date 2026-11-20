@@ -55,6 +55,21 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 - **What would settle it.** Run the test in a loop (alone and as the binary) with nothing else running and with the machine loaded, and save both images when it fails, to see whether the pixels are on an edge of the
   ground's block and whether the dark pixel is a shadow value; compare with the shadow tests' explanation.
 
+### `engine/renderer/tests/gpu_rendering/shader_packs.rs`: `the_example_packs_are_taken_by_every_graphics_card_and_do_what_they_say`
+
+- **The test.** For each adapter and each example pack, renders a scene, sets the pack, renders, takes the pack away (`set_shader_pack(None)`) and asserts that the render is **byte for byte the one from before** (line 447,
+  `the default again`).
+- **Occurrence 1: 2026-11-19**, the full gate (`cargo test --workspace --no-fail-fast`, dev profile, Windows) on the working tree of the free joint pull (`grid_bodies`, its tests and the Cave test of joints on a rail;
+  `renderer` depends on none of it). The renderer binary reported `155 passed; 1 failed ... finished in 571.41 s`. **The message was kept and the two images compared**: the adapter was **AMD Radeon(TM) Graphics (IntegratedGpu, Dx12)**;
+  of 64 x 64 pixels **38 differ**, all in one staircase-shaped patch that starts at (26, 27): the green channel is 188 in one render and 23 in the other (the ground's colour against a dark value), red and blue the same. The other
+  4,058 pixels are the same.
+- **Reruns.** 5 times alone (`cargo test -p renderer --test gpu_rendering the_example_packs_are_taken`) and once as the whole binary (156 tests, 494.55 s): **0 failures in 6**.
+- **What it depends on [read].** The GPU, and nothing of the engine's simulation: two renders of one scene by one renderer with a pack set and taken away between them. It is the same file, the same integrated AMD adapter and the
+  same kind of fault (a patch of pixels at a shadow-like edge that comes out dark in one of two renders of one picture) as the entry above, from the same day; the two tests are two sites of one cause, if it is one.
+- **Beliefs about the cause.** **Believed, not tested**: as the entry above, a shadow edge that this adapter does not render the same way twice. **Checked**: a patch of 38 pixels of 4,096 with a straight edge, not a changed picture.
+- **What would settle it.** As the entry above (a loop of both tests, alone and as the binary, saving the images); note that two tests of this file have now failed on this adapter within one day, which a single
+  occurrence did not show.
+
 ### `games/voxunami_cave/tests/screen.rs`: `a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_closed`
 
 - **The test.** It draws a form live and again from a replay and compares them pixel for pixel.
