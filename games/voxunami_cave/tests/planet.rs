@@ -769,9 +769,10 @@ fn a_planet_has_colliders_only_for_the_bricks_near_the_ships_that_can_hit_it() {
     assert_eq!(near_held, far_held);
     assert_eq!(near_held, bricks_made_by_a_cube(10.0, true, false, 60));
     // One that is free has the bricks of the planet near it made (the bricks it falls through on the way to the ground are made as it comes to them): a few
-    // for the one on the ground, and for the one in the sky the bricks of the air around it (which have none of the cost of a brick of ground, but are counted).
+    // for the one on the ground. For the one in the sky there are none (until 2026-11-20 the bricks of the air around it were made, which have none of the cost of a
+    // brick of ground, but were counted): a cube of air all through, by the generator of the planet, with nothing built in it, has no ground to meet.
     assert!(near_free.0 > near_held.0, "{near_free:?} {near_held:?}");
-    assert!(far_free.0 > far_held.0, "{far_free:?} {far_held:?}");
+    assert_eq!(far_free, far_held, "air is given no colliders");
     // And never many, and never many in one tick, however large the planet is.
     for (total, most) in [near_free, far_free] {
         assert!(total <= 24 && most <= 12, "{total} {most}");

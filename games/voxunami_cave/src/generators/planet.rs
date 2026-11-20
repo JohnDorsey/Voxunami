@@ -497,6 +497,11 @@ impl TerrainGenerator for PlanetGenerator {
         terrain::cube_may_show(&*self.ground, cube)
     }
 
+    /// Air where the ground is nowhere above the surface (the caves only take ground away).
+    fn is_air(&self, cube: BrickCube) -> bool {
+        terrain::cube_is_air(&*self.ground, cube)
+    }
+
     fn solid_core(&self) -> Option<SolidBall> {
         let radius = self.ground.core_radius();
         (radius > 0.0).then_some(SolidBall {
@@ -1437,6 +1442,65 @@ mod tests {
             "{hidden} hidden, {shown} shown"
         );
         assert!(generator.may_show(BrickCube::new(BrickCoordinate::new(0, 15, 0), 0).unwrap()));
+    }
+
+    #[test]
+    fn every_brick_of_a_cube_that_is_air_is_air_and_a_planet_has_air_cubes_over_it_and_none_in_it()
+    {
+        for (settings, edge) in [(small_planet(9), 20i128), (ball(300.0), 20)] {
+            let fixture = StandardTestLayout::default();
+            let generator = generator_of(settings, &fixture);
+            let is_air_brick = |brick: BrickCoordinate| {
+                generator
+                    .generate_brick(&fixture.layout, brick)
+                    .channel(fixture.material)
+                    .uniform_value()
+                    == Some(0)
+            };
+            let (mut air, mut other) = (0, 0);
+            for level in 0..=3u8 {
+                let width = 1i128 << level;
+                for x in (-edge).div_euclid(width)..=edge.div_euclid(width) {
+                    for y in (-edge).div_euclid(width)..=edge.div_euclid(width) {
+                        for z in (-edge).div_euclid(width)..=edge.div_euclid(width) {
+                            let cube = BrickCube::new(
+                                BrickCoordinate::new(x * width, y * width, z * width),
+                                level,
+                            )
+                            .unwrap();
+                            if !generator.is_air(cube) {
+                                other += 1;
+                                continue;
+                            }
+                            air += 1;
+                            for brick in voxel_space::BrickBox::new(
+                                cube.origin(),
+                                BrickCoordinate::new(
+                                    cube.origin().x() + width - 1,
+                                    cube.origin().y() + width - 1,
+                                    cube.origin().z() + width - 1,
+                                ),
+                            )
+                            .unwrap()
+                            .bricks()
+                            {
+                                assert!(
+                                    is_air_brick(brick),
+                                    "{cube:?} is air and {brick:?} is not"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(
+                air > 500 && other > 500,
+                "{air} cubes of air and {other} others"
+            );
+            // The middle of the planet is not air, and the sky far over it is.
+            assert!(!generator.is_air(BrickCube::new(BrickCoordinate::ORIGIN, 3).unwrap()));
+            assert!(generator.is_air(BrickCube::containing(BrickCoordinate::new(0, 4000, 0), 3)));
+        }
     }
 
     // ---- the file format ----

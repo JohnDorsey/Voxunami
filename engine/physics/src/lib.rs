@@ -32,5 +32,5 @@ pub use bodies::{
 pub use character::{CharacterBody, CharacterSettings, ForeignGrid, MoveInput};
 pub use mass::{BodyMass, MassMoments};
 pub use motion::BodyMotion;
-pub use sweep::{SweptBricks, TERRAIN_EVERY_WAY_VOXELS};
+pub use sweep::{Reach, SweptBricks, TERRAIN_EVERY_WAY_VOXELS};
 pub use terrain::{BrickHint, Collision, CollisionSource, bricks_whose_colliders_read};

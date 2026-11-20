@@ -5,14 +5,15 @@ use block_models::{BlockTable, PropertyHandle};
 use namespaced_id::NamespacedId;
 use physics::{
     BodyColliders, BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments,
-    bricks_whose_colliders_read,
+    Reach, bricks_whose_colliders_read,
 };
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
+use region_octree::{BrickCube, RegionOctree};
 use server::{MergePlan, ServerWorld, SplitPart};
-use voxel_grid::ChannelIndex;
+use voxel_grid::{ChannelIndex, Grid};
 use voxel_space::{
-    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickCoordinate, Displacement, GridId, GridPose,
-    LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
+    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, Displacement, GridId,
+    GridPose, LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
 use world_storage::MovingGrid;
 
@@ -611,6 +612,47 @@ struct TerrainPlan {
     settling: BTreeMap<GridId, BTreeSet<BrickCoordinate>>,
 }
 
+/// Which bricks of a level's grid are stored (built in, dug out of, or kept for any other reason): the bricks that are not what the generator makes of them. A cube that the
+/// generator says is air all through (`WorldTerrain::is_air`) is air all through only if none of them is in it, so a ship's terrain is not looked for in it only if this says no.
+///
+/// It is kept from the bricks that changed in each tick, and checked each tick against how many bricks the grid has: if the two do not agree something changed that nobody
+/// said, and it is made again from the grid. (A mistake here is a ship that goes through what was built, and so it is not left to be one.)
+struct StoredBricks {
+    index: RegionOctree<bool>,
+    count: usize,
+}
+
+impl StoredBricks {
+    /// Made from the bricks of a grid.
+    fn scan(grid: &Grid) -> Self {
+        let mut stored = Self {
+            index: RegionOctree::new(false),
+            count: 0,
+        };
+        for (brick, _) in grid.bricks() {
+            stored.set(brick, true);
+        }
+        stored
+    }
+
+    fn set(&mut self, brick: BrickCoordinate, stored: bool) {
+        if *self.index.get(brick) == stored {
+            return;
+        }
+        self.index.set_cube(BrickCube::containing(brick, 0), stored);
+        if stored {
+            self.count += 1;
+        } else {
+            self.count -= 1;
+        }
+    }
+
+    /// Whether any brick of the cube is stored.
+    fn any_in(&self, cube: BrickCube) -> bool {
+        !self.index.all_in_cube(cube, |stored| !*stored)
+    }
+}
+
 struct Bodies {
     config: GridBodiesConfig,
     collisions: BlockCollisions,
@@ -624,6 +666,10 @@ struct Bodies {
     /// The ships that are being looked at to see if they were cut in two.
     checks: BTreeMap<GridId, Check>,
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
+    /// Which bricks of each level are stored in its grid (see [`StoredBricks`]), for the levels that have a frame.
+    stored_bricks: BTreeMap<LevelIndex, StoredBricks>,
+    /// The same for the planets that have a body: which bricks of their own voxels are stored (built or dug), by planet.
+    stored_planet_bricks: BTreeMap<GridId, StoredBricks>,
     /// What the world is to be told of the weight of ships, at the end of the step.
     weighed: BTreeMap<GridId, (f64, [f64; 3])>,
     /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
@@ -685,6 +731,8 @@ impl Bodies {
             config,
             collisions,
             frames: BTreeMap::new(),
+            stored_bricks: BTreeMap::new(),
+            stored_planet_bricks: BTreeMap::new(),
             next_frame: 0,
             changed_ship_bricks: BTreeSet::new(),
             changed_ship_voxels: BTreeMap::new(),
@@ -1694,6 +1742,7 @@ impl Bodies {
         changed_terrain: &BTreeSet<(LevelIndex, BrickCoordinate)>,
         changed_ships: &BTreeSet<(GridId, BrickCoordinate)>,
     ) {
+        self.refresh_stored_bricks(world, changed_terrain, changed_ships);
         let keys: Vec<FrameKey> = self.frames.keys().copied().collect();
         let mut made_this_tick = 0u64;
         for key in keys {
@@ -1726,7 +1775,7 @@ impl Bodies {
                     to_make,
                     ahead,
                     settling,
-                } = self.bricks_to_change(key, ground, &changed);
+                } = self.bricks_to_change(world, key, ground, &changed);
                 if let Ground::Planet(id) = ground {
                     // The wanted bricks that are not made this tick are made by a worker meanwhile, so that they are there when they are, with the bricks
                     // beside them and beside those that are made now (a collider is made looking at the voxels next to its brick).
@@ -1904,10 +1953,67 @@ impl Bodies {
         }
     }
 
+    /// Brings what is known of the stored bricks of the levels that have a frame up to date: a level seen for the first time is scanned, and in the others the bricks that
+    /// were edited in this tick are read again; and if the count does not agree with the grid's, the index is made again.
+    fn refresh_stored_bricks(
+        &mut self,
+        world: &ServerWorld,
+        changed_terrain: &BTreeSet<(LevelIndex, BrickCoordinate)>,
+        changed_ships: &BTreeSet<(GridId, BrickCoordinate)>,
+    ) {
+        let planets: BTreeSet<GridId> = self
+            .frames
+            .values()
+            .flat_map(|frame| frame.planets.keys().copied())
+            .collect();
+        self.stored_planet_bricks
+            .retain(|id, _| planets.contains(id));
+        for id in planets {
+            let Some(planet) = world.data().grids().get(id) else {
+                continue;
+            };
+            let grid = &planet.voxels;
+            let stored = self
+                .stored_planet_bricks
+                .entry(id)
+                .or_insert_with(|| StoredBricks::scan(grid));
+            for (_, brick) in changed_ships.iter().filter(|(changed, _)| *changed == id) {
+                stored.set(*brick, grid.brick(*brick).is_some());
+            }
+            if stored.count != grid.brick_count() {
+                *stored = StoredBricks::scan(grid);
+            }
+        }
+        let levels: BTreeSet<LevelIndex> = self.frames.values().map(|frame| frame.level).collect();
+        for level in levels {
+            let Some(data) = world.data().level(level) else {
+                continue;
+            };
+            let grid = &data.overrides;
+            let stored = self
+                .stored_bricks
+                .entry(level)
+                .or_insert_with(|| StoredBricks::scan(grid));
+            for (_, brick) in changed_terrain
+                .iter()
+                .filter(|(changed, _)| *changed == level)
+            {
+                stored.set(*brick, grid.brick(*brick).is_some());
+            }
+            if stored.count != grid.brick_count() {
+                *stored = StoredBricks::scan(grid);
+            }
+        }
+    }
+
     /// Which bricks of a ground are to lose their colliders, which are to get them (or get them again, if `changed` has them and they had) this tick, which are
     /// wanted and left for a later tick, nearest first, and which each ship that is being made needs (made a few at a tick, see [`SETTLING_TERRAIN_BRICKS_PER_TICK`]).
+    ///
+    /// A brick of a ground is left out of all of it when it is in a cube that the generator says is air all through and nothing is stored in: a brick of air has no colliders, so it
+    /// is not made, and not kept. For a ship in empty space that is no brick at all, whatever its speed.
     fn bricks_to_change(
         &self,
+        world: &ServerWorld,
         key: FrameKey,
         ground: Ground,
         changed: &BTreeSet<BrickCoordinate>,
@@ -1928,25 +2034,76 @@ impl Bodies {
         // of a margin are not made, since a ship at 400,000 voxels a second has 8,000 of them, each a tube of a thousand boxes).
         let visit_bricks_near =
             |body: BodyId,
-             margins: &[f64],
-             way: [f64; 3],
+             reach: Reach<'_>,
+             skip: &mut dyn FnMut(BrickCube) -> bool,
              visit: &mut dyn FnMut(BrickCoordinate, usize)| match ground {
-                Ground::Level => level.bodies.visit_bricks_ahead(
-                    body,
-                    margins,
-                    physics::TERRAIN_EVERY_WAY_VOXELS,
-                    way,
-                    visit,
-                ),
-                Ground::Planet(id) => level.bodies.visit_bricks_ahead_in(
-                    body,
-                    margins,
-                    physics::TERRAIN_EVERY_WAY_VOXELS,
-                    way,
-                    BodyId(id.get()),
-                    visit,
-                ),
+                Ground::Level => level.bodies.visit_bricks_ahead(body, reach, skip, visit),
+                Ground::Planet(id) => {
+                    level
+                        .bodies
+                        .visit_bricks_ahead_in(body, reach, BodyId(id.get()), skip, visit)
+                }
             };
+        // A cube of the ground that has no ground in it: for a level, the generator that makes all of it says it is air, and no brick of it is stored; for a planet, the same of the
+        // cubes that are in the bricks its generator makes, and a cube that is outside them is what the layout of its grid has for nothing, which is air if that is (see
+        // `GeneratedHull`).
+        let air_of_the_level = world
+            .data()
+            .level(level.level)
+            .zip(self.stored_bricks.get(&level.level));
+        let air_of_the_planet = match ground {
+            Ground::Level => None,
+            Ground::Planet(id) => (|| {
+                let planet = world.data().grids().get(id)?;
+                let terrain = planet.terrain?;
+                let generator = world
+                    .data()
+                    .main()
+                    .terrain
+                    .generators()
+                    .entry(terrain.generator)?
+                    .content()?
+                    .clone();
+                let nothing_is_air = planet
+                    .voxels
+                    .layout()
+                    .default_value(self.config.block_channel)
+                    == self.config.air;
+                Some((
+                    terrain.extent,
+                    generator,
+                    nothing_is_air,
+                    self.stored_planet_bricks.get(&id)?,
+                ))
+            })(),
+        };
+        let mut skip = |cube: BrickCube| match ground {
+            Ground::Level => air_of_the_level
+                .is_some_and(|(data, stored)| data.terrain.is_air(cube) && !stored.any_in(cube)),
+            Ground::Planet(_) => air_of_the_planet.as_ref().is_some_and(
+                |(extent, generator, nothing_is_air, stored)| {
+                    let last = cube.edge_length() as i128 - 1;
+                    let origin = cube.origin();
+                    let whole = BrickBox::new(
+                        origin,
+                        BrickCoordinate::new(
+                            origin.x().saturating_add(last),
+                            origin.y().saturating_add(last),
+                            origin.z().saturating_add(last),
+                        ),
+                    );
+                    let Some(whole) = whole else {
+                        return false;
+                    };
+                    let is_air = if extent.contains(whole.min()) && extent.contains(whole.max()) {
+                        generator.is_air(cube)
+                    } else {
+                        *nothing_is_air && extent.intersection(whole).is_none()
+                    };
+                    is_air && !stored.any_in(cube)
+                },
+            ),
+        };
         // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept. A planet is fixed, so the ships
         // that would be held against it need nothing of it.
         let mut needed: BTreeSet<BrickCoordinate> = BTreeSet::new();
@@ -1988,7 +2145,12 @@ impl Bodies {
             let rings = margins.len() - 1;
             margins.push(lookahead + TERRAIN_KEEP_EXTRA_VOXELS);
             let mut needed_by_this_ship: BTreeSet<BrickCoordinate> = BTreeSet::new();
-            let reached = visit_bricks_near(body, &margins, way, &mut |brick, margin| {
+            let reach = Reach {
+                margins: &margins,
+                cap: physics::TERRAIN_EVERY_WAY_VOXELS,
+                direction: way,
+            };
+            let reached = visit_bricks_near(body, reach, &mut skip, &mut |brick, margin| {
                 kept.insert(brick);
                 if margin == 0 {
                     needed_by_this_ship.insert(brick);
@@ -2788,6 +2950,73 @@ fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cube_at(x: i128, y: i128, z: i128, level: u8) -> BrickCube {
+        BrickCube::containing(BrickCoordinate::new(x, y, z), level)
+    }
+
+    #[test]
+    fn stored_bricks_say_whether_any_brick_of_a_cube_is_stored_and_count_those_that_are() {
+        let mut stored = StoredBricks {
+            index: RegionOctree::new(false),
+            count: 0,
+        };
+        let at = |x, y, z| BrickCoordinate::new(x, y, z);
+        assert!(!stored.any_in(cube_at(0, 0, 0, 116)), "nothing at all");
+        stored.set(at(5, 6, 7), true);
+        stored.set(at(5, 6, 7), true);
+        stored.set(at(-40, 2, 9), true);
+        assert_eq!(stored.count, 2, "a brick is counted once");
+        // The cube of 8 bricks that has the first, and the bigger ones that have it, and none that are beside it.
+        assert!(stored.any_in(cube_at(0, 0, 0, 3)));
+        assert!(stored.any_in(cube_at(0, 0, 0, 20)));
+        assert!(stored.any_in(cube_at(0, 0, 0, 116)));
+        assert!(stored.any_in(cube_at(5, 6, 7, 0)));
+        assert!(!stored.any_in(cube_at(6, 6, 7, 0)));
+        assert!(!stored.any_in(cube_at(8, 0, 0, 3)));
+        assert!(!stored.any_in(cube_at(0, 8, 0, 3)));
+        // One that is let go is not stored, and the cube that had only it has none.
+        stored.set(at(5, 6, 7), false);
+        stored.set(at(5, 6, 7), false);
+        assert_eq!(stored.count, 1);
+        assert!(!stored.any_in(cube_at(0, 0, 0, 3)));
+        assert!(stored.any_in(cube_at(-64, 0, 0, 6)));
+    }
+
+    #[test]
+    fn stored_bricks_scanned_from_a_grid_are_those_of_the_grid() {
+        use std::sync::Arc;
+        use voxel_grid::{ChannelDefinition, GridLayout};
+        let layout = Arc::new(
+            GridLayout::new(vec![ChannelDefinition::number(
+                "test:number".parse().unwrap(),
+                0,
+            )])
+            .unwrap(),
+        );
+        let mut grid = Grid::new(layout);
+        let channel = grid
+            .layout()
+            .channel_index(&"test:number".parse().unwrap())
+            .unwrap();
+        for brick in [
+            BrickCoordinate::new(1, 2, 3),
+            BrickCoordinate::new(-9, 0, 40),
+        ] {
+            let voxel = brick.origin();
+            grid.set(channel, voxel, 7);
+        }
+        let stored = StoredBricks::scan(&grid);
+        assert_eq!(stored.count, grid.brick_count());
+        assert_eq!(stored.count, 2);
+        assert!(stored.any_in(cube_at(0, 0, 0, 2)));
+        assert!(stored.any_in(cube_at(-16, 0, 32, 4)));
+        assert!(!stored.any_in(cube_at(16, 0, 0, 4)));
+        assert!(
+            !StoredBricks::scan(&Grid::new(Arc::clone(grid.layout())))
+                .any_in(cube_at(0, 0, 0, 116))
+        );
+    }
 
     #[test]
     fn two_bricks_are_farther_apart_than_a_radius_when_any_axis_is_past_it() {

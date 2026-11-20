@@ -33,6 +33,11 @@ impl TerrainGenerator for EmptyTerrain {
     fn may_show(&self, _: BrickCube) -> bool {
         false
     }
+
+    /// Every brick it makes is air.
+    fn is_air(&self, _: BrickCube) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -73,10 +78,11 @@ mod tests {
     fn nothing_of_it_may_show_at_any_size_and_it_has_no_coarse_cells_and_no_core() {
         let fixture = StandardTestLayout::default();
         let generator = empty(fixture.material, AIR);
-        for level in [0, 1, 5, 20, 40] {
+        for level in [0, 1, 5, 20, 40, 116] {
             for origin in [BrickCoordinate::ORIGIN, BrickCoordinate::new(-64, 128, 0)] {
                 let cube = BrickCube::containing(origin, level);
                 assert!(!generator.may_show(cube), "{cube:?}");
+                assert!(generator.is_air(cube), "{cube:?} is air");
                 if level > 0 {
                     assert!(generator.coarse_node(cube, 3).is_none());
                 }

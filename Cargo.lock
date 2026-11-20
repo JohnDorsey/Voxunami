@@ -1164,6 +1164,7 @@ dependencies = [
  "namespaced_id",
  "physics",
  "plugin_host",
+ "region_octree",
  "server",
  "thiserror 2.0.21",
  "voxel_grid",
@@ -2253,6 +2254,7 @@ dependencies = [
  "libm",
  "proptest",
  "rapier3d-f64",
+ "region_octree",
  "thiserror 2.0.21",
  "voxel_space",
 ]

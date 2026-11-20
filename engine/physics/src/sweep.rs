@@ -9,6 +9,9 @@
 //! under the cap, which is for every body that goes slower than the cap lets (a quarter of the margin of the cap, 400 voxels a second for 128 voxels), the bricks are the cube's, exactly. Beyond it
 //! they are always some of the cube's (never a brick the cube had not) and always the ones ahead.
 
+use std::collections::HashMap;
+
+use region_octree::BrickCube;
 use voxel_space::{BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate};
 
 use rapier3d::prelude::{Real, Vector};
@@ -160,12 +163,103 @@ impl FirstPositions {
         self.positions.get(index).copied()
     }
 
-    /// Every coordinate of the widest range, lowest first, with where it is first in the range.
-    fn each(&self) -> impl Iterator<Item = (i128, usize)> + '_ {
-        self.positions
-            .iter()
-            .enumerate()
-            .map(|(index, &position)| (self.lowest + index as i128, position))
+    /// The widest range, `(lowest, highest)`, or `None` if there is none.
+    fn widest(&self) -> Option<(i128, i128)> {
+        let count = i128::try_from(self.positions.len())
+            .ok()
+            .filter(|&count| count > 0)?;
+        Some((self.lowest, self.lowest + count - 1))
+    }
+}
+
+/// What a sweep is of: the box of a body (`low` to `high`, voxels in the frame) and the way it goes, with the `cap` and the `origin` that [`swept_bricks`] takes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sweep {
+    pub low: Vector,
+    pub high: Vector,
+    pub cap: Real,
+    pub direction: Vector,
+    pub origin: BrickCoordinate,
+}
+
+/// How far a body is to reach, for [`BodyWorld::visit_bricks_ahead`](crate::BodyWorld::visit_bricks_ahead): some `margins` (in order, the least first), the `cap`, and the way it goes (in the axes of the frame).
+#[derive(Clone, Copy, Debug)]
+pub struct Reach<'a> {
+    pub margins: &'a [Real],
+    pub cap: Real,
+    pub direction: [Real; 3],
+}
+
+/// How big the cubes are that the bricks of a box are looked for in to begin with: 64 bricks to an edge, 2,000 voxels, so that a box of a piece of a tube is in one or two of them along
+/// each axis, and in empty space the whole of it is one question.
+const FIRST_CUBE_LEVEL: u8 = 6;
+
+/// The cubes of this level and above that have been asked about are remembered (those below it are as many as the bricks, and asked once each by the piece that has them).
+const REMEMBERED_FROM_LEVEL: u8 = 2;
+
+/// The bricks of boxes that are in none of the cubes that `skip` says need not be visited.
+struct Unskipped<S: FnMut(BrickCube) -> bool> {
+    skip: S,
+    answers: HashMap<BrickCube, bool>,
+    found: Vec<BrickCoordinate>,
+}
+
+impl<S: FnMut(BrickCube) -> bool> Unskipped<S> {
+    fn new(skip: S) -> Self {
+        Self {
+            skip,
+            answers: HashMap::new(),
+            found: Vec::new(),
+        }
+    }
+
+    /// The bricks of the box from `low` to `high` (each corner included) that are in no cube that `skip` says need not be visited, in `self.found`: of the cubes of
+    /// [`FIRST_CUBE_LEVEL`] that have a brick of the box, each is dropped if it is said to be, and otherwise is looked into by its eight halves, down to a brick.
+    fn find(&mut self, low: [i128; 3], high: [i128; 3]) {
+        self.found.clear();
+        let Some(region) = BrickBox::new(
+            BrickCoordinate::new(low[0], low[1], low[2]),
+            BrickCoordinate::new(high[0], high[1], high[2]),
+        ) else {
+            return;
+        };
+        for cube in BrickCube::covering(region, FIRST_CUBE_LEVEL) {
+            self.look_into(cube, region);
+        }
+    }
+
+    fn look_into(&mut self, cube: BrickCube, region: BrickBox) {
+        if self.skipped(cube) {
+            return;
+        }
+        if cube.level() == 0 {
+            self.found.push(cube.origin());
+            return;
+        }
+        let half = 1i128 << (cube.level() - 1);
+        let origin = cube.origin();
+        for index in 0..8i128 {
+            let child = BrickCube::new(
+                BrickCoordinate::new(
+                    origin.x() + (index & 1) * half,
+                    origin.y() + (index >> 1 & 1) * half,
+                    origin.z() + (index >> 2 & 1) * half,
+                ),
+                cube.level() - 1,
+            )
+            .expect("the half of an aligned cube is aligned");
+            if child.meets(region) {
+                self.look_into(child, region);
+            }
+        }
+    }
+
+    fn skipped(&mut self, cube: BrickCube) -> bool {
+        if cube.level() < REMEMBERED_FROM_LEVEL {
+            return (self.skip)(cube);
+        }
+        let Self { skip, answers, .. } = self;
+        *answers.entry(cube).or_insert_with(|| skip(cube))
     }
 }
 
@@ -178,17 +272,27 @@ impl FirstPositions {
 /// last, which is as long as the margin; so each piece is looked at once, and for each of the three axes the first margin in which each coordinate of it is in the box is found by halving (a brick is in a
 /// box when all three of its coordinates are, so its first margin is the last of the three).
 ///
+/// `skip` says of a cube of bricks that nothing in it need be visited (it holds no ground that anything could meet): the bricks of a cube it says that of are not visited, and one is
+/// visited if no cube that has it is said so. It is asked of aligned cubes, from those of 64 bricks to an edge that have a brick of a piece of the tube, down to single bricks, and what it
+/// says of a cube of more than one brick is remembered while the bricks are visited; so a tube through empty space is a question for each cube it goes through, and not for each brick.
+/// It is asked of whole cubes, which may reach past the bricks that are asked for, and must be said of all of the cube.
+///
 /// `margins` are in order, the least first, and none is less than the one before it (a panic if one is: what is found of margins that are not in order is wrong, and nothing says so); with none
 /// there is nothing to visit. A box whose `low` is not below its `high` has no bricks.
-pub fn visit_bricks_by_first_margin(
-    low: Vector,
-    high: Vector,
+pub(crate) fn visit_bricks_by_first_margin(
+    sweep: Sweep,
     margins: &[Real],
-    cap: Real,
-    direction: Vector,
-    origin: BrickCoordinate,
+    skip: impl FnMut(BrickCube) -> bool,
     mut visit: impl FnMut(BrickCoordinate, usize),
 ) {
+    let Sweep {
+        low,
+        high,
+        cap,
+        direction,
+        origin,
+    } = sweep;
+    let mut unskipped = Unskipped::new(skip);
     let Some(&outermost) = margins.last() else {
         return;
     };
@@ -227,10 +331,12 @@ pub fn visit_bricks_by_first_margin(
     };
     if let (true, Some(firsts)) = (cubes == margins.len(), &cube_firsts) {
         // All of them are the cube: the bricks of the last, each at the first margin that has it.
-        for (z, in_z) in firsts[2].each() {
-            for (y, in_y) in firsts[1].each() {
-                for (x, in_x) in firsts[0].each() {
-                    visit(BrickCoordinate::new(x, y, z), in_x.max(in_y).max(in_z));
+        let widest = firsts.each_ref().map(FirstPositions::widest);
+        if let [Some((x0, x1)), Some((y0, y1)), Some((z0, z1))] = widest {
+            unskipped.find([x0, y0, z0], [x1, y1, z1]);
+            for &brick in &unskipped.found {
+                if let Some(position) = first_of_cube(brick) {
+                    visit(brick, position);
                 }
             }
         }
@@ -254,22 +360,32 @@ pub fn visit_bricks_by_first_margin(
                 brick_at(high[axis] + from.max(to), origins[axis]),
             )
         };
-        let firsts = [0, 1, 2].map(|axis| {
-            FirstPositions::new(first, last_that_changes, |position| {
-                piece_range(position, axis)
-            })
-        });
-        for (z, in_z) in firsts[2].each() {
-            for (y, in_y) in firsts[1].each() {
-                for (x, in_x) in firsts[0].each() {
-                    let brick = BrickCoordinate::new(x, y, z);
-                    let position = in_x.max(in_y).max(in_z);
-                    // A brick of the cube of a smaller margin is in the bricks of that margin and of the tubes after it.
-                    visit(
-                        brick,
-                        first_of_cube(brick).map_or(position, |cube| cube.min(position)),
-                    );
-                }
+        // The bricks of the piece as the last margin that changes it has it, which are all of them, that are not in cubes that need not be visited. (Where a tube goes through empty space
+        // this is all there is to a piece: the table of where each coordinate is first is made only for a piece that has bricks.)
+        let widest = [0, 1, 2].map(|axis| piece_range(last_that_changes, axis));
+        unskipped.find(widest.map(|range| range.0), widest.map(|range| range.1));
+        if !unskipped.found.is_empty() {
+            let firsts = [0, 1, 2].map(|axis| {
+                FirstPositions::new(first, last_that_changes, |position| {
+                    piece_range(position, axis)
+                })
+            });
+            for &brick in &unskipped.found {
+                let position = [brick.x(), brick.y(), brick.z()]
+                    .into_iter()
+                    .zip(&firsts)
+                    .map(|(coordinate, positions)| {
+                        positions
+                            .of(coordinate)
+                            .expect("a brick of the widest box is in the table")
+                    })
+                    .max()
+                    .expect("there are three axes");
+                // A brick of the cube of a smaller margin is in the bricks of that margin and of the tubes after it.
+                visit(
+                    brick,
+                    first_of_cube(brick).map_or(position, |cube| cube.min(position)),
+                );
             }
         }
         start += PIECE;
@@ -369,6 +485,16 @@ mod tests {
         first
     }
 
+    fn sweep_of(low: Vector, high: Vector, way: Vector, origin: BrickCoordinate) -> Sweep {
+        Sweep {
+            low,
+            high,
+            cap: CAP,
+            direction: way,
+            origin,
+        }
+    }
+
     fn first_margins_in_one_pass(
         low: Vector,
         high: Vector,
@@ -376,13 +502,30 @@ mod tests {
         way: Vector,
         origin: BrickCoordinate,
     ) -> BTreeMap<BrickCoordinate, usize> {
+        first_margins_skipping(low, high, margins, way, origin, |_| false)
+    }
+
+    /// The first margin of each brick that is visited, the least of the margins it is visited with, when `skip` says of cubes that they need not be.
+    fn first_margins_skipping(
+        low: Vector,
+        high: Vector,
+        margins: &[Real],
+        way: Vector,
+        origin: BrickCoordinate,
+        skip: impl FnMut(BrickCube) -> bool,
+    ) -> BTreeMap<BrickCoordinate, usize> {
         let mut first: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
-        visit_bricks_by_first_margin(low, high, margins, CAP, way, origin, |brick, position| {
-            first
-                .entry(brick)
-                .and_modify(|seen| *seen = (*seen).min(position))
-                .or_insert(position);
-        });
+        visit_bricks_by_first_margin(
+            sweep_of(low, high, way, origin),
+            margins,
+            skip,
+            |brick, position| {
+                first
+                    .entry(brick)
+                    .and_modify(|seen| *seen = (*seen).min(position))
+                    .or_insert(position);
+            },
+        );
         first
     }
 
@@ -452,12 +595,9 @@ mod tests {
         let mut along_the_way = BTreeMap::new();
         let (row_y, row_z) = (6, 9);
         visit_bricks_by_first_margin(
-            low,
-            high,
+            sweep_of(low, high, Vector::X, BrickCoordinate::ORIGIN),
             &margins,
-            CAP,
-            Vector::X,
-            BrickCoordinate::ORIGIN,
+            |_| false,
             |brick, position| {
                 visits += 1;
                 if brick.y() == row_y && brick.z() == row_z {
@@ -487,12 +627,9 @@ mod tests {
         );
         let mut none = 0;
         visit_bricks_by_first_margin(
-            low,
-            high,
+            sweep_of(low, high, Vector::X, BrickCoordinate::ORIGIN),
             &[],
-            CAP,
-            Vector::X,
-            BrickCoordinate::ORIGIN,
+            |_| false,
             |_, _| none += 1,
         );
         assert_eq!(none, 0);
@@ -518,13 +655,154 @@ mod tests {
             Vector::new(108.0, 208.0, 308.0),
         );
         visit_bricks_by_first_margin(
+            sweep_of(low, high, Vector::X, BrickCoordinate::ORIGIN),
+            &[200.0, 100.0],
+            |_| false,
+            |_, _| {},
+        );
+    }
+
+    /// Whether the cube of 4 bricks to an edge that holds a brick is one of the half of them, like the black squares of a board, that are air.
+    fn in_an_even_cube(brick: BrickCoordinate) -> bool {
+        let along = |coordinate: i128| coordinate.div_euclid(4);
+        (along(brick.x()) + along(brick.y()) + along(brick.z())).rem_euclid(2) == 0
+    }
+
+    /// Whether a brick is one of the third of them that are air in the last of the oracles, which says nothing of cubes of more than one brick.
+    fn is_a_scattered_air_brick(brick: BrickCoordinate) -> bool {
+        let mixed = (brick.x().wrapping_mul(73_856_093))
+            ^ (brick.y().wrapping_mul(19_349_663))
+            ^ (brick.z().wrapping_mul(83_492_791));
+        mixed.rem_euclid(3) == 0
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(160))]
+
+        /// What is skipped is the bricks of the cubes that are said to be air, and no others: the first margin of every other brick is what making every margin's bricks gives.
+        #[test]
+        fn the_bricks_that_are_visited_are_all_of_those_that_are_in_no_cube_that_is_skipped(
+            low in proptest::array::uniform3(-5000.0f64..5000.0),
+            size in proptest::array::uniform3(0.5f64..60.0),
+            mut margins in proptest::collection::vec(0.0f64..1500.0, 1..14),
+            way in proptest::array::uniform3(-1.0f64..1.0),
+            origin in proptest::array::uniform3(-40i128..40),
+            // Which of the bricks that are air, and where: a height among the rows of the bricks there are, and a side of it, so that the air is across the middle of them.
+            pick in 0usize..10_000,
+            nudge in 0i128..2,
+            which in 0u8..4,
+        ) {
+            margins.sort_by(f64::total_cmp);
+            let (low, high) = (Vector::from_array(low), Vector::from_array(low) + Vector::from_array(size));
+            let way = way_from(way);
+            let origin = BrickCoordinate::new(origin[0], origin[1], origin[2]);
+            let everything = first_margins_by_making_every_region(low, high, &margins, way, origin);
+            let mut rows: Vec<i128> = everything.keys().map(|brick| brick.y()).collect();
+            rows.sort_unstable();
+            rows.dedup();
+            let height = rows[pick % rows.len()] + nudge;
+            let kept = |keep: &dyn Fn(BrickCoordinate) -> bool| -> BTreeMap<BrickCoordinate, usize> {
+                everything.iter().filter(|(brick, _)| keep(**brick)).map(|(brick, first)| (*brick, *first)).collect()
+            };
+            let (found, expected) = match which {
+                // Every brick from a height up is air: a cube is, if it begins at or over it.
+                0 => (
+                    first_margins_skipping(low, high, &margins, way, origin, |cube| cube.origin().y() >= height),
+                    kept(&|brick| brick.y() < height),
+                ),
+                // Half of the cubes of 4 to an edge are air, like the black squares of a board: no cube of more than that is, and one of less is if the cube that holds it is.
+                1 => (
+                    first_margins_skipping(low, high, &margins, way, origin, |cube| {
+                        cube.level() <= 2 && in_an_even_cube(cube.origin())
+                    }),
+                    kept(&|brick| !in_an_even_cube(brick)),
+                ),
+                // A third of the bricks are air, here and there, and no cube of more than one brick has only them.
+                2 => (
+                    first_margins_skipping(low, high, &margins, way, origin, |cube| {
+                        cube.level() == 0 && is_a_scattered_air_brick(cube.origin())
+                    }),
+                    kept(&|brick| !is_a_scattered_air_brick(brick)),
+                ),
+                // All of it is air.
+                _ => (
+                    first_margins_skipping(low, high, &margins, way, origin, |_| true),
+                    BTreeMap::new(),
+                ),
+            };
+            prop_assert_eq!(found, expected);
+        }
+    }
+
+    #[test]
+    fn a_tube_through_empty_space_is_a_question_for_each_cube_it_goes_through_and_not_for_each_brick()
+     {
+        // A ship at 420,000 voxels a second: rings 8 voxels apart to a lookahead of 105,008 voxels, a tube of 820 pieces and 800,000 bricks that is all air.
+        let margins: Vec<Real> = (0..7_900)
+            .map(|ring| 42_002.0 + 8.0 * ring as f64)
+            .collect();
+        let (low, high) = (
+            Vector::new(100.0, 200.0, 300.0),
+            Vector::new(108.0, 208.0, 308.0),
+        );
+        for way in [Vector::Y, Vector::new(1.0, 2.0, 3.0).normalize()] {
+            let mut questions = 0u64;
+            let mut visits = 0u64;
+            visit_bricks_by_first_margin(
+                sweep_of(low, high, way, BrickCoordinate::ORIGIN),
+                &margins,
+                |cube| {
+                    questions += 1;
+                    assert!(cube.level() <= FIRST_CUBE_LEVEL);
+                    true
+                },
+                |_, _| visits += 1,
+            );
+            assert_eq!(visits, 0);
+            // (A cube is asked once however many pieces have a brick in it; the cubes are 64 bricks, 2,000 voxels, to an edge, and the tube goes through 105,000 voxels of them.)
+            assert!(questions < 1_000, "{questions} questions");
+        }
+    }
+
+    #[test]
+    fn where_the_tube_goes_through_ground_only_the_cubes_that_have_some_are_looked_into() {
+        // The ground is the bricks under a plane across the way; air above. A ship going up through the plane at 6,000 voxels a second.
+        let margins: Vec<Real> = (0..60).map(|ring| 1_000.0 + 8.0 * ring as f64).collect();
+        let (low, high) = (
+            Vector::new(100.0, 200.0, 300.0),
+            Vector::new(108.0, 208.0, 308.0),
+        );
+        let ground_top = 20i128;
+        let mut questions = 0u64;
+        let mut visited = BTreeMap::new();
+        visit_bricks_by_first_margin(
+            sweep_of(low, high, Vector::Y, BrickCoordinate::ORIGIN),
+            &margins,
+            |cube| {
+                questions += 1;
+                cube.origin().y() >= ground_top
+            },
+            |brick, position| {
+                visited.entry(brick).or_insert(position);
+            },
+        );
+        // Every brick under the plane is visited, and none over it.
+        assert!(visited.keys().all(|brick| brick.y() < ground_top));
+        let everything = first_margins_by_making_every_region(
             low,
             high,
-            &[200.0, 100.0],
-            CAP,
-            Vector::X,
+            &margins,
+            Vector::Y,
             BrickCoordinate::ORIGIN,
-            |_, _| {},
+        );
+        let under = everything
+            .keys()
+            .filter(|brick| brick.y() < ground_top)
+            .count();
+        assert_eq!(visited.len(), under);
+        assert!(
+            questions < 10 * under as u64,
+            "{questions} questions for {under} bricks"
         );
     }
 

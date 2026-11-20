@@ -7,8 +7,9 @@ use voxel_space::{
 
 use crate::mass::BodyMass;
 use crate::real::{array, matrix, vector, world_position};
-use crate::sweep::{SweptBricks, swept_bricks, visit_bricks_by_first_margin};
+use crate::sweep::{Reach, Sweep, SweptBricks, swept_bricks, visit_bricks_by_first_margin};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
+use region_octree::BrickCube;
 
 mod couplings;
 mod sleeping;
@@ -691,25 +692,23 @@ impl BodyWorld {
 
     /// The bricks that a body will reach for each of some `margins` (in order, the least first), as [`BodyWorld::bricks_ahead`] has them, without making the bricks of all but the last: calls `visit` with
     /// each brick of the last, and the position in `margins` of the first whose bricks have it (a brick that is in more than one box of the tube more than once: the least position it is given is its
-    /// first). See [`visit_bricks_by_first_margin`] for why. `None` for a body with no blocks yet or one that is not there.
+    /// first). See `visit_bricks_by_first_margin` in the sweep module for why, and for `skip`, which says of a cube that nothing in it need be visited. `None` for a body with no blocks yet or one that is not there.
     pub fn visit_bricks_ahead(
         &self,
         id: BodyId,
-        margins: &[f64],
-        cap: f64,
-        direction: [f64; 3],
+        reach: Reach<'_>,
+        skip: impl FnMut(BrickCube) -> bool,
         visit: impl FnMut(BrickCoordinate, usize),
     ) -> Option<()> {
         let (low, high) = self.bounds_of(id)?;
-        visit_bricks_by_first_margin(
+        let sweep = Sweep {
             low,
             high,
-            margins,
-            cap,
-            vector(direction),
-            self.origin,
-            visit,
-        );
+            cap: reach.cap,
+            direction: vector(reach.direction),
+            origin: self.origin,
+        };
+        visit_bricks_by_first_margin(sweep, reach.margins, skip, visit);
         Some(())
     }
 
@@ -717,22 +716,20 @@ impl BodyWorld {
     pub fn visit_bricks_ahead_in(
         &self,
         id: BodyId,
-        margins: &[f64],
-        cap: f64,
-        direction: [f64; 3],
+        reach: Reach<'_>,
         frame: BodyId,
+        skip: impl FnMut(BrickCube) -> bool,
         visit: impl FnMut(BrickCoordinate, usize),
     ) -> Option<()> {
         let (low, high, turn) = self.bounds_seen_from(id, frame)?;
-        visit_bricks_by_first_margin(
+        let sweep = Sweep {
             low,
             high,
-            margins,
-            cap,
-            turn * vector(direction),
-            BrickCoordinate::ORIGIN,
-            visit,
-        );
+            cap: reach.cap,
+            direction: turn * vector(reach.direction),
+            origin: BrickCoordinate::ORIGIN,
+        };
+        visit_bricks_by_first_margin(sweep, reach.margins, skip, visit);
         Some(())
     }
 
@@ -1534,12 +1531,16 @@ mod tests {
                 BodyKind::Fixed,
             )
             .unwrap();
+        let reach = Reach {
+            margins: &margins,
+            cap: 128.0,
+            direction: way,
+        };
         assert_eq!(
             first_margins_by_one_pass(|visit| world.visit_bricks_ahead(
                 BodyId(1),
-                &margins,
-                128.0,
-                way,
+                reach,
+                |_| false,
                 visit
             )),
             first_margins_by_making_each(
@@ -1550,10 +1551,9 @@ mod tests {
         assert_eq!(
             first_margins_by_one_pass(|visit| world.visit_bricks_ahead_in(
                 BodyId(1),
-                &margins,
-                128.0,
-                way,
+                reach,
                 BodyId(2),
+                |_| false,
                 visit
             )),
             first_margins_by_making_each(
@@ -1561,13 +1561,22 @@ mod tests {
                 &margins
             )
         );
+        // What is said to be air is not visited, in the world and in a body's coordinates.
+        let mut visited = 0;
+        world
+            .visit_bricks_ahead(BodyId(1), reach, |_| true, |_, _| visited += 1)
+            .unwrap();
+        world
+            .visit_bricks_ahead_in(BodyId(1), reach, BodyId(2), |_| true, |_, _| visited += 1)
+            .unwrap();
+        assert_eq!(visited, 0);
         // A body that is not there, or a frame that is not, has none.
         assert_eq!(
-            world.visit_bricks_ahead(BodyId(7), &margins, 128.0, way, |_, _| {}),
+            world.visit_bricks_ahead(BodyId(7), reach, |_| false, |_, _| {}),
             None
         );
         assert_eq!(
-            world.visit_bricks_ahead_in(BodyId(1), &margins, 128.0, way, BodyId(7), |_, _| {}),
+            world.visit_bricks_ahead_in(BodyId(1), reach, BodyId(7), |_| false, |_, _| {}),
             None
         );
     }
