@@ -11,13 +11,13 @@
 mod common;
 
 use common::chains::{
-    Vec3, a_chain_in_orbit, car, centre_of, mass_of, origins_of, pivot_gap, put_on_its_rail,
-    set_going,
+    Lying, Vec3, a_chain_in_orbit_lying, car, centre_of, mass_of, origins_of, pivot_gap,
+    put_on_its_rail, set_going, world_of,
 };
 use common::docking::{PLAIN, make_going, stone, stones};
 use common::joints::{ball_end_toward, joint_block};
 use common::rails::put_on_a_rail_near_another_ship;
-use common::{Scene, circular_speed, length, pose_at, ship_id};
+use common::{Scene, circular_speed, length, ship_id};
 use voxel_space::{FaceDirection, GridId};
 
 const DISTANCE: f64 = 70_016.0;
@@ -89,14 +89,16 @@ fn a_chain_and_a_car(
     Vec<GridId>,
     GridId,
 ) {
-    a_weighted_chain_and_a_car(chain, Weight::Light, CLOSING, with_joints)
+    a_weighted_chain_and_a_car(chain, Weight::Light, CLOSING, Lying::AlongX, with_joints)
 }
 
-/// `a_chain_and_a_car` for a chain of this weight, with the car closing at `closing` voxels a second.
+/// `a_chain_and_a_car` for a chain of this weight, with the car closing at `closing` voxels a second, the chain and the car lying along x as they are made or turned a quarter so that
+/// they lie along z (the car then comes along z, from beyond the chain's end).
 fn a_weighted_chain_and_a_car(
     chain: Chain,
     weight: Weight,
     closing: f64,
+    lying: Lying,
     with_joints: bool,
 ) -> (
     Scene,
@@ -123,7 +125,7 @@ fn a_weighted_chain_and_a_car(
         cars[2].0.push(([weight.east_end(), 0, 0], stone(), PLAIN));
     }
     cars[2].1 += 1.0;
-    let ships = a_chain_in_orbit(&mut scene, cars, DISTANCE, speed);
+    let ships = a_chain_in_orbit_lying(&mut scene, cars, DISTANCE, speed, lying);
     let still = vec![([0.0; 3], [0.0; 3]); 3];
     match chain {
         Chain::OnARail | Chain::AndTheCarOnOne => {
@@ -137,13 +139,11 @@ fn a_weighted_chain_and_a_car(
     } else {
         stones(0, 4)
     };
-    let origin = origins_of(&scene, &ships[..1])[0];
-    make_going(
-        &mut scene,
-        pose_at(origin[0] + weight.length() + GAP, origin[1], origin[2]),
-        second,
-        [-closing, 0.0, speed],
-    );
+    let mut origin = origins_of(&scene, &ships[..1])[0];
+    origin[lying.axis()] += weight.length() + GAP;
+    let mut velocity = [0.0, 0.0, speed];
+    velocity[lying.axis()] -= closing;
+    make_going(&mut scene, lying.pose_at(origin), second, velocity);
     // (The same number of ticks for every case: the car is given its rail in this one, or nothing is done.)
     let ship = ship_id(4);
     scene.run(move |world| {
@@ -257,12 +257,13 @@ struct Run {
 }
 
 fn until_the_car_is_coupled(chain: Chain) -> Run {
-    until_a_car_is_coupled(chain, Weight::Light, CLOSING)
+    until_a_car_is_coupled(chain, Weight::Light, CLOSING, Lying::AlongX)
 }
 
-/// The run of a chain of this weight and a car that closes on it at `closing` voxels a second.
-fn until_a_car_is_coupled(chain: Chain, weight: Weight, closing: f64) -> Run {
-    let (mut scene, report, ships, car) = a_weighted_chain_and_a_car(chain, weight, closing, true);
+/// The run of a chain of this weight and a car that closes on it at `closing` voxels a second, the two lying as asked.
+fn until_a_car_is_coupled(chain: Chain, weight: Weight, closing: f64, lying: Lying) -> Run {
+    let (mut scene, report, ships, car) =
+        a_weighted_chain_and_a_car(chain, weight, closing, lying, true);
     let (mut left_at, mut coupled_at, mut near_at) = (None, None, None);
     let mut gap_at_the_touch = f64::NAN;
     let mut car_rode_until_the_touch = true;
@@ -402,7 +403,7 @@ fn a_chain_of_heavy_cars_is_coupled_soon_after_its_end_is_within_the_coupling_di
     // against the spin sized by one number for the inertia): the spin of the cars against each other alternated in sign every tick and the free chain hovered 0.02 voxels from the car
     // for 25 ticks and more (coupled 34 ticks after it was within 0.3 voxels, at a closing speed of 2; and not at all at 1 in 400 ticks with a torque by axis and the old force).
     for closing in [1.0, 2.0, 3.0, 4.0] {
-        let free = until_a_car_is_coupled(Chain::Free, Weight::Heavy, closing);
+        let free = until_a_car_is_coupled(Chain::Free, Weight::Heavy, closing, Lying::AlongX);
         let (near, coupled) = (
             free.near_at
                 .unwrap_or_else(|| panic!("closing {closing}: never within 0.3 voxels")),
@@ -414,11 +415,57 @@ fn a_chain_of_heavy_cars_is_coupled_soon_after_its_end_is_within_the_coupling_di
             "closing {closing}: within 0.3 voxels in tick {near}, coupled in {coupled}"
         );
         for chain in [Chain::OnARail, Chain::AndTheCarOnOne] {
-            let run = until_a_car_is_coupled(chain, Weight::Heavy, closing);
+            let run = until_a_car_is_coupled(chain, Weight::Heavy, closing, Lying::AlongX);
             assert!(
                 run.coupled_at.is_some(),
                 "closing {closing}, {chain:?}: never coupled"
             );
+        }
+    }
+}
+
+#[test]
+fn a_chain_and_a_car_turned_a_quarter_are_coupled_as_soon_after_the_ends_are_near_as_when_they_are_not_free_or_on_a_rail()
+ {
+    // The inertia of a car in the world's axes is the one it has in its own turned by the car's orientation. A chain that lies along x as it is made has the two the same; one that is
+    // turned has them differ, and a pull that took one for the other would damp the spin of the cars about the wrong axes (and, being sized by the lever of the end, pull with the wrong
+    // force).
+    for weight in [Weight::Light, Weight::Heavy] {
+        let (scene, _, ships, _) =
+            a_weighted_chain_and_a_car(Chain::Free, weight, CLOSING, Lying::AlongZ, true);
+        // (The turn is the one meant: the car's length lies along the world's z, from its origin, and the chain's east pivot is beyond it.)
+        let first = world_of(&scene, ships[0], [0.0, 0.5, 0.5]);
+        let last = world_of(&scene, ships[2], [weight.east_pivot(), 0.5, 0.5]);
+        let along = [0, 1, 2].map(|axis| last[axis] - first[axis]);
+        assert!(
+            (along[2] - weight.length()).abs() < 1.0e-3
+                && along[0].abs() < 1.0e-3
+                && along[1].abs() < 1.0e-3,
+            "{weight:?}: the chain lies along z, {} voxels long: {along:?}",
+            weight.length()
+        );
+        drop(scene);
+        for closing in [1.0, 2.0, 3.0] {
+            let free = until_a_car_is_coupled(Chain::Free, weight, closing, Lying::AlongZ);
+            let (near, coupled) = (
+                free.near_at.unwrap_or_else(|| {
+                    panic!("{weight:?}, closing {closing}: never within 0.3 voxels")
+                }),
+                free.coupled_at.unwrap_or_else(|| {
+                    panic!("{weight:?}, closing {closing}: the free chain was never coupled")
+                }),
+            );
+            assert!(
+                coupled - near <= 12,
+                "{weight:?}, closing {closing}: within 0.3 voxels in tick {near}, coupled in {coupled}"
+            );
+            for chain in [Chain::OnARail, Chain::AndTheCarOnOne] {
+                let run = until_a_car_is_coupled(chain, weight, closing, Lying::AlongZ);
+                assert!(
+                    run.coupled_at.is_some(),
+                    "{weight:?}, closing {closing}, {chain:?}: never coupled"
+                );
+            }
         }
     }
 }

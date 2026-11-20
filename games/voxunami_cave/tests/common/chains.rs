@@ -6,7 +6,7 @@
 use super::docking::{PLAIN, Placed, make_all_going, stone, stones};
 use super::joints::{ball_end_toward, joint_block};
 use super::{Scene, length, pose_at, ship_id};
-use voxel_space::{FaceDirection, GridId, Orientation, WorldPosition};
+use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, Orientation, WorldPosition};
 use world_storage::rail::{Centre, Orbit, Rail, RailTime};
 
 pub type Vec3 = [f64; 3];
@@ -139,6 +139,45 @@ fn planet_speed(scene: &Scene, planet: u64) -> [f64; 3] {
         .linear_velocity
 }
 
+/// Which way the cars of a chain lie: as they are made, with their length along x (the way a car's blocks are set), or each turned a quarter about y (the way up from the planet) so
+/// that the length lies along z, the way the chain goes. The inertia of a car in the world's axes is not the one it has in its own when it is turned, and a test that turns the cars is
+/// the only one that can tell the two apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lying {
+    AlongX,
+    AlongZ,
+}
+
+impl Lying {
+    /// The turn of a car: none, or a quarter about y that has the car's x along the world's z (and its z along the world's minus x).
+    pub fn orientation(self) -> Orientation {
+        match self {
+            Lying::AlongX => Orientation::IDENTITY,
+            Lying::AlongZ => {
+                let half = std::f64::consts::FRAC_1_SQRT_2;
+                Orientation::from_components([0.0, -half, 0.0, half])
+                    .expect("a quarter turn is a rotation")
+            }
+        }
+    }
+
+    /// The pose of a car whose origin is at `origin` in the world (its length is along `self`, so the car goes on from there).
+    pub fn pose_at(self, origin: Vec3) -> GridPose {
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, origin),
+            self.orientation(),
+        )
+    }
+
+    /// The world's axis the length of a car lies along.
+    pub fn axis(self) -> usize {
+        match self {
+            Lying::AlongX => 0,
+            Lying::AlongZ => 2,
+        }
+    }
+}
+
 /// Makes the cars of a chain end to end along x, from the origin, `distance` from the middle of the planet along y, going at `speed` along z, in a scene that has the planet (the
 /// ship before them), all in one tick. Their numbers are 1, 2 and so on. Two ticks after, the bodies have coupled them.
 pub fn a_chain_in_orbit(
@@ -147,11 +186,24 @@ pub fn a_chain_in_orbit(
     distance: f64,
     speed: f64,
 ) -> Vec<GridId> {
+    a_chain_in_orbit_lying(scene, cars, distance, speed, Lying::AlongX)
+}
+
+/// `a_chain_in_orbit` with the chain lying as asked: from the origin along x, or along z.
+pub fn a_chain_in_orbit_lying(
+    scene: &mut Scene,
+    cars: Vec<(Vec<Placed>, f64)>,
+    distance: f64,
+    speed: f64,
+    lying: Lying,
+) -> Vec<GridId> {
     let count = cars.len() as u64;
     let mut at = 0.0;
     let mut made = Vec::new();
     for (blocks, length) in cars {
-        made.push((pose_at(at, distance, 0.0), blocks));
+        let mut origin = [0.0, distance, 0.0];
+        origin[lying.axis()] = at;
+        made.push((lying.pose_at(origin), blocks));
         at += length;
     }
     make_all_going(scene, made, [0.0, 0.0, speed]);
