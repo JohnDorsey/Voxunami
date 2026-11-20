@@ -39,7 +39,12 @@ pub struct Scene {
 
 /// Flat ground: stone below, three layers of dirt, grass at height 10 (the top voxel is y = 9).
 pub fn scene() -> Scene {
-    let game = Game::new(&[Plugin::BaseBlocks]);
+    scene_of(&[Plugin::BaseBlocks])
+}
+
+/// The same, in a game with the plugins given (`Plugin::FancyTerrain` adds a second generator, flat ground to 40).
+pub fn scene_of(plugins: &[Plugin]) -> Scene {
+    let game = Game::new(plugins);
     let world = game.new_world();
     let material = world
         .main()
@@ -65,6 +70,19 @@ impl Scene {
                 .main_mut()
                 .terrain
                 .assign_unassigned(cube.origin());
+        }
+    }
+
+    /// What a client does when the server answers a watch: it is told which generator made every cube that covers the region (the default, for what was not
+    /// made yet), and takes the word. Unlike [`Scene::assign_around`] this is the word of another, and it comes again for the cubes the next watch shares.
+    pub fn tell_assignments_around(&mut self, center: BrickCoordinate, radius: u32) {
+        let terrain = &mut self.world.main_mut().terrain;
+        let default = terrain.default_generator();
+        for cube in BrickCube::covering(
+            BrickBox::around(center, radius),
+            terrain.assignment_cube_level(),
+        ) {
+            terrain.set_assignment(cube, Some(default));
         }
     }
 

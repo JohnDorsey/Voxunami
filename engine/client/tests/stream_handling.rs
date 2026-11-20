@@ -306,6 +306,57 @@ fn the_client_generates_terrain_where_the_server_named_a_generator() {
     );
 }
 
+/// A watch of the region around `at`, as the server answers one: the default generator (0) for every cube of level 3 that covers it, or `other` for the first.
+fn watch_around(rig: &mut Rig, at: BrickCoordinate, other: Option<u32>) {
+    let region = BrickBox::around(at, 2);
+    let assignments = BrickCube::covering(region, 3)
+        .enumerate()
+        .map(|(index, cube)| GeneratorAssignment {
+            cube,
+            generator: Some(match other {
+                Some(generator) if index == 0 => generator,
+                _ => 0,
+            }),
+        })
+        .collect();
+    rig.send(ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
+        region,
+        assignments,
+    });
+}
+
+#[test]
+fn what_the_view_kept_for_the_terrain_is_kept_when_a_watch_tells_the_default_and_not_when_it_tells_another_generator()
+ {
+    // A view keeps what it worked out for one version of the terrain ([`WorldTerrain::version`]): the answers of `may_show`, for a hundred thousand cubes. The server
+    // answers every watch with the generator of every cube that covers the region, and nearly all of them are the default, so a flight that watches somewhere new at
+    // every brick must not make a new version of the terrain at every brick, or the view is worked out from nothing each time.
+    let mut rig = Rig::new();
+    let version = |rig: &Rig| rig.client.world().world().main().terrain.version();
+    watch_around(&mut rig, BrickCoordinate::ORIGIN, None);
+    rig.tick(5);
+    rig.client.poll_tick().unwrap().unwrap();
+    let kept = version(&rig);
+    // Somewhere new, which is cubes it has no word of, and some that it has.
+    for step in 1..=6 {
+        watch_around(&mut rig, BrickCoordinate::new(0, 4 * step, 0), None);
+        rig.tick(5 + step as u64);
+        rig.client.poll_tick().unwrap().unwrap();
+        assert_eq!(version(&rig), kept, "after {step} watches");
+    }
+    // A cube of the other generator (1: the one of the fancy terrain) is another matter, and one that is told once more is not.
+    watch_around(&mut rig, BrickCoordinate::new(0, 40, 0), Some(1));
+    rig.tick(12);
+    rig.client.poll_tick().unwrap().unwrap();
+    let after_another = version(&rig);
+    assert!(after_another > kept);
+    watch_around(&mut rig, BrickCoordinate::new(0, 40, 0), Some(1));
+    rig.tick(13);
+    rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(version(&rig), after_another);
+}
+
 #[test]
 fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     let mut rig = Rig::new();

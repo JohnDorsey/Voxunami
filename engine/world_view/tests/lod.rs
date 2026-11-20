@@ -13,12 +13,12 @@ use voxel_grid::{Brick, GridLayout};
 use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
 use voxel_space::{BrickCoordinate, GridId, LevelIndex, WorldPosition};
 use world_storage::LevelData;
-use world_storage::test_support::brick;
+use world_storage::test_support::{Plugin, brick};
 use world_view::{CoarseTerrainSource, LodConfig, LodSettings, LodView, MeshUpdate, TerrainSource};
 
 mod common;
 
-use common::{Scene, scene};
+use common::{Scene, scene, scene_of};
 
 /// What the renderer holds, as the updates say.
 #[derive(Default)]
@@ -682,6 +682,112 @@ fn what_a_terrain_said_may_show_is_asked_again_when_its_version_changes_and_not_
         &settings(),
     ));
     assert!(screen.nodes.is_empty());
+}
+
+/// The terrain of a level, that counts how many times the view asks whether a cube may show anything.
+struct Counting<'a> {
+    level: &'a LevelData,
+    asked: &'a Cell<u64>,
+}
+
+impl TerrainSource for Counting<'_> {
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
+        self.level.known(coordinate)
+    }
+
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        self.level.generator_for(coordinate)
+    }
+
+    fn layout(&self) -> &Arc<GridLayout> {
+        self.level.layout()
+    }
+}
+
+impl CoarseTerrainSource for Counting<'_> {
+    fn version(&self) -> u64 {
+        self.level.version()
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        self.asked.set(self.asked.get() + 1);
+        self.level.may_show(cube)
+    }
+
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        self.level.coarse_generator(cube)
+    }
+}
+
+#[test]
+fn a_view_at_rest_does_not_ask_the_terrain_again_when_a_watch_only_tells_it_the_default_generator_of_cubes()
+ {
+    // The view is worked out from the answers of `may_show`, kept for one version of the terrain. A client is told, at every watch, the generator of each cube that
+    // covers the region (the default, nearly always), including the cubes it knew: if that is a new version each time, a view that moves a brick at a time has
+    // nothing kept at any brick, and at 444 Mm along its trail of cubes each answer for a big cube is a walk through all of them.
+    let mut scene = scene();
+    scene.tell_assignments_around(brick(0, 0, 0), 10);
+    let asked = Cell::new(0);
+    let at = viewer_in(brick(0, 0, 0));
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let source = Counting {
+        level: scene.world.main(),
+        asked: &asked,
+    };
+    screen.apply(view.settle(GridId::MAIN, &source, at, &settings()));
+    assert!(asked.get() > 0 && !screen.nodes.is_empty());
+    let shown = view.shown().clone();
+
+    // Another watch: cubes of the same region again, and cubes beyond it.
+    scene.tell_assignments_around(brick(0, 0, 4), 10);
+    scene.tell_assignments_around(brick(0, 8, 8), 10);
+    asked.set(0);
+    let source = Counting {
+        level: scene.world.main(),
+        asked: &asked,
+    };
+    screen.apply(view.settle(GridId::MAIN, &source, at, &settings()));
+    assert_eq!(asked.get(), 0, "the view asked the terrain again");
+    assert_eq!(view.shown(), &shown);
+}
+
+#[test]
+fn a_view_at_rest_works_out_its_cubes_again_when_a_watch_tells_it_another_generator_than_the_one_that_made_them()
+ {
+    let mut scene = scene_of(&[Plugin::BaseBlocks, Plugin::FancyTerrain]);
+    scene.tell_assignments_around(brick(0, 0, 0), 10);
+    let asked = Cell::new(0);
+    let at = viewer_in(brick(0, 0, 0));
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let source = Counting {
+        level: scene.world.main(),
+        asked: &asked,
+    };
+    screen.apply(view.settle(GridId::MAIN, &source, at, &settings()));
+    assert!(asked.get() > 0);
+
+    // The ground there is higher (40, not 10) by the generator the server names for a cube: what was kept of the cubes round it is not so any more.
+    let higher = scene
+        .world
+        .main()
+        .terrain
+        .generators()
+        .runtime_id(&world_storage::test_support::id("fancy_terrain:cliffs_v1"))
+        .unwrap();
+    scene
+        .world
+        .main_mut()
+        .terrain
+        .set_assignment(BrickCube::containing(brick(0, 0, 0), 3), Some(higher));
+    asked.set(0);
+    let source = Counting {
+        level: scene.world.main(),
+        asked: &asked,
+    };
+    screen.apply(view.settle(GridId::MAIN, &source, at, &settings()));
+    assert!(asked.get() > 0, "the view did not ask again");
 }
 
 #[test]

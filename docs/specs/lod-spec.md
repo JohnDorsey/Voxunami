@@ -390,7 +390,10 @@ The first two items of the order of work in 9a, built together because pruning n
 - **What it costs** (one thread, release profile). The pruned walk asks about 6,595 (flat) to 18,811 (caves) cubes to 1,500 voxels and 66,000 to 224,000 to 100 million. A question is 40 to 75 ns for flat ground, 130 to 440 ns for hills and 180 to 650 ns with caves (the
   tight bounds); the whole working out is 0.4 ms (flat), 4 ms (hills) or 10 ms (caves) to 1,500 voxels and 2.7 / 13 / 41 ms to 100 million, against 1 ms and 12 ms for the walk with nothing left out. Asking through `WorldTerrain` cost another 1.1 to 1.3 microseconds a
   question, from an octave walk that looked at all eight children at every level (`RegionOctree::all_in_cube`); it now goes down the one that holds the cube, and costs 0.25 microseconds. And the view keeps the answers of the last two workings out
-  (`MayShowMemo`, forgotten when the terrain's `version` changes), so moving a brick asks only about the cubes that are new.
+  (`MayShowMemo`, forgotten when the terrain's `version` changes), so moving a brick asks only about the cubes that are new. The version counts up only when the generator that makes some
+  region changes (`WorldTerrain::set_assignment` compares what each brick of the cube had, in effect, with what it is given: a region with none is made by the default). It did count up at every
+  assignment (2026-11-20), and a client is told the generator of every cube round the region it watches at every watch, nearly always the default, so a flight that watched somewhere new at each brick
+  forgot the whole memo at each brick: after 444 million voxels of flight the view was worked out from nothing every time, 229 ms of walking the assignments of the way it had come.
 - **Mutation experiments:** about 110 mutants over the new code. The first tests missed: the slope constant a little too small, a bound made from the first cell only on x or z, the cell of a position on a lattice line, cave bounds that forgot the octave a footprint
   drops, the edges of the room round a cube (the low sides, one voxel short), a cube judged at level 0, and the bookkeeping of edits; each got a test. Left alone: a hair of rounding that no sample can show (1), and the server working out its leaves when nothing has
   changed (it only saves time).
