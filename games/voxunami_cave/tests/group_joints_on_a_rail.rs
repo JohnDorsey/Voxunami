@@ -297,3 +297,36 @@ fn a_chain_on_a_rail_is_coupled_to_a_car_in_about_the_time_the_free_chain_is() {
         );
     }
 }
+
+#[test]
+fn the_pull_of_a_free_chain_closes_the_ends_smoothly_and_slowly_at_the_end() {
+    // The pull of the bodies (sized by the mass of the group) was thought to flip-flop on a chain's end car, its ends swinging between 1.9 and 3.1 metres a second apart. It does not in
+    // this scene (measured 2026-11-19: the gap shrinks every tick and the ends meet at about half a metre a second); the flip-flop was the rails' pull when it was sized the same way.
+    let readings = followed_for(Chain::Free, true, 70);
+    let gaps: Vec<f64> = readings.iter().map(|reading| reading.gap).collect();
+    let touch = gaps
+        .iter()
+        .position(|gap| *gap < 0.01)
+        .expect("the ends were brought together");
+    assert!(touch > 30, "the pull took a while: {touch} ticks");
+    for tick in 1..touch {
+        assert!(
+            gaps[tick] < gaps[tick - 1],
+            "the gap grew in tick {tick}: {} after {}",
+            gaps[tick],
+            gaps[tick - 1]
+        );
+    }
+    let ticks_per_second = f64::from(common::chains::TICKS_PER_SECOND);
+    for tick in 1..touch - 1 {
+        // (A step that starts within the coupling distance: it is the speed the ends have there that a coupling asks about.)
+        if gaps[tick - 1] < 0.3 {
+            let closing = (gaps[tick - 1] - gaps[tick]) * ticks_per_second;
+            assert!(
+                closing <= 1.0,
+                "closing at {closing} voxels a second with {} voxels to go",
+                gaps[tick - 1]
+            );
+        }
+    }
+}
