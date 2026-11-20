@@ -18,7 +18,7 @@ use world_storage::{HullBox, MovingGrid};
 use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{BlockFace, BlockFaceView, Docking, approach, docked_pose, torque_of_force};
-use crate::joints::JointSettings;
+use crate::joints::{Inertia, JointSettings, inertia_in_the_world, mass_at_an_end};
 
 mod alone;
 mod clusters;
@@ -244,6 +244,34 @@ struct Ship {
     gravity: [f64; 3],
     /// What the simulation last said of where the ship is and how fast it moves: if the world says other, something else moved it.
     written: (GridPose, [f64; 3], [f64; 3]),
+}
+
+impl Ship {
+    /// The inertia tensor of the ship about its centre of mass in the world's axes, for a ship that its pose turns by `rotation` (`GridPose::rotation_matrix`): the tensor of its
+    /// own axes (from the moments of its bricks) turned to the world's. The spin of two ships against each other is slowed against this, and the end of a ship answers a force with
+    /// it (`Ship::mass_at_an_end`), by the pull of a joint end, free or on a rail. `None` for a ship that weighs nothing.
+    fn inertia_in_the_worlds_axes(&self, rotation: [[f64; 3]; 3]) -> Option<Inertia> {
+        let tensor = MassMoments::sum(self.moments.values().copied())
+            .properties()?
+            .inertia;
+        Some(inertia_in_the_world(rotation, tensor))
+    }
+
+    /// What the end of the ship at `arm` from its centre of mass (in the world's axes) answers a force along `direction` with, as a mass: `joints::mass_at_an_end` of the ship's
+    /// mass and its inertia in the world's axes. `None` for a ship that weighs nothing.
+    fn mass_at_an_end(
+        &self,
+        rotation: [[f64; 3]; 3],
+        arm: [f64; 3],
+        direction: [f64; 3],
+    ) -> Option<f64> {
+        mass_at_an_end(
+            self.mass,
+            self.inertia_in_the_worlds_axes(rotation)?,
+            arm,
+            direction,
+        )
+    }
 }
 
 /// A planet (a ship with terrain) in the simulation: a body that is fixed, whose colliders are only of the bricks that ships are near.
@@ -2958,6 +2986,129 @@ mod tests {
         let (sine, cosine) = (libm::sin(angle / 2.0), libm::cos(angle / 2.0));
         let [x, y, z] = direction.map(|part| part / length * sine);
         Orientation::from_components([x, y, z, cosine]).unwrap()
+    }
+
+    /// A ship of a rod of five voxels along its x, each of mass 1 (a cube of that mass spread evenly): it weighs 5, and about its centre of mass it has `5/6` about x and
+    /// `5/6 + (4 + 1 + 0 + 1 + 4) = 65/6` about y and about z, worked out by hand.
+    fn a_rod() -> Ship {
+        let moments =
+            MassMoments::sum((0..5).map(|index| MassMoments::of_voxel([index, 0, 0], 1.0)));
+        Ship {
+            moments: BTreeMap::from([(BrickCoordinate::ORIGIN, moments)]),
+            extents: BTreeMap::new(),
+            ports: BTreeMap::new(),
+            joint_ends: BTreeMap::new(),
+            kind: BodyKind::Dynamic,
+            mass: 5.0,
+            centre_of_mass: [2.5, 0.5, 0.5],
+            gravity: [0.0; 3],
+            written: (
+                GridPose::new(
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]),
+                    Orientation::IDENTITY,
+                ),
+                [0.0; 3],
+                [0.0; 3],
+            ),
+        }
+    }
+
+    const ALONG: f64 = 5.0 / 6.0;
+    const ACROSS: f64 = 65.0 / 6.0;
+
+    /// The matrix of a turn of `angle` radians about the axis of `direction`, as a pose that turns a ship by it has it.
+    fn rotation_of(direction: [f64; 3], angle: f64) -> [[f64; 3]; 3] {
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]),
+            turn_about(direction, angle),
+        )
+        .rotation_matrix()
+    }
+
+    #[test]
+    fn the_inertia_of_a_ship_in_the_worlds_axes_is_its_own_with_the_turn_of_its_pose_put_in() {
+        let rod = a_rod();
+        // Not turned: its own axes are the world's.
+        let own = rod
+            .inertia_in_the_worlds_axes(rotation_of([0.0, 1.0, 0.0], 0.0))
+            .unwrap();
+        for (row, entries) in own.iter().enumerate() {
+            for (column, entry) in entries.iter().enumerate() {
+                let wanted = match (row == column, row) {
+                    (false, _) => 0.0,
+                    (true, 0) => ALONG,
+                    (true, _) => ACROSS,
+                };
+                assert!((entry - wanted).abs() < 1e-9, "{own:?}");
+            }
+        }
+        // Turned a quarter about y, the rod lies along z (or minus z) and turns easily about z, and not about x: the two have changed places.
+        let quarter = rod
+            .inertia_in_the_worlds_axes(rotation_of([0.0, 1.0, 0.0], std::f64::consts::FRAC_PI_2))
+            .unwrap();
+        assert!((quarter[2][2] - ALONG).abs() < 1e-9, "{quarter:?}");
+        assert!((quarter[0][0] - ACROSS).abs() < 1e-9, "{quarter:?}");
+        assert!((quarter[1][1] - ACROSS).abs() < 1e-9, "{quarter:?}");
+        // Any turn: a rod is `ACROSS` about every axis across it and `ALONG` about its own, so its tensor is `ACROSS` times the identity and the difference along the
+        // way it lies, `u` (the first column of the matrix: the world's way of its x): worked out here, not by the function that is under test.
+        for (direction, angle) in [
+            ([1.0, 2.0, 3.0], 0.7),
+            ([-2.0, 0.5, 1.0], 2.4),
+            ([0.0, 0.0, 1.0], 1.0),
+        ] {
+            let rotation = rotation_of(direction, angle);
+            let u = [rotation[0][0], rotation[1][0], rotation[2][0]];
+            let turned = rod.inertia_in_the_worlds_axes(rotation).unwrap();
+            for row in 0..3 {
+                for column in 0..3 {
+                    let wanted = if row == column { ACROSS } else { 0.0 }
+                        + (ALONG - ACROSS) * u[row] * u[column];
+                    assert!(
+                        (turned[row][column] - wanted).abs() < 1e-9,
+                        "turn {angle} about {direction:?}, entry {row} {column}: {} for {wanted}",
+                        turned[row][column]
+                    );
+                }
+            }
+        }
+        // A ship that weighs nothing has no inertia.
+        let mut nothing = a_rod();
+        nothing.moments.clear();
+        assert_eq!(
+            nothing.inertia_in_the_worlds_axes(rotation_of([0.0, 1.0, 0.0], 1.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_end_of_a_turned_ship_answers_a_force_with_the_inertia_it_has_in_the_worlds_axes() {
+        let rod = a_rod();
+        let rotation = rotation_of([0.0, 1.0, 0.0], std::f64::consts::FRAC_PI_2);
+        // The rod lies along the world's z now (its own x, which is the first column of the matrix).
+        let u = [rotation[0][0], rotation[1][0], rotation[2][0]];
+        assert!(u[2].abs() > 1.0 - 1e-9, "{u:?}");
+        let arm = u.map(|part| part * 2.5);
+        // A force along the rod has no lever: the mass of the ship.
+        let along = rod.mass_at_an_end(rotation, arm, u).unwrap();
+        assert!((along - 5.0).abs() < 1e-9, "{along}");
+        // A force across it, along y, has a lever of 2.5 about x, across the rod: the end answers it as `1/5 + 2.5^2 / ACROSS` does. With the rod's own axes taken for the
+        // world's, the lever would be about the rod's long axis, with a twelfth of the inertia, and the end would answer with far less.
+        let across = rod.mass_at_an_end(rotation, arm, [0.0, 1.0, 0.0]).unwrap();
+        let wanted = 1.0 / (1.0 / 5.0 + 2.5 * 2.5 / ACROSS);
+        assert!((across - wanted).abs() < 1e-9, "{across} for {wanted}");
+        // A rod that is not turned, a force across it at its end: the same answer, whatever the turn.
+        let unturned = rod
+            .mass_at_an_end(
+                rotation_of([0.0, 1.0, 0.0], 0.0),
+                [2.5, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            )
+            .unwrap();
+        assert!((unturned - wanted).abs() < 1e-9, "{unturned} for {wanted}");
+        // A ship that weighs nothing has no end to answer with.
+        let mut nothing = a_rod();
+        nothing.moments.clear();
+        assert_eq!(nothing.mass_at_an_end(rotation, arm, u), None);
     }
 
     fn same_turn(first: Orientation, second: Orientation) -> bool {

@@ -409,6 +409,41 @@ fn the_spin_of_two_cars_that_turn_easily_about_one_axis_is_cut_the_same_part_eve
 }
 
 #[test]
+fn the_spin_of_a_pair_is_slowed_against_the_inertia_of_the_pair_or_of_the_one_that_can_turn_or_not_at_all()
+ {
+    let settings = JointSettings::default();
+    let (first, second) = (diagonal([2.0, 4.0, 6.0]), diagonal([2.0, 12.0, 3.0]));
+    let spin = [1.0, -1.0, 0.5];
+    // Both can turn: against the reduced tensor, a b / (a + b) on each axis, worked out by hand: 1, 3 and 2.
+    let both = settings.spin_damping_between(spin, Some(first), Some(second));
+    for (axis, reduced) in [1.0, 3.0, 2.0].into_iter().enumerate() {
+        let wanted = -reduced * spin[axis] / settings.response_seconds;
+        assert!((both[axis] - wanted).abs() < 1e-9, "{both:?}");
+    }
+    // The order of the two is not the matter.
+    assert_eq!(
+        both,
+        settings.spin_damping_between(spin, Some(second), Some(first))
+    );
+    // One that cannot turn (a ship that is held): the other's own tensor.
+    let only_first = settings.spin_damping_between(spin, Some(first), None);
+    for (axis, own) in [2.0, 4.0, 6.0].into_iter().enumerate() {
+        let wanted = -own * spin[axis] / settings.response_seconds;
+        assert!((only_first[axis] - wanted).abs() < 1e-9, "{only_first:?}");
+    }
+    assert_eq!(
+        only_first,
+        settings.spin_damping_between(spin, None, Some(first))
+    );
+    // Neither can, or a tensor is not usable: nothing to slow it against.
+    assert_eq!(settings.spin_damping_between(spin, None, None), [0.0; 3]);
+    assert_eq!(
+        settings.spin_damping_between(spin, Some(isotropic(f64::NAN)), None),
+        [0.0; 3]
+    );
+}
+
+#[test]
 fn a_tensor_that_is_the_same_every_way_slows_a_spin_as_the_number_did() {
     let settings = JointSettings::default();
     for inertia in [0.5, 40.0, 3_000.0] {

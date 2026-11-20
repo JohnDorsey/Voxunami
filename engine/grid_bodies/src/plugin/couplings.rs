@@ -19,9 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use physics::{
-    BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, MassMoments, PivotPair, SolverDials,
-};
+use physics::{BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, PivotPair, SolverDials};
 use server::ServerWorld;
 use voxel_space::GridId;
 use world_storage::MovingGrid;
@@ -29,9 +27,7 @@ use world_storage::MovingGrid;
 use super::rail_ports::is_a_rail_pair;
 use super::{Bodies, Frame, FrameKey, Ship};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{
-    Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world, mass_at_an_end,
-};
+use crate::joints::{Inertia, JointSettings, effective_mass};
 
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
@@ -598,11 +594,7 @@ impl Bodies {
         groups.mass_moved_by_a_pull_on(id)?;
         let record = self.frames.get(&frame_key)?.ships.get(&id)?;
         let ship = world.data().grids().get(id)?;
-        let tensor = MassMoments::sum(record.moments.values().copied())
-            .properties()?
-            .inertia;
-        let inertia = inertia_in_the_world(ship.pose.rotation_matrix(), tensor);
-        mass_at_an_end(record.mass, inertia, arm, direction)
+        record.mass_at_an_end(ship.pose.rotation_matrix(), arm, direction)
     }
 
     /// Pulls two ends toward each other: each of the two ships whose group can move gets the same force, the other way, at its end (as docking's is, owner, 2026-11-09), whatever
@@ -625,15 +617,13 @@ impl Bodies {
             groups.mass_moved_by_a_pull_on(id)?;
             let record = self.frames.get(&frame_key)?.ships.get(&id)?;
             let ship = world.data().grids().get(id)?;
-            let tensor = MassMoments::sum(record.moments.values().copied())
-                .properties()?
-                .inertia;
-            Some(inertia_in_the_world(ship.pose.rotation_matrix(), tensor))
+            record.inertia_in_the_worlds_axes(ship.pose.rotation_matrix())
         };
-        let damping = effective_inertia(inertia_of(pair.first), inertia_of(pair.second))
-            .map_or([0.0; 3], |inertia| {
-                settings.spin_damping_on_second(pair.relative_spin, inertia)
-            });
+        let damping = settings.spin_damping_between(
+            pair.relative_spin,
+            inertia_of(pair.first),
+            inertia_of(pair.second),
+        );
         let Some(frame) = self.frames.get_mut(&frame_key) else {
             return;
         };

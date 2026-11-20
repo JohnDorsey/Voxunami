@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 
-use physics::{BodyKind, MassMoments};
+use physics::BodyKind;
 use server::ServerWorld;
 use voxel_space::GridId;
 use world_storage::MovingGrid;
@@ -26,9 +26,7 @@ use world_storage::MovingGrid;
 use super::rail_ports::{are_of_one_group, rides_a_rail};
 use super::{Bodies, Ship};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{
-    Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world, mass_at_an_end,
-};
+use crate::joints::{Inertia, JointSettings, effective_mass};
 
 /// Two ships, one of which at least rides a rail, with ends that pull on each other: the closest such pair of ends, and what the rules need to know of how the ships go.
 struct RailJointPair {
@@ -134,21 +132,17 @@ impl Bodies {
         direction: [f64; 3],
     ) -> Option<f64> {
         self.mass_a_pull_moves(world, ship)?;
-        let record = self.record_of(ship)?;
-        let inertia = self.inertia_a_pull_turns(world, ship)?;
-        mass_at_an_end(record.mass, inertia, arm, direction)
+        let rotation = world.data().grids().get(ship)?.pose.rotation_matrix();
+        self.record_of(ship)?
+            .mass_at_an_end(rotation, arm, direction)
     }
 
     /// The inertia that the spin of two ships against each other is slowed against: each one's own tensor, about its centre of mass, in the world's axes (a number would take the spin
     /// about the long axis of a car through zero every tick: `JointSettings::spin_damping_on_second`).
     fn inertia_a_pull_turns(&self, world: &ServerWorld, ship: GridId) -> Option<Inertia> {
         self.mass_a_pull_moves(world, ship)?;
-        let record = self.record_of(ship)?;
-        let tensor = MassMoments::sum(record.moments.values().copied())
-            .properties()?
-            .inertia;
         let rotation = world.data().grids().get(ship)?.pose.rotation_matrix();
-        Some(inertia_in_the_world(rotation, tensor))
+        self.record_of(ship)?.inertia_in_the_worlds_axes(rotation)
     }
 
     /// Pulls the joint ends of ships of which one rides a rail, or couples them: the pairs that are in line and slow enough to be coupled (`JointSettings::can_couple`) take their
@@ -217,13 +211,11 @@ impl Bodies {
             };
             busy.extend(groups);
             let on_second = settings.pull_on_second(pair.how.gap, pair.relative_velocity, mass);
-            let damping = effective_inertia(
+            let damping = settings.spin_damping_between(
+                pair.relative_spin,
                 self.inertia_a_pull_turns(world, pair.first),
                 self.inertia_a_pull_turns(world, pair.second),
-            )
-            .map_or([0.0; 3], |inertia| {
-                settings.spin_damping_on_second(pair.relative_spin, inertia)
-            });
+            );
             for (ship, arm, sign) in [
                 (pair.first, pair.first_arm, -1.0),
                 (pair.second, pair.second_arm, 1.0),

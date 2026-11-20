@@ -178,6 +178,21 @@ impl JointSettings {
     }
 }
 
+impl JointSettings {
+    /// The torque on the second car that slows the spin of the two against each other, from the inertia of each in the world's axes (`None` for a car that cannot turn, as for
+    /// [`effective_inertia`]): the pair's inertia, and then [`JointSettings::spin_damping_on_second`] against it. No torque where there is no inertia to slow the spin against.
+    pub fn spin_damping_between(
+        &self,
+        relative_spin: [f64; 3],
+        first: Option<Inertia>,
+        second: Option<Inertia>,
+    ) -> [f64; 3] {
+        effective_inertia(first, second).map_or([0.0; 3], |inertia| {
+            self.spin_damping_on_second(relative_spin, inertia)
+        })
+    }
+}
+
 /// An inertia tensor, in kilograms metres metres, about a centre of mass.
 pub type Inertia = [[f64; 3]; 3];
 
