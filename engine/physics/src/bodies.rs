@@ -7,7 +7,7 @@ use voxel_space::{
 
 use crate::mass::BodyMass;
 use crate::real::{array, matrix, vector, world_position};
-use crate::sweep::{SweptBricks, swept_bricks};
+use crate::sweep::{SweptBricks, swept_bricks, visit_bricks_by_first_margin};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 mod couplings;
@@ -687,6 +687,53 @@ impl BodyWorld {
             turn * vector(direction),
             BrickCoordinate::ORIGIN,
         )
+    }
+
+    /// The bricks that a body will reach for each of some `margins` (in order, the least first), as [`BodyWorld::bricks_ahead`] has them, without making the bricks of all but the last: calls `visit` with
+    /// each brick of the last, and the position in `margins` of the first whose bricks have it (a brick that is in more than one box of the tube more than once: the least position it is given is its
+    /// first). See [`visit_bricks_by_first_margin`] for why. `None` for a body with no blocks yet or one that is not there.
+    pub fn visit_bricks_ahead(
+        &self,
+        id: BodyId,
+        margins: &[f64],
+        cap: f64,
+        direction: [f64; 3],
+        visit: impl FnMut(BrickCoordinate, usize),
+    ) -> Option<()> {
+        let (low, high) = self.bounds_of(id)?;
+        visit_bricks_by_first_margin(
+            low,
+            high,
+            margins,
+            cap,
+            vector(direction),
+            self.origin,
+            visit,
+        );
+        Some(())
+    }
+
+    /// The same bricks, but of another body's own coordinates, as [`BodyWorld::bricks_ahead_in`] has them for each margin.
+    pub fn visit_bricks_ahead_in(
+        &self,
+        id: BodyId,
+        margins: &[f64],
+        cap: f64,
+        direction: [f64; 3],
+        frame: BodyId,
+        visit: impl FnMut(BrickCoordinate, usize),
+    ) -> Option<()> {
+        let (low, high, turn) = self.bounds_seen_from(id, frame)?;
+        visit_bricks_by_first_margin(
+            low,
+            high,
+            margins,
+            cap,
+            turn * vector(direction),
+            BrickCoordinate::ORIGIN,
+            visit,
+        );
+        Some(())
     }
 
     /// The box around the turned bounds of a body, seen from the coordinates of another, in voxels, and the turn that takes a way in the frame to a way in those coordinates; `None` if
@@ -1428,6 +1475,99 @@ mod tests {
         assert_eq!(extent_of(&turned), ([-3, -4, -4], [32, 4, 4]));
         assert_eq!(
             world.bricks_ahead_in(BodyId(1), 1000.0, 128.0, [0.0, 0.0, -1.0], BodyId(7)),
+            None
+        );
+    }
+
+    /// The first of some margins whose bricks ahead have each brick of the last, by making the bricks of each margin (the way the rings of a ship's terrain were first found).
+    fn first_margins_by_making_each(
+        ahead: impl Fn(f64) -> Option<SweptBricks>,
+        margins: &[f64],
+    ) -> std::collections::BTreeMap<BrickCoordinate, usize> {
+        let mut first = std::collections::BTreeMap::new();
+        for (position, &margin) in margins.iter().enumerate() {
+            for brick in ahead(margin).expect("the body is there").bricks() {
+                first.entry(brick).or_insert(position);
+            }
+        }
+        first
+    }
+
+    fn first_margins_by_one_pass(
+        visit_all: impl FnOnce(&mut dyn FnMut(BrickCoordinate, usize)) -> Option<()>,
+    ) -> std::collections::BTreeMap<BrickCoordinate, usize> {
+        let mut first: std::collections::BTreeMap<BrickCoordinate, usize> =
+            std::collections::BTreeMap::new();
+        visit_all(&mut |brick, position| {
+            first
+                .entry(brick)
+                .and_modify(|seen| *seen = (*seen).min(position))
+                .or_insert(position);
+        })
+        .expect("the body is there");
+        first
+    }
+
+    #[test]
+    fn the_first_margin_of_each_brick_ahead_is_that_of_making_the_bricks_of_each_in_the_world_and_in_a_body_it_is_turned_against()
+     {
+        let margins = [40.0, 128.0, 129.0, 300.0, 1000.0, 1000.0, 1300.5];
+        let way = [0.3, -0.2, -1.0];
+        let mut world = BodyWorld::new(BrickCoordinate::new(2, -1, 3), BodySettings::default());
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(at(10.0, 10.0, -50.0)),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &Hull::cube(3))
+            .unwrap();
+        world
+            .add_body(
+                BodyId(2),
+                BodyState {
+                    orientation: Orientation::from_yaw_pitch(0.7, 0.2),
+                    ..resting_at(at(5.0, -7.0, 1.0))
+                },
+                BodyKind::Fixed,
+            )
+            .unwrap();
+        assert_eq!(
+            first_margins_by_one_pass(|visit| world.visit_bricks_ahead(
+                BodyId(1),
+                &margins,
+                128.0,
+                way,
+                visit
+            )),
+            first_margins_by_making_each(
+                |margin| world.bricks_ahead(BodyId(1), margin, 128.0, way),
+                &margins
+            )
+        );
+        assert_eq!(
+            first_margins_by_one_pass(|visit| world.visit_bricks_ahead_in(
+                BodyId(1),
+                &margins,
+                128.0,
+                way,
+                BodyId(2),
+                visit
+            )),
+            first_margins_by_making_each(
+                |margin| world.bricks_ahead_in(BodyId(1), margin, 128.0, way, BodyId(2)),
+                &margins
+            )
+        );
+        // A body that is not there, or a frame that is not, has none.
+        assert_eq!(
+            world.visit_bricks_ahead(BodyId(7), &margins, 128.0, way, |_, _| {}),
+            None
+        );
+        assert_eq!(
+            world.visit_bricks_ahead_in(BodyId(1), &margins, 128.0, way, BodyId(7), |_, _| {}),
             None
         );
     }

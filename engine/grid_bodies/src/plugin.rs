@@ -1913,8 +1913,8 @@ impl Bodies {
         changed: &BTreeSet<BrickCoordinate>,
     ) -> TerrainPlan {
         let level = &self.frames[&key];
-        // Which bricks of the ground have colliders, and how a body's bounds are seen in its bricks. (A planet's colliders are asked for wherever a ship is
-        // near, and not only in the bricks its generator makes: what is built past them is the planet's too.)
+        // Which bricks of the ground have colliders. (A planet's colliders are asked for wherever a ship is near, and not only in the bricks its generator makes: what is
+        // built past them is the planet's too.)
         let loaded = match ground {
             Ground::Level => &level.terrain,
             Ground::Planet(id) => {
@@ -1924,20 +1924,29 @@ impl Bodies {
                 &planet.bricks
             }
         };
-        let bricks_near = |body: BodyId, margin: f64, way: [f64; 3]| match ground {
-            Ground::Level => {
-                level
-                    .bodies
-                    .bricks_ahead(body, margin, physics::TERRAIN_EVERY_WAY_VOXELS, way)
-            }
-            Ground::Planet(id) => level.bodies.bricks_ahead_in(
-                body,
-                margin,
-                physics::TERRAIN_EVERY_WAY_VOXELS,
-                way,
-                BodyId(id.get()),
-            ),
-        };
+        // The bricks a body will reach, for margins that grow: each is told with the first of the margins that has it (see `physics::visit_bricks_by_first_margin`: the bricks
+        // of a margin are not made, since a ship at 400,000 voxels a second has 8,000 of them, each a tube of a thousand boxes).
+        let visit_bricks_near =
+            |body: BodyId,
+             margins: &[f64],
+             way: [f64; 3],
+             visit: &mut dyn FnMut(BrickCoordinate, usize)| match ground {
+                Ground::Level => level.bodies.visit_bricks_ahead(
+                    body,
+                    margins,
+                    physics::TERRAIN_EVERY_WAY_VOXELS,
+                    way,
+                    visit,
+                ),
+                Ground::Planet(id) => level.bodies.visit_bricks_ahead_in(
+                    body,
+                    margins,
+                    physics::TERRAIN_EVERY_WAY_VOXELS,
+                    way,
+                    BodyId(id.get()),
+                    visit,
+                ),
+            };
         // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept. A planet is fixed, so the ships
         // that would be held against it need nothing of it.
         let mut needed: BTreeSet<BrickCoordinate> = BTreeSet::new();
@@ -1969,25 +1978,36 @@ impl Bodies {
             } else {
                 [0.0; 3]
             };
-            if let Some(bricks) = bricks_near(body, needed_margin, way) {
-                if being_made {
-                    settling.entry(*id).or_default().extend(bricks.bricks());
-                } else {
-                    needed.extend(bricks.bricks());
-                }
-            }
-            let mut rings = Vec::new();
+            // The margins, the least first: what is needed, then a ring of what is wanted for each 8 voxels more to the lookahead (ring 1 is the first of them), then what is kept.
+            let mut margins = vec![needed_margin];
             let mut margin = needed_margin;
             while margin < lookahead {
                 margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
-                rings.extend(bricks_near(body, margin, way));
+                margins.push(margin);
             }
-            for (brick, ring) in wanted_rings(&rings) {
-                let nearest = wanted.entry(brick).or_insert(ring);
-                *nearest = (*nearest).min(ring);
-            }
-            if let Some(bricks) = bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS, way) {
-                kept.extend(bricks.bricks());
+            let rings = margins.len() - 1;
+            margins.push(lookahead + TERRAIN_KEEP_EXTRA_VOXELS);
+            let mut needed_by_this_ship: BTreeSet<BrickCoordinate> = BTreeSet::new();
+            let reached = visit_bricks_near(body, &margins, way, &mut |brick, margin| {
+                kept.insert(brick);
+                if margin == 0 {
+                    needed_by_this_ship.insert(brick);
+                }
+                // (What is needed is in the first ring of what is wanted, and what is kept and no more is in none.)
+                if rings > 0 && margin <= rings {
+                    let ring = margin.max(1);
+                    wanted
+                        .entry(brick)
+                        .and_modify(|nearest| *nearest = (*nearest).min(ring))
+                        .or_insert(ring);
+                }
+            });
+            if reached.is_some() {
+                if being_made {
+                    settling.entry(*id).or_default().extend(needed_by_this_ship);
+                } else {
+                    needed.extend(needed_by_this_ship);
+                }
             }
         }
         kept.extend(needed.iter().copied());
@@ -2765,27 +2785,9 @@ fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool 
         })
 }
 
-/// For each brick of the outermost of `regions`, the number of the first region that holds it, counting from 1. The regions are the bricks a ship's bounds come within a margin of,
-/// for margins that grow, so each holds the one before (a cube, or a cube carried along: `physics::SweptBricks`), and a brick is in the regions from some ring on, which is found by
-/// halving. That makes the work the bricks of the outermost region (a tube round a fast ship that is a few thousand) times a few steps, and not that number for every region.
-fn wanted_rings(regions: &[physics::SweptBricks]) -> BTreeMap<BrickCoordinate, usize> {
-    let Some(outer) = regions.last() else {
-        return BTreeMap::new();
-    };
-    outer
-        .bricks()
-        .map(|brick| {
-            let first = regions.partition_point(|region| !region.contains(brick));
-            (brick, first + 1)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-    use voxel_space::BrickBox;
 
     #[test]
     fn two_bricks_are_farther_apart_than_a_radius_when_any_axis_is_past_it() {
@@ -3101,143 +3103,6 @@ mod tests {
         );
         assert!(planet_state(Some(frame), false, last, [0.0; 3], [0.0; 3], 0.05).is_none());
         assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05).is_some());
-    }
-
-    /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every region: the meaning `wanted_rings` must keep.
-    fn rings_by_going_over_every_region(
-        regions: &[physics::SweptBricks],
-    ) -> BTreeMap<BrickCoordinate, usize> {
-        let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
-        for (index, region) in regions.iter().enumerate() {
-            let ring = index + 1;
-            for brick in region.bricks() {
-                let nearest = wanted.entry(brick).or_insert(ring);
-                *nearest = (*nearest).min(ring);
-            }
-        }
-        wanted
-    }
-
-    fn regions_of_boxes(boxes: &[BrickBox]) -> Vec<physics::SweptBricks> {
-        boxes
-            .iter()
-            .map(|bricks| physics::SweptBricks::of_box(*bricks))
-            .collect()
-    }
-
-    /// Boxes that each hold the one before, as margins that grow make them: a first box anywhere, and each of its six faces moved out by 0 to 3 bricks a ring.
-    fn nested_boxes() -> impl Strategy<Value = Vec<BrickBox>> {
-        let base = (
-            -5i128..5,
-            -5i128..5,
-            -5i128..5,
-            0i128..4,
-            0i128..4,
-            0i128..4,
-        );
-        let growth = proptest::collection::vec(proptest::array::uniform6(0i128..4), 0..9);
-        (base, growth).prop_map(|((x, y, z, width, height, depth), growth)| {
-            let mut low = [x, y, z];
-            let mut high = [x + width, y + height, z + depth];
-            let mut boxes = Vec::new();
-            for step in growth {
-                for axis in 0..3 {
-                    low[axis] -= step[axis];
-                    high[axis] += step[axis + 3];
-                }
-                boxes.push(
-                    BrickBox::new(
-                        BrickCoordinate::new(low[0], low[1], low[2]),
-                        BrickCoordinate::new(high[0], high[1], high[2]),
-                    )
-                    .expect("a box that only grows is a box"),
-                );
-            }
-            boxes
-        })
-    }
-
-    /// Regions that each hold the one before and are made of several boxes, as a margin that grows makes the bricks of a tube (`physics::SweptBricks`): some boxes anywhere that grow by 0
-    /// to 2 bricks every face a ring, and now and then another.
-    fn nested_regions() -> impl Strategy<Value = Vec<physics::SweptBricks>> {
-        let one = (
-            proptest::array::uniform3(-5i128..5),
-            proptest::array::uniform3(0i128..4),
-        );
-        let ring = (
-            proptest::collection::vec(proptest::array::uniform6(0i128..3), 3),
-            proptest::option::of(one.clone()),
-        );
-        (
-            proptest::collection::vec(one, 1..4),
-            proptest::collection::vec(ring, 0..7),
-        )
-            .prop_map(|(base, rings)| {
-                let mut boxes: Vec<([i128; 3], [i128; 3])> = base
-                    .into_iter()
-                    .map(|(low, size)| (low, [0, 1, 2].map(|axis| low[axis] + size[axis])))
-                    .collect();
-                let region_of = |boxes: &[([i128; 3], [i128; 3])]| {
-                    physics::SweptBricks::of_boxes(
-                        boxes
-                            .iter()
-                            .map(|(low, high)| {
-                                BrickBox::new(
-                                    BrickCoordinate::new(low[0], low[1], low[2]),
-                                    BrickCoordinate::new(high[0], high[1], high[2]),
-                                )
-                                .expect("a box that only grows is a box")
-                            })
-                            .collect(),
-                    )
-                };
-                let mut regions = vec![region_of(&boxes)];
-                for (growth, extra) in rings {
-                    for (index, (low, high)) in boxes.iter_mut().enumerate() {
-                        let step = growth[index % growth.len()];
-                        for axis in 0..3 {
-                            low[axis] -= step[axis];
-                            high[axis] += step[axis + 3];
-                        }
-                    }
-                    if let Some((low, size)) = extra {
-                        boxes.push((low, [0, 1, 2].map(|axis| low[axis] + size[axis])));
-                    }
-                    regions.push(region_of(&boxes));
-                }
-                regions
-            })
-    }
-
-    proptest! {
-        #[test]
-        fn a_brick_is_in_the_first_ring_whose_box_holds_it(boxes in nested_boxes()) {
-            let regions = regions_of_boxes(&boxes);
-            prop_assert_eq!(wanted_rings(&regions), rings_by_going_over_every_region(&regions));
-        }
-
-        /// The same for regions of several boxes that overlap, which is what a tube is.
-        #[test]
-        fn a_brick_is_in_the_first_ring_whose_region_holds_it(regions in nested_regions()) {
-            prop_assert_eq!(wanted_rings(&regions), rings_by_going_over_every_region(&regions));
-        }
-    }
-
-    #[test]
-    fn rings_are_numbered_from_one_and_a_brick_is_in_the_nearest_ring_that_has_it() {
-        let at = |x, y, z| BrickCoordinate::new(x, y, z);
-        let boxes = [
-            BrickBox::new(at(0, 0, 0), at(0, 0, 0)).unwrap(),
-            BrickBox::new(at(-1, -1, -1), at(1, 1, 1)).unwrap(),
-            BrickBox::new(at(-2, -1, -1), at(3, 1, 1)).unwrap(),
-        ];
-        let rings = wanted_rings(&regions_of_boxes(&boxes));
-        assert_eq!(rings[&at(0, 0, 0)], 1);
-        assert_eq!(rings[&at(1, 1, 1)], 2);
-        assert_eq!(rings[&at(-2, 0, 0)], 3);
-        assert_eq!(rings[&at(3, 1, 1)], 3);
-        assert_eq!(rings.len(), 6 * 3 * 3);
-        assert!(wanted_rings(&[]).is_empty());
     }
 
     // ---- A frame that moves itself (a group off a rail that is alone) ------------------------------------------------------------------------------------------------------

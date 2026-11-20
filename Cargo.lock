@@ -1164,7 +1164,6 @@ dependencies = [
  "namespaced_id",
  "physics",
  "plugin_host",
- "proptest",
  "server",
  "thiserror 2.0.21",
  "voxel_grid",
