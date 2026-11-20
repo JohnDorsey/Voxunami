@@ -71,7 +71,9 @@ exactly that, so I expect it to fit **[believed]**). Step 7 is a design of its o
 
 ## 4. Questions for the owner
 
-1. Rename the shader pack's `pack.json`, or keep both and make each reader name the other kind? (I lean to keeping both for now: the second is a tool of one engine and the name of a
+The owner's answer to the first, and a larger idea in place of steps 1 and 2 (one canonical zip archive for a pack, the same on a server and a client), are in `specs/pack-archive-spec.md`; that proposal supersedes steps 1, 2, 5 and 6 above in how they would be done, and keeps their goals.
+
+1. **Answered 2026-11-20 and built: renamed to `shaderpack.json`**, and each reader names the other kind when it meets the other's manifest (`decisions/packs-and-content.md`). Asked as: rename the shader pack's `pack.json`, or keep both and make each reader name the other kind? (I lean to keeping both for now: the second is a tool of one engine and the name of a
    file is cheap to say twice; confidence low-medium.)
 2. Should the `plugins` default of 2026-11-18 stay as it is until step 1 and 4 are done, or become an explicit developer switch (`--dev`, or the folder named in a file in the source
    tree) at once? It is the one default that depends on where the program is started.

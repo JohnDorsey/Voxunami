@@ -8,7 +8,7 @@ Two things decide how hard a kind of reload is: **who sees the change** (only th
 
 | Kind | Where it lives today | Who sees it | A recording must know? | Exists today |
 |---|---|---|---|---|
-| Shader pack files (`lighting.wgsl`, `pack.json`) | a client folder `shaderpacks` | this player | no | read once at start; `.shader NAME` switches live and a refused pack is taken off again **[read]** |
+| Shader pack files (`lighting.wgsl`, `shaderpack.json`) | a client folder `shaderpacks` | this player | no | read once at start; `.shader NAME` switches live and a refused pack is taken off again **[read]** |
 | Shader pack settings (`NAME.settings.json`) | beside the pack | this player | no | read once at start **[read]** |
 | The engine's own shaders (`voxel.wgsl`, `pictures_on.wgsl`, `relief_*.wgsl`) | `include_str!` into the program | this player | no | none; a developer rebuilds **[believed]** |
 | Pictures (tiles and their `_s`, `_n` companions) | base pictures are `include_bytes!`; a pack's are in its `textures/` | this player, if the change is client-side | no, if it stays a client override | none; texture packs (D9) are specified, not built **[read]** |

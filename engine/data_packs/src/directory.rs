@@ -207,10 +207,12 @@ pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
         let manifest_path = pack.join("pack.json");
         let manifest_label = format!("{folder}/pack.json");
         if !manifest_path.is_file() {
-            errors.push(problem(
-                manifest_label,
-                "this file is missing: every folder here is a pack and has a pack.json",
-            ));
+            let mut message =
+                "this file is missing: every folder here is a pack and has a pack.json".to_owned();
+            if pack.join("shaderpack.json").is_file() {
+                message.push_str(" (this folder has a shaderpack.json, which is the manifest of a shader pack: those are the client's and go in the game data folder's shaderpacks, or `--shader-packs`)");
+            }
+            errors.push(problem(manifest_label, message));
             continue;
         }
         let manifest = match read_text(&manifest_path, &manifest_label) {

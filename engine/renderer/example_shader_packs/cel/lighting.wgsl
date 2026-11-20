@@ -1,4 +1,4 @@
-// Cel shading: the sun's light in steps (`SETTING_STEPS` of them: the setting `steps` of this pack's `pack.json`, three unless the player says another number). Everything else is the default's (see `default_lighting()` in the renderer: this file is that one with the step added).
+// Cel shading: the sun's light in steps (`SETTING_STEPS` of them: the setting `steps` of this pack's `shaderpack.json`, three unless the player says another number). Everything else is the default's (see `default_lighting()` in the renderer: this file is that one with the step added).
 fn pack_shade(s: Surface) -> vec3<f32> {
     let sky = frame.sun_light.y * s.sky_visible + frame.heavens.w * (1.0 - s.above_horizon) * s.uncovered;
     let shaded = s.side * (s.lamp + sky * (1.0 - s.lamp));

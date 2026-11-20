@@ -38,7 +38,7 @@ impl ShaderApplier for FakeRenderer {
 
 fn pack(folder: &Folder, at: &str, id: &str, lighting: &str) {
     folder.write(
-        &format!("{at}/pack.json"),
+        &format!("{at}/shaderpack.json"),
         &format!(r#"{{ "id": "{id}", "name": "Pack {at}" }}"#),
     );
     folder.write(&format!("{at}/lighting.wgsl"), lighting);
@@ -165,7 +165,7 @@ fn a_pack_that_is_no_good_is_a_problem_and_the_good_ones_are_used() {
     let folder = Folder::new("view_problem");
     pack(&folder, "cel", "tester:cel", LIGHTING);
     let (mut packs, mut settings) = started(&folder, Some("tester:cel"));
-    folder.write("broken/pack.json", "{ not json");
+    folder.write("broken/shaderpack.json", "{ not json");
     let mut renderer = FakeRenderer::default();
     let outcome = swap_shader_packs(&mut renderer, &mut packs, &mut settings, read(&folder))
         .expect("accepted")

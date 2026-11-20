@@ -28,6 +28,11 @@ How a game's content reaches a server (data packs) and a client (the package in 
   family `planet_v1`); `base_blocks` is only blocks and properties. The engine keeps the machinery and **`SurfaceLayers { air, surface, subsurface, deep }`**, so it names no block; its own tests use
   fixtures under `terrain`'s `test-support` feature. Checked: with the old ids written back Cave's golden session gave its old pins to the digit, so only the names changed.
 
+## Decided (owner, 2026-11-20)
+
+- **A shader pack's manifest is `shaderpack.json`; `pack.json` is a data pack's.** Built the same day: the shell's reader (`game_shell::shader_packs::MANIFEST_FILE`) and the three example packs use the new name, with no reading of the old one (no shader pack is in use outside the repository that I know of, **[believed]**: the owner's `shaderpacks` folder in the game data folder was empty or missing when I looked). Each reader says what a folder is when it meets the other's manifest: a shader pack reader given a folder with only `pack.json` says it is a data pack's, and `check-pack` and `--packs` say the same of a folder with only `shaderpack.json`. Tests: `a_folder_with_the_manifest_of_a_data_pack_is_told_it_is_one_and_the_old_name_is_no_manifest` and `a_shader_pack_among_the_data_packs_is_told_it_is_one`.
+- **Direction, not yet decided in detail: a pack is one canonical zip archive, the same on a server and on a client** (`specs/pack-archive-spec.md`, a proposal with four questions for the owner).
+
 ## Decided (block textures and the game's own blocks in data; owner, 2026-11-07; not built; `block-textures-spec.md`)
 
 - **The game's own blocks become JSON** read by the pack loader; Rust looks ids up by name. A block names its pictures by one **base name**

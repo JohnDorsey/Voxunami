@@ -102,6 +102,19 @@ fn a_misspelt_folder_gets_a_suggestion() {
     );
 }
 
+/// The owner's decision of 2026-11-20: a shader pack's manifest is `shaderpack.json`; a folder of shader packs given as data packs is told what it is, not only that a file is missing.
+#[test]
+fn a_shader_pack_among_the_data_packs_is_told_it_is_one() {
+    let scratch = Scratch::new("shader_pack_among");
+    scratch.write("cel/shaderpack.json", "{}");
+    scratch.write("cel/lighting.wgsl", "x");
+    let errors = read_directory(scratch.path()).unwrap_err();
+    assert_eq!(
+        errors.to_string(),
+        "cel/pack.json: this file is missing: every folder here is a pack and has a pack.json (this folder has a shaderpack.json, which is the manifest of a shader pack: those are the client's and go in the game data folder's shaderpacks, or `--shader-packs`)"
+    );
+}
+
 #[test]
 fn a_folder_without_a_manifest_and_a_missing_root_are_errors_that_say_where() {
     let scratch = Scratch::new("missing");

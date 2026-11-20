@@ -1,4 +1,4 @@
-//! The settings a `pack.json` declares (`"settings"`) and the defaults it sets for the engine's (`"engine_settings"`).
+//! The settings a `shaderpack.json` declares (`"settings"`) and the defaults it sets for the engine's (`"engine_settings"`).
 
 use renderer::{SettingKind, SettingValue};
 
@@ -7,11 +7,11 @@ use super::*;
 
 const STEPPED: &str = "fn pack_shade(s: Surface) -> vec3<f32> { return s.albedo * floor(s.sun_visible * f32(SETTING_STEPS) + 0.5) / f32(SETTING_STEPS); }";
 
-/// What `read_pack` says of a folder whose `pack.json` is this text after the id and the name.
+/// What `read_pack` says of a folder whose `shaderpack.json` is this text after the id and the name.
 fn read(extra: &str, lighting: &str) -> Result<ShaderPack, Vec<String>> {
     let folder = Folder::new("settings");
     folder.write(
-        "pack.json",
+        "shaderpack.json",
         &format!(r#"{{ "id": "tester:stepped", "name": "Stepped"{extra} }}"#),
     );
     folder.write("lighting.wgsl", lighting);
@@ -138,7 +138,7 @@ fn a_choice_that_is_wrong_is_a_problem_that_names_the_pack_json_and_the_setting(
         let problems = read(extra, lighting).expect_err(extra);
         assert_eq!(problems.len(), 1, "{extra}: {problems:?}");
         assert!(
-            problems[0].contains("pack.json") && problems[0].contains(says),
+            problems[0].contains("shaderpack.json") && problems[0].contains(says),
             "{extra}: {problems:?}"
         );
     }
@@ -244,7 +244,7 @@ fn a_setting_or_a_default_that_is_wrong_is_a_problem_that_names_the_pack_json_an
         let problems = read(extra, lighting).expect_err(extra);
         assert_eq!(problems.len(), 1, "{extra}: {problems:?}");
         assert!(
-            problems[0].contains("pack.json") && problems[0].contains(says),
+            problems[0].contains("shaderpack.json") && problems[0].contains(says),
             "{extra}: {problems:?}"
         );
     }

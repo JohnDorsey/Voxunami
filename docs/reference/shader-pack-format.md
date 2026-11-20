@@ -7,11 +7,11 @@ A shader pack changes **how a face is lit and coloured**, for you alone: nothing
 ```
 shaderpacks/
   cel/
-    pack.json
+    shaderpack.json
     lighting.wgsl
 ```
 
-`pack.json`:
+`shaderpack.json` (until 2026-11-20 the file was called `pack.json`, the name of a data pack's manifest; a folder with only a `pack.json` is now told it is a data pack, and the data pack reader tells a folder with only a `shaderpack.json` that it is a shader pack):
 
 ```json
 {
@@ -96,7 +96,7 @@ While playing, `.shadersetting` lists them, `.shadersetting NAME` says what one 
 
 Only what is chosen is in it, and a shader with nothing chosen has no file; the game reads it when it starts and writes it whenever a value changes. A name that is not a setting of the shader, or a value that is not one of its setting, is a warning on the error stream and is left out. A file that is not a JSON object is a warning, and is not written over until it is mended or removed. A graphics card that refuses a pack with the choices made for it takes the pack off and forgets those choices (and so its file). `--screenshot` and the other headless runs read the files and never write them.
 
-**A pack's own settings** are declared in `pack.json`, never scraped from the shader's text:
+**A pack's own settings** are declared in `shaderpack.json`, never scraped from the shader's text:
 
 ```json
 "settings": {

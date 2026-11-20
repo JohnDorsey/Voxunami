@@ -25,7 +25,7 @@ use crate::shader_settings::{
 };
 use crate::voxel_renderer::{SunWalk, voxel_source};
 
-/// Which version of the interface a pack is written for: the fields of `Surface` and what `pack_shade` is given and returns. A pack's `pack.json` names it, and a version of the
+/// Which version of the interface a pack is written for: the fields of `Surface` and what `pack_shade` is given and returns. A pack's `shaderpack.json` names it, and a version of the
 /// engine that has changed the interface refuses the pack.
 pub const SHADER_PACK_INTERFACE: u32 = 1;
 
@@ -228,7 +228,7 @@ impl ShaderPack {
         })
     }
 
-    /// The same pack setting these defaults for engine settings (`"engine_settings"` in `pack.json`), by name. An error says which name is not an engine setting or which value is
+    /// The same pack setting these defaults for engine settings (`"engine_settings"` in `shaderpack.json`), by name. An error says which name is not an engine setting or which value is
     /// not one of its setting.
     pub fn with_engine_defaults(mut self, defaults: SettingChoices) -> Result<Self, String> {
         engine_settings_with(&defaults)?;
