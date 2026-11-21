@@ -14,6 +14,7 @@ mod camera;
 mod contact_volume;
 mod crosshair;
 mod graphics_context;
+mod mesh_store;
 mod occupancy_volume;
 mod overlay;
 mod shader_pack;
@@ -57,5 +58,6 @@ pub use sun::{
 };
 pub use voxel_renderer::{
     AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_CORNER_SHADE,
-    DEFAULT_PICTURE_DISTANCE, EntityBox, MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
+    DEFAULT_PICTURE_DISTANCE, EntityBox, HeldMesh, MAXIMUM_GAME_MATERIALS, RenderStatistics,
+    VoxelRenderer,
 };

@@ -56,6 +56,8 @@ mod pixelated_shadows;
 mod prisms;
 #[path = "gpu_rendering/relief.rs"]
 mod relief;
+#[path = "gpu_rendering/resident.rs"]
+mod resident;
 #[path = "gpu_rendering/scatter.rs"]
 mod scatter;
 #[path = "gpu_rendering/settings.rs"]

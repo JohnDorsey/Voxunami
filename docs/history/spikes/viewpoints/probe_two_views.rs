@@ -1,5 +1,5 @@
 //! A probe of 2026-11-21 (`docs/specs/viewpoints-spec.md` section 3), kept as a record and not compiled with the workspace: what the view of a planet holds from the surface and from far away, how much the two share, what each takes in memory,
-//! To run it, copy it to `games/voxunami_cave/tests/`, then `cargo test --release -p voxunami_cave --test probe_two_views -- --nocapture --test-threads=1` (`PROBE_TRACE=1` prints what is on the screen every quarter of a second), and remove the copy (the code is of commit `aa419ee`).
+//! To run it, copy it to `games/voxunami_cave/tests/`, then `cargo test --release -p voxunami_cave --test probe_two_views -- --nocapture --test-threads=1` (`PROBE_TRACE=1` prints what is on the screen every quarter of a second; `PROBE_FRAME_MS=16.7` paces the updates to 60 a second, as a game does, where without it they are called as fast as they go: **the figures of section 9a are with it**; `PROBE_HEIGHTS` is a list of heights to visit), and remove the copy (the code is of commit `aa419ee`).
 //! (Its first version missed the updates of the first picture of the world, thrown away by `Rig::settle`, and drew false conclusions from the screen: see `join_settle` and the spec's section 9.)
 //! and what going from one to the other and back costs today (nodes that leave the view are thrown away).
 
@@ -189,7 +189,9 @@ fn settle_view(
     let mut last_report = Instant::now();
     let mut last_trace = Instant::now();
     let mut arrived_at: Option<Instant> = None;
+    let frame_ms: Option<f64> = std::env::var("PROBE_FRAME_MS").ok().and_then(|t| t.parse().ok());
     loop {
+        let frame_began = Instant::now();
         assert!(Instant::now() < deadline, "gave up waiting for the view");
         tick_and_follow(scene, player, 1);
         let updates = player.update_view();
@@ -200,7 +202,9 @@ fn settle_view(
             last_change = Instant::now();
         }
         if updates.is_empty() {
-            std::thread::sleep(Duration::from_millis(2));
+            if frame_ms.is_none() {
+                std::thread::sleep(Duration::from_millis(2));
+            }
         } else {
             result.changing_calls += 1;
             result.most_in_a_call = result.most_in_a_call.max(updates.len());
@@ -219,6 +223,12 @@ fn settle_view(
             }
             screen.apply(updates);
             last_change = Instant::now();
+        }
+        if let Some(frame_ms) = frame_ms {
+            let frame = Duration::from_secs_f64(frame_ms / 1000.0);
+            if let Some(rest) = frame.checked_sub(frame_began.elapsed()) {
+                std::thread::sleep(rest);
+            }
         }
         if arrived_at.is_some() && last_change.elapsed() >= quiet {
             break;

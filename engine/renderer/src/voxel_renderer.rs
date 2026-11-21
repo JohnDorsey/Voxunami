@@ -20,6 +20,7 @@ use crate::camera::{Camera, Frustum};
 use crate::contact_volume::{ContactGpu, WindowUniform, WindowsUniform};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
+use crate::mesh_store::MeshStore;
 use crate::occupancy_volume::{
     MAXIMUM_WINDOWS, SLOT_BYTES, Volume, VolumeKey, VolumeStatistics, WINDOW_BRICKS, WINDOW_ENTRIES,
 };
@@ -675,14 +676,17 @@ fn node_sphere(corner: Vec3, scale: f32) -> (Vec3, f32) {
     )
 }
 
-/// A brick the renderer holds: one of the terrain, or one of a ship.
+/// Why a mesh a frame walks can be looked up: it was found in the draw list, and nothing changes the lists while a frame is planned.
+const DRAWN: &str = "a mesh the frame walks is in the draw list";
+
+/// A mesh the renderer holds, by what it is the mesh of: a brick of the terrain, a brick of a grid (a ship or a planet), a coarse node of the terrain or of a grid (detail level
+/// 1 or more: cells of `2^n` voxels). It is **drawn** or **hidden** ([`VoxelRenderer::hide_mesh`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum BrickKey {
-    Terrain(BrickCoordinate),
-    Ship(GridId, BrickCoordinate),
-    /// A coarse node of the terrain or of a ship (detail level 1 or more): cells of `2^n` voxels.
-    CoarseTerrain(BrickCube),
-    CoarseShip(GridId, BrickCube),
+pub enum HeldMesh {
+    Brick(BrickCoordinate),
+    GridBrick(GridId, BrickCoordinate),
+    Node(BrickCube),
+    GridNode(GridId, BrickCube),
 }
 
 /// The turn and place of a ship for one frame, as the camera sees it.
@@ -702,7 +706,7 @@ struct VolumeFrame {
 /// What a placement draws: a brick or node the renderer holds, an avatar's mesh, or a box's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MeshKey {
-    Held(BrickKey),
+    Held(HeldMesh),
     Avatar(usize),
     Box((u32, [u8; 3])),
 }
@@ -963,12 +967,12 @@ pub struct VoxelRenderer {
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
-    bricks: HashMap<BrickCoordinate, GpuBrick>,
-    /// The bricks of ships, in the ships' own coordinates, and where each ship is. A ship without a pose is not drawn.
-    ship_bricks: HashMap<(GridId, BrickCoordinate), GpuBrick>,
-    /// The coarse nodes (detail level 1 or more) of the terrain, and of ships in their own coordinates.
-    coarse_nodes: HashMap<BrickCube, GpuBrick>,
-    ship_coarse_nodes: HashMap<(GridId, BrickCube), GpuBrick>,
+    /// The meshes held, each store with the ones that are drawn (the only ones a frame walks) and the ones that are hidden ([`MeshStore`]): the bricks of the terrain, the
+    /// bricks of ships in the ships' own coordinates (a ship without a pose is not drawn), and the coarse nodes (detail level 1 or more) of the terrain and of ships.
+    bricks: MeshStore<BrickCoordinate, GpuBrick>,
+    ship_bricks: MeshStore<(GridId, BrickCoordinate), GpuBrick>,
+    coarse_nodes: MeshStore<BrickCube, GpuBrick>,
+    ship_coarse_nodes: MeshStore<(GridId, BrickCube), GpuBrick>,
     ship_poses: BTreeMap<GridId, GridPose>,
     /// The grids that are ground (the terrain of a planet), which a shadow map holds like the terrain of a level and not like a ship ([`VoxelRenderer::set_grid_is_ground`]).
     ground_grids: BTreeSet<GridId>,
@@ -998,7 +1002,7 @@ impl std::fmt::Debug for VoxelRenderer {
         formatter
             .debug_struct("VoxelRenderer")
             .field("color_format", &self.color_format)
-            .field("brick_count", &self.bricks.len())
+            .field("brick_count", &self.bricks.drawn_len())
             .field("quad_count", &self.total_quad_count())
             .finish()
     }
@@ -1277,10 +1281,10 @@ impl VoxelRenderer {
             shading_declared: (SettingChoices::new(), Vec::new()),
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
-            bricks: HashMap::new(),
-            ship_bricks: HashMap::new(),
-            coarse_nodes: HashMap::new(),
-            ship_coarse_nodes: HashMap::new(),
+            bricks: MeshStore::default(),
+            ship_bricks: MeshStore::default(),
+            coarse_nodes: MeshStore::default(),
+            ship_coarse_nodes: MeshStore::default(),
             ship_poses: BTreeMap::new(),
             ground_grids: BTreeSet::new(),
             avatar_meshes: Vec::new(),
@@ -1684,37 +1688,132 @@ impl VoxelRenderer {
         self.sun_occluders = occluders.to_vec();
     }
 
-    /// Replaces the mesh of one brick. An empty mesh removes the brick.
-    pub fn upload_brick(&mut self, coordinate: BrickCoordinate, mesh: &PackedBrickMesh) {
-        self.terrain_version += 1;
+    /// Puts a mesh in the store it belongs to, as drawn if it is new and `new_is_drawn`, as hidden if it is new and not, and where it is if it is there already. An empty
+    /// mesh removes it. Counts a change of the draw list, and only that, for the shadow maps that are kept.
+    fn put_mesh(&mut self, held: HeldMesh, mesh: &PackedBrickMesh, new_is_drawn: bool) {
+        if let HeldMesh::Node(cube) | HeldMesh::GridNode(_, cube) = held {
+            assert!(cube.level() > 0, "a cube of level 0 is a brick");
+        }
         if mesh.is_empty() {
-            self.bricks.remove(&coordinate);
+            self.remove_mesh(held);
             return;
         }
-        let brick = self.gpu_brick(mesh);
-        self.bricks.insert(coordinate, brick);
+        let gpu = self.gpu_brick(mesh);
+        let changed = match held {
+            HeldMesh::Brick(coordinate) => self.bricks.put(coordinate, gpu, new_is_drawn),
+            HeldMesh::GridBrick(grid, coordinate) => {
+                self.ship_bricks.put((grid, coordinate), gpu, new_is_drawn)
+            }
+            HeldMesh::Node(cube) => self.coarse_nodes.put(cube, gpu, new_is_drawn),
+            HeldMesh::GridNode(grid, cube) => {
+                self.ship_coarse_nodes.put((grid, cube), gpu, new_is_drawn)
+            }
+        };
+        self.draw_list_changed(held, changed);
     }
 
+    /// Forgets a mesh wherever it is.
+    fn remove_mesh(&mut self, held: HeldMesh) {
+        let changed = match held {
+            HeldMesh::Brick(coordinate) => self.bricks.remove(&coordinate),
+            HeldMesh::GridBrick(grid, coordinate) => self.ship_bricks.remove(&(grid, coordinate)),
+            HeldMesh::Node(cube) => self.coarse_nodes.remove(&cube),
+            HeldMesh::GridNode(grid, cube) => self.ship_coarse_nodes.remove(&(grid, cube)),
+        };
+        self.draw_list_changed(held, changed);
+    }
+
+    /// Counts a change of what is drawn, of the terrain or of a grid (the maps that are kept are out of date), if `changed`.
+    fn draw_list_changed(&mut self, held: HeldMesh, changed: bool) {
+        if !changed {
+            return;
+        }
+        match held {
+            HeldMesh::Brick(_) | HeldMesh::Node(_) => self.terrain_version += 1,
+            HeldMesh::GridBrick(grid, _) | HeldMesh::GridNode(grid, _) => self.grid_changed(grid),
+        }
+    }
+
+    /// Takes a mesh out of what is drawn and keeps it on the graphics card: the frame does not walk it, cull it, or draw shadows from it, and [`VoxelRenderer::show_mesh`]
+    /// puts it back as it was, with nothing made again. Whether it was drawn.
+    pub fn hide_mesh(&mut self, held: HeldMesh) -> bool {
+        let moved = match held {
+            HeldMesh::Brick(coordinate) => self.bricks.hide(&coordinate),
+            HeldMesh::GridBrick(grid, coordinate) => self.ship_bricks.hide(&(grid, coordinate)),
+            HeldMesh::Node(cube) => self.coarse_nodes.hide(&cube),
+            HeldMesh::GridNode(grid, cube) => self.ship_coarse_nodes.hide(&(grid, cube)),
+        };
+        self.draw_list_changed(held, moved);
+        moved
+    }
+
+    /// Puts a hidden mesh back in what is drawn. Whether it was hidden.
+    pub fn show_mesh(&mut self, held: HeldMesh) -> bool {
+        let moved = match held {
+            HeldMesh::Brick(coordinate) => self.bricks.show(&coordinate),
+            HeldMesh::GridBrick(grid, coordinate) => self.ship_bricks.show(&(grid, coordinate)),
+            HeldMesh::Node(cube) => self.coarse_nodes.show(&cube),
+            HeldMesh::GridNode(grid, cube) => self.ship_coarse_nodes.show(&(grid, cube)),
+        };
+        self.draw_list_changed(held, moved);
+        moved
+    }
+
+    /// Replaces the mesh of one that is held, **hidden if it is new**: the way to make a picture that is not drawn yet (for a view that is not the one on the screen), without
+    /// a frame in which it is, and without the shadow maps that are kept being drawn again for it. A mesh that is drawn stays drawn (this replaces it as the calls that upload
+    /// it do), and one that is hidden stays hidden. An empty mesh removes it. Panics for a node of level 0, which is a brick.
+    pub fn upload_hidden_mesh(&mut self, held: HeldMesh, mesh: &PackedBrickMesh) {
+        self.put_mesh(held, mesh, false);
+    }
+
+    /// Whether a mesh is held and not drawn.
+    pub fn is_mesh_hidden(&self, held: HeldMesh) -> bool {
+        match held {
+            HeldMesh::Brick(coordinate) => self.bricks.is_hidden(&coordinate),
+            HeldMesh::GridBrick(grid, coordinate) => {
+                self.ship_bricks.is_hidden(&(grid, coordinate))
+            }
+            HeldMesh::Node(cube) => self.coarse_nodes.is_hidden(&cube),
+            HeldMesh::GridNode(grid, cube) => self.ship_coarse_nodes.is_hidden(&(grid, cube)),
+        }
+    }
+
+    /// How many meshes are held and not drawn, of the four kinds: what costs the graphics card its memory and a frame nothing.
+    pub fn hidden_mesh_count(&self) -> usize {
+        self.bricks.hidden_len()
+            + self.ship_bricks.hidden_len()
+            + self.coarse_nodes.hidden_len()
+            + self.ship_coarse_nodes.hidden_len()
+    }
+
+    /// Replaces the mesh of one brick; it is drawn if it is new (a brick that is hidden stays hidden: [`VoxelRenderer::upload_hidden_mesh`]). An empty mesh removes the brick,
+    /// drawn or hidden.
+    pub fn upload_brick(&mut self, coordinate: BrickCoordinate, mesh: &PackedBrickMesh) {
+        self.put_mesh(HeldMesh::Brick(coordinate), mesh, true);
+    }
+
+    /// Forgets a brick, drawn or hidden.
     pub fn remove_brick(&mut self, coordinate: BrickCoordinate) {
-        self.terrain_version += 1;
-        self.bricks.remove(&coordinate);
+        self.remove_mesh(HeldMesh::Brick(coordinate));
     }
 
+    /// How many bricks of the terrain are drawn.
     pub fn brick_count(&self) -> usize {
-        self.bricks.len()
+        self.bricks.drawn_len()
     }
 
+    /// Whether a brick of the terrain is drawn.
     pub fn has_brick(&self, coordinate: BrickCoordinate) -> bool {
-        self.bricks.contains_key(&coordinate)
+        self.bricks.drawn(&coordinate).is_some()
     }
 
-    /// Whole-voxel quads and detailed quads of every brick held, of the terrain and of ships.
+    /// Whole-voxel quads and detailed quads of every brick and node drawn, of the terrain and of ships.
     pub fn total_quad_count(&self) -> usize {
         self.bricks
-            .values()
-            .chain(self.ship_bricks.values())
-            .chain(self.coarse_nodes.values())
-            .chain(self.ship_coarse_nodes.values())
+            .drawn_values()
+            .chain(self.ship_bricks.drawn_values())
+            .chain(self.coarse_nodes.drawn_values())
+            .chain(self.ship_coarse_nodes.drawn_values())
             .map(GpuBrick::quad_total)
             .sum()
     }
@@ -1727,18 +1826,12 @@ impl VoxelRenderer {
         coordinate: BrickCoordinate,
         mesh: &PackedBrickMesh,
     ) {
-        self.grid_changed(grid);
-        if mesh.is_empty() {
-            self.ship_bricks.remove(&(grid, coordinate));
-            return;
-        }
-        let brick = self.gpu_brick(mesh);
-        self.ship_bricks.insert((grid, coordinate), brick);
+        self.put_mesh(HeldMesh::GridBrick(grid, coordinate), mesh, true);
     }
 
+    /// Forgets a brick of a ship, drawn or hidden.
     pub fn remove_grid_brick(&mut self, grid: GridId, coordinate: BrickCoordinate) {
-        self.grid_changed(grid);
-        self.ship_bricks.remove(&(grid, coordinate));
+        self.remove_mesh(HeldMesh::GridBrick(grid, coordinate));
     }
 
     /// Notes that something of a grid changed (a brick, a node, its pose, whether it is ground): the maps that hold the things that move are out of date, and those that hold
@@ -1756,27 +1849,22 @@ impl VoxelRenderer {
     /// The renderer draws what it holds and does not choose: a node and the bricks inside it that are both held are both drawn, so whoever selects the
     /// nodes (`coarse_cells::select_nodes`) removes what a node replaces.
     pub fn upload_coarse_node(&mut self, cube: BrickCube, mesh: &PackedBrickMesh) {
-        assert!(cube.level() > 0, "a cube of level 0 is a brick");
-        self.terrain_version += 1;
-        if mesh.is_empty() {
-            self.coarse_nodes.remove(&cube);
-            return;
-        }
-        let node = self.gpu_brick(mesh);
-        self.coarse_nodes.insert(cube, node);
+        self.put_mesh(HeldMesh::Node(cube), mesh, true);
     }
 
+    /// Forgets a coarse node of the terrain, drawn or hidden.
     pub fn remove_coarse_node(&mut self, cube: BrickCube) {
-        self.terrain_version += 1;
-        self.coarse_nodes.remove(&cube);
+        self.remove_mesh(HeldMesh::Node(cube));
     }
 
+    /// How many coarse nodes of the terrain are drawn.
     pub fn coarse_node_count(&self) -> usize {
-        self.coarse_nodes.len()
+        self.coarse_nodes.drawn_len()
     }
 
+    /// Whether a coarse node of the terrain is drawn.
     pub fn has_coarse_node(&self, cube: BrickCube) -> bool {
-        self.coarse_nodes.contains_key(&cube)
+        self.coarse_nodes.drawn(&cube).is_some()
     }
 
     /// The same for a coarse node of a ship, in the ship's own coordinates.
@@ -1786,24 +1874,17 @@ impl VoxelRenderer {
         cube: BrickCube,
         mesh: &PackedBrickMesh,
     ) {
-        assert!(cube.level() > 0, "a cube of level 0 is a brick");
-        self.grid_changed(grid);
-        if mesh.is_empty() {
-            self.ship_coarse_nodes.remove(&(grid, cube));
-            return;
-        }
-        let node = self.gpu_brick(mesh);
-        self.ship_coarse_nodes.insert((grid, cube), node);
+        self.put_mesh(HeldMesh::GridNode(grid, cube), mesh, true);
     }
 
+    /// Forgets a coarse node of a ship, drawn or hidden.
     pub fn remove_grid_coarse_node(&mut self, grid: GridId, cube: BrickCube) {
-        self.grid_changed(grid);
-        self.ship_coarse_nodes.remove(&(grid, cube));
+        self.remove_mesh(HeldMesh::GridNode(grid, cube));
     }
 
-    /// How many coarse nodes of ships are held.
+    /// How many coarse nodes of ships are drawn.
     pub fn grid_coarse_node_count(&self) -> usize {
-        self.ship_coarse_nodes.len()
+        self.ship_coarse_nodes.drawn_len()
     }
 
     /// Says where a ship is and how it is turned: its bricks are drawn there from the next picture on.
@@ -1829,19 +1910,19 @@ impl VoxelRenderer {
         }
     }
 
-    /// Forgets a ship, its pose and all its bricks.
+    /// Forgets a ship, its pose and all its bricks and nodes, drawn or hidden.
     pub fn remove_grid(&mut self, grid: GridId) {
         self.grid_changed(grid);
         self.ground_grids.remove(&grid);
         self.ship_poses.remove(&grid);
-        self.ship_bricks.retain(|(held, _), _| *held != grid);
-        self.ship_coarse_nodes.retain(|(held, _), _| *held != grid);
+        self.ship_bricks.retain(|(held, _)| *held != grid);
+        self.ship_coarse_nodes.retain(|(held, _)| *held != grid);
         self.volume.clear_grid(VolumeKey::Grid(grid));
     }
 
-    /// How many bricks of ships are held.
+    /// How many bricks of ships are drawn.
     pub fn grid_brick_count(&self) -> usize {
-        self.ship_bricks.len()
+        self.ship_bricks.drawn_len()
     }
 
     /// Tells which voxels of a brick of the terrain block the sun whole, for the walk of the sun's ray through the voxels: the first few cells of the ray from a face are
@@ -2195,12 +2276,16 @@ impl VoxelRenderer {
         frame
     }
 
-    fn brick_of(&self, key: BrickKey) -> &GpuBrick {
+    fn brick_of(&self, key: HeldMesh) -> &GpuBrick {
         match key {
-            BrickKey::Terrain(coordinate) => &self.bricks[&coordinate],
-            BrickKey::Ship(grid, coordinate) => &self.ship_bricks[&(grid, coordinate)],
-            BrickKey::CoarseTerrain(cube) => &self.coarse_nodes[&cube],
-            BrickKey::CoarseShip(grid, cube) => &self.ship_coarse_nodes[&(grid, cube)],
+            HeldMesh::Brick(coordinate) => self.bricks.drawn(&coordinate).expect(DRAWN),
+            HeldMesh::GridBrick(grid, coordinate) => {
+                self.ship_bricks.drawn(&(grid, coordinate)).expect(DRAWN)
+            }
+            HeldMesh::Node(cube) => self.coarse_nodes.drawn(&cube).expect(DRAWN),
+            HeldMesh::GridNode(grid, cube) => {
+                self.ship_coarse_nodes.drawn(&(grid, cube)).expect(DRAWN)
+            }
         }
     }
 
@@ -2235,11 +2320,11 @@ impl VoxelRenderer {
                 .map_or(0, |&(_, number)| number)
         };
         let terrain_window = window_of(VolumeKey::Terrain);
-        for &coordinate in self.bricks.keys() {
+        for &coordinate in self.bricks.drawn_keys() {
             let corner = WorldPosition::new(coordinate, [0.0; 3]).relative_to(camera.position);
             let corner = crate::camera::gpu_vector(corner);
             drawables.push(Drawable {
-                mesh: MeshKey::Held(BrickKey::Terrain(coordinate)),
+                mesh: MeshKey::Held(HeldMesh::Brick(coordinate)),
                 placement: Placement {
                     offset: corner,
                     scale: 1.0,
@@ -2252,14 +2337,14 @@ impl VoxelRenderer {
             });
         }
         // Coarse nodes of the terrain: a node of detail level `n` is `2^n` bricks along an edge, drawn from its mesh in cells of `2^n` voxels.
-        for &cube in self.coarse_nodes.keys() {
+        for &cube in self.coarse_nodes.drawn_keys() {
             let scale = cell_scale(cube.level());
             let corner = crate::camera::gpu_vector(
                 WorldPosition::new(cube.origin(), [0.0; 3]).relative_to(camera.position),
             );
             let (middle, radius) = node_sphere(corner, scale);
             drawables.push(Drawable {
-                mesh: MeshKey::Held(BrickKey::CoarseTerrain(cube)),
+                mesh: MeshKey::Held(HeldMesh::Node(cube)),
                 placement: Placement {
                     offset: corner,
                     scale,
@@ -2287,7 +2372,7 @@ impl VoxelRenderer {
                 )
             })
             .collect();
-        for &(grid, coordinate) in self.ship_bricks.keys() {
+        for &(grid, coordinate) in self.ship_bricks.drawn_keys() {
             let Some(frame) = frames.get(&grid) else {
                 continue;
             };
@@ -2305,7 +2390,7 @@ impl VoxelRenderer {
                 coordinate.z() as f64 * 32.0,
             ];
             drawables.push(Drawable {
-                mesh: MeshKey::Held(BrickKey::Ship(grid, coordinate)),
+                mesh: MeshKey::Held(HeldMesh::GridBrick(grid, coordinate)),
                 placement: Placement {
                     offset: place(local),
                     scale: 1.0,
@@ -2317,7 +2402,7 @@ impl VoxelRenderer {
                 dynamic: !self.ground_grids.contains(&grid),
             });
         }
-        for &(grid, cube) in self.ship_coarse_nodes.keys() {
+        for &(grid, cube) in self.ship_coarse_nodes.drawn_keys() {
             let Some(frame) = frames.get(&grid) else {
                 continue;
             };
@@ -2338,7 +2423,7 @@ impl VoxelRenderer {
             ];
             let half = f64::from(BRICK_CENTER_OFFSET) * f64::from(scale);
             drawables.push(Drawable {
-                mesh: MeshKey::Held(BrickKey::CoarseShip(grid, cube)),
+                mesh: MeshKey::Held(HeldMesh::GridNode(grid, cube)),
                 placement: Placement {
                     offset: place(local),
                     scale,
@@ -2721,12 +2806,7 @@ impl VoxelRenderer {
             bricks_drawn: visible.len(),
             coarse_nodes_drawn: visible
                 .iter()
-                .filter(|&&index| {
-                    matches!(
-                        held(index),
-                        BrickKey::CoarseTerrain(_) | BrickKey::CoarseShip(..)
-                    )
-                })
+                .filter(|&&index| matches!(held(index), HeldMesh::Node(_) | HeldMesh::GridNode(..)))
                 .count(),
             bricks_culled: pieces - visible.len(),
             traced_windows: if walking { traced_windows } else { 0 },
