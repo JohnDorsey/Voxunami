@@ -222,3 +222,51 @@ fn what_a_ship_view_and_a_map_view_of_the_planet_share() {
         }
     }
 }
+
+/// How many cubes a viewer flying round the planet at a constant height has to be given each second to keep its cut complete: the cubes of the cut one second on
+/// that the cut now does not have. (This is what keeping a view warm costs while its ship flies; the real client built 3.4 thousand a second on three threads.)
+#[test]
+fn what_it_takes_to_keep_a_flying_ships_cut_current() {
+    let base = base_blocks::BaseBlocks::new();
+    let ids = base.ids();
+    let layout = GridLayout::new(vec![ids.block_channel()]).expect("a layout");
+    let channel = layout.channel_indices().next().expect("a channel");
+    let generator = planet(
+        PlanetSettings::one_percent_of_earth(2024),
+        channel,
+        surface_layers(&ids),
+    );
+    let core = generator.solid_core();
+    let extent = BrickBox::around(BrickCoordinate::ORIGIN, 2100);
+    for altitude in [490.0f64, 20_000.0] {
+        for speed in [100.0f64, 1_000.0, 7_800.0] {
+            let radius = 63_710.0 + altitude;
+            let at = |seconds: f64| -> [f64; 3] {
+                let angle = speed * seconds / radius;
+                [16.0 + radius * angle.sin(), radius * angle.cos(), 16.0]
+            };
+            let mut previous: Option<HashSet<BrickCube>> = None;
+            let mut nodes_entering = Vec::new();
+            let mut bricks_entering = Vec::new();
+            for second in 0..=12 {
+                let now: HashSet<BrickCube> = cut(&generator, core, extent, at(second as f64), 12)
+                    .into_iter()
+                    .collect();
+                if let Some(before) = &previous {
+                    let entering: Vec<&BrickCube> = now.difference(before).collect();
+                    nodes_entering.push(entering.iter().filter(|cube| cube.level() > 0).count());
+                    bricks_entering.push(entering.iter().filter(|cube| cube.level() == 0).count());
+                }
+                previous = Some(now);
+            }
+            let mean = |values: &[usize]| values.iter().sum::<usize>() as f64 / values.len() as f64;
+            println!(
+                "altitude {altitude:>7.0} m, {speed:>6.0} m/s: nodes entering the cut each second: mean {:7.0}, most {:6}, least {:6}; bricks of the ball entering: mean {:7.0}",
+                mean(&nodes_entering),
+                nodes_entering.iter().max().unwrap(),
+                nodes_entering.iter().min().unwrap(),
+                mean(&bricks_entering),
+            );
+        }
+    }
+}
