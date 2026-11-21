@@ -1,5 +1,6 @@
 //! A probe of 2026-11-21 (`docs/specs/viewpoints-spec.md` section 3), kept as a record and not compiled with the workspace: what the view of a planet holds from the surface and from far away, how much the two share, what each takes in memory,
 //! To run it, copy it to `games/voxunami_cave/tests/`, then `cargo test --release -p voxunami_cave --test probe_two_views -- --nocapture --test-threads=1`, and remove the copy (the code is of commit `aa419ee`).
+//! (Its first version missed the updates of the first picture of the world, thrown away by `Rig::settle`, and drew false conclusions from the screen: see `join_settle` and section 9.)
 //! and what going from one to the other and back costs today (nodes that leave the view are thrown away).
 
 mod common;
@@ -301,6 +302,23 @@ fn relation(name_a: &str, a: &Screen, name_b: &str, b: &Screen) {
     );
 }
 
+/// What `Rig::settle` does, keeping the updates it throws away (the first picture of the world is made in them: a screen that does not take them in holds only what changed since).
+fn join_settle(scene: &mut Scene, player: &mut common::Player) -> Vec<MeshUpdate> {
+    let mut updates = Vec::new();
+    player.send_pose();
+    for _ in 0..2 {
+        let server = &mut scene.rig.server;
+        updates.extend(
+            player
+                .settle(|| {
+                    server.step();
+                })
+                .unwrap(),
+        );
+    }
+    updates
+}
+
 fn report(name: &str, settled: &Settled) {
     println!("   (camera y at the end: see next line)");
     println!(
@@ -318,11 +336,11 @@ fn the_view_at_the_spawn_and_after_a_walk() {
         .join_walking(Cave::default_camera().position, 0.0, 0.0);
     player.enable_level_detail();
     player.enable_grid_detail(<Cave as GameDefinition>::grid_detail().expect("Cave draws planets in detail"));
-    scene.rig.settle(&mut [&mut player]);
+    let mut screen = Screen::default();
+    screen.apply(join_settle(&mut scene, &mut player));
     tick_and_follow(&mut scene, &mut player, 5);
     player.take_command_replies();
     say(&mut scene, &mut player, "/fly");
-    let mut screen = Screen::default();
     let brick_y = player.camera.position.brick().y();
     {
         let world = player.client().world();
@@ -355,13 +373,13 @@ fn does_the_surface_view_keep_growing() {
         .join_walking(Cave::default_camera().position, 0.0, 0.0);
     player.enable_level_detail();
     player.enable_grid_detail(<Cave as GameDefinition>::grid_detail().expect("Cave draws planets in detail"));
-    scene.rig.settle(&mut [&mut player]);
+    let mut screen = Screen::default();
+    screen.apply(join_settle(&mut scene, &mut player));
     tick_and_follow(&mut scene, &mut player, 5);
     player.take_command_replies();
     say(&mut scene, &mut player, "/fly");
     player.send_command(&format!("/tp 16 {SURFACE_Y} 16"));
     tick_and_follow(&mut scene, &mut player, 2);
-    let mut screen = Screen::default();
     let began = Instant::now();
     let mut next_report = 0.5;
     let mut nudged = false;
@@ -403,13 +421,13 @@ fn two_views_of_a_planet() {
         .join_walking(Cave::default_camera().position, 0.0, 0.0);
     player.enable_level_detail();
     player.enable_grid_detail(<Cave as GameDefinition>::grid_detail().expect("Cave draws planets in detail"));
-    scene.rig.settle(&mut [&mut player]);
+    let mut screen = Screen::default();
+    screen.apply(join_settle(&mut scene, &mut player));
     tick_and_follow(&mut scene, &mut player, 5);
     player.take_command_replies();
     let reply = say(&mut scene, &mut player, "/fly");
     println!("/fly replied: {reply}");
 
-    let mut screen = Screen::default();
     println!("camera at start: {:?}", player.camera.position);
     player.send_command(&format!("/tp 16 {SURFACE_Y} 16"));
     tick_and_follow(&mut scene, &mut player, 2);
