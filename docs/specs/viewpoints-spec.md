@@ -121,12 +121,12 @@ nothing in a picture depends on the camera: textures near the viewer, `lod-spec.
 - **Viewpoint**: what asks for terrain. A place (a level and a position), an orientation, a **projection**, detail settings (`cell_pixels`, the pixel size, the farthest distance, an optional zoom cone), a **fine radius** (the ball of bricks), a **time offset** (0 now; for an orbit preview, ahead), and a **role**:
   *body* (the player's eyes: a fine ball, bricks and edits, follows the body or ship it is aboard); *free* (no body, so the fine ball is as small as the altitude needs and pruned by what may show, since nobody builds from it), with two ways of being steered: **orbit**, locked on a *focus* (the map, and the
   third-person camera at a short distance), and **fly**, the spectator's camera, which looks where the player points; *predicted* (a free viewpoint at another time).
-- **Focus**: the thing an orbit camera is locked on: a ship, a planet, a star (question 1: what a star is). The viewpoint's place is the focus's place plus a distance along two angles, and it follows the focus, so a camera locked on a planet keeps its place in the planet's own axes and the planet's cut
+- **Focus**: the thing an orbit camera is locked on: a ship, a planet, a star (decision 7). The viewpoint's place is the focus's place plus a distance along two angles, and it follows the focus, so a camera locked on a planet keeps its place in the planet's own axes and the planet's cut
   does not change while the planet moves on its rail, and a camera locked on a ship moves over the planet as the ship does.
 - **Projection** (owner, 2026-11-21): *perspective* everywhere; in the levels with planets in them (`mini_cosmos` and the levels to come) perspective only; in the overworld *orthographic* is available and is the default.
 - **Active** viewpoints are drawn this frame (one per window; a minimap would be a second). **Warm** ones are not drawn and are kept in one of two ways, and there are at most three warm and the first design uses two: *tracked* (the cut is worked out again as the viewpoint moves and building goes on at once, as for the active one) and
   *lazy* (worked out again about once a second, coarsest first, with a share of the workers). The body's view is **tracked whenever it is not the active one** and the body exists ("quite warm", owner). The map's is tracked for a window after it was last active, lazy for a longer one, then released (my defaults: 600 client ticks, 30 s at
-  20 ticks a second, then 12,000, 10 minutes; question 9), which is what makes switching back and forth fast and lets the map take a second or two to catch up after the ship has moved a lot.
+  20 ticks a second, then 12,000, 10 minutes; open question e), which is what makes switching back and forth fast and lets the map take a second or two to catch up after the ship has moved a lot.
 - **Picture store**: the pictures (a CPU mesh, a GPU buffer, a version) keyed `(grid, cube)`, with the viewpoints that want each; unwanted ones go to an LRU under a byte budget; a picture whose data version changed is made again when it is next wanted, not before. **Draw list**: the cubes of the active viewpoints' cuts, the only thing
   the renderer walks. Building goes by priority: the active viewpoint's, then a tracked one's, then a lazy one's, each coarsest first.
 
@@ -155,7 +155,7 @@ none. Far-ship tiering already works from the region and keeps working from the 
   the places it looked at into the world. For a free viewpoint the server answers with the default for an unassigned cube and writes nothing. Whether the client then keeps those answers is its own memory (the client's tree grew by about 43,000 nodes for each megametre flown, 400 MB at 444 Mm, measured 2026-11-20; the client can forget default answers outside every region).
 - *The cache simulation uses.* `generated_brick` and the cache of 256 generated bricks are shared with the colliders and the walkers; a camera that asks for bricks and hints all over a level would push out what the tick needs. A free viewpoint's server work (coarse plans, overrides) is on its own workers and its own bounded cache.
 - *Which ships are awake.* Awake, frozen and parked follow the players' bodies, not their cameras (`grid_lifecycle`): a free camera wakes nothing, brings no ship in from its file, and so sees a ship that is **frozen in memory** as it is (near, with its bricks, if it meets the region) and a ship that is **parked in a file** only as a far ship, from the nodes of its sidecar (`far-nodes-spec.md`),
-  at any distance: **not up close** (question 3).
+  at any distance: **not up close** (decision 9).
 - *Everything else* a viewpoint causes is replication (messages to that client): edited bricks, nodes, far ships. Those change nothing in the world.
 
 ### 6.4 What belongs to the camera and what to the player
@@ -170,19 +170,19 @@ from it (a time offset moves them); the up direction and frame; the picking ray 
   **Orthographic (the overworld's default) needs a rule of its own** **[belief, not built, not run]**: in an orthographic view a pixel is the same size in voxels at every distance, so "fine enough" cannot depend on the distance from the viewer, and the cut is the cubes of **one level**, `2^n` voxels across being about `cell_pixels` pixels, over the box the picture sees and that may hold something. A picture of
   1920 by 1080 pixels at 3 pixels a cell is 20 by 11 nodes across the ground: **a few hundred nodes at any zoom**, against 15,000 for the perspective view near the ground. Two consequences: a zoom changes the level of the whole picture at once (a pop, not the local, gradual change of a perspective cut), so the next level is built ahead while zooming and the swap is one group (or faded); and the cost per
   node of the overworld's generator decides whether the 4 s hold (section 6.6, A).
-- **The free (fly) camera.** A free viewpoint steered by the player, with no focus and no body, anywhere in any level (question 2): the plan from the viewpoint (6.3), the server's read-only rule, and the pruned fine ball. It is the worst case for the assignment tree of the client and, unfixed, of the server (6.3).
-- **Ahead along an orbit.** A *predicted* viewpoint: a time offset, and the ghost of the ship (or none, question 8). It needs the client to place every grid at the other time, which needs the rails of the bodies on the client (`wide_kepler::predicted_path` exists on the server; **[belief]** the client has no rails and only the poses the server sends). Out of scope for the first phases; the
+- **The free (fly) camera.** A free viewpoint steered by the player, with no focus and no body, anywhere in any level (decision 8): the plan from the viewpoint (6.3), the server's read-only rule, and the pruned fine ball. It is the worst case for the assignment tree of the client and, unfixed, of the server (6.3).
+- **Ahead along an orbit.** A *predicted* viewpoint: a time offset, and the ghost of the ship (or none, open question d). It needs the client to place every grid at the other time, which needs the rails of the bodies on the client (`wide_kepler::predicted_path` exists on the server; **[belief]** the client has no rails and only the poses the server sends). Out of scope for the first phases; the
   viewpoint carries the offset from the first.
 
 ### 6.6 What the answers of 2026-11-21 lead to (I checked each)
 
 - **A. The overworld's map is blocked by what a coarse node costs there.** The overworld has no coarse nodes at all today (`Cave::level_detail` is none for it). **[code, and `lod-spec.md` 9a, measured 2026-10-23]** a node of its hills takes 18 to 43 ms and with its sheet caves 94 to 201 ms; the column sampler that would take 0.3 ms (a far field of "the outer skin of the world", `lod-spec.md` 9a item 2) was
-  never built for it (the planet has its own, `planet_node.rs`, 0.5 to 1 ms). **[belief, from those figures]** a few hundred mixed nodes make about 2 to 10 s on three threads, so the 4 s of the map is **missed without the far field**, and the caves that a far field leaves out are invisible from above, though cave mouths and overhangs would not show: question 4.
-- **B. Orthographic is a renderer feature that does not exist.** **[code]** `Camera` has one projection, a vertical field of view with reverse-Z and an infinite far plane; fog, shadow cascades and the culling are by distance from the camera. An orthographic camera needs a projection and a depth range from the box, culling by the box, and a decision for fog, sky and shadows (question 5). The selection (6.5) is a new function beside
+  never built for it (the planet has its own, `planet_node.rs`, 0.5 to 1 ms). **[belief, from those figures]** a few hundred mixed nodes make about 2 to 10 s on three threads, so the 4 s of the map is **missed without the far field**, and the caves that a far field leaves out are invisible from above, though cave mouths and overhangs would not show: decision 10.
+- **B. Orthographic is a renderer feature that does not exist.** **[code]** `Camera` has one projection, a vertical field of view with reverse-Z and an infinite far plane; fog, shadow cascades and the culling are by distance from the camera. An orthographic camera needs a projection and a depth range from the box, culling by the box, and a decision for fog, sky and shadows (open question a). The selection (6.5) is a new function beside
   `select_around_brick`.
 - **C. The ship's view can be kept warm up to a speed, and no further** (measured, section 3): keeping the cut complete takes 570 new nodes a second at 100 m/s near the ground (the real client builds 3,400), 5,749 at 1 km/s and 15,468 at 7.8 km/s, and 6, 49 and 402 from 20 km up. So "quite warm" holds to about 600 m/s near a surface and at any speed high up; faster, the warm cut lags, and so does the active one
   at that speed (the same cost). Coarse first makes the lag a coarser picture and not a hole.
-- **D. A star is not an object today.** **[code]** the sun is a direction worked out from the world's clock (`sun-spec.md`), "stars as voxels" are listed under *not here* in `lod-spec.md`. A focus needs a place: question 1.
+- **D. A star is not an object today.** **[code]** the sun is a direction worked out from the world's clock (`sun-spec.md`), "stars as voxels" are listed under *not here* in `lod-spec.md`. A focus needs a place: decision 7.
 - **E. "Wherever they want" with "never affect the simulation" means read-only service** (6.3): the world's saved generator assignments change with every watch today.
 - **F. In multiplayer a free camera sees the edits of the whole world and every level.** That follows from the answer and is accepted as the answer; the viewpoint list in the protocol is where a game could one day limit it, and none is built now.
 
@@ -193,7 +193,7 @@ from it (a time offset moves them); the up direction and frame; the picking ray 
 2. **One picture store and the pins** (`CubeStates` and the brick states become views of it), with versions and the LRU; test 3 on one viewpoint that moves out and back (generator calls counted).
 3. **`Viewpoint`, several views, a shared `may_show` memo**; the session holds a list; roles, the fine radius by role, the tracked and lazy windows; the occupancy and contact windows told on a switch. Test 4 across a switch; the times of 9 measured by a probe.
 4. **The protocol** (6.3) with tests 5 and 10 and the recordings made again; the server's read-only answers for a viewpoint with no body.
-5. **Focus and the orbit and fly controls** (a game decides the keys); the focus registry (question 1); the map in levels with planets.
+5. **Focus and the orbit and fly controls** (a game decides the keys); the focus registry (decision 7); the map in levels with planets.
 6. **The overworld's map**, in this order: the far field for the overworld's generator (A), an orthographic projection in the renderer (B), the orthographic selection (6.5), the level's rule for the projection (owner: orthographic default in the overworld, perspective only in levels with planets).
 7. **Time offset and rails on the client** (its own spec).
 
@@ -208,21 +208,20 @@ from it (a time offset moves them); the up direction and frame; the picking ray 
 5. **Coarse first.** The ship's view sharpens **within 0.25 s**; the map **within 4 s at worst**, and **within 0.25 s when switching back and forth** (6.2 item 9).
 6. **A player can detach and send the camera wherever they want, and it never affects the simulation** (6.3; 6.6 E and F).
 
-**Open** (the next four are the ones the design waits for; my recommendation in brackets):
+**Decided by taking my picks** (the owner, 2026-11-21, on questions 1 to 4 of the second draft):
 
-1. **What is a star, and what can be a focus?** A focus needs a place. Candidates: any grid or entity with a pose (ships, planets, moons: nothing new); a star as a grid on a rail like a planet; a star as a light record with a place and a radius and no voxels (the sun is a direction today). [Any grid or entity; a star is a grid on a rail with an emissive block when stars are built; until then the sun is not focusable.]
-2. **Two ways of steering the free camera, and "anywhere".** The map is locked on a focus (orbit); the spectator's camera flies where the player points (fly). Do you want both? And does "wherever they want" include other levels? [Both; yes, any level.]
-3. **A free camera and the ships parked in files.** The server may not wake them for a camera, so a parked ship is seen only as a far ship (nodes of its sidecar, nothing finer than level 1): fine from far, blocky up close. A frozen ship that is in memory is seen whole. Options: (a) far only; (b) the server reads the ship's file into a view-only copy and sends its bricks, without waking it (more memory and work, nothing in the simulation);
-   (c) a frozen ship near, a parked ship far. [(c); (b) if the blockiness is noticed.]
-4. **Maps and the caves.** A far field for the overworld makes the map from the outer skin of the ground (the hills without caves): from above and from far you cannot tell, but cave mouths, overhangs and the inside of a hill seen from the side vanish from nodes (the bricks near the ship have them). Accept? [Yes.]
+7. **A focus is any grid or entity with a pose** (ships, planets, moons: nothing new). A star becomes a grid on a rail, with an emissive block, when stars are built; until then the sun is not focusable (6.6 D).
+8. **Both ways of steering the free camera**: *orbit* (the map, locked on a focus) and *fly* (the spectator's camera, looking where the player points); and "anywhere" is **any level**.
+9. **A free camera sees a ship that is frozen in memory near (with its bricks) and a ship parked in a file only far** (the nodes of its sidecar, nothing finer than level 1), since nothing may be loaded for a camera. If the blockiness of a parked ship close up is noticed, the way out is a read-only copy loaded for the view without waking the ship (not built, not decided).
+10. **Far maps, and the overworld's orthographic map, are made from the outer skin of the ground**, the hills without caves (`lod-spec.md` 9a): cave mouths and overhangs vanish from nodes; the bricks near the ship still have them (6.6 A).
 
-**Open, later:**
+**Still open:**
 
-5. Orthographic: may it tilt (orbit angles) or only look straight down? What does it show of lighting: flat colours, or the sun and its shadows, and any fog or sky? [May tilt; the sun and shadows on; no fog and no sky haze.]
-6. The map's zoom range: the nearest distance (the size of the focus?) and the farthest (the whole universe, `great-rivers-spec.md`)? [Nearest: a ship's length; farthest: the largest node.]
-7. Replays: a free camera in a replay sees the right unedited ground (the client's own) and only the edits that were recorded in the recording client's viewpoints. Enough, or must a replay be watchable from anywhere? [Enough.]
-8. Entities in a map (only terrain, planets and far ships, and players only inside a body viewpoint's region; or markers) and the ghost of the ship on a predicted orbit (a transparent copy, a line, nothing). [Terrain, planets and far ships; a line.]
-9. The windows of warmth of 6.1 (tracked 30 s, lazy 10 minutes, counted in ticks) and a byte budget for the store (256 MB of pictures holds about ten surface cuts). [As written.]
+a. Orthographic: may it tilt (orbit angles) or only look straight down? What does it show of lighting: flat colours, or the sun and its shadows, and any fog or sky? [May tilt; the sun and shadows on; no fog and no sky haze.]
+b. The map's zoom range: the nearest distance (the size of the focus?) and the farthest (the whole universe, `great-rivers-spec.md`)? [Nearest: a ship's length; farthest: the largest node.]
+c. Replays: a free camera in a replay sees the right unedited ground (the client's own) and only the edits that were recorded in the recording client's viewpoints. Enough, or must a replay be watchable from anywhere? [Enough.]
+d. Entities in a map (only terrain, planets and far ships, and players only inside a body viewpoint's region; or markers) and the ghost of the ship on a predicted orbit (a transparent copy, a line, nothing). [Terrain, planets and far ships; a line.]
+e. The windows of warmth of 6.1 (tracked 30 s, lazy 10 minutes, counted in ticks) and a byte budget for the store (256 MB of pictures holds about ten surface cuts). [As written.]
 
 ## 9. Observed and not explained
 
