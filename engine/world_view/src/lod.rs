@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
 use coarse_cells::{
-    CoarseNode, DetailSettings, EditedCubes, ViewSelection, Zoom, plan_swaps, select_around_brick,
+    CoarseNode, DetailSettings, EditedCubes, ViewSelection, Zoom, intermediate_cubes,
+    plan_progressive_swaps, refinements, select_around_brick,
 };
 use region_octree::BrickCube;
 use terrain::{SolidBall, TerrainGenerator};
@@ -672,15 +673,51 @@ impl LodView {
         self.may_show.finish_round();
         self.new_edits = false;
         self.updates_since_selection = 0;
-        self.cubes.want(&cubes);
+        // What is shown is replaced a level at a time where what replaces it is much finer (a jump from far away): the cubes between are made too, first.
+        // (A terrain that waits for the server's nodes has no node to make them from.)
+        let wanted_set: HashSet<BrickCube> = cubes.iter().copied().collect();
+        let (steps, hurried) = if source.waits_for_nodes() {
+            (Vec::new(), HashSet::new())
+        } else {
+            let groups: Vec<_> = refinements(self.cubes.shown(), &wanted_set)
+                .into_iter()
+                .filter(|group| {
+                    group
+                        .coming
+                        .iter()
+                        .any(|cube| cube.level() + 1 < group.going.level())
+                })
+                .collect();
+            let hurried: HashSet<BrickCube> = groups
+                .iter()
+                .flat_map(|group| group.coming.iter().copied())
+                .collect();
+            (intermediate_cubes(&groups), hurried)
+        };
+        self.cubes.want_with_steps(&cubes, &steps);
         self.wanted_for = Some((centre, *settings));
         self.selected_version = Some(source.version());
         // The nearest are made first: they are the last in the queue.
         // (What was waited for is waited for again, by the cubes that are still wanted.)
         self.waiting_for_the_server.clear();
-        self.queue = cubes.into_iter().filter(|cube| cube.level() > 0).collect();
+        self.queue = cubes
+            .into_iter()
+            .filter(|cube| cube.level() > 0 && !hurried.contains(cube))
+            .collect();
         self.queue
             .sort_by_key(|cube| std::cmp::Reverse(squared_distance_to_middle(*cube, centre)));
+        // The cubes of a jump are made coarsest first, the nearest first among those, and before the rest: the last in the queue are made first.
+        let mut jump: Vec<BrickCube> = steps
+            .into_iter()
+            .chain(hurried.into_iter().filter(|cube| cube.level() > 0))
+            .collect();
+        jump.sort_by_key(|cube| {
+            (
+                cube.level(),
+                std::cmp::Reverse(squared_distance_to_middle(*cube, centre)),
+            )
+        });
+        self.queue.extend(jump);
         self.plan_needed = true;
     }
 
@@ -730,7 +767,7 @@ impl LodView {
     }
 
     fn swap(&mut self, updates: &mut Vec<MeshUpdate>) {
-        let swaps = plan_swaps(self.cubes.shown(), self.cubes.wanted(), |cube| {
+        let swaps = plan_progressive_swaps(self.cubes.shown(), self.cubes.wanted(), |cube| {
             self.is_ready(cube)
         });
         let mut shown_now = 0;

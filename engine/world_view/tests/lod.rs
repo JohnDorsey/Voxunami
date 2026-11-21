@@ -340,6 +340,101 @@ fn walking_away_and_back_draws_what_is_wanted_again_and_does_not_stay_a_node_amo
     }
 }
 
+/// A view that jumps from far away to the ground is refined a level at a time (`docs/specs/viewpoints-spec.md` 6.2, item 11): the picture it had stays only until the
+/// halves of it are made, and so on down, and not until everything that replaces it is. Found in phase 0: from 264 km up back to the surface the old giant nodes stayed
+/// for the whole of the build.
+#[test]
+fn a_view_that_jumps_from_far_away_to_the_ground_is_refined_a_level_at_a_time_and_never_has_a_hole()
+{
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let far_settings = LodSettings {
+        maximum_distance: 4.0e4,
+        ..settings()
+    };
+    // From 100,000 voxels up: a few big nodes.
+    settle_checked(
+        &mut view,
+        &mut screen,
+        &scene,
+        viewer_in(brick(0, 400, 0)),
+        &far_settings,
+        "far away",
+    );
+    let before: HashSet<BrickCube> = view.shown().clone();
+    assert!(
+        before.iter().all(|cube| cube.level() >= 5),
+        "the far picture is of big nodes: {:?}",
+        first_of(before.iter().copied())
+    );
+    // Down to the ground.
+    let viewer = viewer_in(brick(0, 0, 0));
+    let started = std::time::Instant::now();
+    let mut previous = before.clone();
+    let mut between_seen = 0;
+    let mut states = 0;
+    loop {
+        screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, &far_settings));
+        if view.shown() != &previous {
+            states += 1;
+            assert_nothing_overlaps(view.shown());
+            // (What the renderer holds is drawn. A big node of the ground has nothing to see in it, so not every shown cube has a mesh, which `assert_screen_matches` asks.)
+            for cube in screen.nodes.keys() {
+                assert!(
+                    view.shown().contains(cube),
+                    "{cube:?} is on the screen and not shown"
+                );
+            }
+            if let Err(problem) = view.check_consistency() {
+                panic!("the view's records disagree: {problem}");
+            }
+            // A cube that is neither what was drawn before nor what is wanted: a step on the way.
+            if view
+                .shown()
+                .iter()
+                .any(|cube| !before.contains(cube) && !view.wanted().contains(cube))
+            {
+                between_seen += 1;
+            }
+            // Where something was drawn and something is wanted, something is drawn still: the ground is never bare.
+            let holders = holders_of(view.shown());
+            for cube in &previous {
+                let wanted_inside = view.wanted().iter().any(|wanted| {
+                    wanted.level() <= cube.level()
+                        && BrickCube::containing(wanted.origin(), cube.level()) == *cube
+                });
+                let wanted_over = view.wanted().contains(cube)
+                    || (cube.level() + 1..=30).any(|level| {
+                        view.wanted()
+                            .contains(&BrickCube::containing(cube.origin(), level))
+                    });
+                if wanted_inside || wanted_over {
+                    assert!(
+                        covered(*cube, view.shown(), &holders),
+                        "{cube:?} was drawn and has something wanted in it, and is not covered now"
+                    );
+                }
+            }
+            previous = view.shown().clone();
+        }
+        if view.is_settled() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            "does not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+    assert_converged(&view, "on the ground");
+    assert!(
+        between_seen >= 2,
+        "the picture went from the far one to the near one with {between_seen} steps on the way ({states} states): it waited for everything"
+    );
+}
+
 /// One thing a player does.
 #[derive(Clone, Debug)]
 enum Move {

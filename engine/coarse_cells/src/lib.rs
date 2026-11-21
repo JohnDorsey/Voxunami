@@ -28,4 +28,6 @@ pub use selection::{
     DetailSettings, MAXIMUM_DETAIL_LEVEL, Selection, ViewSelection, Zoom, brick_centre,
     select_around_brick, select_nodes,
 };
-pub use swap::{Swap, plan_swaps};
+pub use swap::{
+    Refinement, Swap, intermediate_cubes, plan_progressive_swaps, plan_swaps, refinements,
+};

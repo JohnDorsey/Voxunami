@@ -1,6 +1,6 @@
 //! A probe of 2026-11-21 (`docs/specs/viewpoints-spec.md` section 3), kept as a record and not compiled with the workspace: what the view of a planet holds from the surface and from far away, how much the two share, what each takes in memory,
-//! To run it, copy it to `games/voxunami_cave/tests/`, then `cargo test --release -p voxunami_cave --test probe_two_views -- --nocapture --test-threads=1`, and remove the copy (the code is of commit `aa419ee`).
-//! (Its first version missed the updates of the first picture of the world, thrown away by `Rig::settle`, and drew false conclusions from the screen: see `join_settle` and section 9.)
+//! To run it, copy it to `games/voxunami_cave/tests/`, then `cargo test --release -p voxunami_cave --test probe_two_views -- --nocapture --test-threads=1` (`PROBE_TRACE=1` prints what is on the screen every quarter of a second), and remove the copy (the code is of commit `aa419ee`).
+//! (Its first version missed the updates of the first picture of the world, thrown away by `Rig::settle`, and drew false conclusions from the screen: see `join_settle` and the spec's section 9.)
 //! and what going from one to the other and back costs today (nodes that leave the view are thrown away).
 
 mod common;
@@ -187,6 +187,7 @@ fn settle_view(
     };
     let mut last_change = Instant::now();
     let mut last_report = Instant::now();
+    let mut last_trace = Instant::now();
     let mut arrived_at: Option<Instant> = None;
     loop {
         assert!(Instant::now() < deadline, "gave up waiting for the view");
@@ -221,6 +222,17 @@ fn settle_view(
         }
         if arrived_at.is_some() && last_change.elapsed() >= quiet {
             break;
+        }
+        if std::env::var_os("PROBE_TRACE").is_some() && last_trace.elapsed() >= Duration::from_millis(250) {
+            last_trace = Instant::now();
+            let levels = screen.per_level();
+            println!(
+                "   trace {:5.2} s: {} meshes, coarsest level held {:?}, finest {:?}",
+                began.elapsed().as_secs_f64(),
+                screen.held.len(),
+                levels.keys().rev().find(|level| **level < 70),
+                levels.keys().next()
+            );
         }
         if last_report.elapsed() > Duration::from_secs(10) {
             last_report = Instant::now();

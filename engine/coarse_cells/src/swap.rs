@@ -87,6 +87,93 @@ pub fn plan_swaps(
         .collect()
 }
 
+/// A cube that is shown and is not wanted, and the cubes that are wanted and not shown inside it: what it is to be replaced by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refinement {
+    pub going: BrickCube,
+    /// Every one is strictly inside `going`, and they are in the order cubes are put in (the biggest first).
+    pub coming: Vec<BrickCube>,
+}
+
+/// The refinements from what is `shown` to what is `wanted`, the biggest cube that goes first: the cubes that go with something wanted inside them. (A cube that
+/// something wanted holds is the other way round, a coarsening, and has none of this: the one cube that comes is ready or it is not.)
+pub fn refinements(shown: &HashSet<BrickCube>, wanted: &HashSet<BrickCube>) -> Vec<Refinement> {
+    let going: HashSet<BrickCube> = shown.difference(wanted).copied().collect();
+    let highest_going = going.iter().map(|cube| cube.level()).max().unwrap_or(0);
+    let mut found: HashMap<BrickCube, Vec<BrickCube>> = HashMap::new();
+    for &cube in wanted.difference(shown) {
+        if let Some(holder) = holder(cube, &going, highest_going) {
+            found.entry(holder).or_default().push(cube);
+        }
+    }
+    let mut found: Vec<Refinement> = found
+        .into_iter()
+        .map(|(going, mut coming)| {
+            coming.sort_by_key(order);
+            Refinement { going, coming }
+        })
+        .collect();
+    found.sort_by_key(|refinement| order(&refinement.going));
+    found
+}
+
+/// The cubes that stand between a cube that goes and the cubes that replace it, when those are more than a level finer: for each cube that comes, its ancestors
+/// that are finer than the cube that goes. None of them is wanted (nothing that is wanted holds something that is wanted). They are what is made so that the cube
+/// that goes can be replaced a level at a time ([`plan_progressive_swaps`]). In the order cubes are put in.
+pub fn intermediate_cubes(refinements: &[Refinement]) -> Vec<BrickCube> {
+    let mut found: HashSet<BrickCube> = HashSet::new();
+    for refinement in refinements {
+        for coming in &refinement.coming {
+            for level in coming.level() + 1..refinement.going.level() {
+                found.insert(BrickCube::containing(coming.origin(), level));
+            }
+        }
+    }
+    let mut found: Vec<BrickCube> = found.into_iter().collect();
+    found.sort_by_key(order);
+    found
+}
+
+/// [`plan_swaps`], and besides it the first step of the swaps that cannot be made yet: a cube that goes and has cubes coming that are more than a level finer is
+/// replaced by its halves that hold them (the cubes that come that are as big as the halves, and the ancestors of the others, which are the cubes of
+/// [`intermediate_cubes`]), when all of those are ready; so that what is on the screen is never more than a level coarser than what has been made, and a node does
+/// not wait for the whole of what replaces it. The next call takes the next step, from the halves. Cubes that come that are not wanted are only these.
+pub fn plan_progressive_swaps(
+    shown: &HashSet<BrickCube>,
+    wanted: &HashSet<BrickCube>,
+    ready: impl Fn(BrickCube) -> bool,
+) -> Vec<Swap> {
+    let mut swaps = plan_swaps(shown, wanted, &ready);
+    let changed: HashSet<BrickCube> = swaps
+        .iter()
+        .flat_map(|swap| swap.remove.iter().copied())
+        .collect();
+    for refinement in refinements(shown, wanted) {
+        let level = refinement.going.level();
+        let steps_between = refinement
+            .coming
+            .iter()
+            .any(|cube| cube.level() + 1 < level);
+        if level < 2 || !steps_between || changed.contains(&refinement.going) {
+            continue;
+        }
+        let halves: HashSet<BrickCube> = refinement
+            .coming
+            .iter()
+            .map(|cube| BrickCube::containing(cube.origin(), level - 1))
+            .collect();
+        if halves.iter().all(|&half| ready(half)) {
+            let mut add: Vec<BrickCube> = halves.into_iter().collect();
+            add.sort_by_key(order);
+            swaps.push(Swap {
+                remove: vec![refinement.going],
+                add,
+            });
+        }
+    }
+    swaps
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

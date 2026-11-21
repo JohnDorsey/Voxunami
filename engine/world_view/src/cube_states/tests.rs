@@ -251,3 +251,29 @@ fn what_the_changes_cannot_prevent_is_found_by_the_check() {
     let problem = states.check_consistency().unwrap_err();
     assert!(problem.contains("has a picture on the screen"), "{problem}");
 }
+
+#[test]
+fn a_step_on_the_way_has_a_record_is_made_and_goes_when_it_is_not_one_any_more() {
+    let mut states = CubeStates::new();
+    states.want_with_steps(&[node(1)], &[node(2)]);
+    // A step has a record and is to be made, though it is not wanted.
+    assert!(!states.wanted().contains(&node(2)));
+    assert!(states.has_node(node(2)));
+    assert!(states.needs_making(node(2), 0));
+    assert_consistent(&states);
+    // Said again without it, and not shown: the record goes.
+    states.want_with_steps(&[node(1)], &[]);
+    assert!(!states.has_node(node(2)));
+    assert!(!states.needs_making(node(2), 0));
+    assert_consistent(&states);
+    // One that is shown keeps its record when the steps change, and loses it when it is taken down.
+    states.want_with_steps(&[node(1)], &[node(2)]);
+    states.start_making(node(2), 0);
+    states.finish_making(node(2), 0, 0, picture());
+    states.show_node(node(2));
+    states.want_with_steps(&[node(1)], &[]);
+    assert!(states.has_node(node(2)));
+    assert!(states.hide_node(node(2)) || !states.has_node(node(2)));
+    assert!(!states.has_node(node(2)));
+    assert_consistent(&states);
+}

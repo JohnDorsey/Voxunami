@@ -78,7 +78,9 @@ pub(crate) enum Arrival {
 pub(crate) struct CubeStates {
     wanted: HashSet<BrickCube>,
     shown: HashSet<BrickCube>,
-    /// The records of the nodes that are wanted or shown, and of no others.
+    /// The cubes that stand between what is shown and what is wanted ([`coarse_cells::intermediate_cubes`]): made and shown on the way, though they are not wanted.
+    steps: HashSet<BrickCube>,
+    /// The records of the nodes that are wanted, shown or steps on the way, and of no others.
     nodes: HashMap<BrickCube, Node>,
 }
 
@@ -102,14 +104,27 @@ impl CubeStates {
     }
 
     /// What is to be drawn is now these cubes: the nodes among them have records, and the nodes that are neither wanted nor shown have none.
+    #[cfg(test)]
     pub(crate) fn want(&mut self, cubes: &[BrickCube]) {
+        self.want_with_steps(cubes, &[]);
+    }
+
+    /// The same, and `steps` are the cubes that are to be made and shown on the way to what is wanted (they have records too, until the next time this is said).
+    pub(crate) fn want_with_steps(&mut self, cubes: &[BrickCube], steps: &[BrickCube]) {
         self.wanted = cubes.iter().copied().collect();
-        for cube in cubes.iter().filter(|cube| cube.level() > 0) {
+        self.steps = steps.iter().copied().collect();
+        for cube in cubes.iter().chain(steps).filter(|cube| cube.level() > 0) {
             self.nodes.entry(*cube).or_insert_with(Node::new);
         }
-        let (wanted, shown) = (&self.wanted, &self.shown);
-        self.nodes
-            .retain(|cube, _| wanted.contains(cube) || shown.contains(cube));
+        let (wanted, shown, steps) = (&self.wanted, &self.shown, &self.steps);
+        self.nodes.retain(|cube, _| {
+            wanted.contains(cube) || shown.contains(cube) || steps.contains(cube)
+        });
+    }
+
+    /// Whether the cube is to be made: it is wanted, or a step on the way to what is.
+    fn is_to_be_made(&self, cube: &BrickCube) -> bool {
+        self.wanted.contains(cube) || self.steps.contains(cube)
     }
 
     /// Whether the picture of a node that is wanted or shown has to be made (again), from data of this version: it is not being made already, and the one it has
@@ -124,9 +139,9 @@ impl CubeStates {
         match node.picture {
             Picture::OnScreen { version: drawn, .. } => drawn != version,
             Picture::Waiting { version: ready, .. } => {
-                self.wanted.contains(&cube) && ready != version
+                self.is_to_be_made(&cube) && ready != version
             }
-            Picture::Missing => self.wanted.contains(&cube),
+            Picture::Missing => self.is_to_be_made(&cube),
         }
     }
 
@@ -222,7 +237,7 @@ impl CubeStates {
         };
         let uploaded = matches!(node.picture, Picture::OnScreen { uploaded: true, .. });
         node.picture = Picture::Missing;
-        if !self.wanted.contains(&cube) {
+        if !self.is_to_be_made(&cube) {
             self.nodes.remove(&cube);
         }
         uploaded
@@ -254,6 +269,7 @@ impl CubeStates {
     pub(crate) fn clear(&mut self) {
         self.wanted.clear();
         self.shown.clear();
+        self.steps.clear();
         self.nodes.clear();
     }
 
@@ -264,9 +280,9 @@ impl CubeStates {
                 return Err(format!("{cube:?} is a brick and has the record of a node"));
             }
             let shown = self.shown.contains(cube);
-            if !shown && !self.wanted.contains(cube) {
+            if !shown && !self.is_to_be_made(cube) {
                 return Err(format!(
-                    "{cube:?} has a record and is neither wanted nor shown"
+                    "{cube:?} has a record and is neither wanted nor shown (nor a step on the way)"
                 ));
             }
             if node.is_on_screen() != shown {
