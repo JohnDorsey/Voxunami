@@ -13,13 +13,11 @@ namespaced_id.workspace = true
 thiserror.workspace = true
 physics.workspace = true
 plugin_host.workspace = true
+region_octree.workspace = true
 server.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 world_storage.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true
 
 [lints]
 workspace = true

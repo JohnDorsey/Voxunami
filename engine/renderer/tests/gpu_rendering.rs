@@ -24,6 +24,8 @@ use voxel_space::{
 use world_view::sun_blocked;
 
 // (The sun's exact short ray: `docs/specs/contact-trace-spec.md`. A module of its own, which uses what is in this file.)
+#[path = "gpu_rendering/bumps.rs"]
+mod bumps;
 #[path = "gpu_rendering/contact_cutouts.rs"]
 mod contact_cutouts;
 #[path = "gpu_rendering/contact_entities.rs"]
@@ -34,16 +36,39 @@ mod contact_grids;
 mod contact_shapes;
 #[path = "gpu_rendering/contact_trace.rs"]
 mod contact_trace;
+#[path = "gpu_rendering/emission.rs"]
+mod emission;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
+#[path = "gpu_rendering/glints.rs"]
+mod glints;
+#[path = "gpu_rendering/lift.rs"]
+mod lift;
+#[path = "gpu_rendering/occlusion.rs"]
+mod occlusion;
+#[path = "gpu_rendering/pack_settings.rs"]
+mod pack_settings;
+#[path = "gpu_rendering/parallax_occlusion.rs"]
+mod parallax_occlusion;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
 mod pixelated_shadows;
+#[path = "gpu_rendering/prisms.rs"]
+mod prisms;
+#[path = "gpu_rendering/relief.rs"]
+mod relief;
+#[path = "gpu_rendering/scatter.rs"]
+mod scatter;
+#[path = "gpu_rendering/settings.rs"]
+mod settings;
 #[path = "gpu_rendering/shader_packs.rs"]
 mod shader_packs;
+#[path = "gpu_rendering/volume_shade.rs"]
+mod volume_shade;
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];
-const SKY_BYTES: [u8; 3] = [51, 102, 204];
+/// What `SKY` is in the picture: decoded to light, raised to the power of 1 / 1.2 (the lift of the whole scene, `lifted` in `voxel.wgsl`) and encoded again (`lift.rs` has the rule).
+const SKY_BYTES: [u8; 3] = [68, 119, 212];
 const RED: u32 = 1;
 const GREEN: u32 = 2;
 const UNKNOWN_MATERIAL: u32 = 77;
@@ -1076,18 +1101,20 @@ fn the_sun_direction_is_normalized_so_its_length_does_not_change_the_shading() {
     }
 }
 
-/// How much light a pixel stands for: its colour channels decoded from sRGB and added.
+/// How much light a pixel stands for: its colour channels decoded from sRGB, taken back down by the lift of the whole scene (`lifted` in `voxel.wgsl`: the light to the power of
+/// one over 1.2, so to the power of 1.2 here), and added. What the tests say of the light is what the light says, not what the lift has made of it (`lift.rs` tests the lift).
 #[allow(clippy::disallowed_methods)] // a test of cosmetics, not simulation
 fn linear_brightness(pixel: [u8; 4]) -> f64 {
     pixel[..3]
         .iter()
         .map(|&byte| {
             let value = f64::from(byte) / 255.0;
-            if value <= 0.04045 {
+            let lifted_light = if value <= 0.04045 {
                 value / 12.92
             } else {
                 ((value + 0.055) / 1.055).powf(2.4)
-            }
+            };
+            lifted_light.powf(1.2)
         })
         .sum()
 }
@@ -3256,10 +3283,12 @@ fn beyond_the_reach_of_the_cascades_the_picture_is_the_one_without_shadows_and_n
             upload_shadow_scene(&mut renderer, ShadowScene::Block, level);
             let (camera, cells, _) = shadow_scene_setup(ShadowScene::Block, level);
             let _ = cells;
+            // (Both are taken once two frames agree: the integrated AMD GPU leaves pixels out of a fresh renderer's first frames, which this test met from the commit that gave
+            // the default shader one more field, 4 runs in 16 on DX12: `docs/test-flakes.md`.)
             renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, false));
-            let off = render(&mut renderer, &camera);
+            let off = settled(&mut renderer, &camera);
             renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, true));
-            let on = render(&mut renderer, &camera);
+            let on = settled(&mut renderer, &camera);
             assert!(
                 pixels_where(&off, |pixel| !is_sky(pixel)) > 1500,
                 "{name} level {level}: the scene is not in the picture"
@@ -5093,10 +5122,12 @@ fn renderer_with_pictures(context: &GraphicsContext, table: &BlockTable) -> Voxe
             PictureSize {
                 size: 8,
                 tiles: vec![&quartered, &green],
+                ..PictureSize::default()
             },
             PictureSize {
                 size: 16,
                 tiles: vec![&blue],
+                ..PictureSize::default()
             },
         ],
     );
@@ -5424,6 +5455,7 @@ fn renderer_with_half_clear(context: &GraphicsContext, table: &BlockTable) -> Vo
         &[PictureSize {
             size: 8,
             tiles: vec![&picture],
+            ..PictureSize::default()
         }],
     );
     renderer.set_picture_distance(100.0);
@@ -5588,6 +5620,7 @@ fn roof_failures(
         &[PictureSize {
             size: 8,
             tiles: vec![&clear, &opaque],
+            ..PictureSize::default()
         }],
     );
     renderer.set_picture_distance(distance);

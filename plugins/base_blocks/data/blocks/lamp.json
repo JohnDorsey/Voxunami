@@ -1,4 +1,5 @@
 {
+  "texture": "lamp",
   "color": [1.0, 0.92, 0.65],
   "properties": { "base_blocks:emission": 64 }
 }

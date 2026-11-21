@@ -87,8 +87,9 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         session.fog_radius_bricks(),
     );
     apply_face_switch(&mut renderer);
+    // (What the player chose of the settings is read, so that a picture shows what they see; nothing is written from here.)
     let shader_packs = prepare_shader_packs(&options.view, &mut session)?;
-    apply_shader_pack(&mut renderer, &shader_packs, session.settings())?;
+    apply_shader_pack(&mut renderer, &shader_packs.packs, session.settings())?;
 
     // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray is told of.)
     let reports_occupancy = std::env::var_os(REPORT_OCCUPANCY).is_some();
@@ -193,7 +194,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     );
     apply_face_switch(&mut renderer);
     let shader_packs = prepare_shader_packs(view, &mut session)?;
-    apply_shader_pack(&mut renderer, &shader_packs, session.settings())?;
+    apply_shader_pack(&mut renderer, &shader_packs.packs, session.settings())?;
     session.set_viewport_height(view.height);
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);

@@ -5,13 +5,15 @@ use block_models::{BlockTable, PropertyHandle};
 use namespaced_id::NamespacedId;
 use physics::{
     BodyColliders, BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments,
+    Reach, bricks_whose_colliders_read,
 };
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
+use region_octree::{BrickCube, RegionOctree};
 use server::{MergePlan, ServerWorld, SplitPart};
-use voxel_grid::ChannelIndex;
+use voxel_grid::{ChannelIndex, Grid};
 use voxel_space::{
-    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickCoordinate, Displacement, GridId, GridPose,
-    LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
+    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, Displacement, GridId,
+    GridPose, LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
 use world_storage::{HullBox, MovingGrid};
 
@@ -57,6 +59,15 @@ const TERRAIN_NEEDED_SECONDS: f64 = 0.1;
 const TERRAIN_WANTED_BRICKS_PER_TICK: usize = 1;
 /// How much farther each ring of the wanted bricks reaches, in voxels: the nearer a brick is in rings, the sooner it is made.
 const TERRAIN_RING_VOXELS: f64 = 8.0;
+
+/// How many bricks of ships that have just come into memory get their colliders, their mass, their ports and their joint ends in a tick, all the ships together. A count and not a
+/// time, for the same reason as the budget of terrain (what is simulated must not depend on how fast a machine is); a brick costs from about 1.5 ms (a few blocks: the weighing alone) to
+/// 10 ms (all 32,768 voxels stone: four of them took 41 to 48 ms of a tick, measured 2026-11-19), so a tick spends 45 ms at the most on them and a few milliseconds on a hollow hull. **A ship whose bricks are all made in the tick it comes (up to this many bricks, with the other ships that
+/// came in it) is made whole, as it was before there was a budget**: only a bigger ship is *being made*, held where it is meanwhile (see `Making`).
+pub const SHIP_BRICKS_PER_TICK: usize = 4;
+/// How many bricks of terrain that a ship that is being made needs, and that cost anything to make (those that are not all air or all one solid block: a brick of natural terrain
+/// with caves in it costs 12 ms), are made in a tick for each ground of each frame, once all the ship's own bricks are made. Bricks that cost nothing are made at once.
+pub const SETTLING_TERRAIN_BRICKS_PER_TICK: usize = 2;
 
 /// How many voxels of ships the checks for a ship that was cut in two may look at in a tick, all the ships together. A count and not a time, for
 /// the same reason as the budget of terrain. A cut that does not separate anything is found in a few steps; one that does costs about the size of the
@@ -138,6 +149,11 @@ pub struct BodiesReport {
     /// Bricks of ships whose colliders and mass were worked out from their voxels (the 32,768 places of each looked at), in all: the first time a ship has a body, and each
     /// brick an edit changes.
     pub ship_bricks_made: u64,
+    /// The same in the last tick, and in the most of any tick.
+    pub ship_bricks_made_last_tick: u64,
+    pub ship_bricks_made_most_in_a_tick: u64,
+    /// Ships that are being made now: held where they are while their bricks, and then the terrain they need, are made a few at a tick (see [`SHIP_BRICKS_PER_TICK`]).
+    pub ships_being_made: u64,
     /// Bricks of ships that went with the ship from the frame it left to the one it entered, with no voxel looked at (see [`BodyWorld::take_colliders`]), in all.
     pub ship_bricks_carried: u64,
     /// How many contact ghosts there are now (step 4c-5-2: one for each set of groups that are alone and near each other, with what is near them), how many were made in all, in
@@ -244,6 +260,26 @@ struct Ship {
     gravity: [f64; 3],
     /// What the simulation last said of where the ship is and how fast it moves: if the world says other, something else moved it.
     written: (GridPose, [f64; 3], [f64; 3]),
+    /// Set while the ship is being made (see [`Making`]).
+    making: Option<Making>,
+}
+
+/// A ship that came into memory and is too big to be made in the tick it came: its bricks are made a few at a tick (see [`SHIP_BRICKS_PER_TICK`]), and then the terrain it needs
+/// a few bricks at a tick (see [`SETTLING_TERRAIN_BRICKS_PER_TICK`]). **Meanwhile it is held where it is**: its body is a fixed one (it does not move, whatever the world says of its
+/// speed, and nothing is written back of it), the world keeps the weight it had of it (the weight of the bricks made so far is not the ship's), it asks for no terrain until its own bricks
+/// are made, and it is neither docked nor coupled (the ports and joint ends it has are of the bricks made so far). Bricks that are made are solid to what comes near. When it is
+/// made it goes on from the place, the speed and the kind (held, frozen, on a rail, free) the world has for it then.
+struct Making {
+    /// The bricks of the ship that have not been made yet, in order of coordinate. (An edit to one is left alone: it is made from what is in it when its turn comes.)
+    unmade: BTreeSet<BrickCoordinate>,
+    /// What the ship is to the solver when it is let go: the kind it would have if it were not held.
+    kind: BodyKind,
+    /// Whether the body has been given the ship's weight (when the last brick was made).
+    weighed: bool,
+    /// Whether all the terrain the ship needs had colliders at the end of the last tick's work (looked at once its bricks are made).
+    terrain_ready: bool,
+    /// Whether it is the tick the ship came in: a ship whose bricks are all made in it was never being made, and goes on at once, as it did before there was a budget.
+    first_tick: bool,
 }
 
 impl Ship {
@@ -899,6 +935,60 @@ enum Ground {
     Planet(GridId),
 }
 
+/// What a ground's colliders are to do in this tick (see [`Bodies::bricks_to_change`]).
+#[derive(Default)]
+struct TerrainPlan {
+    /// Bricks that lose their colliders.
+    to_drop: Vec<BrickCoordinate>,
+    /// Bricks that get them (or get them again): all that are needed now, the nearest of those wanted, and those that were edited and had them.
+    to_make: Vec<BrickCoordinate>,
+    /// Bricks wanted ahead that are left for a later tick, nearest first.
+    ahead: Vec<BrickCoordinate>,
+    /// The bricks each ship that is being made needs, made or not.
+    settling: BTreeMap<GridId, BTreeSet<BrickCoordinate>>,
+}
+
+/// Which bricks of a level's grid are stored (built in, dug out of, or kept for any other reason): the bricks that are not what the generator makes of them. A cube that the
+/// generator says is air all through (`WorldTerrain::is_air`) is air all through only if none of them is in it, so a ship's terrain is not looked for in it only if this says no.
+///
+/// It is kept from the bricks that changed in each tick, and checked each tick against how many bricks the grid has: if the two do not agree something changed that nobody
+/// said, and it is made again from the grid. (A mistake here is a ship that goes through what was built, and so it is not left to be one.)
+struct StoredBricks {
+    index: RegionOctree<bool>,
+    count: usize,
+}
+
+impl StoredBricks {
+    /// Made from the bricks of a grid.
+    fn scan(grid: &Grid) -> Self {
+        let mut stored = Self {
+            index: RegionOctree::new(false),
+            count: 0,
+        };
+        for (brick, _) in grid.bricks() {
+            stored.set(brick, true);
+        }
+        stored
+    }
+
+    fn set(&mut self, brick: BrickCoordinate, stored: bool) {
+        if *self.index.get(brick) == stored {
+            return;
+        }
+        self.index.set_cube(BrickCube::containing(brick, 0), stored);
+        if stored {
+            self.count += 1;
+        } else {
+            self.count -= 1;
+        }
+    }
+
+    /// Whether any brick of the cube is stored.
+    fn any_in(&self, cube: BrickCube) -> bool {
+        !self.index.all_in_cube(cube, |stored| !*stored)
+    }
+}
+
 struct Bodies {
     config: GridBodiesConfig,
     collisions: BlockCollisions,
@@ -912,6 +1002,10 @@ struct Bodies {
     /// The ships that are being looked at to see if they were cut in two.
     checks: BTreeMap<GridId, Check>,
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
+    /// Which bricks of each level are stored in its grid (see [`StoredBricks`]), for the levels that have a frame.
+    stored_bricks: BTreeMap<LevelIndex, StoredBricks>,
+    /// The same for the planets that have a body: which bricks of their own voxels are stored (built or dug), by planet.
+    stored_planet_bricks: BTreeMap<GridId, StoredBricks>,
     /// What the world is to be told of the weight of ships, at the end of the step.
     weighed: BTreeMap<GridId, (f64, [f64; 3], Option<HullBox>)>,
     /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
@@ -981,6 +1075,8 @@ impl Bodies {
             config,
             collisions,
             frames: BTreeMap::new(),
+            stored_bricks: BTreeMap::new(),
+            stored_planet_bricks: BTreeMap::new(),
             next_frame: 0,
             changed_ship_bricks: BTreeSet::new(),
             changed_ship_voxels: BTreeMap::new(),
@@ -1008,19 +1104,23 @@ impl Bodies {
             .map(|(key, _)| *key)
     }
 
-    /// What the plugin keeps of a ship that has a body.
-    fn record_of(&self, id: GridId) -> Option<&Ship> {
+    /// What the plugin keeps of a ship that has a body, in whatever frame it is (`record_of` is for when the frame is known).
+    fn record_in_any_frame(&self, id: GridId) -> Option<&Ship> {
         self.frames.values().find_map(|frame| frame.ships.get(&id))
     }
 
+    /// Notes that a voxel changed. The colliders of its brick are made again, and so are those of the brick across each face of it that the voxel is on (they are made
+    /// from the voxels across that face: a box with nothing open touching it has none, and one beside solid terrain reaches into it).
     fn changed(&mut self, grid: GridId, voxel: VoxelCoordinate) {
-        let brick = voxel.split().0;
+        let bricks = bricks_whose_colliders_read(voxel);
         match grid.root_level() {
             Some(level) => {
-                self.changed_terrain_bricks.insert((level, brick));
+                self.changed_terrain_bricks
+                    .extend(bricks.into_iter().map(|brick| (level, brick)));
             }
             None => {
-                self.changed_ship_bricks.insert((grid, brick));
+                self.changed_ship_bricks
+                    .extend(bricks.into_iter().map(|brick| (grid, brick)));
                 self.changed_ship_voxels
                     .entry(grid)
                     .or_default()
@@ -1118,9 +1218,7 @@ impl Bodies {
                 .is_ok()
         });
         if !given {
-            for brick in bricks {
-                self.remake_brick(frame, id, *brick, ship);
-            }
+            self.begin_making(frame, id, bricks);
             return;
         }
         if let Some(record) = self
@@ -1143,6 +1241,210 @@ impl Bodies {
         for brick in edited {
             self.remake_brick(frame, id, brick, ship);
         }
+    }
+
+    /// Has the bricks of a ship that has a body and nothing else of it made in this tick and the ones after it (see [`Bodies::make_ship_bricks`]).
+    fn begin_making(&mut self, frame: FrameKey, id: GridId, bricks: &[BrickCoordinate]) {
+        if let Some(record) = self
+            .frames
+            .get_mut(&frame)
+            .and_then(|bodies| bodies.ships.get_mut(&id))
+        {
+            record.making = Some(Making {
+                unmade: bricks.iter().copied().collect(),
+                kind: record.kind,
+                weighed: false,
+                terrain_ready: false,
+                first_tick: true,
+            });
+        }
+    }
+
+    /// The record of a ship in a frame, if it has one.
+    fn record_of(&self, frame: FrameKey, id: GridId) -> Option<&Ship> {
+        self.frames.get(&frame)?.ships.get(&id)
+    }
+
+    /// Whether a ship is being made (see [`Making`]).
+    fn is_being_made(&self, frame: FrameKey, id: GridId) -> bool {
+        self.record_of(frame, id)
+            .is_some_and(|record| record.making.is_some())
+    }
+
+    /// Whether a brick of a ship is one that has not been made yet.
+    fn is_unmade(&self, frame: FrameKey, id: GridId, brick: BrickCoordinate) -> bool {
+        self.record_of(frame, id).is_some_and(|record| {
+            record
+                .making
+                .as_ref()
+                .is_some_and(|making| making.unmade.contains(&brick))
+        })
+    }
+
+    /// Whether a ship still has bricks that have not been made.
+    fn has_bricks_unmade(&self, frame: FrameKey, id: GridId) -> bool {
+        self.record_of(frame, id).is_some_and(|record| {
+            record
+                .making
+                .as_ref()
+                .is_some_and(|making| !making.unmade.is_empty())
+        })
+    }
+
+    /// Makes the bricks of the ships that are being made, **no more than [`SHIP_BRICKS_PER_TICK`] in all**, and weighs a ship when its last brick is made. A ship whose bricks are
+    /// all made in the tick it came was never being made: it goes on at once, as it did before there was a budget.
+    /// When the bricks that are left of all the ships fit in the budget they are made in order of ship, each ship whole, as they were before there was a budget; when they do not, a
+    /// brick of each ship in turn (in order of ship), so that a big ship does not keep a small one that came after it from being made.
+    fn make_ship_bricks(&mut self, world: &ServerWorld) {
+        let mut order: Vec<(GridId, FrameKey)> = self
+            .frames
+            .iter()
+            .flat_map(|(key, frame)| {
+                frame
+                    .ships
+                    .iter()
+                    .filter(|(_, record)| {
+                        record
+                            .making
+                            .as_ref()
+                            .is_some_and(|making| !making.unmade.is_empty())
+                    })
+                    .map(move |(id, _)| (*id, *key))
+            })
+            .collect();
+        order.sort();
+        let total: usize = order
+            .iter()
+            .filter_map(|(id, key)| self.record_of(*key, *id)?.making.as_ref())
+            .map(|making| making.unmade.len())
+            .sum();
+        let (mut left, each) = if total <= SHIP_BRICKS_PER_TICK {
+            (usize::MAX, usize::MAX)
+        } else {
+            (SHIP_BRICKS_PER_TICK, 1)
+        };
+        'rounds: loop {
+            let mut made_any = false;
+            for &(id, key) in &order {
+                if left == 0 {
+                    break 'rounds;
+                }
+                let Some(ship) = world.data().grids().get(id) else {
+                    continue;
+                };
+                let Some(making) = self
+                    .frames
+                    .get_mut(&key)
+                    .and_then(|frame| frame.ships.get_mut(&id))
+                    .and_then(|record| record.making.as_mut())
+                else {
+                    continue;
+                };
+                let bricks: Vec<BrickCoordinate> =
+                    making.unmade.iter().copied().take(each.min(left)).collect();
+                for brick in &bricks {
+                    making.unmade.remove(brick);
+                }
+                made_any |= !bricks.is_empty();
+                left = left.saturating_sub(bricks.len());
+                for brick in bricks {
+                    self.remake_brick(key, id, brick, ship);
+                }
+            }
+            if !made_any {
+                break;
+            }
+        }
+        // The ships whose bricks are all made have their weight now (a ship that has no bricks too).
+        let weighed: Vec<(GridId, FrameKey)> = self
+            .frames
+            .iter()
+            .flat_map(|(key, frame)| {
+                frame
+                    .ships
+                    .iter()
+                    .filter(|(_, record)| {
+                        record
+                            .making
+                            .as_ref()
+                            .is_some_and(|making| making.unmade.is_empty() && !making.weighed)
+                    })
+                    .map(move |(id, _)| (*id, *key))
+            })
+            .collect();
+        for (id, key) in weighed {
+            self.set_mass(key, id);
+            if let Some(record) = self
+                .frames
+                .get_mut(&key)
+                .and_then(|frame| frame.ships.get_mut(&id))
+                && let Some(making) = record.making.as_mut()
+            {
+                making.weighed = true;
+                if making.first_tick {
+                    record.making = None;
+                }
+            }
+        }
+    }
+
+    /// At the end of the tick's work: holds the ships that are still being made (a fixed body, whatever it is to be), and lets go those that are made, their bricks and the terrain
+    /// they need, to go on from the place, the speed and the kind the world has for them now.
+    fn settle_ships(&mut self, world: &ServerWorld) {
+        let mut made: Vec<(FrameKey, GridId)> = Vec::new();
+        let mut being_made = 0;
+        for (key, frame) in &mut self.frames {
+            for (id, record) in &mut frame.ships {
+                let Some(making) = record.making.as_mut() else {
+                    continue;
+                };
+                making.first_tick = false;
+                if making.unmade.is_empty() && making.terrain_ready {
+                    made.push((*key, *id));
+                    continue;
+                }
+                being_made += 1;
+                if record.kind != BodyKind::Fixed {
+                    record.kind = BodyKind::Fixed;
+                    let _ = frame.bodies.set_kind(BodyId(id.get()), BodyKind::Fixed);
+                }
+            }
+        }
+        for (key, id) in made {
+            self.release_ship(world, key, id);
+        }
+        self.count(|report| report.ships_being_made = being_made);
+    }
+
+    /// Lets a ship that is made go on: its body is what the world says it is (its kind, and where it is and how fast it goes if it was held for the making).
+    fn release_ship(&mut self, world: &ServerWorld, key: FrameKey, id: GridId) {
+        let Some(ship) = world.data().grids().get(id) else {
+            return;
+        };
+        let Some(frame) = self.frames.get_mut(&key) else {
+            return;
+        };
+        let Some(record) = frame.ships.get_mut(&id) else {
+            return;
+        };
+        let Some(making) = record.making.take() else {
+            return;
+        };
+        if record.kind == making.kind {
+            return;
+        }
+        record.kind = making.kind;
+        let _ = frame.bodies.set_kind(BodyId(id.get()), making.kind);
+        if let Some(state) = ship_state_in(
+            frame.follow,
+            making.kind,
+            ship.pose,
+            ship.linear_velocity,
+            ship.angular_velocity,
+        ) {
+            let _ = frame.bodies.set_state(BodyId(id.get()), state);
+        }
+        record.written = (ship.pose, ship.linear_velocity, ship.angular_velocity);
     }
 
     /// Changes the report.
@@ -1263,6 +1565,7 @@ impl Bodies {
     fn step(&mut self, world: &mut ServerWorld) {
         self.tick += 1;
         let tick = self.tick;
+        let ship_bricks_before = self.report().ship_bricks_made;
         self.refused.retain(|_, until| tick < *until);
         let changed_ships = std::mem::take(&mut self.changed_ship_bricks);
         let changed_terrain = std::mem::take(&mut self.changed_terrain_bricks);
@@ -1322,10 +1625,12 @@ impl Bodies {
                 .collect();
             for id in gone {
                 let record = frame.ships.remove(&id);
-                // A ship that is still in the world goes to another frame, and takes what was made of its bricks with it (one that is gone altogether takes nothing).
+                // A ship that is still in the world goes to another frame, and takes what was made of its bricks with it (one that is gone altogether takes nothing, and nor does
+                // one that is being made: it has only some of its bricks, and is begun again in the frame it enters).
                 let colliders = frame.bodies.take_colliders(BodyId(id.get())).ok();
                 let _ = frame.bodies.remove_body(BodyId(id.get()));
                 if let (Some(record), Some(colliders)) = (record, colliders)
+                    && record.making.is_none()
                     && present.iter().any(|(held, _)| *held == id)
                 {
                     self.carried.insert(
@@ -1348,9 +1653,11 @@ impl Bodies {
         }
         // (What was not given to a body in this step, a ship that could not be made one, is made again from its voxels in the next.)
         self.carried.clear();
+        self.make_ship_bricks(world);
         self.sync_planets(world);
         self.scan_planets_for_ports(world, &changed_ships);
         self.keep_terrain(world, &changed_terrain, &changed_ships);
+        self.settle_ships(world);
 
         for (id, (mass, centre, hull)) in std::mem::take(&mut self.weighed) {
             let _ = world.set_grid_mass(id, mass, centre);
@@ -1427,6 +1734,10 @@ impl Bodies {
             report.frames = frames;
             report.group_frames = group_frames;
             report.group_ground_bricks = group_ground_bricks;
+            report.ship_bricks_made_last_tick = report.ship_bricks_made - ship_bricks_before;
+            report.ship_bricks_made_most_in_a_tick = report
+                .ship_bricks_made_most_in_a_tick
+                .max(report.ship_bricks_made_last_tick);
         });
         self.write_back(world);
         // (After the step, where the world has every ship at the place of the end of the tick: a ship on a rail is no tick ahead of the others, and a ship that docks with it does not
@@ -1436,6 +1747,14 @@ impl Bodies {
         self.couple_or_pull_joints_of_ships_on_rails(world);
         // (And a group taken off its rail before it would be stepped a second time in this tick.)
         self.take_railed_groups_off_for_ends_that_pull(world);
+    }
+
+    /// What the report says of the bricks made so far, as a copy.
+    fn report(&self) -> BodiesReport {
+        *self
+            .report
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Makes a ship's body and colliders, or brings them up to date with the ship.
@@ -1541,21 +1860,21 @@ impl Bodies {
                     gravity: [0.0; 3],
                     kind,
                     written: (ship.pose, ship.linear_velocity, ship.angular_velocity),
+                    making: None,
                 },
             );
             let bricks: Vec<BrickCoordinate> = ship.voxels.sorted_brick_coordinates();
             match self.carried.remove(&id) {
                 Some(carried) => self.take_over(key, id, ship, carried, &bricks, changed),
-                None => {
-                    for brick in bricks {
-                        self.remake_brick(key, id, brick, ship);
-                    }
-                }
+                // (Its bricks are made below, a few at a tick for all the ships that came together, and its weight when the last is.)
+                None => self.begin_making(key, id, &bricks),
             }
-            self.set_mass(key, id);
+            if !self.is_being_made(key, id) {
+                self.set_mass(key, id);
+            }
             return;
         };
-        // Bricks that changed.
+        // Bricks that changed. (One of a ship that is being made and has no colliders yet is made from what is in it when its turn comes.)
         let mut remade = false;
         let bricks: Vec<BrickCoordinate> = changed
             .iter()
@@ -1563,10 +1882,14 @@ impl Bodies {
             .map(|(_, brick)| *brick)
             .collect();
         for brick in bricks {
+            if self.is_unmade(key, id, brick) {
+                continue;
+            }
             self.remake_brick(key, id, brick, ship);
             remade = true;
         }
-        if remade {
+        // (A ship that is still having its bricks made is weighed when the last is.)
+        if remade && !self.has_bricks_unmade(key, id) {
             self.set_mass(key, id);
         }
         let Some(frame) = self.frames.get_mut(&key) else {
@@ -1574,6 +1897,14 @@ impl Bodies {
         };
         let Some(record) = frame.ships.get_mut(&id) else {
             return;
+        };
+        // A ship that is being made is held (a fixed body) whatever it is to be: what it is to be is kept for when it is let go.
+        let kind = match record.making.as_mut() {
+            Some(making) => {
+                making.kind = kind;
+                BodyKind::Fixed
+            }
+            None => kind,
         };
         // A ship that changes what it is to the solver gets its state from the world: a fixed body has no speed (a ship on a rail has the speed its rail gives it, in the
         // world's data and nowhere else), so a ship taken off its rail (by a ship that came near: nothing was written for it, the rail's pose is the last one the body was
@@ -1817,6 +2148,7 @@ impl Bodies {
         changed_terrain: &BTreeSet<(LevelIndex, BrickCoordinate)>,
         changed_ships: &BTreeSet<(GridId, BrickCoordinate)>,
     ) {
+        self.refresh_stored_bricks(world, changed_terrain, changed_ships);
         let keys: Vec<FrameKey> = self.frames.keys().copied().collect();
         let mut made_this_tick = 0u64;
         for key in keys {
@@ -1824,6 +2156,8 @@ impl Bodies {
             let planets: Vec<GridId> = self.frames[&key].planets.keys().copied().collect();
             // (The terrain of the level stands still in the world, and a frame that goes with a planet does not.)
             let level_ground = self.frames[&key].follow.is_none();
+            // The ships that are being made and need terrain that has no colliders yet, in all the grounds of the frame.
+            let mut unready: BTreeSet<GridId> = BTreeSet::new();
             for ground in level_ground
                 .then_some(Ground::Level)
                 .into_iter()
@@ -1842,7 +2176,12 @@ impl Bodies {
                         .map(|(_, brick)| *brick)
                         .collect(),
                 };
-                let (to_drop, to_make, ahead) = self.bricks_to_change(key, ground, &changed);
+                let TerrainPlan {
+                    to_drop,
+                    to_make,
+                    ahead,
+                    settling,
+                } = self.bricks_to_change(world, key, ground, &changed);
                 if let Ground::Planet(id) = ground {
                     // The wanted bricks that are not made this tick are made by a worker meanwhile, so that they are there when they are, with the bricks
                     // beside them and beside those that are made now (a collider is made looking at the voxels next to its brick).
@@ -1872,40 +2211,44 @@ impl Bodies {
                     }
                 }
                 for brick in to_make {
-                    let level = self.frames.get_mut(&key).expect("the frame exists");
-                    match ground {
-                        Ground::Level => {
-                            made_this_tick += u64::from(!level.terrain.contains(&brick));
-                            let mut source = WorldTerrain {
-                                world,
-                                level: level_index,
-                                block_channel: self.config.block_channel,
-                                state_channel: self.config.state_channel,
-                                orientation_channel: self.config.orientation_channel,
-                                air: self.config.air,
-                                collisions: &mut self.collisions,
-                            };
-                            level.bodies.set_terrain_brick(brick, &mut source);
-                            level.terrain.insert(brick);
+                    made_this_tick +=
+                        u64::from(self.make_ground_brick(world, key, level_index, ground, brick));
+                }
+                // The terrain that the ships being made need: the bricks that cost something to make, a few a tick (those with nothing in them, or all of one block, are made
+                // at once), in order of coordinate.
+                let missing: BTreeSet<BrickCoordinate> = settling
+                    .values()
+                    .flatten()
+                    .copied()
+                    .filter(|brick| !self.has_ground_brick(key, ground, *brick))
+                    .collect();
+                let mut costly_left = SETTLING_TERRAIN_BRICKS_PER_TICK;
+                for brick in missing {
+                    if self.ground_brick_costs(world, level_index, ground, brick) {
+                        if costly_left == 0 {
+                            continue;
                         }
-                        Ground::Planet(id) => {
-                            let Some(planet) = level.planets.get_mut(&id) else {
-                                continue;
-                            };
-                            made_this_tick += u64::from(!planet.bricks.contains(&brick));
-                            let mut source = GeneratedHull {
-                                world,
-                                grid: id,
-                                block_channel: self.config.block_channel,
-                                state_channel: self.config.state_channel,
-                                orientation_channel: self.config.orientation_channel,
-                                air: self.config.air,
-                                collisions: &self.collisions,
-                            };
-                            let _ = level.bodies.set_brick(BodyId(id.get()), brick, &mut source);
-                            planet.bricks.insert(brick);
-                        }
+                        costly_left -= 1;
                     }
+                    made_this_tick +=
+                        u64::from(self.make_ground_brick(world, key, level_index, ground, brick));
+                }
+                for (id, bricks) in &settling {
+                    if !bricks
+                        .iter()
+                        .all(|brick| self.has_ground_brick(key, ground, *brick))
+                    {
+                        unready.insert(*id);
+                    }
+                }
+            }
+            // A ship that is being made, whose bricks are made, is ready to be let go when it needs no more terrain than there is.
+            let frame = self.frames.get_mut(&key).expect("the frame exists");
+            for (id, record) in &mut frame.ships {
+                if let Some(making) = record.making.as_mut()
+                    && making.unmade.is_empty()
+                {
+                    making.terrain_ready = !unready.contains(id);
                 }
             }
         }
@@ -1920,51 +2263,268 @@ impl Bodies {
         report.terrain_bricks_made += made_this_tick;
     }
 
-    /// Which bricks of a ground are to lose their colliders, which are to get them (or get them again, if `changed` has them and they had) this tick, and which are
-    /// wanted and left for a later tick, nearest first.
+    /// Whether a brick of a ground has colliders.
+    fn has_ground_brick(&self, key: FrameKey, ground: Ground, brick: BrickCoordinate) -> bool {
+        let Some(frame) = self.frames.get(&key) else {
+            return false;
+        };
+        match ground {
+            Ground::Level => frame.terrain.contains(&brick),
+            Ground::Planet(id) => frame
+                .planets
+                .get(&id)
+                .is_some_and(|planet| planet.bricks.contains(&brick)),
+        }
+    }
+
+    /// Whether making the colliders of a brick of a ground costs something: it has voxels of more than one kind in it (one that is all air or all one block is made with no
+    /// look at its voxels). The hint is what the making of it asks first.
+    fn ground_brick_costs(
+        &mut self,
+        world: &mut ServerWorld,
+        level_index: LevelIndex,
+        ground: Ground,
+        brick: BrickCoordinate,
+    ) -> bool {
+        use physics::{BrickHint, CollisionSource};
+        let hint = match ground {
+            Ground::Level => WorldTerrain {
+                world,
+                level: level_index,
+                block_channel: self.config.block_channel,
+                state_channel: self.config.state_channel,
+                orientation_channel: self.config.orientation_channel,
+                air: self.config.air,
+                collisions: &mut self.collisions,
+            }
+            .brick_hint(brick),
+            Ground::Planet(id) => GeneratedHull {
+                world,
+                grid: id,
+                block_channel: self.config.block_channel,
+                state_channel: self.config.state_channel,
+                orientation_channel: self.config.orientation_channel,
+                air: self.config.air,
+                collisions: &self.collisions,
+            }
+            .brick_hint(brick),
+        };
+        hint == BrickHint::Unknown
+    }
+
+    /// Gives a brick of a ground its colliders (again, if it had them). Whether it had none.
+    fn make_ground_brick(
+        &mut self,
+        world: &mut ServerWorld,
+        key: FrameKey,
+        level_index: LevelIndex,
+        ground: Ground,
+        brick: BrickCoordinate,
+    ) -> bool {
+        let level = self.frames.get_mut(&key).expect("the frame exists");
+        match ground {
+            Ground::Level => {
+                let new = !level.terrain.contains(&brick);
+                let mut source = WorldTerrain {
+                    world,
+                    level: level_index,
+                    block_channel: self.config.block_channel,
+                    state_channel: self.config.state_channel,
+                    orientation_channel: self.config.orientation_channel,
+                    air: self.config.air,
+                    collisions: &mut self.collisions,
+                };
+                level.bodies.set_terrain_brick(brick, &mut source);
+                level.terrain.insert(brick);
+                new
+            }
+            Ground::Planet(id) => {
+                let Some(planet) = level.planets.get_mut(&id) else {
+                    return false;
+                };
+                let new = !planet.bricks.contains(&brick);
+                let mut source = GeneratedHull {
+                    world,
+                    grid: id,
+                    block_channel: self.config.block_channel,
+                    state_channel: self.config.state_channel,
+                    orientation_channel: self.config.orientation_channel,
+                    air: self.config.air,
+                    collisions: &self.collisions,
+                };
+                let _ = level.bodies.set_brick(BodyId(id.get()), brick, &mut source);
+                planet.bricks.insert(brick);
+                new
+            }
+        }
+    }
+
+    /// Brings what is known of the stored bricks of the levels that have a frame up to date: a level seen for the first time is scanned, and in the others the bricks that
+    /// were edited in this tick are read again; and if the count does not agree with the grid's, the index is made again.
+    fn refresh_stored_bricks(
+        &mut self,
+        world: &ServerWorld,
+        changed_terrain: &BTreeSet<(LevelIndex, BrickCoordinate)>,
+        changed_ships: &BTreeSet<(GridId, BrickCoordinate)>,
+    ) {
+        let planets: BTreeSet<GridId> = self
+            .frames
+            .values()
+            .flat_map(|frame| frame.planets.keys().copied())
+            .collect();
+        self.stored_planet_bricks
+            .retain(|id, _| planets.contains(id));
+        for id in planets {
+            let Some(planet) = world.data().grids().get(id) else {
+                continue;
+            };
+            let grid = &planet.voxels;
+            let stored = self
+                .stored_planet_bricks
+                .entry(id)
+                .or_insert_with(|| StoredBricks::scan(grid));
+            for (_, brick) in changed_ships.iter().filter(|(changed, _)| *changed == id) {
+                stored.set(*brick, grid.brick(*brick).is_some());
+            }
+            if stored.count != grid.brick_count() {
+                *stored = StoredBricks::scan(grid);
+            }
+        }
+        let levels: BTreeSet<LevelIndex> = self.frames.values().map(|frame| frame.level).collect();
+        for level in levels {
+            let Some(data) = world.data().level(level) else {
+                continue;
+            };
+            let grid = &data.overrides;
+            let stored = self
+                .stored_bricks
+                .entry(level)
+                .or_insert_with(|| StoredBricks::scan(grid));
+            for (_, brick) in changed_terrain
+                .iter()
+                .filter(|(changed, _)| *changed == level)
+            {
+                stored.set(*brick, grid.brick(*brick).is_some());
+            }
+            if stored.count != grid.brick_count() {
+                *stored = StoredBricks::scan(grid);
+            }
+        }
+    }
+
+    /// Which bricks of a ground are to lose their colliders, which are to get them (or get them again, if `changed` has them and they had) this tick, which are
+    /// wanted and left for a later tick, nearest first, and which each ship that is being made needs (made a few at a tick, see [`SETTLING_TERRAIN_BRICKS_PER_TICK`]).
+    ///
+    /// A brick of a ground is left out of all of it when it is in a cube that the generator says is air all through and nothing is stored in: a brick of air has no colliders, so it
+    /// is not made, and not kept. For a ship in empty space that is no brick at all, whatever its speed.
     fn bricks_to_change(
         &self,
+        world: &ServerWorld,
         key: FrameKey,
         ground: Ground,
         changed: &BTreeSet<BrickCoordinate>,
-    ) -> (
-        Vec<BrickCoordinate>,
-        Vec<BrickCoordinate>,
-        Vec<BrickCoordinate>,
-    ) {
+    ) -> TerrainPlan {
         let level = &self.frames[&key];
-        // Which bricks of the ground have colliders, and how a body's bounds are seen in its bricks. (A planet's colliders are asked for wherever a ship is
-        // near, and not only in the bricks its generator makes: what is built past them is the planet's too.)
+        // Which bricks of the ground have colliders. (A planet's colliders are asked for wherever a ship is near, and not only in the bricks its generator makes: what is
+        // built past them is the planet's too.)
         let loaded = match ground {
             Ground::Level => &level.terrain,
             Ground::Planet(id) => {
                 let Some(planet) = level.planets.get(&id) else {
-                    return (Vec::new(), Vec::new(), Vec::new());
+                    return TerrainPlan::default();
                 };
                 &planet.bricks
             }
         };
-        let bricks_near = |body: BodyId, margin: f64, way: [f64; 3]| match ground {
-            Ground::Level => {
-                level
-                    .bodies
-                    .bricks_ahead(body, margin, physics::TERRAIN_EVERY_WAY_VOXELS, way)
-            }
-            Ground::Planet(id) => level.bodies.bricks_ahead_in(
-                body,
-                margin,
-                physics::TERRAIN_EVERY_WAY_VOXELS,
-                way,
-                BodyId(id.get()),
+        // The bricks a body will reach, for margins that grow: each is told with the first of the margins that has it (see `physics::visit_bricks_by_first_margin`: the bricks
+        // of a margin are not made, since a ship at 400,000 voxels a second has 8,000 of them, each a tube of a thousand boxes).
+        let visit_bricks_near =
+            |body: BodyId,
+             reach: Reach<'_>,
+             skip: &mut dyn FnMut(BrickCube) -> bool,
+             visit: &mut dyn FnMut(BrickCoordinate, usize)| match ground {
+                Ground::Level => level.bodies.visit_bricks_ahead(body, reach, skip, visit),
+                Ground::Planet(id) => {
+                    level
+                        .bodies
+                        .visit_bricks_ahead_in(body, reach, BodyId(id.get()), skip, visit)
+                }
+            };
+        // A cube of the ground that has no ground in it: for a level, the generator that makes all of it says it is air, and no brick of it is stored; for a planet, the same of the
+        // cubes that are in the bricks its generator makes, and a cube that is outside them is what the layout of its grid has for nothing, which is air if that is (see
+        // `GeneratedHull`).
+        let air_of_the_level = world
+            .data()
+            .level(level.level)
+            .zip(self.stored_bricks.get(&level.level));
+        let air_of_the_planet = match ground {
+            Ground::Level => None,
+            Ground::Planet(id) => (|| {
+                let planet = world.data().grids().get(id)?;
+                let terrain = planet.terrain?;
+                let generator = world
+                    .data()
+                    .main()
+                    .terrain
+                    .generators()
+                    .entry(terrain.generator)?
+                    .content()?
+                    .clone();
+                let nothing_is_air = planet
+                    .voxels
+                    .layout()
+                    .default_value(self.config.block_channel)
+                    == self.config.air;
+                Some((
+                    terrain.extent,
+                    generator,
+                    nothing_is_air,
+                    self.stored_planet_bricks.get(&id)?,
+                ))
+            })(),
+        };
+        let mut skip = |cube: BrickCube| match ground {
+            Ground::Level => air_of_the_level
+                .is_some_and(|(data, stored)| data.terrain.is_air(cube) && !stored.any_in(cube)),
+            Ground::Planet(_) => air_of_the_planet.as_ref().is_some_and(
+                |(extent, generator, nothing_is_air, stored)| {
+                    let last = cube.edge_length() as i128 - 1;
+                    let origin = cube.origin();
+                    let whole = BrickBox::new(
+                        origin,
+                        BrickCoordinate::new(
+                            origin.x().saturating_add(last),
+                            origin.y().saturating_add(last),
+                            origin.z().saturating_add(last),
+                        ),
+                    );
+                    let Some(whole) = whole else {
+                        return false;
+                    };
+                    let is_air = if extent.contains(whole.min()) && extent.contains(whole.max()) {
+                        generator.is_air(cube)
+                    } else {
+                        *nothing_is_air && extent.intersection(whole).is_none()
+                    };
+                    is_air && !stored.any_in(cube)
+                },
             ),
         };
         // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept. A planet is fixed, so the ships
         // that would be held against it need nothing of it.
         let mut needed: BTreeSet<BrickCoordinate> = BTreeSet::new();
+        let mut settling: BTreeMap<GridId, BTreeSet<BrickCoordinate>> = BTreeMap::new();
         let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
         let mut kept: BTreeSet<BrickCoordinate> = BTreeSet::new();
         for (id, record) in &level.ships {
-            if ground != Ground::Level && record.kind == BodyKind::Fixed {
+            // A ship that is being made asks for nothing while its own bricks are made (it is held, and what it needs is where it will be let go from, which is all of it); then it
+            // asks for what it needs as the ship it is to be (a free ship asks for a planet's ground, a held one does not), the terrain it needs made a few bricks at a tick.
+            let (kind, being_made) = match &record.making {
+                Some(making) if making.unmade.is_empty() => (making.kind, true),
+                Some(_) => continue,
+                None => (record.kind, false),
+            };
+            if ground != Ground::Level && kind == BodyKind::Fixed {
                 continue;
             }
             let body = BodyId(id.get());
@@ -1993,33 +2553,59 @@ impl Bodies {
             } else {
                 [0.0; 3]
             };
-            if let Some(bricks) = bricks_near(body, needed_margin, way) {
-                needed.extend(bricks.bricks());
-            }
-            let mut rings = Vec::new();
+            // The margins, the least first: what is needed, then a ring of what is wanted for each 8 voxels more to the lookahead (ring 1 is the first of them), then what is kept.
+            let mut margins = vec![needed_margin];
             let mut margin = needed_margin;
             while margin < lookahead {
                 margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
-                rings.extend(bricks_near(body, margin, way));
+                margins.push(margin);
             }
-            for (brick, ring) in wanted_rings(&rings) {
-                let nearest = wanted.entry(brick).or_insert(ring);
-                *nearest = (*nearest).min(ring);
-            }
-            if let Some(bricks) = bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS, way) {
-                kept.extend(bricks.bricks());
+            let rings = margins.len() - 1;
+            margins.push(lookahead + TERRAIN_KEEP_EXTRA_VOXELS);
+            let mut needed_by_this_ship: BTreeSet<BrickCoordinate> = BTreeSet::new();
+            let reach = Reach {
+                margins: &margins,
+                cap: physics::TERRAIN_EVERY_WAY_VOXELS,
+                direction: way,
+            };
+            let reached = visit_bricks_near(body, reach, &mut skip, &mut |brick, margin| {
+                kept.insert(brick);
+                if margin == 0 {
+                    needed_by_this_ship.insert(brick);
+                }
+                // (What is needed is in the first ring of what is wanted, and what is kept and no more is in none.)
+                if rings > 0 && margin <= rings {
+                    let ring = margin.max(1);
+                    wanted
+                        .entry(brick)
+                        .and_modify(|nearest| *nearest = (*nearest).min(ring))
+                        .or_insert(ring);
+                }
+            });
+            if reached.is_some() {
+                if being_made {
+                    settling.entry(*id).or_default().extend(needed_by_this_ship);
+                } else {
+                    needed.extend(needed_by_this_ship);
+                }
             }
         }
         kept.extend(needed.iter().copied());
+        kept.extend(settling.values().flatten().copied());
         let to_drop: Vec<BrickCoordinate> = loaded
             .iter()
             .copied()
             .filter(|brick| !kept.contains(brick))
             .collect();
-        // Everything needed; of the wanted, the nearest few that are not made yet (ties by coordinate: the map is in order).
+        // Everything needed; of the wanted, the nearest few that are not made yet (ties by coordinate: the map is in order). (What a ship that is being made needs is made on
+        // its own account, so it is not wanted as well.)
         let mut missing_wanted: Vec<(usize, BrickCoordinate)> = wanted
             .iter()
-            .filter(|(brick, _)| !needed.contains(brick) && !loaded.contains(brick))
+            .filter(|(brick, _)| {
+                !needed.contains(brick)
+                    && !loaded.contains(brick)
+                    && !settling.values().any(|bricks| bricks.contains(brick))
+            })
             .map(|(brick, ring)| (*ring, *brick))
             .collect();
         missing_wanted.sort();
@@ -2041,7 +2627,12 @@ impl Bodies {
                     .filter(|brick| loaded.contains(brick)),
             )
             .collect();
-        (to_drop, to_make, ahead)
+        TerrainPlan {
+            to_drop,
+            to_make,
+            ahead,
+            settling,
+        }
     }
 
     /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
@@ -2122,6 +2713,10 @@ impl Bodies {
                 && self.corrected_frames.contains(key)
             {
                 kicked.push(group);
+                continue;
+            }
+            // (A group with a ship in it that is being made is not whole: it is held where it is until the ship is made, and then put at its point.)
+            if frame.ships.values().any(|record| record.making.is_some()) {
                 continue;
             }
             let (mut mass, mut apart, mut speed) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
@@ -2390,12 +2985,15 @@ impl Bodies {
                 .iter()
                 .filter_map(|(id, record)| {
                     let ship = world.data().grids().get(*id)?;
-                    (!ship.frozen && !record.ports.is_empty()).then_some(Bearer {
-                        id: *id,
-                        moves: record.kind != BodyKind::Fixed,
-                        ports: &record.ports,
-                        ship,
-                    })
+                    // (A ship that is being made has the ports of the bricks made so far: it is docked when it is made.)
+                    (!ship.frozen && !record.ports.is_empty() && record.making.is_none()).then_some(
+                        Bearer {
+                            id: *id,
+                            moves: record.kind != BodyKind::Fixed,
+                            ports: &record.ports,
+                            ship,
+                        },
+                    )
                 })
                 .collect();
             bearers.extend(frame.planets.iter().filter_map(|(id, planet)| {
@@ -2471,9 +3069,11 @@ impl Bodies {
         self.frames
             .values()
             .flat_map(|frame| {
+                // (A ship that is being made has none: it is docked when it is made.)
                 let ships = frame
                     .ships
                     .iter()
+                    .filter(|(_, ship)| ship.making.is_none())
                     .map(|(id, ship)| (*id, ship.ports.values().flatten().copied().collect()));
                 let planets = frame
                     .planets
@@ -2914,27 +3514,76 @@ fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool 
         })
 }
 
-/// For each brick of the outermost of `regions`, the number of the first region that holds it, counting from 1. The regions are the bricks a ship's bounds come within a margin of,
-/// for margins that grow, so each holds the one before (a cube, or a cube carried along: `physics::SweptBricks`), and a brick is in the regions from some ring on, which is found by
-/// halving. That makes the work the bricks of the outermost region (a tube round a fast ship that is a few thousand) times a few steps, and not that number for every region.
-fn wanted_rings(regions: &[physics::SweptBricks]) -> BTreeMap<BrickCoordinate, usize> {
-    let Some(outer) = regions.last() else {
-        return BTreeMap::new();
-    };
-    outer
-        .bricks()
-        .map(|brick| {
-            let first = regions.partition_point(|region| !region.contains(brick));
-            (brick, first + 1)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-    use voxel_space::BrickBox;
+
+    fn cube_at(x: i128, y: i128, z: i128, level: u8) -> BrickCube {
+        BrickCube::containing(BrickCoordinate::new(x, y, z), level)
+    }
+
+    #[test]
+    fn stored_bricks_say_whether_any_brick_of_a_cube_is_stored_and_count_those_that_are() {
+        let mut stored = StoredBricks {
+            index: RegionOctree::new(false),
+            count: 0,
+        };
+        let at = |x, y, z| BrickCoordinate::new(x, y, z);
+        assert!(!stored.any_in(cube_at(0, 0, 0, 116)), "nothing at all");
+        stored.set(at(5, 6, 7), true);
+        stored.set(at(5, 6, 7), true);
+        stored.set(at(-40, 2, 9), true);
+        assert_eq!(stored.count, 2, "a brick is counted once");
+        // The cube of 8 bricks that has the first, and the bigger ones that have it, and none that are beside it.
+        assert!(stored.any_in(cube_at(0, 0, 0, 3)));
+        assert!(stored.any_in(cube_at(0, 0, 0, 20)));
+        assert!(stored.any_in(cube_at(0, 0, 0, 116)));
+        assert!(stored.any_in(cube_at(5, 6, 7, 0)));
+        assert!(!stored.any_in(cube_at(6, 6, 7, 0)));
+        assert!(!stored.any_in(cube_at(8, 0, 0, 3)));
+        assert!(!stored.any_in(cube_at(0, 8, 0, 3)));
+        // One that is let go is not stored, and the cube that had only it has none.
+        stored.set(at(5, 6, 7), false);
+        stored.set(at(5, 6, 7), false);
+        assert_eq!(stored.count, 1);
+        assert!(!stored.any_in(cube_at(0, 0, 0, 3)));
+        assert!(stored.any_in(cube_at(-64, 0, 0, 6)));
+    }
+
+    #[test]
+    fn stored_bricks_scanned_from_a_grid_are_those_of_the_grid() {
+        use std::sync::Arc;
+        use voxel_grid::{ChannelDefinition, GridLayout};
+        let layout = Arc::new(
+            GridLayout::new(vec![ChannelDefinition::number(
+                "test:number".parse().unwrap(),
+                0,
+            )])
+            .unwrap(),
+        );
+        let mut grid = Grid::new(layout);
+        let channel = grid
+            .layout()
+            .channel_index(&"test:number".parse().unwrap())
+            .unwrap();
+        for brick in [
+            BrickCoordinate::new(1, 2, 3),
+            BrickCoordinate::new(-9, 0, 40),
+        ] {
+            let voxel = brick.origin();
+            grid.set(channel, voxel, 7);
+        }
+        let stored = StoredBricks::scan(&grid);
+        assert_eq!(stored.count, grid.brick_count());
+        assert_eq!(stored.count, 2);
+        assert!(stored.any_in(cube_at(0, 0, 0, 2)));
+        assert!(stored.any_in(cube_at(-16, 0, 32, 4)));
+        assert!(!stored.any_in(cube_at(16, 0, 0, 4)));
+        assert!(
+            !StoredBricks::scan(&Grid::new(Arc::clone(grid.layout())))
+                .any_in(cube_at(0, 0, 0, 116))
+        );
+    }
 
     #[test]
     fn two_bricks_are_farther_apart_than_a_radius_when_any_axis_is_past_it() {
@@ -3002,6 +3651,7 @@ mod tests {
             mass: 5.0,
             centre_of_mass: [2.5, 0.5, 0.5],
             gravity: [0.0; 3],
+            making: None,
             written: (
                 GridPose::new(
                     WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]),
@@ -3557,143 +4207,6 @@ mod tests {
             )
             .is_some()
         );
-    }
-
-    /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every region: the meaning `wanted_rings` must keep.
-    fn rings_by_going_over_every_region(
-        regions: &[physics::SweptBricks],
-    ) -> BTreeMap<BrickCoordinate, usize> {
-        let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
-        for (index, region) in regions.iter().enumerate() {
-            let ring = index + 1;
-            for brick in region.bricks() {
-                let nearest = wanted.entry(brick).or_insert(ring);
-                *nearest = (*nearest).min(ring);
-            }
-        }
-        wanted
-    }
-
-    fn regions_of_boxes(boxes: &[BrickBox]) -> Vec<physics::SweptBricks> {
-        boxes
-            .iter()
-            .map(|bricks| physics::SweptBricks::of_box(*bricks))
-            .collect()
-    }
-
-    /// Boxes that each hold the one before, as margins that grow make them: a first box anywhere, and each of its six faces moved out by 0 to 3 bricks a ring.
-    fn nested_boxes() -> impl Strategy<Value = Vec<BrickBox>> {
-        let base = (
-            -5i128..5,
-            -5i128..5,
-            -5i128..5,
-            0i128..4,
-            0i128..4,
-            0i128..4,
-        );
-        let growth = proptest::collection::vec(proptest::array::uniform6(0i128..4), 0..9);
-        (base, growth).prop_map(|((x, y, z, width, height, depth), growth)| {
-            let mut low = [x, y, z];
-            let mut high = [x + width, y + height, z + depth];
-            let mut boxes = Vec::new();
-            for step in growth {
-                for axis in 0..3 {
-                    low[axis] -= step[axis];
-                    high[axis] += step[axis + 3];
-                }
-                boxes.push(
-                    BrickBox::new(
-                        BrickCoordinate::new(low[0], low[1], low[2]),
-                        BrickCoordinate::new(high[0], high[1], high[2]),
-                    )
-                    .expect("a box that only grows is a box"),
-                );
-            }
-            boxes
-        })
-    }
-
-    /// Regions that each hold the one before and are made of several boxes, as a margin that grows makes the bricks of a tube (`physics::SweptBricks`): some boxes anywhere that grow by 0
-    /// to 2 bricks every face a ring, and now and then another.
-    fn nested_regions() -> impl Strategy<Value = Vec<physics::SweptBricks>> {
-        let one = (
-            proptest::array::uniform3(-5i128..5),
-            proptest::array::uniform3(0i128..4),
-        );
-        let ring = (
-            proptest::collection::vec(proptest::array::uniform6(0i128..3), 3),
-            proptest::option::of(one.clone()),
-        );
-        (
-            proptest::collection::vec(one, 1..4),
-            proptest::collection::vec(ring, 0..7),
-        )
-            .prop_map(|(base, rings)| {
-                let mut boxes: Vec<([i128; 3], [i128; 3])> = base
-                    .into_iter()
-                    .map(|(low, size)| (low, [0, 1, 2].map(|axis| low[axis] + size[axis])))
-                    .collect();
-                let region_of = |boxes: &[([i128; 3], [i128; 3])]| {
-                    physics::SweptBricks::of_boxes(
-                        boxes
-                            .iter()
-                            .map(|(low, high)| {
-                                BrickBox::new(
-                                    BrickCoordinate::new(low[0], low[1], low[2]),
-                                    BrickCoordinate::new(high[0], high[1], high[2]),
-                                )
-                                .expect("a box that only grows is a box")
-                            })
-                            .collect(),
-                    )
-                };
-                let mut regions = vec![region_of(&boxes)];
-                for (growth, extra) in rings {
-                    for (index, (low, high)) in boxes.iter_mut().enumerate() {
-                        let step = growth[index % growth.len()];
-                        for axis in 0..3 {
-                            low[axis] -= step[axis];
-                            high[axis] += step[axis + 3];
-                        }
-                    }
-                    if let Some((low, size)) = extra {
-                        boxes.push((low, [0, 1, 2].map(|axis| low[axis] + size[axis])));
-                    }
-                    regions.push(region_of(&boxes));
-                }
-                regions
-            })
-    }
-
-    proptest! {
-        #[test]
-        fn a_brick_is_in_the_first_ring_whose_box_holds_it(boxes in nested_boxes()) {
-            let regions = regions_of_boxes(&boxes);
-            prop_assert_eq!(wanted_rings(&regions), rings_by_going_over_every_region(&regions));
-        }
-
-        /// The same for regions of several boxes that overlap, which is what a tube is.
-        #[test]
-        fn a_brick_is_in_the_first_ring_whose_region_holds_it(regions in nested_regions()) {
-            prop_assert_eq!(wanted_rings(&regions), rings_by_going_over_every_region(&regions));
-        }
-    }
-
-    #[test]
-    fn rings_are_numbered_from_one_and_a_brick_is_in_the_nearest_ring_that_has_it() {
-        let at = |x, y, z| BrickCoordinate::new(x, y, z);
-        let boxes = [
-            BrickBox::new(at(0, 0, 0), at(0, 0, 0)).unwrap(),
-            BrickBox::new(at(-1, -1, -1), at(1, 1, 1)).unwrap(),
-            BrickBox::new(at(-2, -1, -1), at(3, 1, 1)).unwrap(),
-        ];
-        let rings = wanted_rings(&regions_of_boxes(&boxes));
-        assert_eq!(rings[&at(0, 0, 0)], 1);
-        assert_eq!(rings[&at(1, 1, 1)], 2);
-        assert_eq!(rings[&at(-2, 0, 0)], 3);
-        assert_eq!(rings[&at(3, 1, 1)], 3);
-        assert_eq!(rings.len(), 6 * 3 * 3);
-        assert!(wanted_rings(&[]).is_empty());
     }
 
     // ---- A frame that moves itself (a group off a rail that is alone) ------------------------------------------------------------------------------------------------------

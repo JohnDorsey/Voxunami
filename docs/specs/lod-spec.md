@@ -123,7 +123,7 @@ with a small cap has very many nodes; the cap is the owner's to set, and a plane
   for the moment between the edit and the message.
 - **Ships**: nothing generates them, so the server sends the nodes (computed exactly from the ship's bricks). Small ships, wholly within full-detail
   range, send nothing new. A ship with a generator is a later case (planets, 3.8).
-- **Never saved**, rebuilt as needed (owner's decision 16).
+- **Never saved**, rebuilt as needed (owner's decision 16), **except the nodes of a ship that no generator makes**: those are kept in a file beside the ship's (`far-nodes-spec.md` section 8, `world_storage::far_nodes`; the owner agreed 2026-11-17).
 
 ### 3.5 Protocol (as built in 38i: no version bump; version 7 is the orientation change in 38a)
 
@@ -169,6 +169,19 @@ game message, so a replay needs nothing else, and a server without the plugin si
   goes with nothing to take its place goes at once. A property test checks that whatever is ready, nothing is ever drawn twice or dropped, and that with everything ready the result is exactly what is wanted.
   `world_view::LodView` runs it: it asks the mesher for the bricks, makes nodes on threads of its own (from the override if there is one, else from the terrain generator of the middle brick of the cube),
   nearest first, and puts at most 64 cubes on the screen in an update. A node whose override changes is made again and replaced where it is.
+- **What keeps the swap from waiting for ever** (2026-11-14, `build-log.md`). A group changes only when every cube that comes in is *ready*, so the view converges only if a cube it wants always becomes ready. Four things hold that,
+  each tested:
+  1. **A brick has one record, and a picture is either missing, being made, waiting, or given out** (`brick_states.rs`: `BrickStates`, one `BrickState` per brick, changed only by its methods; the counts of jobs and loaded bricks are worked out from each change, so they cannot drift).
+     `WorldMesher::hide` takes the picture off the screen, and the picture was the renderer's, so the brick has none until it is made again (a brick that was left "meshed" with no picture anywhere was never made again, and the cubes that wanted it stayed nodes: level 1 nodes
+     among bricks, in the middle of the fine region, for as long as the viewer stayed; it was a set of coordinates that `hide` forgot to change). `WorldMesher::check_consistency` checks what the records cannot make impossible.
+  2. **A worker's panic is the panic of whoever updates the view, and crashes the game** (the owner's choice, 2026-11-16). Generators run on threads nobody watches; a thread that died with its job left the job in flight for ever and the view "busy" with nothing to say why. Both kinds of worker catch a panic and send it back, and
+     `WorldMesher::update` and `LodView::update` raise it again on the caller's thread, as if the work had been done in place.
+  3. **A view that comes to rest without drawing what it wants says so.** *In progress* includes a brick that was loaded as it is (an edited one: no job, and the bricks beside it are whole now and are looked at by the next update): `WorldMesher::is_settled` and so
+     `LodView::is_settled` were true one update too early before, with a wanted brick not ready. `LodView::is_settled` means *nothing is in progress*, not *converged*: the two differ exactly when something is wrong (or when a region has no generator in this program, so that bricks beside it have no
+     neighbour to mesh against). Once, when the view comes to rest, it names the cubes that are wanted, not drawn and not on their way, and why (`stalled`, `take_stall_report`; the shell prints it as a warning).
+  4. **A node has one record, and what is shown is changed in one place** (`cube_states.rs`: `CubeStates`). A node's picture is *missing*, *waiting* (with its version) or *on the screen* (with its version, and whether the renderer holds a mesh), so a picture that is both waiting and
+     on the screen cannot be written, and no separate set says which nodes the renderer holds. *Wanted* and *shown* stay sets (the planner reads them, and so does every caller of `LodView::shown` and `wanted`) and only `CubeStates` changes them. `LodView::check_consistency` checks what the records cannot
+     make impossible, and the bricks' `shown` of the view against the mesher's.
 - The renderer is told by `MeshUpdate::UploadCoarse` and `RemoveCoarse`. A game turns it on with `Session::enable_coarse_detail(CoarseDetail { maximum_distance, unlit, cell_pixels, bytes_per_second })`
   (the windows and screenshots do when `GameDefinition::coarse_detail()` says so, or, since 2026-10-28, for each level as `GameDefinition::level_detail` says: `Session::enable_level_detail`; the default is no), and the fog is then set for the distance drawn (`Session::fog_radius_bricks`).
 
@@ -377,7 +390,10 @@ The first two items of the order of work in 9a, built together because pruning n
 - **What it costs** (one thread, release profile). The pruned walk asks about 6,595 (flat) to 18,811 (caves) cubes to 1,500 voxels and 66,000 to 224,000 to 100 million. A question is 40 to 75 ns for flat ground, 130 to 440 ns for hills and 180 to 650 ns with caves (the
   tight bounds); the whole working out is 0.4 ms (flat), 4 ms (hills) or 10 ms (caves) to 1,500 voxels and 2.7 / 13 / 41 ms to 100 million, against 1 ms and 12 ms for the walk with nothing left out. Asking through `WorldTerrain` cost another 1.1 to 1.3 microseconds a
   question, from an octave walk that looked at all eight children at every level (`RegionOctree::all_in_cube`); it now goes down the one that holds the cube, and costs 0.25 microseconds. And the view keeps the answers of the last two workings out
-  (`MayShowMemo`, forgotten when the terrain's `version` changes), so moving a brick asks only about the cubes that are new.
+  (`MayShowMemo`, forgotten when the terrain's `version` changes), so moving a brick asks only about the cubes that are new. The version counts up only when the generator that makes some
+  region changes (`WorldTerrain::set_assignment` compares what each brick of the cube had, in effect, with what it is given: a region with none is made by the default). It did count up at every
+  assignment (2026-11-20), and a client is told the generator of every cube round the region it watches at every watch, nearly always the default, so a flight that watched somewhere new at each brick
+  forgot the whole memo at each brick: after 444 million voxels of flight the view was worked out from nothing every time, 229 ms of walking the assignments of the way it had come.
 - **Mutation experiments:** about 110 mutants over the new code. The first tests missed: the slope constant a little too small, a bound made from the first cell only on x or z, the cell of a position on a lattice line, cave bounds that forgot the octave a footprint
   drops, the edges of the room round a cube (the low sides, one voxel short), a cube judged at level 0, and the bookkeeping of edits; each got a test. Left alone: a hair of rounding that no sample can show (1), and the server working out its leaves when nothing has
   changed (it only saves time).

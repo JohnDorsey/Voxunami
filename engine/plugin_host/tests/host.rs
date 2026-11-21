@@ -11,7 +11,7 @@ use namespaced_id::NamespacedId;
 use plugin_host::{
     Argument, CASCADE_LIMIT, CommandSpec, EntityDespawned, EntitySpawned, Event, HandlerSpec,
     Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError, SaveScope,
-    SystemSpec, Verdict,
+    ShipParked, SystemSpec, Verdict,
 };
 use protocol::{ClientMessage, EntityId, Message, ServerMessage};
 use server::test_support::log_in;
@@ -1903,4 +1903,92 @@ fn a_rule_asks_where_down_is_for_the_voxels_it_looks_at_and_gets_the_answer_in_t
         lines(&log),
         ["terrain 0.0 -5.0 0.0", "ship 0.0 5.0 0.0", "missing true"]
     );
+}
+
+#[test]
+fn a_ship_put_into_a_file_is_an_event_once_and_the_handler_finds_it_in_its_file() {
+    let log = new_log();
+    let mut rig = build(|_, _| {
+        let log = Arc::clone(&log);
+        vec![plugin("test:p", move |registrar| {
+            let heard = Arc::clone(&log);
+            registrar.on::<ShipParked>(HandlerSpec::new("test:parked"), move |event, context| {
+                let parked = context.world().data().grids().get_parked(event.grid);
+                note(
+                    &heard,
+                    format!(
+                        "parked {} in a file {} in memory {}",
+                        event.grid.get() - GridId::FIRST_ALLOCATED,
+                        parked.is_some(),
+                        context.world().data().grids().get(event.grid).is_some()
+                    ),
+                );
+            });
+            let acting = Arc::clone(&log);
+            registrar.system(
+                SystemSpec::new("test:put_away", Phase::Rules),
+                move |context| {
+                    if context.tick().get() != 1 {
+                        return;
+                    }
+                    let pose = voxel_space::GridPose::identity();
+                    let first = context
+                        .world()
+                        .create_grid(voxel_space::LevelIndex::MAIN, pose)
+                        .unwrap();
+                    let second = context
+                        .world()
+                        .create_grid(voxel_space::LevelIndex::MAIN, pose)
+                        .unwrap();
+                    context.world().park_ship(second, false).unwrap();
+                    context.world().park_ship(first, false).unwrap();
+                    // Put away already: refused, and no event for it.
+                    note(
+                        &acting,
+                        format!("again {}", context.world().park_ship(first, false).is_err()),
+                    );
+                },
+            );
+        })]
+    })
+    .unwrap();
+    rig.server.step();
+    rig.server.step();
+    assert_eq!(
+        lines(&log),
+        [
+            "again true",
+            "parked 1 in a file true in memory false",
+            "parked 0 in a file true in memory false",
+        ]
+    );
+}
+
+#[test]
+fn work_is_pending_while_any_plugin_says_it_has_some() {
+    let game = game();
+    let world = sample_world(&game);
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let also = Arc::clone(&busy);
+    let host = PluginHost::new(
+        vec![
+            plugin("test:idle", |registrar| {
+                registrar.pending_work(|| false);
+            }),
+            plugin("test:busy", move |registrar| {
+                let busy = Arc::clone(&also);
+                registrar.pending_work(move || busy.load(Ordering::SeqCst));
+            }),
+            plugin("test:no_work", |_| {}),
+        ],
+        &world,
+    )
+    .unwrap();
+    assert!(!host.work_pending());
+    busy.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(host.work_pending());
+    busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(!host.work_pending());
+    // And a host with no plugin that says so has none.
+    assert!(!PluginHost::new(Vec::new(), &world).unwrap().work_pending());
 }

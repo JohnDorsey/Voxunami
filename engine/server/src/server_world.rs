@@ -189,6 +189,9 @@ pub struct ServerWorld {
     catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
+    /// The ships each client was told of as far away in the latest tick it was sent updates, for the plugins that send what a far ship is drawn from (see
+    /// [`ServerWorld::far_ships_of`]).
+    far_ships: BTreeMap<ClientId, BTreeSet<GridId>>,
     /// The entity that is each client's own body, if the game says which it is: the ships it is aboard are in the client's picture wherever the client's view is.
     focus: BTreeMap<ClientId, EntityId>,
     /// (Behind a cell so that reading a ship that has terrain needs only a shared borrow of the world: a body meets several grids at once, and the others are
@@ -222,6 +225,8 @@ pub struct ServerWorld {
     ships: Option<ShipStorage>,
     /// The ships that were brought into memory since the rules were told of their voxels (see [`ServerWorld::take_changes`]).
     pub(crate) woken: Vec<GridId>,
+    /// The ships that were put into files since the plugins were told (see [`ServerWorld::take_parked_ships`]).
+    parked: Vec<GridId>,
     /// What the splits, merges, docks and detaches of the tick did, in order, until they are taken (see [`ServerWorld::take_structure_changes`]).
     pub(crate) structure_changes: Vec<StructureChange>,
     ship_settings: ShipSettings,
@@ -280,6 +285,7 @@ impl ServerWorld {
             catalog,
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
+            far_ships: BTreeMap::new(),
             focus: BTreeMap::new(),
             generated: RefCell::new(GeneratedBrickCache::default()),
             generations: Cell::new(0),
@@ -297,6 +303,7 @@ impl ServerWorld {
             level_gravity: BTreeMap::new(),
             ships: None,
             woken: Vec::new(),
+            parked: Vec::new(),
             structure_changes: Vec::new(),
             ship_settings: ShipSettings::default(),
             disconnects: Vec::new(),
@@ -386,7 +393,9 @@ impl ServerWorld {
         self.ships = Some(ShipStorage { format, files });
     }
 
-    pub(crate) fn ship_format(&self) -> Option<&ShipFormat> {
+    /// How ships are written and read, if the world has somewhere to keep them: what numbers its blocks, for whoever writes something about a ship that
+    /// has to hold names.
+    pub fn ship_format(&self) -> Option<&ShipFormat> {
         self.ships.as_ref().map(|ships| &ships.format)
     }
 
@@ -436,7 +445,15 @@ impl ServerWorld {
             &mut *ships.files,
             &ships.format,
         )?;
+        self.parked.push(grid);
         Ok(())
+    }
+
+    /// The ships that were put into files since the last call, in the order they were (a ship put away twice is in it twice). The plugin host tells the plugins of them
+    /// (the `ShipParked` event of the plugin host): a ship that is in a file has nothing in memory, so whatever a plugin keeps of it for the file is written then. Only a ship that
+    /// was put away is in it: one that could not be (the file could not be written) is where it was.
+    pub fn take_parked_ships(&mut self) -> Vec<GridId> {
+        std::mem::take(&mut self.parked)
     }
 
     /// Says which channels to log changes of, in the order they happen. Nothing is logged for any
@@ -619,8 +636,20 @@ impl ServerWorld {
         self.clients.insert(client, key);
     }
 
+    /// The ships a client has been told of as far away, as of the updates the latest tick sent it (the tick before this one, to a system that runs in it): their bricks
+    /// are not sent and never will be while they are far, and what draws them is for a plugin to send. In order of id; none for a client that has joined and has not
+    /// been sent an update yet, or has left.
+    pub fn far_ships_of(&self, client: ClientId) -> impl Iterator<Item = GridId> + '_ {
+        self.far_ships.get(&client).into_iter().flatten().copied()
+    }
+
+    pub(crate) fn set_far_ships(&mut self, client: ClientId, ships: BTreeSet<GridId>) {
+        self.far_ships.insert(client, ships);
+    }
+
     pub(crate) fn remove_client(&mut self, client: ClientId) {
         self.clients.remove(&client);
+        self.far_ships.remove(&client);
         self.focus.remove(&client);
     }
 

@@ -120,14 +120,25 @@ impl GameDefinition for Cave {
         vec![(mini_cosmos_id(), [0.0; 3])]
     }
 
+    /// A ship that is too far for its bricks is told of all the same when it looks four or five pixels long (a quarter of a degree: 0.005 of a radian is four pixels at 1,080 lines
+    /// and a 70 degree view) and drawn from the nodes the server makes of it, whether it is in memory or in its file, and no more than sixteen at a time, the nearest first. The
+    /// size and the number are guesses to be changed by playing (`far-nodes-spec.md`, F5).
+    fn far_ships() -> Option<server::FarShipSettings> {
+        Some(server::FarShipSettings {
+            minimum_apparent_size: 0.005,
+            maximum_ships: 16,
+        })
+    }
+
     /// A planet is drawn out to ten thousand kilometres, from which the one of the first level is a few pixels across, with the light that the bricks of its generator
     /// have (none: the nodes are as bright as the bricks beside them). The terrain of a level is drawn beyond its bricks only in the level of space (`level_detail`).
+    /// The server corrects the nodes of a planet where players build and dig, a million bytes a second to each player (`far-nodes-spec.md`, F2).
     fn grid_detail() -> Option<CoarseDetail> {
         Some(CoarseDetail {
             maximum_distance: 1.0e7,
             unlit: 0,
             cell_pixels: 3.0,
-            bytes_per_second: 0,
+            bytes_per_second: 1_000_000,
         })
     }
 
@@ -138,7 +149,7 @@ impl GameDefinition for Cave {
             maximum_distance: 2.0e27,
             unlit: 0,
             cell_pixels: 3.0,
-            bytes_per_second: 0,
+            bytes_per_second: 1_000_000,
         })
     }
 

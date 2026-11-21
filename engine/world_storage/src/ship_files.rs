@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use voxel_space::GridId;
 
+use crate::far_nodes::{DirectoryFarFiles, FarFiles, MemoryFarFiles};
 use crate::file::write_atomically;
 
 /// What a ship file is called: the ship's number, a dash and the number of the write, then `.voxship` (`4294967296-12.voxship`). The writes
@@ -90,18 +91,26 @@ pub trait ShipFiles: fmt::Debug + Send {
 
     /// The names of the ship files there are, in order. Files of other names are not listed (and are left alone).
     fn names(&self) -> io::Result<Vec<ShipFileName>>;
+
+    /// The far nodes files of the ships, kept where the ship files are (see [`crate::far_nodes`]): they are part of what a world keeps of its ships, so a
+    /// save cleans them with the ship files they were made from.
+    fn far_files_mut(&mut self) -> &mut dyn FarFiles;
 }
 
 /// The files of ships in a folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryShipFiles {
     directory: PathBuf,
+    /// The far nodes files, in the same folder (the extensions differ, and neither listing sees the other's files).
+    far: DirectoryFarFiles,
 }
 
 impl DirectoryShipFiles {
     pub fn new(directory: impl Into<PathBuf>) -> Self {
+        let directory = directory.into();
         Self {
-            directory: directory.into(),
+            far: DirectoryFarFiles::new(&directory),
+            directory,
         }
     }
 
@@ -157,6 +166,10 @@ impl ShipFiles for DirectoryShipFiles {
         names.sort();
         Ok(names)
     }
+
+    fn far_files_mut(&mut self) -> &mut dyn FarFiles {
+        &mut self.far
+    }
 }
 
 /// The files of ships in memory: for a world that is not kept anywhere, and for tests. Clones share the files, so a test can keep one and give
@@ -164,6 +177,7 @@ impl ShipFiles for DirectoryShipFiles {
 #[derive(Clone, Debug, Default)]
 pub struct MemoryShipFiles {
     files: Arc<Mutex<BTreeMap<ShipFileName, Vec<u8>>>>,
+    far: MemoryFarFiles,
 }
 
 impl MemoryShipFiles {
@@ -182,6 +196,7 @@ impl MemoryShipFiles {
     pub fn duplicate(&self) -> Self {
         Self {
             files: Arc::new(Mutex::new(self.files().clone())),
+            far: self.far.duplicate(),
         }
     }
 
@@ -215,6 +230,10 @@ impl ShipFiles for MemoryShipFiles {
 
     fn names(&self) -> io::Result<Vec<ShipFileName>> {
         Ok(self.files().keys().copied().collect())
+    }
+
+    fn far_files_mut(&mut self) -> &mut dyn FarFiles {
+        &mut self.far
     }
 }
 
@@ -352,6 +371,45 @@ mod tests {
             io::ErrorKind::NotFound
         );
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn far_nodes_files_are_kept_beside_ship_files_in_the_same_folder_and_neither_listing_sees_the_other()
+     {
+        use crate::far_nodes::FarFileName;
+
+        let base = scratch_directory();
+        let mut files = DirectoryShipFiles::new(&base);
+        files.write(&name(FIRST, 3), b"ship").unwrap();
+        let far = FarFileName::new(GridId::new(FIRST), 3);
+        files.far_files_mut().write(&far, b"nodes").unwrap();
+        assert_eq!(files.names().unwrap(), [name(FIRST, 3)]);
+        assert_eq!(files.far_files_mut().names().unwrap(), [far]);
+        assert_eq!(files.far_files_mut().read(&far).unwrap(), b"nodes");
+        // Both are in the one folder, side by side.
+        assert!(base.join("4294967296-3.voxship").exists());
+        assert!(base.join("4294967296-3.voxfar").exists());
+        // Another write of the ship file does not disturb them.
+        files.remove(&name(FIRST, 3)).unwrap();
+        assert!(base.join("4294967296-3.voxfar").exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn memory_far_files_are_shared_by_clones_and_not_by_a_duplicate() {
+        use crate::far_nodes::FarFileName;
+
+        let mut files = MemoryShipFiles::new();
+        let mut shared = files.clone();
+        let far = FarFileName::new(GridId::new(FIRST), 1);
+        files.far_files_mut().write(&far, b"one").unwrap();
+        assert_eq!(shared.far_files_mut().read(&far).unwrap(), b"one");
+        // (The count of files is of ship files.)
+        assert!(files.is_empty());
+        let mut duplicate = files.duplicate();
+        duplicate.far_files_mut().remove(&far).unwrap();
+        assert_eq!(files.far_files_mut().names().unwrap(), [far]);
+        assert_eq!(duplicate.far_files_mut().names().unwrap(), []);
     }
 
     #[test]

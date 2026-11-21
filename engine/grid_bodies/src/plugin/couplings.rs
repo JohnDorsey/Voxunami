@@ -171,7 +171,9 @@ impl Bodies {
 
     /// Tells the world which ships are coupled, for whoever keeps ships by how near the players are (`ServerWorld::coupled_ships`): every coupling there is. One that is gone
     /// is forgotten too, unless a ship of it is in a file: its joint went with the ship's body, but the pair is the same, and the group is kept together while it waits (the
-    /// joint is made again when both are in memory and the ends are together, and the pair is let go if they are not).
+    /// joint is made again when both are in memory and the ends are together, and the pair is let go if they are not). **Nor is a pair forgotten while a ship of it is being made**
+    /// (a big ship that has come into memory is coupled when its bricks are made, not before: the group must be kept together meanwhile, or the car that is far from the players
+    /// would be put away in the ticks it takes).
     fn record_couplings(&self, world: &mut ServerWorld) {
         let forgotten: Vec<CouplingKey> = world
             .coupled_ships()
@@ -179,7 +181,15 @@ impl Bodies {
             .filter(|key| !self.couplings.contains_key(key))
             .filter(|(first, second)| {
                 let in_a_file = |id: &GridId| world.data().grids().get_parked(*id).is_some();
-                !in_a_file(first) && !in_a_file(second)
+                let being_made = |id: &GridId| {
+                    self.frames.values().any(|frame| {
+                        frame
+                            .ships
+                            .get(id)
+                            .is_some_and(|record| record.making.is_some())
+                    })
+                };
+                !in_a_file(first) && !in_a_file(second) && !being_made(first) && !being_made(second)
             })
             .copied()
             .collect();
@@ -431,7 +441,9 @@ impl Bodies {
             .iter()
             .filter_map(|(id, record)| {
                 let ship = world.data().grids().get(*id)?;
-                (!ship.frozen && !record.joint_ends.is_empty()).then_some((*id, record, ship))
+                // (A ship that is being made has the joint ends of the bricks made so far: it is coupled when it is made.)
+                (!ship.frozen && !record.joint_ends.is_empty() && record.making.is_none())
+                    .then_some((*id, record, ship))
             })
             .collect();
         for (index, &(first_id, first, first_ship)) in bearers.iter().enumerate() {

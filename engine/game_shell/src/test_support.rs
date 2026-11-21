@@ -321,6 +321,71 @@ impl GameDefinition for ExampleDetailGame {
     }
 }
 
+/// A game that draws the level `test_content:main` beyond its bricks in coarse nodes (a million bytes a second) and every other level in bricks only, as Cave
+/// draws its levels of space and its overworld.
+#[derive(Debug)]
+pub struct ExampleOneCoarseLevelGame;
+
+impl ExampleOneCoarseLevelGame {
+    /// How the coarse level is drawn.
+    pub fn detail() -> crate::definition::CoarseDetail {
+        crate::definition::CoarseDetail {
+            maximum_distance: 700.0,
+            unlit: 0,
+            cell_pixels: 3.0,
+            bytes_per_second: 1_000_000,
+        }
+    }
+}
+
+impl GameDefinition for ExampleOneCoarseLevelGame {
+    type Content = ExampleContent;
+
+    fn id() -> NamespacedId {
+        id("example:one_coarse_level_game")
+    }
+
+    fn title() -> &'static str {
+        ExampleGame::title()
+    }
+
+    fn command() -> &'static str {
+        ExampleGame::command()
+    }
+
+    fn summary() -> &'static str {
+        ExampleGame::summary()
+    }
+
+    fn controls() -> &'static str {
+        ExampleGame::controls()
+    }
+
+    fn default_seed() -> u64 {
+        ExampleGame::default_seed()
+    }
+
+    fn default_camera() -> CameraStart {
+        ExampleGame::default_camera()
+    }
+
+    fn reach() -> f64 {
+        ExampleGame::reach()
+    }
+
+    fn new_content() -> ExampleContent {
+        ExampleGame::new_content()
+    }
+
+    fn plugins(content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
+        ExampleGame::plugins(content)
+    }
+
+    fn level_detail(level: &NamespacedId) -> Option<crate::definition::CoarseDetail> {
+        (*level == world_storage::test_support::main_level_id()).then(Self::detail)
+    }
+}
+
 /// A game whose server fails on its third tick, for the tests of what the shell does when a server dies.
 #[derive(Debug)]
 pub struct ExamplePanickingGame;
@@ -389,5 +454,38 @@ impl GameDefinition for ExamplePanickingGame {
 
     fn plugins(_content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
         vec![Box::new(PanicOnThirdTick)]
+    }
+}
+
+/// A way for a test to run a server that has the coarse plugin so that the nodes are kept after the same number of ticks on every run: the plugin makes its nodes
+/// on a thread, and keeps them in the tick after the one that handed them over.
+#[derive(Clone, Debug, Default)]
+pub struct CoarseWatch(Option<coarse_streaming::CoarseHandle>);
+
+impl CoarseWatch {
+    /// Watching the plugin that `handle` is of (a server without the plugin is watched with `CoarseWatch::default()`).
+    pub fn of(handle: coarse_streaming::CoarseHandle) -> Self {
+        Self(Some(handle))
+    }
+
+    /// One tick of the server, and then the wait (with a deadline) for the thread that makes the nodes to finish what it was given.
+    pub fn step(&self, server: &mut server::Server) {
+        server.step();
+        let Some(handle) = &self.0 else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while handle.worker_is_busy() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the thread that makes the nodes did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Whether no node is waiting to be made, or kept.
+    pub fn is_done(&self) -> bool {
+        self.0.as_ref().is_none_or(|handle| handle.counts().1 == 0)
     }
 }

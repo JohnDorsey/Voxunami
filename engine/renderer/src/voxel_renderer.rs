@@ -15,7 +15,7 @@ use voxel_space::{
 };
 use wgpu::util::DeviceExt;
 
-use crate::block_textures::{BlockTextures, PictureSize};
+use crate::block_textures::{BlockTextures, PictureSize, words_with_relief};
 use crate::camera::{Camera, Frustum};
 use crate::contact_volume::{ContactGpu, WindowUniform, WindowsUniform};
 use crate::crosshair::Crosshair;
@@ -24,7 +24,8 @@ use crate::occupancy_volume::{
     MAXIMUM_WINDOWS, SLOT_BYTES, Volume, VolumeKey, VolumeStatistics, WINDOW_BRICKS, WINDOW_ENTRIES,
 };
 use crate::overlay::{Overlay, OverlayRect};
-use crate::shader_pack::{DEFAULT_LIGHTING, ShaderPack, ShaderPackError};
+use crate::shader_pack::{DEFAULT_LIGHTING, Relief, ShaderPack, ShaderPackError, Shading};
+use crate::shader_settings::{SettingChoices, SettingDeclaration, ShaderSettings};
 use crate::shadow::{
     Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
     sky_half_widths,
@@ -210,6 +211,25 @@ fn shadow_picture_layout(device: &wgpu::Device, frame_size: u64) -> wgpu::BindGr
     })
 }
 
+/// The layout of the bind group that holds the companions of the pictures, an array for each size of each kind: the specular pictures (bindings 0 to 3: emission, for now) and
+/// the normal pictures (bindings 4 to 7: bumps). It is the fourth group, which only the pipelines that draw pictures have in their layout. It is a group of its own, and not more
+/// bindings of the frame's, so that the pipelines that draw no pictures keep the layout they had before there were companions (the integrated AMD card's shadow tests flake
+/// less with it, it was thought: `docs/test-flakes.md`; it is kept as the layout that grows without touching the others).
+fn companion_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..2 * crate::MOST_PICTURE_SIZES as u32)
+        .map(|binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: picture_array_type(),
+            count: None,
+        })
+        .collect();
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("companion layout"),
+        entries: &entries,
+    })
+}
+
 fn picture_array_type() -> wgpu::BindingType {
     wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -380,8 +400,8 @@ pub struct RenderStatistics {
     pub shadow_casters_drawn: usize,
     /// How many cascades of the sky's maps (the terrain seen from straight above, for [`Atmosphere::sky_light_under_cover`]) were drawn again this frame.
     pub sky_cascades_drawn: usize,
-    /// How many windows of voxels that block the sun the faces were traced in this frame (0: the picture was drawn with the shader that has no walk of the sun's ray, which is
-    /// the case while no voxel that blocks the sun was told of, and while there are no shadows).
+    /// How many windows of voxels that block the sun the faces were walked in this frame (0: the picture was drawn with the shader that has no walk of the sun's ray, which is
+    /// the case while no voxel that blocks the sun was told of, and while there are no shadows; the faces are shaded at their corners all the same where some voxel was told of).
     pub traced_windows: usize,
     /// Whether the walk was the one that goes through the eighths of voxels that block the sun in part (some brick has such voxels), which is a shader of its own and slower.
     pub walked_shapes: bool,
@@ -437,7 +457,13 @@ struct FrameUniform {
     /// x: how far from the camera a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn), z: 1 if each pixel of
     /// a picture is wholly in the light or wholly in the shade (`pixelated_place` in `pictures_on.wgsl`), 0 if not.
     pictures: [f32; 4],
+    /// x: how much one level of the shade of the corners of a face darkens it (`SHADE_PER_LEVEL`'s place, [`VoxelRenderer::set_corner_shade`]).
+    shade: [f32; 4],
 }
+
+/// How much a level of the shade of the corners of a face darkens its ambient light, unless [`VoxelRenderer::set_corner_shade`] says another: a fifth, so that the darkest corner
+/// (level 3) keeps two fifths.
+pub const DEFAULT_CORNER_SHADE: f32 = 0.2;
 
 /// A cascade of the shadow map as the shader has it: the matrix from a place relative to the camera to the map, how far from the camera the cascade is looked in,
 /// the width of a texel in voxels, the depth range in voxels and half the width of the map in voxels.
@@ -880,8 +906,14 @@ pub struct VoxelRenderer {
     picture_pipelines: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     pictures_in_use: bool,
     pipeline_layout: wgpu::PipelineLayout,
-    /// Draws the sky (the stars and the sun) over the whole picture, before the terrain.
+    /// The layout of the pipelines made with the shader that draws pictures (without the walk of the sun's ray): the same, and the companion pictures (specular, normal) as the
+    /// fourth group.
+    picture_pipeline_layout: wgpu::PipelineLayout,
+    companion_layout: wgpu::BindGroupLayout,
+    companion_group: wgpu::BindGroup,
+    /// Draws the sky (the stars and the sun) over the whole picture, before the terrain, and its layout (to make it again when a setting changes).
     sky_pipeline: wgpu::RenderPipeline,
+    sky_pipeline_layout: wgpu::PipelineLayout,
     frame_layout: wgpu::BindGroupLayout,
     /// The frame's uniform for the picture, and after it one copy for each cascade of the maps (the sun's, then the sky's), each at a multiple of `frame_stride`.
     frame_buffer: wgpu::Buffer,
@@ -893,6 +925,8 @@ pub struct VoxelRenderer {
     picture_distance: f32,
     /// Whether the shadow of a face is looked up at the middle of the picture's pixel each pixel of the screen is in ([`VoxelRenderer::set_pixelated_shadows`]).
     pixelated_shadows: bool,
+    /// How much one level of the shade of the corners of a face darkens its ambient light ([`VoxelRenderer::set_corner_shade`]).
+    corner_shade: f32,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -919,8 +953,13 @@ pub struct VoxelRenderer {
     skip_faces_looking_away: bool,
     /// Whether the sun's ray is tested against the boxes of the nearest entities (the default).
     entities_in_the_sun_walk: bool,
-    /// The text of the shader pack's `pack_shade` the voxel shaders are made with ([`DEFAULT_LIGHTING`] or a pack's: [`VoxelRenderer::set_shader_pack`]).
-    lighting: String,
+    /// What the voxel shaders are made with besides the engine's text: the lighting of the shader pack ([`DEFAULT_LIGHTING`] or a pack's), how the relief of pictures is drawn
+    /// ([`DEFAULT_RELIEF`] or the pack's) and the values of the settings ([`VoxelRenderer::set_shader_pack_with_settings`]).
+    shading: Shading,
+    /// The choices of settings the shading was made from (what [`VoxelRenderer::set_shader_pack_with_settings`] was last given that it took).
+    shading_choices: SettingChoices,
+    /// What the pack the shading was made for declared of settings: the defaults it set for the engine's, and its own.
+    shading_declared: (SettingChoices, Vec<SettingDeclaration>),
     /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
     sun_shapes: Vec<[u64; 8]>,
     sun_shapes_written: bool,
@@ -977,6 +1016,20 @@ pub(crate) fn srgb_to_linear(value: f32) -> f32 {
 
 fn srgb_to_linear_color(color: [f32; 3]) -> [f32; 3] {
     color.map(srgb_to_linear)
+}
+
+/// The colour raised to the power of one over `lift` (the setting `scene_lift`: the shader's `lifted` takes the same constant, `SCENE_LIFT`), so that the darks are brighter and
+/// black and full brightness stay where they are. The shader lifts what it draws; the colour the picture is cleared to (the sky where the shader does not draw it) is lifted here.
+// A power function; this is client-side cosmetics, not simulation.
+#[allow(clippy::disallowed_methods)]
+fn lifted_color(color: [f32; 3], lift: f32) -> [f32; 3] {
+    color.map(|part| {
+        if part <= 0.0 {
+            0.0
+        } else {
+            part.powf(1.0 / lift)
+        }
+    })
 }
 
 impl VoxelRenderer {
@@ -1061,6 +1114,7 @@ impl VoxelRenderer {
                 },
             ],
         });
+        let companion_layout = companion_layout(&device);
         let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("placement layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1079,8 +1133,20 @@ impl VoxelRenderer {
             bind_group_layouts: &[Some(&frame_layout), Some(&placement_layout)],
             immediate_size: 0,
         });
+        // (The third group is the sun's ray's, which the pipelines with the walk have and these do not: a hole keeps the specular pictures at the number the shader says.)
+        let picture_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("voxel pipeline layout with pictures"),
+                bind_group_layouts: &[
+                    Some(&frame_layout),
+                    Some(&placement_layout),
+                    None,
+                    Some(&companion_layout),
+                ],
+                immediate_size: 0,
+            });
 
-        let shader = voxel_shader(&device, false, SunWalk::None, DEFAULT_LIGHTING);
+        let shader = voxel_shader(&device, false, SunWalk::None, &Shading::engine_default());
         let (pipeline, detailed_pipeline) =
             voxel_pipelines(&device, &pipeline_layout, &shader, color_format);
 
@@ -1089,39 +1155,7 @@ impl VoxelRenderer {
             bind_group_layouts: &[Some(&frame_layout)],
             immediate_size: 0,
         });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sky pipeline"),
-            layout: Some(&sky_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("sky_vertex"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("sky_fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            // (Drawn after the terrain, where the depth is still the clear value: depth is reversed and the sky is at the far plane, 0, so the sky is at depth 0 and the terrain
-            // hides it everywhere it is. It writes no depth.)
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Equal),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let sky_pipeline = sky_pipeline(&device, &sky_layout, &shader, color_format);
 
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let frame_stride = (size_of::<FrameUniform>() as u64).next_multiple_of(alignment);
@@ -1135,6 +1169,7 @@ impl VoxelRenderer {
         let shadow_target = ShadowTarget::new(&device, false);
         let shadow_sampler = comparison_sampler(&device);
         let block_textures = BlockTextures::new(&device, &queue, &[]);
+        let companion_group = Self::companion_group(&device, &companion_layout, &block_textures);
         let frame_bind_group = Self::frame_bind_group(
             &device,
             &frame_layout,
@@ -1205,7 +1240,11 @@ impl VoxelRenderer {
             picture_pipelines: None,
             pictures_in_use: false,
             pipeline_layout,
+            picture_pipeline_layout,
+            companion_layout,
+            companion_group,
             sky_pipeline,
+            sky_pipeline_layout: sky_layout,
             frame_layout,
             frame_buffer,
             frame_stride,
@@ -1213,6 +1252,7 @@ impl VoxelRenderer {
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
             pixelated_shadows: false,
+            corner_shade: DEFAULT_CORNER_SHADE,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1232,7 +1272,9 @@ impl VoxelRenderer {
             contact_debug: ContactDebug::Off,
             skip_faces_looking_away: true,
             entities_in_the_sun_walk: true,
-            lighting: DEFAULT_LIGHTING.to_owned(),
+            shading: Shading::engine_default(),
+            shading_choices: SettingChoices::new(),
+            shading_declared: (SettingChoices::new(), Vec::new()),
             sun_shapes: Vec::new(),
             sun_shapes_written: false,
             bricks: HashMap::new(),
@@ -1328,6 +1370,29 @@ impl VoxelRenderer {
                     resource: wgpu::BindingResource::Sampler(&block_textures.sampler),
                 },
             ],
+        })
+    }
+
+    /// The group of the companion pictures: the specular arrays, one for each size of picture, and then the normal arrays.
+    fn companion_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        block_textures: &BlockTextures,
+    ) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = block_textures
+            .specular_views
+            .iter()
+            .chain(&block_textures.normal_views)
+            .enumerate()
+            .map(|(binding, view)| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            })
+            .collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("companion bind group"),
+            layout,
+            entries: &entries,
         })
     }
 
@@ -1436,7 +1501,9 @@ impl VoxelRenderer {
             colors.len() <= MAXIMUM_GAME_MATERIALS,
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
-        self.palette_buffer = Self::palette_buffer(&self.device, colors, words);
+        // (The shader's words say which pictures have a relief to look past: the one bit the renderer adds, `HAS_RELIEF`.)
+        self.palette_buffer =
+            Self::palette_buffer(&self.device, colors, &words_with_relief(words, sizes));
         self.block_textures = BlockTextures::new(&self.device, &self.queue, sizes);
         self.pictures_in_use = words.iter().any(|&word| word != 0);
         // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
@@ -1446,14 +1513,14 @@ impl VoxelRenderer {
                 &self.device,
                 true,
                 SunWalk::None,
-                &self.lighting,
+                &self.shading,
             ));
         }
         if let Some(shader) = &self.picture_shader {
             if self.pictures_in_use && self.picture_pipelines.is_none() {
                 self.picture_pipelines = Some(voxel_pipelines(
                     &self.device,
-                    &self.pipeline_layout,
+                    &self.picture_pipeline_layout,
                     shader,
                     self.color_format,
                 ));
@@ -1501,6 +1568,19 @@ impl VoxelRenderer {
         self.pixelated_shadows = on;
     }
 
+    /// Chooses how much each level of the shade of the corners of a face (0 to 3, from the voxels beside it: ambient occlusion) cuts the ambient light that reaches it: the share
+    /// of its brightness a face loses at level 1, so that a corner at level 3 keeps one minus three times this. 0 is no shade, and the most is a third (level 3 is black). The
+    /// default is [`DEFAULT_CORNER_SHADE`]. The sun's light is not cut. (Untuned: the default was a guess.)
+    ///
+    /// Panics if it is not from 0 to a third.
+    pub fn set_corner_shade(&mut self, per_level: f32) {
+        assert!(
+            (0.0..=1.0 / 3.0).contains(&per_level),
+            "a level of shade cuts from nothing to a third, not {per_level}"
+        );
+        self.corner_shade = per_level;
+    }
+
     fn remake_frame_bind_group(&mut self) {
         self.frame_bind_group = Self::frame_bind_group(
             &self.device,
@@ -1511,6 +1591,8 @@ impl VoxelRenderer {
             &self.shadow_sampler,
             &self.block_textures,
         );
+        self.companion_group =
+            Self::companion_group(&self.device, &self.companion_layout, &self.block_textures);
         self.shadow_picture_group = Self::shadow_picture_group(
             &self.device,
             &self.shadow_picture_layout,
@@ -1818,24 +1900,65 @@ impl VoxelRenderer {
     /// Draws faces with this shader pack's `pack_shade` from now on, or with the default one for `None` (see [`ShaderPack`]). The engine still works out what is lit and what
     /// is not, and the fog and the sky are still its own. The pack's shaders are made at once, for the kinds the renderer draws with and the heaviest one: if the graphics card
     /// refuses any of them (the checks of [`ShaderPack::new`] are the shader language's, not the card's) this is an error and the renderer draws as it did.
+    ///
+    /// The settings are the engine's own ([`crate::engine_settings`]) at their defaults: [`VoxelRenderer::set_shader_pack_with_settings`] takes the ones a player has chosen.
     pub fn set_shader_pack(&mut self, pack: Option<&ShaderPack>) -> Result<(), ShaderPackError> {
+        self.set_shader_pack_with_settings(pack, &SettingChoices::new())
+    }
+
+    /// As [`VoxelRenderer::set_shader_pack`], with these settings chosen (by name: the rest are their defaults): the shaders are made with their values as constants, and are made
+    /// again when any changes (a pause of a moment). A name that is not a setting, or a value that is not one of its setting, is an error that changes nothing.
+    pub fn set_shader_pack_with_settings(
+        &mut self,
+        pack: Option<&ShaderPack>,
+        choices: &SettingChoices,
+    ) -> Result<(), ShaderPackError> {
         let lighting = pack.map_or(DEFAULT_LIGHTING, ShaderPack::lighting);
-        if lighting == self.lighting {
+        static NO_DEFAULTS: SettingChoices = SettingChoices::new();
+        let (defaults, own) = match pack {
+            Some(pack) => (pack.engine_defaults(), pack.own_settings()),
+            None => (&NO_DEFAULTS, &[][..]),
+        };
+        // (The window asks every frame: what is the same as last time is told apart without making anything.)
+        if lighting == self.shading.lighting
+            && *choices == self.shading_choices
+            && *defaults == self.shading_declared.0
+            && own == self.shading_declared.1.as_slice()
+        {
+            return Ok(());
+        }
+        let settings = ShaderSettings::resolve_for(defaults, own, choices)
+            .map_err(|message| ShaderPackError::bad_settings(&message))?;
+        let shading = Shading {
+            lighting: lighting.to_owned(),
+            settings,
+        };
+        if shading == self.shading {
+            // (Other choices that make the same values, such as a default said in words: nothing to make.)
+            self.shading_choices = choices.clone();
+            self.shading_declared = (defaults.clone(), own.to_vec());
             return Ok(());
         }
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = voxel_shader(&self.device, false, SunWalk::None, lighting);
+        let shader = voxel_shader(&self.device, false, SunWalk::None, &shading);
         let pipelines = voxel_pipelines(
             &self.device,
             &self.pipeline_layout,
             &shader,
             self.color_format,
         );
+        // (The sky is lifted by the setting `scene_lift` too, so its pipeline is made again from the same text.)
+        let sky = sky_pipeline(
+            &self.device,
+            &self.sky_pipeline_layout,
+            &shader,
+            self.color_format,
+        );
         let pictures = self.pictures_in_use.then(|| {
-            let shader = voxel_shader(&self.device, true, SunWalk::None, lighting);
+            let shader = voxel_shader(&self.device, true, SunWalk::None, &shading);
             let pipelines = voxel_pipelines(
                 &self.device,
-                &self.pipeline_layout,
+                &self.picture_pipeline_layout,
                 &shader,
                 self.color_format,
             );
@@ -1843,7 +1966,7 @@ impl VoxelRenderer {
         });
         let mut contact = self.contact.take();
         if let Some(contact) = &mut contact {
-            contact.set_lighting(lighting);
+            contact.set_shading(&shading);
             // (The heaviest kind: if the card takes this one it takes the others, which have less of the engine's code round the same pack.)
             contact.ensure_pipelines(
                 &self.device,
@@ -1859,7 +1982,7 @@ impl VoxelRenderer {
         if let Some(error) = pollster::block_on(scope.pop()) {
             // (The old pack's shaders are made again lazily, from the old text.)
             if let Some(contact) = &mut contact {
-                contact.set_lighting(&self.lighting);
+                contact.set_shading(&self.shading);
             }
             self.contact = contact;
             return Err(ShaderPackError::refused_by_the_graphics_card(
@@ -1867,7 +1990,10 @@ impl VoxelRenderer {
             ));
         }
         self.contact = contact;
-        self.lighting = lighting.to_owned();
+        self.shading = shading;
+        self.shading_choices = choices.clone();
+        self.shading_declared = (defaults.clone(), own.to_vec());
+        self.sky_pipeline = sky;
         (self.pipeline, self.detailed_pipeline) = pipelines;
         match pictures {
             Some((shader, pipelines)) => {
@@ -1952,10 +2078,11 @@ impl VoxelRenderer {
                 return;
             }
             self.contact = Some(ContactGpu::new(
-                &self.lighting,
+                &self.shading,
                 &self.device,
                 &self.frame_layout,
                 &self.placement_layout,
+                &self.companion_layout,
                 self.volume.maximum_slots(),
                 self.volume.maximum_partial_slots(),
             ));
@@ -2534,16 +2661,16 @@ impl VoxelRenderer {
             self.shadow_target = ShadowTarget::new(&self.device, true);
             self.remake_frame_bind_group();
         }
-        // The faces are traced (the shader with the walk of the sun's ray is used) while some window of voxels that block the sun is in view, and there are shadows for the
-        // walk to correct, or its answer is asked for.
+        // The faces are walked (the shader with the walk of the sun's ray is used) while some window of voxels that block the sun is in view, and there are shadows for the
+        // walk to correct, or its answer is asked for. Whenever a window is in view the shader has the voxels, for the shade of the corners of faces (`volume_shade_level`); with no
+        // walk it is the shader that has them and nothing more.
         let traced_windows = volume_frame
             .numbers
             .iter()
             .filter(|&&number| number != 0)
             .count();
-        let tracing = self.contact.is_some()
-            && traced_windows > 0
-            && (shadows.is_some() || self.contact_debug != ContactDebug::Off);
+        let tracing = self.contact.is_some() && traced_windows > 0;
+        let walking = tracing && (shadows.is_some() || self.contact_debug != ContactDebug::Off);
         let with_pictures = self.pictures_in_use && self.picture_distance > 0.0;
         // The walk goes through the eighths of voxels that block the sun in part only while some brick has such voxels: the code for it makes the shader slower even where there
         // are none.
@@ -2557,10 +2684,14 @@ impl VoxelRenderer {
             Vec::new()
         };
         let with_entities = !sun_boxes.is_empty();
-        let walk = SunWalk::Voxels {
-            shapes: with_shapes,
-            other_windows: with_other_windows,
-            entities: with_entities,
+        let walk = if walking {
+            SunWalk::Voxels {
+                shapes: with_shapes,
+                other_windows: with_other_windows,
+                entities: with_entities,
+            }
+        } else {
+            SunWalk::Shade
         };
         if tracing && let Some(contact) = &mut self.contact {
             contact.ensure_pipelines(&self.device, self.color_format, with_pictures, walk);
@@ -2598,10 +2729,10 @@ impl VoxelRenderer {
                 })
                 .count(),
             bricks_culled: pieces - visible.len(),
-            traced_windows: if tracing { traced_windows } else { 0 },
-            walked_shapes: tracing && with_shapes,
-            walked_other_windows: tracing && with_other_windows,
-            walked_entities: tracing && with_entities,
+            traced_windows: if walking { traced_windows } else { 0 },
+            walked_shapes: walking && with_shapes,
+            walked_other_windows: walking && with_other_windows,
+            walked_entities: walking && with_entities,
             quads_drawn: visible
                 .iter()
                 .map(|&index| self.mesh(drawables[index].mesh).quad_total())
@@ -2648,7 +2779,10 @@ impl VoxelRenderer {
             .as_ref()
             .expect("depth target was just created")
             .view;
-        let [red, green, blue] = srgb_to_linear_color(self.atmosphere.sky_color);
+        let [red, green, blue] = lifted_color(
+            srgb_to_linear_color(self.atmosphere.sky_color),
+            self.shading.settings.scene_lift(),
+        );
         let placement_offset =
             |index: usize| (u64::from(slots.get(index)) * self.placement_stride) as u32;
         let mut encoder = self
@@ -2793,6 +2927,9 @@ impl VoxelRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            if with_pictures {
+                pass.set_bind_group(3, &self.companion_group, &[]);
+            }
             // (With no distance, or no picture on any block, the pipelines that read no picture: they are cheaper, by about a tenth of a frame on an integrated GPU. And while
             // nothing is traced, the ones that have no walk of the sun's ray in them.)
             let (whole_pipeline, detailed_pipeline) = match (&self.contact, tracing) {
@@ -3184,6 +3321,7 @@ impl VoxelRenderer {
             } else {
                 [0.0; 4]
             },
+            shade: [self.corner_shade, 0.0, 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3218,13 +3356,17 @@ impl VoxelRenderer {
 }
 
 /// The voxel shader: `voxel.wgsl` and, for what a face looks like where it may have a picture, either `pictures_on.wgsl` (the pictures are read from their textures) or
-/// `pictures_off.wgsl` (they are not, and the shader uses no texture at all); and for the walk of the sun's ray through the voxels that block it, either `contact_on.wgsl` (it is
-/// walked, in the buffers of the third bind group) or `contact_off.wgsl` (it is not, and the shader uses no buffer for it).
+/// `pictures_off.wgsl` (they are not, and the shader uses no texture at all); and for the voxels that block the sun, `volume_table.wgsl` (in the buffers of the third bind group: for
+/// the shade of the corners of faces) with either `contact_on.wgsl` (the sun's ray is walked through them) or `contact_none.wgsl` (it is not), or `contact_off.wgsl` alone (there are
+/// no voxels, and the shader uses no buffer for them).
 /// How much of the walk of the sun's ray the fragment shader has: none, or the walk through voxels that block the sun whole, with, as each is wanted, the walk through the eighths
 /// of those that block it in part, and the walk through the windows of other grids than the face's own. Each is code the shader is slower for, even where it has nothing to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SunWalk {
+    /// The shader has no voxels that block the sun: no walk, and no shade of the corners of a face.
     None,
+    /// The shader has the voxels, for the shade of the corners of a face, and no walk of the sun's ray (there are no shadows to correct).
+    Shade,
     Voxels {
         shapes: bool,
         other_windows: bool,
@@ -3232,22 +3374,60 @@ pub(crate) enum SunWalk {
     },
 }
 
-/// The text of the voxel shader of this kind, with `lighting` (the shader pack's `pack_shade`: [`crate::shader_pack::DEFAULT_LIGHTING`] or a pack's) after all the rest, so that
-/// the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (`voxel_source(.., "")`).
-pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, lighting: &str) -> String {
+/// The text of the voxel shader of this kind, with the shading's lighting (the shader pack's `pack_shade`: [`crate::shader_pack::DEFAULT_LIGHTING`] or a pack's) after all the
+/// rest, so that the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (the source with an empty lighting). The constants of the
+/// settings (`crate::shader_settings`) come right after the engine's own shader, which the rest read them in.
+pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading) -> String {
     let pictures = if with_pictures {
-        include_str!("pictures_on.wgsl")
+        // (Both read the picture where `parallax_shift` says; the one with no prisms says nowhere else than where the face is.)
+        match shading.relief() {
+            Relief::Flat => concat!(
+                include_str!("pictures_on.wgsl"),
+                "\n",
+                include_str!("relief_flat.wgsl")
+            ),
+            Relief::Prisms => concat!(
+                include_str!("pictures_on.wgsl"),
+                "\n",
+                include_str!("relief_ray.wgsl"),
+                "\n",
+                include_str!("relief_prisms.wgsl")
+            ),
+            Relief::ParallaxOcclusion => concat!(
+                include_str!("pictures_on.wgsl"),
+                "\n",
+                include_str!("relief_ray.wgsl"),
+                "\n",
+                include_str!("relief_parallax_occlusion.wgsl")
+            ),
+        }
     } else {
         include_str!("pictures_off.wgsl")
     };
     let (contact, shapes, windows, entities) = match walk {
         SunWalk::None => (include_str!("contact_off.wgsl"), "", "", ""),
+        SunWalk::Shade => (
+            concat!(
+                include_str!("volume_table.wgsl"),
+                "
+",
+                include_str!("contact_none.wgsl")
+            ),
+            "",
+            "",
+            "",
+        ),
         SunWalk::Voxels {
             shapes,
             other_windows,
             entities,
         } => (
-            include_str!("contact_on.wgsl"),
+            concat!(
+                include_str!("volume_table.wgsl"),
+                "
+",
+                include_str!("contact_on.wgsl")
+            ),
             if shapes {
                 include_str!("shapes_on.wgsl")
             } else {
@@ -3267,27 +3447,79 @@ pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, lighting: &str) -
     };
     format!(
         "{}
+{}
 {pictures}
 {contact}
 {shapes}
 {windows}
 {entities}
-{lighting}",
-        include_str!("voxel.wgsl")
+{}",
+        include_str!("voxel.wgsl"),
+        shading.settings.prelude(),
+        shading.lighting
     )
+}
+
+/// The pipeline that draws the sky (the stars and the sun) over the whole picture, before the terrain, from the sky's entry points of `shader`. The shader says the settings the
+/// sky is lifted by, so it is made again with the rest when a setting changes.
+fn sky_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    color_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sky pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("sky_vertex"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("sky_fragment"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        // (Drawn after the terrain, where the depth is still the clear value: depth is reversed and the sky is at the far plane, 0, so the sky is at depth 0 and the terrain
+        // hides it everywhere it is. It writes no depth.)
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Equal),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 pub(crate) fn voxel_shader(
     device: &wgpu::Device,
     with_pictures: bool,
     walk: SunWalk,
-    lighting: &str,
+    shading: &Shading,
 ) -> wgpu::ShaderModule {
     let label = format!(
         "voxel shader{}{}{}{}{}",
-        if with_pictures { " with pictures" } else { "" },
+        match (with_pictures, shading.relief()) {
+            (false, _) => "",
+            (true, Relief::Flat) => " with pictures",
+            (true, Relief::Prisms) => " with pictures and prisms",
+            (true, Relief::ParallaxOcclusion) => " with pictures and parallax occlusion",
+        },
         match walk {
             SunWalk::None => "",
+            SunWalk::Shade => " and the shade of faces",
             SunWalk::Voxels { .. } => " and the sun's ray",
         },
         match walk {
@@ -3308,7 +3540,7 @@ pub(crate) fn voxel_shader(
     );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&label),
-        source: wgpu::ShaderSource::Wgsl(voxel_source(with_pictures, walk, lighting).into()),
+        source: wgpu::ShaderSource::Wgsl(voxel_source(with_pictures, walk, shading).into()),
     })
 }
 
@@ -3883,7 +4115,8 @@ mod tests {
     fn the_walk_of_the_suns_ray_and_the_books_of_the_volume_agree_on_sizes_and_on_what_an_entry_says()
      {
         use crate::occupancy_volume::{ENTRY_EMPTY, ENTRY_FULL, ENTRY_UNKNOWN, FIRST_SLOT_ENTRY};
-        let walk = include_str!("contact_on.wgsl");
+        let walk = include_str!("volume_table.wgsl");
+        let walk_alone = include_str!("contact_on.wgsl");
         for declaration in [
             format!("const WINDOW_BRICKS: u32 = {WINDOW_BRICKS}u;"),
             format!("const ENTRY_UNKNOWN: u32 = {ENTRY_UNKNOWN}u;"),
@@ -3903,13 +4136,14 @@ mod tests {
                 "const PARTIAL_ENTRY_SHIFT: u32 = {}u;",
                 crate::occupancy_volume::PARTIAL_ENTRY_SHIFT
             ),
-            format!(
-                "const CASTER_SLOPE_BIAS: f32 = {:?};",
-                crate::shadow::CASTER_SLOPE_BIAS
-            ),
         ] {
             assert!(walk.contains(&declaration), "{declaration}");
         }
+        let declaration = format!(
+            "const CASTER_SLOPE_BIAS: f32 = {:?};",
+            crate::shadow::CASTER_SLOPE_BIAS
+        );
+        assert!(walk_alone.contains(&declaration), "{declaration}");
         // And the pool's slots are the words the shader reads, four bytes each.
         assert_eq!(SLOT_BYTES, voxel_meshing::OCCUPANCY_WORDS * 4);
     }

@@ -296,3 +296,43 @@ fn a_ship_read_from_its_file_and_changed_is_the_ship_brought_in_and_the_rules_he
             .any(|change| change.voxel == VoxelCoordinate::new(3, 1, 2))
     );
 }
+
+#[test]
+fn a_ship_put_away_is_recorded_once_in_the_order_it_was_and_a_ship_that_could_not_be_put_away_is_not_recorded_and_the_far_files_are_those_of_the_ship_files()
+ {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = sample_world(&game);
+    let (one, two) = (game.sample_ship(&world, 0), game.sample_ship(&world, 100));
+    let (first, second) = (world.grids_mut().create(one), world.grids_mut().create(two));
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seeing = Arc::clone(&seen);
+    let logic = ScriptedLogic::new().on_tick(move |tick, world: &mut ServerWorld| {
+        if tick.get() == 1 {
+            // The second first, and a ship that is not in memory (the first one put away, again) is refused and says nothing.
+            world.park_ship(second, false).unwrap();
+            world.park_ship(first, false).unwrap();
+            assert!(world.park_ship(first, false).is_err());
+            seeing.lock().unwrap().push(world.take_parked_ships());
+            seeing.lock().unwrap().push(world.take_parked_ships());
+            // The far nodes files are kept where the ship files are: the ones written here are in the files the server was given.
+            let far = world_storage::far_nodes::FarFileName::new(first, 0);
+            world
+                .ship_files_mut()
+                .unwrap()
+                .far_files_mut()
+                .write(&far, b"nodes")
+                .unwrap();
+        }
+    });
+    let files = MemoryShipFiles::new();
+    let mut server = server_for(&game, world, &files, logic);
+    server.step();
+
+    assert_eq!(*seen.lock().unwrap(), [vec![second, first], vec![]]);
+    let mut shared = files.clone();
+    assert_eq!(
+        shared.far_files_mut().names().unwrap(),
+        [world_storage::far_nodes::FarFileName::new(first, 0)]
+    );
+}

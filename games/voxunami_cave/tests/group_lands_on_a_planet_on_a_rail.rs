@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::chains::chain_over;
+use common::chains::{chain_over, pivot_gap};
 use common::moving_planet::{
     WANDERER, orbit_of_the_home_planet, reporting_scene_with, wanderer_pack,
 };
@@ -56,13 +56,6 @@ fn a_chain_that_comes_down_on_a_planet_that_goes_round_and_spins_has_its_own_fra
             ship_voxels(scene, WANDERER),
         )
     };
-    let spacing = |scene: &common::Scene| {
-        length(minus(
-            from_the_middle(scene, cars[2]),
-            from_the_middle(scene, cars[0]),
-        ))
-    };
-    let spacing_at_the_start = spacing(&scene);
     let mut had_its_own_frame_on_the_way = false;
     let mut heights = Vec::new();
     for _ in 0..700 {
@@ -93,9 +86,14 @@ fn a_chain_that_comes_down_on_a_planet_that_goes_round_and_spins_has_its_own_fra
         (at_the_end - a_second_before).abs() < 0.5,
         "the chain went from {a_second_before} to {at_the_end} voxels over the ground in the last second: it does not rest"
     );
-    let held_together = spacing(&scene);
+    // The joints held: the east pivot of each car is with the west pivot of the next. (This used to be how far the last car was from the first, 13 voxels when it was made: that is
+    // how straight the chain lies after it has landed, and a landing on hills is not the same twice. Measured 2026-11-21 after main was merged in: from a start one voxel from
+    // 1,200 the chain ended 12.0, 9.8, 9.2 voxels long and, from 1,210, 13.1, with the pivots together to 3e-6 voxels in every one of nine starts between 1,198 and 1,300.)
+    let gap =
+        pivot_gap(&scene, (cars[0], 7.0), cars[1]).max(pivot_gap(&scene, (cars[1], 6.0), cars[2]));
     assert!(
-        (held_together - spacing_at_the_start).abs() < 1.0,
-        "the first and the last car were {spacing_at_the_start} voxels apart and are {held_together}: the joints did not hold"
+        gap < 1e-3,
+        "the pivots of the cars are {gap} voxels apart: the joints did not hold"
     );
+    assert_eq!(report().couplings, 2, "the chain is coupled still");
 }

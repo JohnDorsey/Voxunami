@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{FLOOR, Scene, flat_floor, heavy_planet, make_ship, pose_at, ship_id as id};
+use common::{
+    FLOOR, Scene, flat_floor, heavy_planet, make_ship, pose_at, put_stone, ship_id as id,
+};
 use server::GridView;
 use voxel_space::{
     BrickCoordinate, GravitySettings, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
@@ -669,10 +671,16 @@ fn a_ship_that_falls_faster_than_the_floor_is_thick_stops_on_it() {
 
 #[test]
 fn the_terrain_a_ship_only_wants_gets_colliders_one_brick_a_tick_and_all_of_it_in_the_end() {
-    // A raft of 30 by 30 held in the sky (every brick there is empty and cheap, so only the counts matter). The bricks its bounds reach within two
-    // voxels are needed and are all made in the first tick (4: it is over two bricks in each direction); the rest of the 8 voxels around it (9
-    // bricks in all) is only wanted, and comes one a tick, nearest first.
+    // A raft of 30 by 30 held in the sky, in bricks that each have one block of stone in them far over the raft, so that they are cheap and every one of them has ground (a brick of
+    // air, in a cube that the generator says is air with nothing built in it, is given no colliders at all, whatever the speed: see the next test; it was the bricks of air that made
+    // these counts until 2026-11-20, so that only the counts mattered). The bricks its bounds reach within two voxels are needed and are all made in the first tick (4: it is over
+    // two bricks in each direction); the rest of the 8 voxels around it (9 bricks in all) is only wanted, and comes one a tick, nearest first.
     let (mut scene, report) = Scene::reporting();
+    for x in [-16, 16, 48] {
+        for z in [-16, 16, 48] {
+            put_stone(&mut scene, [x, 215, z]);
+        }
+    }
     make_ship(
         &mut scene,
         pose_at(2.0, 200.0, 2.0),
@@ -688,6 +696,26 @@ fn the_terrain_a_ship_only_wants_gets_colliders_one_brick_a_tick_and_all_of_it_i
     assert_eq!(per_tick, [5, 1, 1, 1, 1, 0, 0, 0, 0], "{per_tick:?}");
     assert_eq!(report().terrain_bricks_made, 9);
     assert_eq!(report().terrain_bricks_made_most_in_a_tick, 5);
+}
+
+#[test]
+fn a_raft_held_in_a_sky_with_nothing_in_it_is_given_no_colliders_of_terrain_at_all() {
+    // The same raft with nothing built in the bricks round it: they are air all through by the generator's bounds, so no brick is needed, wanted or kept.
+    let (mut scene, report) = Scene::reporting();
+    make_ship(
+        &mut scene,
+        pose_at(2.0, 200.0, 2.0),
+        true,
+        [30, 1, 30],
+        |_| true,
+    );
+    let mut per_tick = vec![report().terrain_bricks_made_last_tick];
+    for _ in 0..8 {
+        scene.ticks(1);
+        per_tick.push(report().terrain_bricks_made_last_tick);
+    }
+    assert_eq!(per_tick, [0; 9], "{per_tick:?}");
+    assert_eq!(report().terrain_bricks_made, 0);
 }
 
 #[test]

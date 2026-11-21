@@ -2912,12 +2912,18 @@ fn aboard_at(ship: GridId, brick_x: i128, offset_x: f64) -> EntityPose {
 fn herd_ship_harness(
     act: impl FnMut(Tick, &mut server::ServerWorld) + Send + 'static,
 ) -> (Harness, TestClient) {
+    herd_ship_harness_with(ServerConfig::new(game_id()), act)
+}
+
+fn herd_ship_harness_with(
+    config: ServerConfig,
+    act: impl FnMut(Tick, &mut server::ServerWorld) + Send + 'static,
+) -> (Harness, TestClient) {
     let game = Game::new(&ALL_PLUGINS);
     let logic = ScriptedLogic::new()
         .with_entity_catalog(cow_catalog())
         .on_tick(act);
-    let mut harness =
-        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut harness = Harness::with_logic(&game, game.new_world(), config, logic);
     let mut client = harness.connect();
     harness.log_in(&mut [&mut client]);
     client.received();
@@ -2993,6 +2999,111 @@ fn a_client_is_told_of_the_entities_aboard_the_ships_it_holds_after_the_ship_and
         unreachable!()
     };
     assert_eq!(states[1].pose, aboard_at(a_ship_id(0), 0, 3.0));
+}
+
+#[test]
+fn a_ship_that_is_far_is_told_of_without_bricks_or_those_aboard_and_with_both_when_the_client_comes_near()
+ {
+    let mut config = ServerConfig::new(game_id());
+    config.far_ships = Some(server::FarShipSettings {
+        minimum_apparent_size: 0.005,
+        maximum_ships: 4,
+    });
+    let (mut harness, mut client) = herd_ship_harness_with(config, |tick, world| {
+        if tick.get() == 3 {
+            // A ship of one brick, 1,280 voxels from where the client watches: 0.025 of a radian.
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+            world
+                .spawn_entity(
+                    &id("test:cow"),
+                    aboard_at(ship, 0, 3.0),
+                    ComponentBag::new(),
+                )
+                .unwrap();
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    let told: Vec<&ServerMessage> = messages
+        .iter()
+        .filter(|message| {
+            matches!(
+                message,
+                ServerMessage::GridsSpawned(_)
+                    | ServerMessage::GridsDespawned(_)
+                    | ServerMessage::BrickContents { .. }
+                    | ServerMessage::EntitiesSpawned(_)
+            ) && !matches!(message, ServerMessage::BrickContents { grid, .. } if *grid == GridId::MAIN)
+        })
+        .collect();
+    let [ServerMessage::GridsSpawned(spawned)] = &told[..] else {
+        panic!("only the ship is told of, with no brick and nobody aboard: {told:?}");
+    };
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(spawned[0].id, a_ship_id(0));
+    assert!(matches!(
+        spawned[0].content,
+        protocol::GridContent::Far { bounds } if bounds == BrickBox::around(BrickCoordinate::ORIGIN, 0)
+    ));
+
+    // The client goes to the ship: it is taken back, told of with its brick, and the cow aboard comes with it.
+    client.watch(BrickCoordinate::new(40, 0, 0), 2);
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    let kinds: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::GridsDespawned(_) => Some("ship taken back"),
+            ServerMessage::GridsSpawned(_) => Some("ship"),
+            ServerMessage::BrickContents { grid, .. } if *grid != GridId::MAIN => Some("brick"),
+            ServerMessage::EntitiesSpawned(_) => Some("entities"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kinds, ["ship taken back", "ship", "brick", "entities"]);
+}
+
+#[test]
+fn the_plugins_can_ask_which_ships_a_client_was_told_of_as_far_away_and_they_are_no_longer_so_when_it_goes_near()
+ {
+    let mut config = ServerConfig::new(game_id());
+    config.far_ships = Some(server::FarShipSettings {
+        minimum_apparent_size: 0.005,
+        maximum_ships: 4,
+    });
+    // What a system sees at the start of each tick, for the first client.
+    let seen: Arc<Mutex<Vec<Vec<GridId>>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    let (mut harness, mut client) = herd_ship_harness_with(config, move |tick, world| {
+        if tick.get() == 3 {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+        }
+        // (The ticks while the client was logging in have none.)
+        let ships = world
+            .clients()
+            .next()
+            .map(|first| world.far_ships_of(first).collect())
+            .unwrap_or_default();
+        record.lock().unwrap().push(ships);
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    for _ in 0..4 {
+        harness.server.step();
+    }
+    // Told of in the tick after the ship was made, seen by the tick after that.
+    assert_eq!(seen.lock().unwrap().last().unwrap(), &[a_ship_id(0)]);
+    assert!(seen.lock().unwrap().iter().any(Vec::is_empty));
+    // Near: not far.
+    client.watch(BrickCoordinate::new(40, 0, 0), 2);
+    for _ in 0..3 {
+        harness.server.step();
+    }
+    assert!(seen.lock().unwrap().last().unwrap().is_empty());
 }
 
 #[test]

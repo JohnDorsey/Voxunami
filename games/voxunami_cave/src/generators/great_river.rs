@@ -580,6 +580,11 @@ impl TerrainGenerator for GreatRiversGenerator {
         let near = self.rivers.field.near_cube(cube);
         terrain::cube_may_show(&near, cube)
     }
+
+    fn is_air(&self, cube: BrickCube) -> bool {
+        let near = self.rivers.field.near_cube(cube);
+        terrain::cube_is_air(&near, cube)
+    }
 }
 
 #[cfg(test)]
@@ -1161,6 +1166,75 @@ mod tests {
             let cube = BrickCube::containing(brick, level);
             assert!(generator.may_show(cube), "level {level}");
         }
+    }
+
+    #[test]
+    fn a_cube_far_from_every_river_is_air_one_in_the_water_or_on_its_surface_is_not_and_the_bricks_of_a_cube_of_air_are_air()
+     {
+        let (generator, fixture) = generator(2024);
+        let widest = generator.rivers().widest_knot();
+        let deep = BrickCube::containing(voxel(widest.position).split().0, 70);
+        assert!(!generator.is_air(deep), "water");
+        let nowhere = BrickCube::containing(BrickCoordinate::new(0, 0, 0), 60);
+        assert!(generator.is_air(nowhere));
+        let (inside, _) = surface_beside(generator.rivers().field(), &widest).unwrap();
+        let brick = voxel(inside).split().0;
+        for level in (10..=78).step_by(4) {
+            assert!(
+                !generator.is_air(BrickCube::containing(brick, level)),
+                "level {level}"
+            );
+        }
+        // At the narrowest part, where the cubes are small enough to make the bricks of: those that say they are air have air in every brick, and some do and some do not.
+        let narrow = generator.rivers().narrowest_knot();
+        let (inside, _) = surface_beside(generator.rivers().field(), &narrow).unwrap();
+        let middle = voxel(inside).split().0;
+        let (mut air, mut other) = (0, 0);
+        for level in 0..=3u8 {
+            let width = 1i128 << level;
+            for dx in -6..=6 {
+                for dy in -6..=6 {
+                    for dz in -6..=6 {
+                        let cube = BrickCube::containing(
+                            BrickCoordinate::new(
+                                middle.x() + dx * width,
+                                middle.y() + dy * width,
+                                middle.z() + dz * width,
+                            ),
+                            level,
+                        );
+                        if !generator.is_air(cube) {
+                            other += 1;
+                            continue;
+                        }
+                        air += 1;
+                        let origin = cube.origin();
+                        for brick in voxel_space::BrickBox::new(
+                            origin,
+                            BrickCoordinate::new(
+                                origin.x() + width - 1,
+                                origin.y() + width - 1,
+                                origin.z() + width - 1,
+                            ),
+                        )
+                        .unwrap()
+                        .bricks()
+                        {
+                            let made = generator.generate_brick(&fixture.layout, brick);
+                            assert_eq!(
+                                made.channel(fixture.material).uniform_value(),
+                                Some(AIR),
+                                "{cube:?} is air and {brick:?} is not"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            air > 100 && other > 100,
+            "{air} cubes of air and {other} others"
+        );
     }
 
     #[test]

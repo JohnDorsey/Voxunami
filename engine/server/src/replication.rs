@@ -100,7 +100,8 @@ pub(crate) fn entity_messages(
     let mut wanted: Vec<EntityId> = watched
         .map(|(level, region)| world.entities().in_bricks(GridId::root(level), region))
         .unwrap_or_default();
-    for ship in ships.keys() {
+    // (A ship that is far has no bricks to stand in, and whether an entity of it is to be seen from afar is for its kind to say, which is not built: none is told of.)
+    for (ship, _) in ships.iter().filter(|(_, known)| !known.far) {
         wanted.extend(world.entities().in_grid(*ship));
     }
     let mut now: KnownEntities = BTreeMap::new();

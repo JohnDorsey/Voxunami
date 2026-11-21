@@ -485,7 +485,7 @@ impl Plugin for MovementPlugin {
             move |event, _| {
                 let mut movement = locked(&bodies);
                 for voxel in &event.voxels {
-                    movement.brick_changed(event.grid, voxel.split().0);
+                    movement.voxel_changed(event.grid, *voxel);
                 }
             },
         );

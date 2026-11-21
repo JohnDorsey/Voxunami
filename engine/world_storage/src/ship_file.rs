@@ -22,7 +22,7 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use protocol::{read_brick_coordinate, read_grid_pose, write_brick_coordinate, write_grid_pose};
 use terrain::GeneratorId;
-use voxel_grid::{Brick, ChannelValueKind, Grid, GridLayout};
+use voxel_grid::{Brick, ChannelIndex, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridPose};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
@@ -527,6 +527,32 @@ impl ShipFormat {
 
     pub fn layout(&self) -> &Arc<GridLayout> {
         &self.layout
+    }
+
+    /// What the entry numbered `number` is called in the registry that the content channel `channel` uses (a block, for the block channel), as this world
+    /// numbers them. `None` for a number the registry has no entry for, and for a channel that does not hold content.
+    pub fn content_identifier(&self, channel: ChannelIndex, number: u32) -> Option<NamespacedId> {
+        let registry = self.content_registry(channel)?;
+        self.tables
+            .get(registry)?
+            .get(usize::try_from(number).ok()?)
+            .cloned()
+    }
+
+    /// The number this world gives the entry called `identifier` in the registry that the content channel `channel` uses: the inverse of
+    /// [`ShipFormat::content_identifier`].
+    pub fn content_number(&self, channel: ChannelIndex, identifier: &NamespacedId) -> Option<u32> {
+        let registry = self.content_registry(channel)?;
+        self.numbers
+            .get(&(registry.clone(), identifier.clone()))
+            .copied()
+    }
+
+    fn content_registry(&self, channel: ChannelIndex) -> Option<&NamespacedId> {
+        match &self.layout.channels().get(channel.get())?.value_kind {
+            ChannelValueKind::Content { registry } => Some(registry),
+            ChannelValueKind::Number => None,
+        }
     }
 
     /// The file of a ship that is in the level called `level`. Its bytes are the same for the same ship, whatever the order things were

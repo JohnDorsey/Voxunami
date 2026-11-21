@@ -85,6 +85,47 @@ fn extent_around_the_origin(radius: u32) -> BrickBox {
 }
 
 #[test]
+fn a_planet_mesher_is_not_settled_while_the_brick_beside_a_stored_brick_it_has_just_loaded_is_still_to_be_meshed()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 6);
+    let mut voxels = no_edits(&scene);
+    // Just outside the view of radius 3, so that loading it starts no job, and beside a brick that is inside it and is nearer, so that this is looked at first.
+    let stored = brick(4, 0, 0);
+    let layout = Arc::clone(voxels.layout());
+    voxels
+        .insert_brick(stored, Arc::new(voxel_grid::Brick::new(&layout)))
+        .unwrap();
+    let source = ShipTerrainSource::new(
+        &voxels,
+        Some(generator_of(&scene)),
+        extent_around_the_origin(8),
+    );
+    let mut mesher = planet_mesher(&scene, 3);
+    let mut live = HashMap::new();
+    apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
+    let beside = brick(3, 0, 0);
+    assert!(live.contains_key(&beside));
+
+    // It arrives again, as it does when the server sends it: the brick is loaded as it is, and the one beside it has to be meshed again.
+    mesher.brick_changed(stored);
+    let mut updates = Vec::new();
+    loop {
+        updates.extend(mesher.update(&source, at(0, 0, 0)));
+        if mesher.is_settled() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(200));
+    }
+    apply(&mut live, updates);
+    let more = mesher.settle(&source, at(0, 0, 0));
+    assert!(
+        more.is_empty(),
+        "settled, and then there was more to put on the screen: {more:?}"
+    );
+}
+
+#[test]
 fn a_planet_is_meshed_exactly_as_the_terrain_of_a_level_with_the_same_ground() {
     let mut scene = scene();
     scene.assign_around(brick(0, 0, 0), 6);

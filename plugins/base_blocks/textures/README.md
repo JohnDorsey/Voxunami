@@ -7,6 +7,7 @@ Blocks that exist today (ids are `base_blocks:<name>`): stone, dirt, grass, lamp
 How the game uses them is decided in `docs/specs/block-textures-spec.md`: the files are `name_top.png`, `name_side.png`, `name_bottom.png` or `name.png`
 (a block names `name` in its file, and which faces differ follows from the files that exist), 16 by 16 here but any power of two from 8 to 256. Grass, dirt, stone,
 still water, leaves and glass (their clear pixels are holes), the log (`log_top`, `log_side`), and the dev docking port (`_top`, `_side`, `_bottom`) are used by blocks and embedded in the program; the others are not yet.
+Companions (`dirt_n`, `lamp_s`, `leaves_s`: `block-textures-spec.md` section 4.4) are made by scripts here: `make_dirt_normals.py` and `make_placeholder_specular.py` (placeholders drawn from the pictures: the lamp's glow and the leaves' scatter, until there is art).
 The editor below is for making them: the game reads the loose PNG files and ignores `atlas.json`.
 
 ## VirtualAtlas.py

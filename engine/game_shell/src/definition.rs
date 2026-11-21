@@ -189,6 +189,13 @@ pub trait GameDefinition: Sized + 'static {
         None
     }
 
+    /// Whether the server tells a player of the ships that are too far for their bricks but look big enough to see, which are then drawn from nodes (`server::FarShipSettings`,
+    /// `docs/specs/far-nodes-spec.md`). A game that says draws them only if it also draws terrain in coarse detail ([`GameDefinition::coarse_detail`]) and its server has the plugin that
+    /// sends the nodes. The default is not at all.
+    fn far_ships() -> Option<server::FarShipSettings> {
+        None
+    }
+
     /// How far the terrain of the level with this identifier is drawn, if beyond the bricks round the camera it is: what a window follows as the player goes from level to
     /// level (`Session::enable_level_detail`). The default is [`GameDefinition::coarse_detail`] for every level, so a game that says only that is drawn as it was.
     fn level_detail(level: &NamespacedId) -> Option<CoarseDetail> {
@@ -203,8 +210,8 @@ pub trait GameDefinition: Sized + 'static {
         None
     }
 
-    /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (The server corrects the
-    /// nodes of a level where it was edited and the nodes of a planet it does not, so `bytes_per_second` means nothing here.)
+    /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (`bytes_per_second` is how fast the server may tell the player of its
+    /// corrections to the nodes of planets where they were edited, if the game has the plugin that makes them; 0 asks for none.)
     fn grid_detail() -> Option<CoarseDetail> {
         None
     }

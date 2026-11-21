@@ -17,6 +17,10 @@
 
 use std::fmt;
 
+use crate::shader_settings::{
+    OWN_PREFIX, SettingChoices, SettingDeclaration, SettingValue, ShaderSettings, constants_of,
+    engine_settings, engine_settings_with,
+};
 use crate::voxel_renderer::{SunWalk, voxel_source};
 
 /// Which version of the interface a pack is written for: the fields of `Surface` and what `pack_shade` is given and returns. A pack's `pack.json` names it, and a version of the
@@ -29,6 +33,68 @@ pub(crate) const DEFAULT_LIGHTING: &str = include_str!("lighting_default.wgsl");
 /// The text of the default pack's lighting file: how the engine draws with no pack, and a place to start a pack from.
 pub fn default_lighting() -> &'static str {
     DEFAULT_LIGHTING
+}
+
+/// How the relief of a block's picture is drawn: the height in the alpha of its normal picture (LabPBR `_n`). Each is a different shader, so that one that is not wanted is not in
+/// the shader at all and costs nothing (`relief_off.wgsl`, `relief_prisms.wgsl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Relief {
+    /// The face is flat: the picture is read where the eye's ray meets the face. (The relief still shades the sun's light on the picture, which needs no other shader.)
+    Flat,
+    /// Each pixel of the picture is a square column as deep as its height says, and the eye's ray is walked through the columns: a flat top is the picture's colours, a side wall
+    /// is lit as the sun says and darker the deeper it is (`docs/specs/block-textures-spec.md`, "Prisms" under "As built").
+    Prisms,
+    /// Parallax occlusion mapping, the usual smooth parallax: the heights are a smooth surface (the four pixels round a place mixed as a bilinear filter would), the eye's ray is
+    /// marched down through it in equal steps and the picture is read where the ray meets it. Nothing is a wall and the normal picture's tilts still light what is seen, so it is
+    /// the lumpy look: right for mud and stone, and not for pixel art (`docs/history/parallax-spike.md`).
+    ParallaxOcclusion,
+}
+
+/// The relief a pack that does not say is drawn with, and the default pack: the default of the engine setting `relief`. Prisms are on while they are tested (owner, 2026-11-14);
+/// whether they stay the default is open.
+pub const DEFAULT_RELIEF: Relief = Relief::Prisms;
+
+impl Relief {
+    /// Every relief, in the order of the words of the setting `relief`.
+    /// (The place of a word is its constant in the shaders, `RELIEF_PRISMS` being 1: a new relief goes last.)
+    pub const ALL: [Relief; 3] = [Relief::Flat, Relief::Prisms, Relief::ParallaxOcclusion];
+
+    /// The word of the setting `relief` for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Relief::Flat => "flat",
+            Relief::Prisms => "prisms",
+            Relief::ParallaxOcclusion => "parallax_occlusion",
+        }
+    }
+
+    /// The relief a word of the setting `relief` names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|relief| relief.name() == name)
+    }
+}
+
+/// What the voxel shaders are made of besides the engine's own text: the pack's lighting (`pack_shade`) and the values of the settings (among them how the relief of pictures is
+/// drawn, [`Shading::relief`]). Equal shadings make the same shaders.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Shading {
+    pub lighting: String,
+    pub settings: ShaderSettings,
+}
+
+impl Shading {
+    /// How the engine draws with no pack: the default lighting and settings.
+    pub(crate) fn engine_default() -> Self {
+        Self {
+            lighting: DEFAULT_LIGHTING.to_owned(),
+            settings: ShaderSettings::defaults(),
+        }
+    }
+
+    /// How the relief of pictures is drawn: each is a different shader.
+    pub(crate) fn relief(&self) -> Relief {
+        self.settings.relief()
+    }
 }
 
 /// A place in a pack's file that is wrong, and what is wrong with it.
@@ -70,6 +136,11 @@ impl ShaderPackError {
         }
     }
 
+    /// The settings chosen for a pack are not its settings.
+    pub(crate) fn bad_settings(message: &str) -> Self {
+        Self::one(format!("shader settings: {message}"))
+    }
+
     /// The graphics card refused a shader of the pack that the shader language accepted.
     pub(crate) fn refused_by_the_graphics_card(message: &str) -> Self {
         Self::one(format!(
@@ -78,23 +149,114 @@ impl ShaderPackError {
     }
 }
 
-/// A pack: its id and name, and the text of its `pack_shade`, checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A pack: its id and name, the text of its `pack_shade`, checked, the settings it declares and the defaults it sets for the engine's (among them how it draws the relief of
+/// pictures, if it says).
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShaderPack {
     id: String,
     name: String,
     lighting: String,
+    own_settings: Vec<SettingDeclaration>,
+    engine_defaults: SettingChoices,
 }
 
 impl ShaderPack {
-    /// A pack with this id and name and the text of its lighting file; an error says everything that is wrong with the text.
+    /// A pack with this id and name and the text of its lighting file; an error says everything that is wrong with the text. It draws the relief as the engine does
+    /// ([`DEFAULT_RELIEF`]) until [`ShaderPack::with_relief`] says otherwise.
     pub fn new(id: &str, name: &str, lighting: &str) -> Result<Self, ShaderPackError> {
-        check_lighting(lighting)?;
+        Self::new_with_settings(id, name, lighting, Vec::new())
+    }
+
+    /// A pack with settings of its own, which its lighting reads as constants: the setting `steps` is `SETTING_STEPS` (a float, a whole number or a switch, as it is declared). A name
+    /// that an engine setting has, or another setting of the pack, is an error; so is anything wrong with the text, which is checked with the constants before it.
+    pub fn new_with_settings(
+        id: &str,
+        name: &str,
+        lighting: &str,
+        settings: Vec<SettingDeclaration>,
+    ) -> Result<Self, ShaderPackError> {
+        let engine = engine_settings();
+        for (index, setting) in settings.iter().enumerate() {
+            let taken = engine
+                .iter()
+                .any(|declaration| declaration.name() == setting.name())
+                || settings[..index]
+                    .iter()
+                    .any(|earlier| earlier.name() == setting.name());
+            if taken {
+                return Err(ShaderPackError::one(format!(
+                    "the setting {} is the name of an engine setting or of another of the pack's: rename it",
+                    setting.name()
+                )));
+            }
+        }
+        // (The constants of a choice's words are made of its name: `quality` with the word `high` and a setting `quality_high` would be the same constant.)
+        let mut constants: Vec<String> = engine
+            .iter()
+            .flat_map(|declaration| constants_of("", declaration))
+            .collect();
+        for setting in &settings {
+            for constant in constants_of(OWN_PREFIX, setting) {
+                if constants.contains(&constant) {
+                    return Err(ShaderPackError::one(format!(
+                        "the setting {} makes the constant {constant}, which another setting (or a word of a choice) makes too: rename one",
+                        setting.name()
+                    )));
+                }
+                constants.push(constant);
+            }
+        }
+        check_lighting_with(lighting, &settings)?;
         Ok(Self {
             id: id.to_owned(),
             name: name.to_owned(),
             lighting: lighting.to_owned(),
+            own_settings: settings,
+            engine_defaults: SettingChoices::new(),
         })
+    }
+
+    /// The same pack setting these defaults for engine settings (`"engine_settings"` in `pack.json`), by name. An error says which name is not an engine setting or which value is
+    /// not one of its setting.
+    pub fn with_engine_defaults(mut self, defaults: SettingChoices) -> Result<Self, String> {
+        engine_settings_with(&defaults)?;
+        self.engine_defaults = defaults;
+        Ok(self)
+    }
+
+    /// The settings the pack declares itself.
+    pub fn own_settings(&self) -> &[SettingDeclaration] {
+        &self.own_settings
+    }
+
+    /// The defaults the pack sets for engine settings.
+    pub fn engine_defaults(&self) -> &SettingChoices {
+        &self.engine_defaults
+    }
+
+    /// Every setting that is in play when the pack is: the engine's with the defaults the pack sets, then the pack's own.
+    pub fn settings(&self) -> Vec<SettingDeclaration> {
+        let mut settings = engine_settings_with(&self.engine_defaults)
+            .expect("the defaults were checked when they were set");
+        settings.extend(self.own_settings.iter().cloned());
+        settings
+    }
+
+    /// The same pack drawing the relief of pictures this way unless the player chooses another: the default of the engine setting `relief`.
+    pub fn with_relief(mut self, relief: Relief) -> Self {
+        self.engine_defaults.insert(
+            "relief".to_owned(),
+            SettingValue::Choice(relief.name().to_owned()),
+        );
+        self
+    }
+
+    /// How the pack asked for the relief of pictures to be drawn; `None` for the engine's own choice ([`DEFAULT_RELIEF`]).
+    pub fn relief(&self) -> Option<Relief> {
+        match self.engine_defaults.get("relief") {
+            Some(SettingValue::Choice(word)) => Relief::from_name(word),
+            _ => None,
+        }
     }
 
     pub fn id(&self) -> &str {
@@ -244,8 +406,29 @@ fn lexical_problems(text: &str) -> Vec<ShaderPackProblem> {
 }
 
 /// What the shader language says of the engine's shader of one kind with this text of the pack after it, as problems with the lines of the pack's text.
-fn language_problem(with_pictures: bool, walk: SunWalk, text: &str) -> Option<ShaderPackProblem> {
-    let before = voxel_source(with_pictures, walk, "");
+fn language_problem(
+    with_pictures: bool,
+    relief: Relief,
+    walk: SunWalk,
+    own_settings: &[SettingDeclaration],
+    text: &str,
+) -> Option<ShaderPackProblem> {
+    let before = voxel_source(
+        with_pictures,
+        walk,
+        &Shading {
+            lighting: String::new(),
+            settings: ShaderSettings::resolve_for(
+                &SettingChoices::new(),
+                own_settings,
+                &SettingChoices::from([(
+                    "relief".to_owned(),
+                    SettingValue::Choice(relief.name().to_owned()),
+                )]),
+            )
+            .expect("defaults and the words of the relief are in their ranges"),
+        },
+    );
     let source = format!("{before}{text}");
     let first_line_of_the_pack = before.matches('\n').count() as u32 + 1;
     let module = match naga::front::wgsl::parse_str(&source) {
@@ -306,9 +489,19 @@ fn problem_at(
     }
 }
 
-/// Checks the text of a pack's lighting: the words it may not use, and that the engine's shader of the plainest kind and of the heaviest, with the text after it, is accepted by
-/// the shader language. (The pack's text sees only the `Surface` and the frame's uniform, which every kind has, so the kinds between are as these.)
+/// Checks the text of a pack's lighting: the words it may not use, and that the engine's shader of the plainest kind and of the heaviest (with each relief), with the text after it,
+/// is accepted by the shader language. (The pack's text sees only the `Surface` and the frame's uniform, which every kind has, so the kinds between are as these; the names the
+/// pack may not define are those of the heaviest, and of each relief, which has names of its own.)
+#[cfg(test)]
 pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
+    check_lighting_with(text, &[])
+}
+
+/// [`check_lighting`] for a pack that declares these settings, whose constants are before its text.
+pub(crate) fn check_lighting_with(
+    text: &str,
+    own_settings: &[SettingDeclaration],
+) -> Result<(), ShaderPackError> {
     let problems = lexical_problems(text);
     if !problems.is_empty() {
         return Err(ShaderPackError { problems });
@@ -318,8 +511,14 @@ pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
         other_windows: true,
         entities: true,
     };
-    for (with_pictures, walk) in [(false, SunWalk::None), (true, heaviest)] {
-        if let Some(problem) = language_problem(with_pictures, walk, text) {
+    for (with_pictures, relief, walk) in [
+        (false, Relief::Flat, SunWalk::None),
+        (true, Relief::Flat, heaviest),
+        (true, Relief::Prisms, heaviest),
+        (true, Relief::ParallaxOcclusion, heaviest),
+    ] {
+        // (Each relief, whatever the player chooses of it: a setting's value is a constant of the same text of the pack.)
+        if let Some(problem) = language_problem(with_pictures, relief, walk, own_settings, text) {
             return Err(ShaderPackError {
                 problems: vec![problem],
             });
@@ -328,5 +527,7 @@ pub(crate) fn check_lighting(text: &str) -> Result<(), ShaderPackError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod pack_settings_tests;
 #[cfg(test)]
 mod tests;

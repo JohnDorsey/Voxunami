@@ -419,6 +419,7 @@ dependencies = [
 name = "coarse_cells"
 version = "0.0.0"
 dependencies = [
+ "binary_codec",
  "libm",
  "proptest",
  "region_octree",
@@ -440,6 +441,7 @@ dependencies = [
  "protocol",
  "region_octree",
  "server",
+ "terrain",
  "transport",
  "voxel_grid",
  "voxel_meshing",
@@ -970,6 +972,7 @@ dependencies = [
  "binary_codec",
  "block_models",
  "client",
+ "coarse_cells",
  "coarse_streaming",
  "content_registry",
  "ctrlc",
@@ -1161,7 +1164,7 @@ dependencies = [
  "namespaced_id",
  "physics",
  "plugin_host",
- "proptest",
+ "region_octree",
  "server",
  "thiserror 2.0.21",
  "voxel_grid",
@@ -2251,6 +2254,7 @@ dependencies = [
  "libm",
  "proptest",
  "rapier3d-f64",
+ "region_octree",
  "thiserror 2.0.21",
  "voxel_space",
 ]
@@ -3437,6 +3441,7 @@ dependencies = [
  "block_models",
  "client",
  "coarse_cells",
+ "coarse_streaming",
  "content_registry",
  "data_packs",
  "entities",
@@ -4208,6 +4213,7 @@ name = "world_storage"
 version = "0.0.0"
 dependencies = [
  "binary_codec",
+ "coarse_cells",
  "content_registry",
  "crc32fast",
  "entities",

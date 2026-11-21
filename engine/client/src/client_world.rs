@@ -65,6 +65,8 @@ pub struct GridSummary {
     pub bricks: u64,
     /// What generates the rest of its bricks, if anything does: the generator by its identifier, and the box of bricks.
     pub terrain: Option<(NamespacedId, BrickBox)>,
+    /// For a ship told of as far away: the box of bricks it occupies.
+    pub far: Option<BrickBox>,
 }
 
 /// Everything that identifies a client's view, for comparing two views (a live client and a replay
@@ -215,6 +217,7 @@ impl ClientWorld {
                     level: grid.level,
                     pose: grid.pose,
                     bricks: grid.voxels.content_digest(),
+                    far: grid.far,
                     terrain: grid.terrain.map(|terrain| {
                         (
                             self.world
@@ -379,6 +382,9 @@ impl ClientWorld {
                     None => {
                         // The ship is looked for first: contents for one the client was not told of are that mistake, whatever they hold.
                         let ship = self.grids.get_mut(grid)?;
+                        if ship.far.is_some() {
+                            return Err(ClientError::BrickOfAFarGrid(grid));
+                        }
                         ship.insert_brick(brick, self.translator.translate_brick(contents)?);
                     }
                 }

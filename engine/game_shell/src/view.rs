@@ -1,5 +1,7 @@
 //! Glue between a session and the renderer.
 
+use std::collections::BTreeMap;
+
 use block_models::BlockTable;
 use data_packs::Tile;
 use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, ShaderPack, VoxelRenderer};
@@ -11,6 +13,7 @@ use crate::definition::GameDefinition;
 use crate::options::ViewOptions;
 use crate::package_data::PackageData;
 use crate::session::Session;
+use crate::shader_pack_settings::SettingsFiles;
 
 /// Palette (with the pictures of the blocks that have them) and fog suited to the view distance: the world fades into the sky just before it ends.
 pub fn configure_renderer(
@@ -29,17 +32,25 @@ pub fn configure_renderer(
     renderer.set_sun_shapes(&block_table.shape_cells());
 }
 
-/// Reads the shader packs the player has (the game data folder's, and the folder `--shader-packs` names), tells the session of them and of the one `--shader-pack` chose, and
-/// returns them for [`apply_shader_pack`]. A pack that is no good is a warning on the error stream and the others are kept; a folder asked for that cannot be read, and a pack
-/// asked for that is not there, are errors.
+/// The shader packs the player has, and where what they chose of the settings of each is kept.
+#[derive(Debug)]
+pub struct ShaderPacks {
+    /// For [`apply_shader_pack`].
+    pub packs: Vec<ShaderPack>,
+    /// The files of what the player chose of the settings (`crate::shader_pack_settings`): [`SettingsFiles::save_changes`] writes what changed.
+    pub files: SettingsFiles,
+}
+
+/// Reads the shader packs the player has (the game data folder's, and the folder `--shader-packs` names) and what they chose of the settings of each (a file next to each pack's
+/// folder, and `default.settings.json` for the game's own shader), tells the session of them and of the one `--shader-pack` chose, and returns them for [`apply_shader_pack`]. A
+/// pack that is no good, and a choice that is no good, are a warning on the error stream and the others are kept; a folder asked for that cannot be read, and a pack asked for
+/// that is not there, are errors.
 pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
     view: &ViewOptions,
     session: &mut Session<C, G>,
-) -> Result<Vec<ShaderPack>, String> {
-    let shelf = crate::shader_packs::shelf_of(
-        crate::shader_packs::default_directory().as_deref(),
-        view.shader_packs.as_deref(),
-    )?;
+) -> Result<ShaderPacks, String> {
+    let directory = crate::shader_packs::default_directory();
+    let shelf = crate::shader_packs::shelf_of(directory.as_deref(), view.shader_packs.as_deref())?;
     for problem in &shelf.problems {
         eprintln!("warning: shader pack: {problem}");
     }
@@ -52,8 +63,30 @@ pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
         ),
         None => None,
     };
-    session.offer_shader_packs(names, chosen);
-    Ok(shelf.packs)
+    // The game's own shader has the engine's settings; a pack's are the engine's with its defaults and then its own.
+    let mut declared = BTreeMap::from([(None, renderer::engine_settings())]);
+    declared.extend(
+        names
+            .iter()
+            .map(|name| (Some(name.id.clone()), name.settings.clone())),
+    );
+    let mut files: BTreeMap<_, _> = shelf
+        .settings_files
+        .iter()
+        .map(|(id, file)| (Some(id.clone()), file.clone()))
+        .collect();
+    if let Some(file) = crate::shader_packs::own_settings_file(directory.as_deref()) {
+        files.insert(None, file);
+    }
+    let (files, choices, warnings) = SettingsFiles::load(files, &declared);
+    for warning in &warnings {
+        eprintln!("warning: shader settings: {warning}");
+    }
+    session.offer_shader_packs(names, chosen, choices);
+    Ok(ShaderPacks {
+        packs: shelf.packs,
+        files,
+    })
 }
 
 /// Gives the renderer the shader pack the player's settings choose (or the game's own): at once if it is the one the renderer has. An error says the graphics card refused it,
@@ -67,12 +100,14 @@ pub fn apply_shader_pack(
         .shader_pack
         .as_ref()
         .and_then(|id| packs.iter().find(|pack| pack.id() == id));
-    renderer.set_shader_pack(wanted).map_err(|error| {
-        format!(
-            "the shader pack {} is refused:\n{error}",
-            wanted.map_or("", ShaderPack::name)
-        )
-    })
+    renderer
+        .set_shader_pack_with_settings(wanted, &settings.chosen_settings())
+        .map_err(|error| {
+            format!(
+                "the shader pack {} with the settings chosen is refused (the game's own shader and settings are used again):\n{error}",
+                wanted.map_or("", ShaderPack::name)
+            )
+        })
 }
 
 /// The pictures of a game's blocks as the renderer takes them: a size at a time, smallest first, which is the order the table's picture words count the sizes in.
@@ -84,7 +119,17 @@ pub fn picture_sizes(tile_classes: &[Vec<Tile>]) -> Vec<PictureSize<'_>> {
                 .first()
                 .expect("a size of picture has pictures (a package is read with at least one)")
                 .size(),
-            tiles: tiles.iter().map(Tile::rgba).collect(),
+            tiles: tiles.iter().map(|tile| tile.rgba()).collect(),
+            specular: if tiles.iter().any(|tile| tile.specular().is_some()) {
+                tiles.iter().map(|tile| tile.specular()).collect()
+            } else {
+                Vec::new()
+            },
+            normal: if tiles.iter().any(|tile| tile.normal().is_some()) {
+                tiles.iter().map(|tile| tile.normal()).collect()
+            } else {
+                Vec::new()
+            },
         })
         .collect()
 }
@@ -304,6 +349,54 @@ mod tests {
         assert_eq!(sizes[0].tiles[1], classes[0][1].rgba());
         assert_eq!(sizes[2].tiles[0], classes[2][0].rgba());
         assert!(picture_sizes(&[]).is_empty());
+        assert!(
+            sizes.iter().all(|size| size.specular.is_empty()),
+            "no companions, none handed on"
+        );
+    }
+
+    #[test]
+    fn the_specular_pictures_of_a_package_go_with_their_pictures_and_a_picture_without_one_has_none()
+     {
+        let plain = |size: u32, byte: u8| {
+            Tile::from_rgba(size, vec![byte; size as usize * size as usize * 4])
+        };
+        let shining = plain(8, 2).with_specular(vec![7; 8 * 8 * 4]);
+        let classes = vec![vec![plain(8, 1), shining], vec![plain(16, 3)]];
+        let sizes = picture_sizes(&classes);
+        assert_eq!(
+            sizes[0].specular.len(),
+            2,
+            "one for each picture of the size"
+        );
+        assert_eq!(sizes[0].specular[0], None);
+        assert_eq!(sizes[0].specular[1], Some(&[7u8; 8 * 8 * 4][..]));
+        assert!(
+            sizes[1].specular.is_empty(),
+            "a size none of whose pictures has one hands on none"
+        );
+    }
+
+    #[test]
+    fn the_normal_pictures_of_a_package_go_with_their_pictures_beside_the_specular_ones() {
+        let plain = |size: u32, byte: u8| {
+            Tile::from_rgba(size, vec![byte; size as usize * size as usize * 4])
+        };
+        let bumpy = plain(8, 2).with_normal(vec![9; 8 * 8 * 4]);
+        let both = plain(16, 3)
+            .with_specular(vec![4; 16 * 16 * 4])
+            .with_normal(vec![5; 16 * 16 * 4]);
+        let classes = vec![vec![plain(8, 1), bumpy], vec![both]];
+        let sizes = picture_sizes(&classes);
+        assert_eq!(sizes[0].normal.len(), 2, "one for each picture of the size");
+        assert_eq!(sizes[0].normal[0], None);
+        assert_eq!(sizes[0].normal[1], Some(&[9u8; 8 * 8 * 4][..]));
+        assert!(
+            sizes[0].specular.is_empty(),
+            "a size with normal pictures only has no specular ones"
+        );
+        assert_eq!(sizes[1].normal[0], Some(&[5u8; 16 * 16 * 4][..]));
+        assert_eq!(sizes[1].specular[0], Some(&[4u8; 16 * 16 * 4][..]));
     }
 
     #[test]

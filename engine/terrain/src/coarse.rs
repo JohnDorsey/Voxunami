@@ -48,6 +48,21 @@ pub fn cube_may_show(field: &dyn DensityField, cube: BrickCube) -> bool {
     field.bounds_through_finer(&around, detail).lower() <= 0.0
 }
 
+/// Whether every voxel of every brick of a cube is air in a field: the bounds of the field over the cube, at full detail, are nowhere above the surface. The same
+/// bounds say that a brick is all air when it is generated (`FieldTerrainGenerator::generate_brick`), so a brick of a cube that is air here is made all air, whatever
+/// the sampling would say; and `false` when unsure, as for a cube that does not fit in the world.
+pub fn cube_is_air(field: &dyn DensityField, cube: BrickCube) -> bool {
+    let edge = (cube.edge_length() * BRICK_EDGE_LENGTH as u128) as i128;
+    let origin = cube.origin().origin();
+    let Some(region) = origin
+        .checked_offset(edge - 1, edge - 1, edge - 1)
+        .and_then(|high| VoxelBox::new(origin, high))
+    else {
+        return false;
+    };
+    field.bounds(&region, LevelOfDetail::FULL_DETAIL).upper() <= 0.0
+}
+
 /// The coarse node of a cube of bricks of a field, or `None` for detail level 0 (a node of level 0 is a brick, and a brick is generated).
 pub fn coarse_node_of_field(
     field: &dyn DensityField,
@@ -870,6 +885,87 @@ mod tests {
                 cube_at([BRICK_COORDINATE_MINIMUM; 3], 116),
                 UNLIT
             )
+        );
+    }
+
+    #[test]
+    fn what_a_cube_that_is_air_holds_nothing_but_air_in_every_brick_at_every_level() {
+        use crate::generator::TerrainGenerator;
+        use crate::test_support::{RollingHillsSettings, rolling_hills};
+        use voxel_grid::test_support::StandardTestLayout;
+        let fixture = StandardTestLayout::default();
+        let is_air_brick = |generator: &dyn TerrainGenerator, brick: BrickCoordinate| {
+            generator
+                .generate_brick(&fixture.layout, brick)
+                .channel(fixture.material)
+                .uniform_value()
+                == Some(AIR)
+        };
+        let (mut said_air, mut not_said_air) = (0, 0);
+        let (mut air_bricks, mut air_bricks_said) = (0, 0);
+        for caves in [false, true] {
+            let settings = RollingHillsSettings {
+                cave_half_thickness: if caves { 0.08 } else { 0.0 },
+                ..RollingHillsSettings::for_one_metre_voxels(2024)
+            };
+            let generator = rolling_hills(settings, fixture.material, materials());
+            for level in 0..=3u8 {
+                let width = 1i128 << level;
+                // Cubes from well under the surface (near 64 voxels, hills 100 either way) to well over it, in 9 by 9 columns. Only the cubes that say they are air have their
+                // bricks made, which is cheap (a brick of air is made without sampling), so a cube that says it is air and has ground in it is found wherever the surface is.
+                for x in 0..9 {
+                    for z in 0..9 {
+                        for y in -12..14 {
+                            let cube = cube_at([x * width * 3, y * width, z * width * 5], level);
+                            if !generator.is_air(cube) {
+                                not_said_air += 1;
+                                continue;
+                            }
+                            said_air += 1;
+                            let edge = cube.edge_length() as i128;
+                            let origin = cube.origin();
+                            for bx in 0..edge {
+                                for by in 0..edge {
+                                    for bz in 0..edge {
+                                        let brick = BrickCoordinate::new(
+                                            origin.x() + bx,
+                                            origin.y() + by,
+                                            origin.z() + bz,
+                                        );
+                                        assert!(
+                                            is_air_brick(&generator, brick),
+                                            "{cube:?} is air and {brick:?} is not"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // How much of the air it says: of the bricks that are air (a few columns of them, as making the bricks of ground costs), most are said to be. It says air only
+                // when sure, so one that is not said is no mistake; the bounds are tight enough to say it of nearly all of them.
+                if level == 0 {
+                    for x in 0..3 {
+                        for z in 0..3 {
+                            for y in -12..14 {
+                                let cube = cube_at([x * 2, y, z * 2], 0);
+                                if is_air_brick(&generator, cube.origin()) {
+                                    air_bricks += 1;
+                                    air_bricks_said += usize::from(generator.is_air(cube));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            said_air > 1000 && not_said_air > 1000,
+            "{said_air} cubes of air and {not_said_air} others"
+        );
+        assert!(
+            air_bricks > 100 && air_bricks_said * 10 >= air_bricks * 9,
+            "{air_bricks_said} of {air_bricks} bricks of air were said to be"
         );
     }
 

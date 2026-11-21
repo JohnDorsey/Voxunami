@@ -5,6 +5,17 @@
 @group(0) @binding(6) var pictures_2: texture_2d_array<f32>;
 @group(0) @binding(7) var pictures_3: texture_2d_array<f32>;
 @group(0) @binding(8) var picture_sampler: sampler;
+// The specular pictures that go with them (LabPBR `_s`), an array for each size with the same layers; data, not colours. Only the alpha is read so far: the emission. They are in
+// a bind group of their own (the fourth), which only the pipelines made with this file carry: the layout of the pipelines that draw no pictures is as it was before they existed.
+@group(3) @binding(0) var specular_0: texture_2d_array<f32>;
+@group(3) @binding(1) var specular_1: texture_2d_array<f32>;
+@group(3) @binding(2) var specular_2: texture_2d_array<f32>;
+@group(3) @binding(3) var specular_3: texture_2d_array<f32>;
+// And the normal pictures (LabPBR `_n`), the same: data, not colours. The red and green are the tilt of the face at the pixel; the rest is not read yet.
+@group(3) @binding(4) var normals_0: texture_2d_array<f32>;
+@group(3) @binding(5) var normals_1: texture_2d_array<f32>;
+@group(3) @binding(6) var normals_2: texture_2d_array<f32>;
+@group(3) @binding(7) var normals_3: texture_2d_array<f32>;
 
 // The colour of a picture at a place on a face: `coordinates` are in voxels (the picture repeats in each), `ddx` and `ddy` how much they change across a pixel, which
 // say which smaller picture to read. The size of the picture is its number among the sizes in use (bits 1 and 2) and its place among the pictures of that size is
@@ -25,6 +36,51 @@ fn sample_picture(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec
         }
         default: {
             texel = textureSampleGrad(pictures_3, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+    }
+    return texel;
+}
+
+// The specular picture of a picture at a place on a face, read as `sample_picture` reads the picture (the picture's word names the size and the layer). A picture with no specular
+// companion has the pixel of nothing (all zero).
+fn sample_specular(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let layer = i32((picture >> 3u) & 255u);
+    let wrapped = fract(coordinates);
+    var texel = vec4<f32>(0.0);
+    switch ((picture >> 1u) & 3u) {
+        case 0u: {
+            texel = textureSampleGrad(specular_0, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 1u: {
+            texel = textureSampleGrad(specular_1, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 2u: {
+            texel = textureSampleGrad(specular_2, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        default: {
+            texel = textureSampleGrad(specular_3, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+    }
+    return texel;
+}
+
+// The normal picture of a picture at a place on a face, read as `sample_picture` reads the picture. A picture with no normal companion has the pixel of a flat face (128, 128).
+fn sample_normal(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let layer = i32((picture >> 3u) & 255u);
+    let wrapped = fract(coordinates);
+    var texel = vec4<f32>(128.0 / 255.0, 128.0 / 255.0, 1.0, 1.0);
+    switch ((picture >> 1u) & 3u) {
+        case 0u: {
+            texel = textureSampleGrad(normals_0, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 1u: {
+            texel = textureSampleGrad(normals_1, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        case 2u: {
+            texel = textureSampleGrad(normals_2, picture_sampler, wrapped, layer, ddx, ddy);
+        }
+        default: {
+            texel = textureSampleGrad(normals_3, picture_sampler, wrapped, layer, ddx, ddy);
         }
     }
     return texel;
@@ -101,7 +157,7 @@ fn picture_albedo(in: VertexOutput) -> vec4<f32> {
         // The picture is all there is up to the distance, fades into the flat colour of the face over the band that follows, and is not read beyond it.
         let share = picture_share(in.relative);
         if (share > 0.0) {
-            let texel = sample_picture(in.picture, in.uv, picture_dx, picture_dy);
+            let texel = sample_picture(in.picture, in.uv + parallax_shift, picture_dx, picture_dy);
             albedo = mix(albedo, texel.rgb, share);
             if (((in.picture >> 17u) & 1u) == 1u) {
                 coverage = mix(1.0, texel.a, share);
@@ -109,6 +165,134 @@ fn picture_albedo(in: VertexOutput) -> vec4<f32> {
         }
     }
     return vec4<f32>(albedo, coverage);
+}
+
+// What the picture's specular companion says of the pixel (LabPBR `_s`), faded out with the picture over the same band, so that beyond the picture distance a face is as flat as it
+// is in the colour and the shadow: x is how smooth it is (the red byte, 0 to 1), y how much light it throws back straight on (the green byte, 0 to 1), z whether it is a metal
+// (1 from a green byte of 230, which throws back its own colour: 0 otherwise), how much of it shines by itself, 0 to 1 (the alpha: 0 to 254 is none to all, and the loader
+// has made 255, none, a 0), and how much of the sun's light it lets through (the blue byte: up to 64 is porosity, which is not read, and from 65 `(byte - 64) / 191`, 0 to 1).
+fn picture_material(in: VertexOutput) -> PictureMaterial {
+    // (How the coordinates of the picture change across a pixel is taken here, before anything branches, as in `picture_albedo`.)
+    let picture_dx = dpdx(in.uv);
+    let picture_dy = dpdy(in.uv);
+    if (in.picture == 0u || frame.pictures.y <= 0.0) {
+        return PictureMaterial(0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    let share = picture_share(in.relative);
+    if (share <= 0.0) {
+        return PictureMaterial(0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    let texel = sample_specular(in.picture, in.uv + parallax_shift, picture_dx, picture_dy);
+    let metal = select(0.0, 1.0, texel.g * 255.0 >= 229.5);
+    let emission = min(texel.a * (255.0 / 254.0), 1.0);
+    let subsurface = clamp((texel.b * 255.0 - 64.0) / 191.0, 0.0, 1.0);
+    return PictureMaterial(texel.r * share, texel.g * share, metal * share, emission * share, subsurface * share);
+}
+
+// How much the normal picture tilts the face's normal at this pixel: the tilted normal minus the face's own, in the world's axes, faded out with the picture over the same band
+// (so that beyond the picture distance a face is as flat as it is in the colour and the shadow). It is added to the normal that the sun's light is the cosine of (and to no
+// other: the shadow, which sides of a block the sun reaches, and the sky's light keep the face's own normal, so that a bump never lets the sun through a wall).
+//
+// The picture is LabPBR's: red and green are the normal's x and y (to the right in the picture and toward its top) as 128 plus or minus 127 for a tilt of 1 either way, and the
+// part along the face is what makes the length 1. Which way is right and up in the world is found from how the picture's coordinates and the place change across the screen,
+// so that it holds on every face and on a ship turned any way.
+fn picture_bump(in: VertexOutput) -> PictureBump {
+    // (These are taken before anything branches, as in `picture_albedo`.)
+    let uv_across = dpdx(in.uv);
+    let uv_down = dpdy(in.uv);
+    let place_across = dpdx(in.relative);
+    let place_down = dpdy(in.relative);
+    if (in.picture == 0u || frame.pictures.y <= 0.0) {
+        return PictureBump(vec3<f32>(0.0), 1.0, 1.0);
+    }
+    let share = picture_share(in.relative);
+    if (share <= 0.0) {
+        return PictureBump(vec3<f32>(0.0), 1.0, 1.0);
+    }
+    // (Where the eye's ray meets the relief is where the picture is read when there are prisms: `picture_prepare`, in `relief_prisms.wgsl`. A prism's side is a wall, and prisms are flat on top.)
+    let uv = in.uv + parallax_shift;
+    let wall = dot(parallax_wall, parallax_wall) > 0.5;
+    let texel = sample_normal(in.picture, uv, uv_across, uv_down);
+    let prisms = parallax_prisms > 0.0;
+    let height = select(texel.a, parallax_height, prisms);
+    // The blue byte is the share of the ambient light that gets to the pixel, faded in with the picture like the tilt (a prism's wall is darker the deeper it is).
+    let open = mix(1.0, select(texel.b, mix(1.0, 1.0 - WALL_DARKNESS, 1.0 - height), wall), share);
+    // (A prism is flat on top: where they are drawn the picture's tilts are left out, and fade back in where the prisms fade out.)
+    var tilt = (texel.xy - vec2<f32>(128.0 / 255.0)) * (255.0 / 127.0) * (1.0 - parallax_prisms);
+    // A pixel that does not tilt the face and is at the top of the relief (the stand-in of a picture with no normal companion, which is most of what is drawn: 128, 128 and a
+    // height of 255; and a flat pixel at the top of one that has) leaves the face as it is: the frame below would only find the face's own normal again, and nothing is higher
+    // than the top to shade it.
+    let at_the_top = height > 0.999 && !wall;
+    if (all(tilt == vec2<f32>(0.0)) && at_the_top) {
+        return PictureBump(vec3<f32>(0.0), open, 1.0);
+    }
+    let steepness = dot(tilt, tilt);
+    if (steepness > 1.0) {
+        tilt = tilt * inverseSqrt(steepness);
+    }
+    let out_of_the_face = sqrt(max(1.0 - dot(tilt, tilt), 0.0));
+    let normal = normalize(in.normal);
+    // Where the picture's coordinates grow, along the face: the place changes by `place_across` and `place_down` while the coordinates change by `uv_across` and `uv_down`,
+    // so the change of the place with u (to the right in the picture) and with v (down it: rows count from the top) is the solution of two equations. (Solved, and not the
+    // usual cotangent frame, whose signs follow which way the screen's rows count and so turn the picture's directions both around on this one.) Where the face is nearly edge
+    // on the equations have no good solution, and the face is left as it is.
+    var right = parallax_right;
+    var up = parallax_up;
+    if (!parallax_framed) {
+        let determinant = uv_across.x * uv_down.y - uv_across.y * uv_down.x;
+        if (abs(determinant) < 0.05 * length(uv_across) * length(uv_down)) {
+            return PictureBump(vec3<f32>(0.0), open, 1.0);
+        }
+        let along_right = (place_across * uv_down.y - place_down * uv_across.y) / determinant;
+        let along_down = (place_down * uv_across.x - place_across * uv_down.x) / determinant;
+        // (Taken along the face, and of length 1.)
+        right = normalize(along_right - normal * dot(along_right, normal));
+        up = -normalize(along_down - normal * dot(along_down, normal));
+    }
+    var tilted = normalize(right * tilt.x + up * tilt.y + normal * out_of_the_face);
+    if (wall) {
+        tilted = parallax_wall;
+    }
+    var sun = 1.0;
+    if (!at_the_top && frame.sun_light.x > 0.0) {
+        sun = 1.0 - share * (1.0 - relief_sun(in.picture, uv, uv_across, uv_down, height, normal, right, up));
+    }
+    return PictureBump((tilted - normal) * share, open, sun);
+}
+
+// How deep the relief of a normal picture is, in voxels, from the top (a height of 255) to the lowest (0): the art of the dirt makes its tilts from a height field that is 1.6
+// pixels of its 16 deep, so a tenth of a voxel; how far along the sun's ray a pixel looks for something higher than the ray (voxels, a few pixels of a picture of 16: the shade of
+// a bump is short, and a longer look would find the next block's picture, which the repeat of this one stands for badly); and how soft the edge of a shade is (voxels of height
+// between the ray being clear of the ground and being under it). `RELIEF_DEPTH` is also how deep a prism of `relief_prisms.wgsl` is, and `WALL_DARKNESS` how much darker the
+// ambient light is at the foot of the wall of the deepest prism than at its top: those two are settings (`relief_depth`, `wall_darkness`), written above the pictures by the
+// renderer (`crate::shader_settings`).
+const RELIEF_REACH: f32 = 0.25;
+const RELIEF_SOFTNESS: f32 = 0.01;
+const RELIEF_STEPS: i32 = 4;
+
+// The share of the sun's light that gets past the relief of the picture to a pixel `height` high (0 to 1, 1 for the top), on a face whose normal is `normal` and in which the picture's
+// right and top are the directions `right` and `up`: the ray from the pixel toward the sun climbs as it goes along the face, and if the picture's height at a place under the ray
+// (looked at in a few steps, as far as the ray takes to climb past the top, and no farther than `RELIEF_REACH`) is above the ray, something stands over the pixel. A face turned
+// from the sun has nothing of the sun to be shaded from. The coordinates of the picture are in voxels, as the place is, so a step of the ray along the face is the same step in them
+// (to the right where the ray goes along `right`, and down the rows where it goes along `up`' opposite).
+fn relief_sun(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>, height: f32, normal: vec3<f32>, right: vec3<f32>, up: vec3<f32>) -> f32 {
+    let to_the_sun = frame.sun_direction.xyz;
+    let climb = dot(to_the_sun, normal);
+    if (climb <= 0.02) {
+        return 1.0;
+    }
+    let depth = RELIEF_DEPTH;
+    let start = depth * (height - 1.0);
+    let reach = min(-start / climb, RELIEF_REACH);
+    let step_in_the_picture = vec2<f32>(dot(to_the_sun, right), -dot(to_the_sun, up));
+    var blocked = 0.0;
+    for (var index = 1; index <= RELIEF_STEPS; index = index + 1) {
+        let along = reach * f32(index) / f32(RELIEF_STEPS);
+        let ray = start + climb * along;
+        let ground = depth * (sample_normal(picture, coordinates + step_in_the_picture * along, ddx, ddy).a - 1.0);
+        blocked = max(blocked, smoothstep(0.0, RELIEF_SOFTNESS, ground - ray));
+    }
+    return 1.0 - blocked;
 }
 
 // ---- The shadow maps of blocks that cut holes: what leaves and glass hide of the sun is what their pictures are not clear of. ----

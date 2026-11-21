@@ -2,5 +2,14 @@
   "id": "voxunami:cel",
   "name": "Cel shading",
   "interface": 1,
-  "description": "The sun's light in three steps instead of a smooth fall-off; the sky's and the lamps' as they are."
+  "description": "The sun's light in steps (three, unless the player says another number with .shadersetting steps) instead of a smooth fall-off; the sky's and the lamps' as they are.",
+  "settings": {
+    "steps": {
+      "type": "integer",
+      "description": "how many steps the sun's light has, from the dark of the shade to the full light of a face turned to the sun",
+      "default": 3,
+      "minimum": 2,
+      "maximum": 8
+    }
+  }
 }

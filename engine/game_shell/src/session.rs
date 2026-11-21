@@ -34,6 +34,7 @@ use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
     ClientContext, ClientHost, ClientPlugin, MouseButton, Outgoing, SessionView,
 };
+use crate::coarse_overrides::CoarseOverrides;
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
 use crate::package_data::{PackageData, PackageError, check_materials};
@@ -50,6 +51,10 @@ pub enum SessionError {
     #[error("the world around the camera did not finish loading in time")]
     LoadingTimedOut,
 }
+
+/// How many threads make the meshes of a far ship: the nodes it is drawn from are made by the server, and each is meshed here as it comes, so one thread does it (not measured:
+/// the number of threads was the worry, not the speed), where a planet's view has as many as the machine can spare for its generators.
+const FAR_SHIP_WORKERS: usize = 1;
 
 /// Whether the player controls the camera, or the camera follows what a recording captured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,8 +91,6 @@ pub struct OccupancyReport {
 struct CoarseTerrain {
     view: LodView,
     detail: CoarseDetail,
-    /// What the server was last asked (or would have been, in a replay).
-    asked: Option<SetDetail>,
 }
 
 impl TerrainView {
@@ -115,7 +118,7 @@ impl TerrainView {
     /// Whether there is nothing more to make or to put on the screen.
     fn is_settled(&self) -> bool {
         match self {
-            Self::Bricks(mesher) => mesher.pending_jobs() == 0,
+            Self::Bricks(mesher) => mesher.is_settled(),
             Self::Coarse(coarse) => coarse.view.is_settled(),
         }
     }
@@ -154,6 +157,10 @@ pub struct Session<C: Connection, G: GameDefinition> {
     planets: BTreeMap<GridId, ShipTerrainMesher>,
     /// How far, and how fine, the terrain of a planet is drawn beyond its bricks, if the game says.
     grid_detail: Option<CoarseDetail>,
+    /// The nodes the server has told this session of, which it does not tell again: a view of the terrain that is made again is given them.
+    coarse_overrides: CoarseOverrides,
+    /// What the server was last asked about how the terrain is drawn (or would have been, in a replay).
+    asked: Option<SetDetail>,
     /// Whether the meshers say which voxels of their bricks block the sun (`Session::enable_occupancy`).
     occupancy_wanted: bool,
     /// Whether the terrain follows what the game says for each level (`GameDefinition::level_detail`): coarse nodes in a level it draws so, bricks only in another.
@@ -161,6 +168,12 @@ pub struct Session<C: Connection, G: GameDefinition> {
     sent_poses: BTreeMap<GridId, GridPose>,
     /// The grids the renderer was told are the ground of a planet (a ship with terrain).
     sent_ground: BTreeSet<GridId>,
+    /// The ships that were far (no brick, drawn from nodes) when the renderer was last told of them: a ship that is told of again in the other tier is one the renderer is
+    /// told to drop and is told of afresh.
+    sent_far: BTreeSet<GridId>,
+    /// The ships that were told of again in the other tier since the renderer was last told of them: what was kept of each is gone, and the renderer is told to drop it
+    /// the next time the ships are drawn.
+    changed_tier: BTreeSet<GridId>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
     client_plugins: Vec<Box<dyn ClientPlugin>>,
@@ -270,10 +283,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             grid_mesher,
             planets: BTreeMap::new(),
             grid_detail: None,
+            coarse_overrides: CoarseOverrides::default(),
+            asked: None,
             occupancy_wanted: false,
             follows_level_detail: false,
             sent_poses: BTreeMap::new(),
             sent_ground: BTreeSet::new(),
+            sent_far: BTreeSet::new(),
+            changed_tier: BTreeSet::new(),
             camera: start,
             client_plugins,
             client_host,
@@ -464,17 +481,20 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         if self.occupancy_wanted {
             mesher.enable_occupancy();
         }
-        TerrainView::Coarse(Box::new(CoarseTerrain {
-            view: LodView::new(
-                mesher,
-                LodConfig {
-                    unlit: detail.unlit,
-                    worker_count: self.view_settings.worker_count,
-                },
-            ),
-            detail,
-            asked: None,
-        }))
+        let mut view = LodView::new(
+            mesher,
+            LodConfig {
+                unlit: detail.unlit,
+                worker_count: self.view_settings.worker_count,
+            },
+        );
+        // (What the server said before this view was made, of the root grids of levels: it says nothing twice.)
+        for (grid, cube, node) in self.coarse_overrides.in_order() {
+            if grid.root_level().is_some() {
+                view.set_override(grid, cube, Some(node.clone()));
+            }
+        }
+        TerrainView::Coarse(Box::new(CoarseTerrain { view, detail }))
     }
 
     /// Makes the view of the terrain what the game says for this level, if it is not that: what the old one drew is taken down (the updates are returned).
@@ -546,6 +566,35 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         terrain.max(self.grid_detail.as_ref().map_or(0, distance_in_bricks))
     }
 
+    /// Drops what is kept of a ship that the server has told of again in the other tier since it was drawn (far, or near): its bricks, its nodes and its mesher. The server
+    /// does not send a node again that it has sent, and it forgot them when the ship stopped being what it was; and what it sends of the ship now is sent in this tick
+    /// or a later one. So it is done as each tick's events are taken in, not when the ships are drawn (which may be after several ticks), or what arrived in between
+    /// would be lost with the rest. The nodes held of a ship that is gone are dropped too.
+    fn forget_ships_that_changed_tier(&mut self) {
+        let ships = self.client.world().grids();
+        let changed: Vec<GridId> = self
+            .sent_poses
+            .keys()
+            .copied()
+            .filter(|grid| {
+                ships
+                    .get(*grid)
+                    .is_some_and(|ship| ship.far.is_some() != self.sent_far.contains(grid))
+            })
+            .collect();
+        for grid in changed {
+            self.coarse_overrides.forget_grid(grid);
+            self.grid_mesher.forget_grid(grid);
+            self.planets.remove(&grid);
+            self.changed_tier.insert(grid);
+        }
+        for grid in self.coarse_overrides.ships() {
+            if ships.get(grid).is_none() {
+                self.coarse_overrides.forget_grid(grid);
+            }
+        }
+    }
+
     /// What the server is asked for, and what the terrain is drawn with: how fine, as far as the camera sees and the picture is high.
     fn coarse_request(&self, detail: &CoarseDetail) -> SetDetail {
         let tangent = libm::tanf(self.camera.vertical_field_of_view * 0.5);
@@ -599,7 +648,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     }
                 }
                 // Where ships are and which are gone is read from the client's picture when the view is updated.
-                ClientEvent::GridsChanged => players_changed = true,
+                ClientEvent::GridsChanged => {
+                    players_changed = true;
+                    self.forget_ships_that_changed_tier();
+                }
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
                 ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.
@@ -645,15 +697,20 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     }
                 }
                 ClientEvent::GameMessage { kind, payload } if kind == CoarseNodes::kind() => {
-                    // Nodes the server says differ from what the generators make. A message that cannot be read is dropped, as are the nodes of a game that
-                    // does not draw coarse nodes.
-                    if let (TerrainView::Coarse(coarse), Ok(CoarseNodes(updates))) =
-                        (&mut self.terrain, CoarseNodes::decode(&payload))
-                    {
+                    // Nodes the server says differ from what the generators make. A message that cannot be read is dropped. They are kept by the session, and given to
+                    // the view that draws them, now or when there is one: the server does not say them again.
+                    if let Ok(CoarseNodes(updates)) = CoarseNodes::decode(&payload) {
                         for update in updates {
-                            coarse
-                                .view
-                                .set_override(update.grid, update.cube, update.node);
+                            self.coarse_overrides.apply(&update);
+                            if update.grid.root_level().is_some() {
+                                if let TerrainView::Coarse(coarse) = &mut self.terrain {
+                                    coarse
+                                        .view
+                                        .set_override(update.grid, update.cube, update.node);
+                                }
+                            } else if let Some(planet) = self.planets.get_mut(&update.grid) {
+                                planet.set_override(update.cube, update.node);
+                            }
                         }
                     }
                 }
@@ -840,10 +897,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     self.camera.position,
                     &settings,
                 ));
+                if let Some(report) = coarse.view.take_stall_report() {
+                    eprintln!("warning: {report}");
+                }
             }
             (terrain, _) => updates.extend(terrain.mesher_mut().update(data, center)),
         }
-        if let Some(request) = request {
+        // What the server is asked is how the level is drawn if it is drawn in nodes, and otherwise how the planets are, if they are.
+        let planets = self.grid_detail.map(|detail| self.coarse_request(&detail));
+        if let Some(request) = request.or(planets) {
             self.ask_for_coarse_nodes(request);
         }
         updates.extend(self.ship_updates());
@@ -852,13 +914,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// Tells the server how the terrain is drawn, when that is not what it was told last. A replay asks for nothing.
     fn ask_for_coarse_nodes(&mut self, request: SetDetail) {
-        let TerrainView::Coarse(coarse) = &mut self.terrain else {
-            return;
-        };
-        if coarse.asked == Some(request) {
+        if self.asked == Some(request) {
             return;
         }
-        coarse.asked = Some(request);
+        self.asked = Some(request);
         if self.mode == Mode::Playing {
             self.send_game_message(SetDetail::kind(), request.encode());
         }
@@ -868,16 +927,23 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     fn ship_updates(&mut self) -> Vec<MeshUpdate> {
         let ships = self.client.world().grids();
         let mut updates = Vec::new();
+        // (A ship that is told of again as far, or near, is another picture of it: taken down whole and made afresh.)
         let gone: Vec<GridId> = self
             .sent_poses
             .keys()
             .filter(|id| ships.get(**id).is_none())
+            .chain(self.changed_tier.iter())
             .copied()
             .collect();
+        self.changed_tier.clear();
         for id in gone {
             self.sent_poses.remove(&id);
             self.sent_ground.remove(&id);
-            self.grid_mesher.forget_grid(id);
+            self.sent_far.remove(&id);
+            // (A ship that changed tier had its bricks forgotten as the events came in, and those that came after are the new ones.)
+            if ships.get(id).is_none() {
+                self.grid_mesher.forget_grid(id);
+            }
             // (Dropping its mesher ends its threads; the renderer drops the ship whole.)
             self.planets.remove(&id);
             updates.push(MeshUpdate::RemoveGrid(id));
@@ -886,6 +952,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             // (Before its pose: the renderer holds a grid that is ground as it holds terrain, whatever else it is told of it.)
             if ship.terrain.is_some() && self.sent_ground.insert(id) {
                 updates.push(MeshUpdate::GridIsGround(id));
+            }
+            if ship.far.is_some() {
+                self.sent_far.insert(id);
             }
             if self.sent_poses.get(&id) != Some(&ship.pose) {
                 self.sent_poses.insert(id, ship.pose);
@@ -903,49 +972,75 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         });
         let world = self.client.world().world();
         for (id, ship) in ships.iter() {
-            let Some(terrain) = ship.terrain else {
+            // A planet is drawn from its generator, and a far ship (no brick, no generator) from the nodes the server sends, and from them only: none without a game that
+            // draws in detail.
+            if ship.terrain.is_none() && (ship.far.is_none() || detail.is_none()) {
                 continue;
-            };
+            }
             let Some(local) = ship.pose.world_to_local(self.camera.position) else {
                 continue;
+            };
+            // (No brick of a far ship is ever drawn: the ball of bricks round the viewer has no radius. And it is meshed from nodes the server made, a few at a time: one
+            // thread, not a pool for each of up to sixteen ships.)
+            let view_settings = if ship.far.is_some() {
+                ViewSettings {
+                    view_radius_bricks: 0,
+                    worker_count: FAR_SHIP_WORKERS,
+                }
+            } else {
+                self.view_settings
             };
             let planet = self.planets.entry(id).or_insert_with(|| {
                 let mesher = match detail {
                     Some((detail, settings)) => ShipTerrainMesher::with_detail(
                         id,
-                        self.view_settings,
+                        view_settings,
                         self.view_channels.clone(),
                         Arc::clone(&self.block_table),
                         LodConfig {
                             unlit: detail.unlit,
-                            worker_count: self.view_settings.worker_count,
+                            worker_count: view_settings.worker_count,
                         },
                         settings,
                     ),
                     None => ShipTerrainMesher::new(
                         id,
-                        self.view_settings,
+                        view_settings,
                         self.view_channels.clone(),
                         Arc::clone(&self.block_table),
                     ),
                 };
-                if self.occupancy_wanted {
+                let mut mesher = if self.occupancy_wanted {
                     mesher.with_occupancy()
                 } else {
                     mesher
-                }
+                };
+                // (What the server said of the planet before its mesher was made: it says nothing twice.)
+                // (The cubes it said are empty too: a far ship waits to be told.)
+                self.coarse_overrides
+                    .tell_of_a_grid(id, |cube, node| mesher.set_override(cube, node));
+                mesher
             });
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);
             }
-            let generator = world
-                .main()
-                .terrain
-                .generators()
-                .entry(terrain.generator)
-                .and_then(|entry| entry.content().cloned());
-            let source = ShipTerrainSource::new(&ship.voxels, generator, terrain.extent);
+            let source = match (ship.terrain, ship.far) {
+                (Some(terrain), _) => {
+                    let generator = world
+                        .main()
+                        .terrain
+                        .generators()
+                        .entry(terrain.generator)
+                        .and_then(|entry| entry.content().cloned());
+                    ShipTerrainSource::new(&ship.voxels, generator, terrain.extent)
+                }
+                (None, Some(bounds)) => ShipTerrainSource::far(&ship.voxels, bounds),
+                (None, None) => unreachable!("a ship that is neither was left out above"),
+            };
             updates.extend(planet.update(&source, local));
+            if let Some(report) = planet.take_stall_report() {
+                eprintln!("warning: the planet {id:?}: {report}");
+            }
         }
         // (The stored bricks of a planet are meshed with the rest of it, by its own mesher.)
         updates.extend(self.grid_mesher.update(
@@ -1136,19 +1231,23 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.settings
     }
 
-    /// Tells the session which shader packs the player has (`.shader` chooses among them) and which is chosen to start with (`None`: the game's own).
+    /// Tells the session which shader packs the player has (`.shader` chooses among them), which is chosen to start with (`None`: the game's own), and what the player chose of
+    /// the settings of each (read from the files next to them).
     pub fn offer_shader_packs(
         &mut self,
         packs: Vec<crate::shader_packs::ShaderPackName>,
         chosen: Option<String>,
+        choices: crate::shader_pack_settings::PackChoices,
     ) {
         self.settings.shader_packs = packs;
         self.settings.shader_pack = chosen;
+        self.settings.pack_settings = choices;
     }
 
-    /// Goes back to the game's own shader, for a pack the graphics card did not take.
+    /// Goes back to the game's own shader, for a pack or a value the graphics card did not take (which of them it was is not known), and forgets what was chosen of the settings of
+    /// the shader that was refused ([`ClientSettings::forget_the_refused_shader`]; the shell's files forget it too). The game's own shader at its defaults is known to draw.
     pub fn reject_shader_pack(&mut self) {
-        self.settings.shader_pack = None;
+        self.settings.forget_the_refused_shader();
     }
 
     /// The sun of the level the player is in and the time of day by the world's clock, if the game has a sun there.

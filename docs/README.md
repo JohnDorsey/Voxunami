@@ -22,6 +22,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 - `plan.md`: the build plan, what is proposed, what is open.
 - `future-goals.md`: owner wishes that are not scheduled, with what each would need.
 - `orbits-and-thrust-plan.md`: a plan for elliptical orbits and an investigation of ships kept on exact rails and of long burns with previews. **A proposal**; nothing is built.
+- `monty-step-budget-plan.md`: the plan for a deterministic step budget in the Monty fork, so a ship computer is cut off at the same instruction on every machine. **Built** (phases 0 to 6, 2026-11-16), and followed by a deterministic memory limit, `max_model_memory`, which the plan's "Not part of this plan" section records with its measurements (`history/spikes/scripting/monty_memory_results_2026-11-16.txt`). The fork's own `FORK.md` is the reference.
 - `planetary-mass-change.md`: the feature "a planet's mass changes", **held back: not in the first release** (owner, 2026-11-04); what is built, what it does to players, a flaw found, and Cave's ARGOS device.
 - `test-flakes.md`: tests that failed once and were not explained, kept together for a deep bug hunt (what failed, when, the reruns, what is believed and what was checked).
 - `ship-terrain-cost.md`: what a fast ship costs the server and the options to cut it, **held back** until ships of several grids are understood.
@@ -43,7 +44,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 
 Plugins and content: `plugin-api-spec.md`, `property-bags-spec.md`, `messages-and-commands-spec.md`, `client-interface-spec.md`,
 `entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `block-textures-spec.md` (textures, and the game's own blocks as JSON; **not built**), `ui-spec.md`. The game Voxunami 2048: `2048-spec.md`.
-The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rails-and-recipes-spec.md` (orbits, planets from data),
+The world and the sky: `lod-spec.md` (levels of detail), `viewpoints-spec.md` (**a draft, nothing built**: the camera as a viewpoint that asks for terrain, several kept warm and one drawn, for a ship view and a map view that switch at once, a free camera and an orbit preview; with measurements), `far-nodes-spec.md` (a plan: far nodes for edits and ships), `planet-spec.md`, `rails-and-recipes-spec.md` (orbits, planets from data),
 `great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`, `contact-trace-spec.md` (**a design; phases 0 to 2 are built (the renderer too), and the cost in real Cave is over the budget: the owner's to decide**: the sun's exact short ray through the voxels that removes the lit strip at the foot of a wall), `shader-pack-spec.md` (swappable shaders: the engine works out what is lit and a pack makes the colour; **built: the interface, and the player's side (`--shader-pack`, `.shader`)**). Ships: `moving-grids-spec.md`.
 
 ## History
@@ -58,7 +59,9 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `shader-systems-survey.md` (2026-11-10: how shader packs work in the block-game genre, OptiFine and Iris above all, and in other games and engines, set against our `shader-pack-spec.md`, with what to keep, what is too narrow, and the owner's open questions; read from primary sources, each claim marked as re-read, inferred, run or not read).
 - `shade-study.md` (2026-11-11: whether the shade is legible at a distance, measured on ten fixed Cave views, with the shade's share of the sky's light at 70, 130 and 190; 38% of the far terrain is nearly black today).
 - `pixelated-shadows-study.md` (2026-11-11: what it costs to make each pixel of a block's picture wholly lit or shaded, as Complementary does, for everything including ships and planets: the snap is nearly free, the shadow map's resolution is what costs, measured at 1024, 2048 and 4096).
-- `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
+- `parallax-spike.md` (2026-11-13: parallax for block pictures as square prisms with shaded sides, against smooth parallax occlusion and offset limiting: what each looks like (pictures in `parallax-spike/`) and what it costs on the integrated GPU; the spike is commit `7d8f955`; prisms were then built as a shader pack's option, on while tested: "Afterwards" at its end, and `block-textures-spec.md` "Prisms").
+- `interoperability-survey.md` (2026-11-13: what Voxunami could take from Veloren, other games, avatar standards and editor plugins, and how third-party avatars, builds, ships, textures, controls and mods could appear in the game; ten ranked moves, the licence facts, wild options, what VRM and VR would cost, the scripting languages games use, a measured Python setup cost, and the sandboxed engines with generator expressions compared by running them (Rune, Starlark, Monty, QuickJS-ng, Tcl, jaq; programs and output in `spikes/scripting/`), and the questions only the owner can answer; research and not legal advice, each claim marked as re-read, read, secondary, recalled or inferred; Mojang's terms were not readable).
+- `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`; the three programs behind `viewpoints-spec.md` section 3 are in `spikes/viewpoints/` (no document of their own).
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 
 ## Keeping them

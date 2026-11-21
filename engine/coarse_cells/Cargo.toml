@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Coarse cells: what a cell of 2^n voxels is drawn as (its dominant block, how much of it is filled, how bright it is), how eight cells make the next, and nodes of 32 x 32 x 32 of them."
 
 [dependencies]
+binary_codec.workspace = true
 region_octree.workspace = true
 voxel_space.workspace = true
 

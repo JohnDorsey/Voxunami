@@ -126,9 +126,10 @@ impl Bodies {
         // a rail: the pull is a force on the rail and a torque on the bodies, which give it to the ship in the frame it is in (see `rail_ports.rs`), and only the dock, which is a touch,
         // takes the rail. The ends that count here are those of ships of which neither rides a rail (a coupling and a dock are made in one frame).
         for stranger in near {
-            let (Some(other), Some(other_record)) =
-                (world.data().grids().get(stranger), self.record_of(stranger))
-            else {
+            let (Some(other), Some(other_record)) = (
+                world.data().grids().get(stranger),
+                self.record_in_any_frame(stranger),
+            ) else {
                 continue;
             };
             let other_pose = pose_at_the_start(world, stranger, other, lag);
@@ -136,9 +137,10 @@ impl Bodies {
                 continue;
             }
             for member in &members {
-                let (Some(ship), Some(record)) =
-                    (world.data().grids().get(*member), self.record_of(*member))
-                else {
+                let (Some(ship), Some(record)) = (
+                    world.data().grids().get(*member),
+                    self.record_in_any_frame(*member),
+                ) else {
                     continue;
                 };
                 let pose = pose_at_the_start(world, *member, ship, lag);

@@ -8,7 +8,8 @@ use entities::EntityCatalog;
 use namespaced_id::NamespacedId;
 use protocol::ClientId;
 use voxel_grid::ChannelIndex;
-use world_storage::Section;
+use world_storage::far_nodes::FarFileName;
+use world_storage::{SavedShip, Section, ShipFormat};
 
 use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
@@ -58,6 +59,13 @@ pub(crate) struct SaveEntry {
     pub write: Box<dyn Fn() -> Vec<Section> + Send>,
 }
 
+/// Whether a plugin has work in hand (see [`crate::Registrar::pending_work`]).
+pub(crate) type PendingWork = Box<dyn Fn() -> bool + Send + Sync>;
+
+/// What a plugin makes of the ships a save writes the files of: far files for them.
+pub(crate) type FarFileSaver =
+    Box<dyn Fn(&[SavedShip], &ShipFormat) -> Vec<(FarFileName, Vec<u8>)> + Send + Sync>;
+
 /// Everything the plugins registered, checked and put in order. Built once.
 pub(crate) struct Registry {
     pub systems: Vec<SystemEntry>,
@@ -72,6 +80,10 @@ pub(crate) struct Registry {
     /// The kinds of entity and the items the plugins declared.
     pub catalog: Arc<EntityCatalog>,
     pub saves: Vec<SaveEntry>,
+    /// The plugins that make far files for the ships a save writes the files of.
+    pub far_file_savers: Arc<Vec<FarFileSaver>>,
+    /// The plugins that say whether they have work in hand.
+    pub pending_work: Vec<PendingWork>,
     /// The channels some handler asked to hear of.
     pub watched: BTreeSet<ChannelIndex>,
 }

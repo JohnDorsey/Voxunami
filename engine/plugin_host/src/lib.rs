@@ -27,7 +27,7 @@ pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
 pub use event::{
     ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft,
-    PromptAnswered, UiResponded, Verdict,
+    PromptAnswered, ShipParked, UiResponded, Verdict,
 };
 pub use forms::{
     FormError, FormId, MAXIMUM_FORMS_PER_PLAYER, UiAction, UiClose, UiResponse, UiShow,

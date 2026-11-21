@@ -107,7 +107,7 @@ impl Bodies {
         let members = world.data().grids().group_of(ship);
         let records: Vec<&Ship> = members
             .iter()
-            .map(|member| self.record_of(*member))
+            .map(|member| self.record_in_any_frame(*member))
             .collect::<Option<_>>()?;
         if !rides_a_rail(world, ship) && records.iter().any(|record| record.kind == BodyKind::Fixed)
         {
@@ -133,7 +133,7 @@ impl Bodies {
     ) -> Option<f64> {
         self.mass_a_pull_moves(world, ship)?;
         let rotation = world.data().grids().get(ship)?.pose.rotation_matrix();
-        self.record_of(ship)?
+        self.record_in_any_frame(ship)?
             .mass_at_an_end(rotation, arm, direction)
     }
 
@@ -142,7 +142,8 @@ impl Bodies {
     fn inertia_a_pull_turns(&self, world: &ServerWorld, ship: GridId) -> Option<Inertia> {
         self.mass_a_pull_moves(world, ship)?;
         let rotation = world.data().grids().get(ship)?.pose.rotation_matrix();
-        self.record_of(ship)?.inertia_in_the_worlds_axes(rotation)
+        self.record_in_any_frame(ship)?
+            .inertia_in_the_worlds_axes(rotation)
     }
 
     /// Pulls the joint ends of ships of which one rides a rail, or couples them: the pairs that are in line and slow enough to be coupled (`JointSettings::can_couple`) take their

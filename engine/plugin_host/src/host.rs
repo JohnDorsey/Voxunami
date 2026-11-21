@@ -8,14 +8,17 @@ use protocol::{ClientId, Message, Tick};
 use server::{Audience, CommandLine, GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
-use world_storage::{Section, WorldData};
+use world_storage::far_nodes::FarFileName;
+use world_storage::{FarFileMaker, SavedShip, Section, ShipFormat, WorldData};
 
 use entities::EntityCatalog;
 
 use crate::command::{Argument, Arguments, CommandSpec};
 use crate::context::{Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
-use crate::event::{ChannelsChanged, PlayerJoined, PlayerLeft, PromptAnswered, UiResponded};
+use crate::event::{
+    ChannelsChanged, PlayerJoined, PlayerLeft, PromptAnswered, ShipParked, UiResponded,
+};
 use crate::forms::{UiAction, UiClose, UiResponse};
 use crate::prompt::{PromptAnswer, PromptClosed};
 use crate::registrar::{Builder, Plugin, Registrar, finish, registration_order};
@@ -140,10 +143,11 @@ impl PluginHost {
 }
 
 /// Turns what was written to watched channels into events, one for each grid and channel, in the
-/// order they first appear.
+/// order they first appear, and then the ships that were put into files into events, in the order they were.
 fn collect_changes(queue: &mut Queue, world: &mut ServerWorld) {
+    let parked = world.take_parked_ships();
     let changes = world.take_changes();
-    if changes.is_empty() || queue.halted {
+    if queue.halted {
         return;
     }
     let mut groups: Vec<(GridId, ChannelIndex, Vec<VoxelCoordinate>)> = Vec::new();
@@ -164,6 +168,13 @@ fn collect_changes(queue: &mut Queue, world: &mut ServerWorld) {
                 channel,
                 voxels,
             }),
+        });
+    }
+    // (After the changes: a ship that came into memory and was put away again before they were taken has none, and its handlers find it in its file.)
+    for grid in parked {
+        queue.events.push_back(Queued {
+            type_id: TypeId::of::<ShipParked>(),
+            payload: Box::new(ShipParked { grid }),
         });
     }
 }
@@ -545,6 +556,27 @@ impl GameLogic for PluginHost {
         }
         queue.delivered = 0;
         queue.halted = false;
+    }
+
+    /// Whether any plugin has work in hand (see [`Registrar::pending_work`]).
+    fn work_pending(&self) -> bool {
+        self.registry.pending_work.iter().any(|pending| pending())
+    }
+
+    /// What makes the far files the plugins keep for the ships a save writes the files of, in the order of the files' names: none if no plugin keeps any.
+    fn far_file_maker(&self) -> Option<FarFileMaker> {
+        if self.registry.far_file_savers.is_empty() {
+            return None;
+        }
+        let savers = Arc::clone(&self.registry.far_file_savers);
+        Some(Arc::new(move |ships: &[SavedShip], format: &ShipFormat| {
+            let mut files: Vec<(FarFileName, Vec<u8>)> = savers
+                .iter()
+                .flat_map(|saver| saver(ships, format))
+                .collect();
+            files.sort_by_key(|(name, _)| (name.grid, name.serial));
+            files
+        }))
     }
 
     /// What the plugins save, in the order of the sections' identifiers: the bytes of a saved world must

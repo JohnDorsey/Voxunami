@@ -578,7 +578,9 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   A ship's terrain has two zones: the *needed* zone, the bricks that the ship's bounds sweep in this tick (and a voxel or two around), is always made, so a ship can never
   reach a brick that has no colliders; the *wanted* zone, the rest of the lookahead (8 voxels and five ticks of speed), is made nearest first, at most as many bricks a tick as
   the budget says (chosen by measurement, about 2), ties broken by brick coordinate. A ship that has just been made, loaded or unfrozen, and so has a large needed zone
-  all at once, is the case to decide by measurement: wait the few ticks it takes (kinematic and asleep, as a frozen ship is) or pay the spike once. The same budget is the
+  all at once, is the case to decide by measurement: wait the few ticks it takes (kinematic and asleep, as a frozen ship is) or pay the spike once. **Decided and built
+  2026-11-19 for a ship that has just come into memory and is too big for a tick: wait** (held where it is while its bricks and then its terrain are made, a few a tick;
+  `build-log.md`, "A ship that is too big for a tick comes alive over several"). A ship unfrozen next to natural ground still pays the spike. The same budget is the
   "bricks made again per tick" of 2.3, for a ship edited in many bricks in a tick. *Tests first:* a big raft falling to natural ground (the worst tick of the 30 by 30 raft is
   82 ms and of the 40 by 40 73 ms today) has no tick over 30 ms; a ship's path with the budget is the path without it whenever the lookahead is long enough (a property
   test over speeds); a ship cannot reach a brick without colliders however small the budget is. Related and *not* part of this step: natural terrain costs 5 to 10 ms a brick to

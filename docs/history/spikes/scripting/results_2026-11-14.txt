@@ -1,0 +1,283 @@
+Results of the 2026-11-14 scripting probes (Windows 10, UCRT; WSL2 Ubuntu with glibc 2.43 where stated). Times printed as 'us' are microseconds.
+Machine: this owner's development PC. Programs: the files next to this one. Each section is the program's own output, unedited except for the header lines.
+
+######## monty_battery.py (Monty 1.6.0, Windows, every case under 3 s / 200 MB limits unless it states its own)
+python 3.11.9 platform win32
+pool start: 3.6 ms
+
+== GENERATOR AND SYNTAX
+[     5.4 ms] sum over genexpr                             OK    285
+[     0.5 ms] list comprehension with filter               OK    [0, 3, 6, 9]
+[     0.4 ms] dict comprehension                           OK    {0: 0, 1: 1, 2: 4, 3: 9}
+[     0.4 ms] set comprehension                            OK    [0, 1, 2]
+[     1.0 ms] nested three-axis cube, even sum, count      OK    2048
+[   298.4 ms] genexpr is lazy (range of 10**12, next)      MontyRuntimeError: MemoryError: memory limit exceeded: 268480018 bytes > 200000000 bytes
+[     0.6 ms] genexpr type name                            OK    'list'
+[     0.1 ms] generator function with yield                MontyRuntimeError: NotImplementedError: The monty syntax parser does not yet support yield expressions
+[     0.1 ms] yield from                                   MontyRuntimeError: NotImplementedError: The monty syntax parser does not yet support yield from expressions
+[   333.1 ms] any over genexpr short-circuit               MontyRuntimeError: MemoryError: memory limit exceeded: 268480102 bytes > 200000000 bytes
+[     0.7 ms] min / max / sorted over genexpr              OK    [0, 4, [3, 2, 1]]
+[     3.3 ms] map / filter / zip / enumerate               OK    [[1, 2], [1, 2], [('a', 1), ('b', 2)], [(0, 'a'), (1, 'b')]]
+[     2.7 ms] itertools.islice over infinite count         OK    [5, 6, 7]
+[     0.8 ms] itertools.product                            OK    64
+[     0.1 ms] generator send()                             MontyRuntimeError: NotImplementedError: The monty syntax parser does not yet support yield expressions
+[     0.5 ms] star-unpack genexpr into tuple               OK    ((0, 0), (1, -1), (2, -2))
+[     1.1 ms] lambda + comprehension closure               OK    [0, 2, 4]
+[     0.6 ms] walrus inside comprehension                  OK    [4, 6, 8]
+[     1.3 ms] match statement                              OK    None
+[     1.9 ms] class definition (instance method)           OK    8
+[     0.6 ms] class inheritance                            MontyRuntimeError: NotImplementedError: The monty syntax parser does not yet support class inheritance and metaclasses
+
+== SANDBOX
+[     5.1 ms] open a file                                  MontyRuntimeError: PermissionError: Permission denied: '/C:/Windows/win.ini'
+[     1.7 ms] import os                                    MontyRuntimeError: PermissionError: Permission denied: '/'
+[     1.3 ms] import sys                                   OK    'monty'
+[     2.0 ms] import subprocess                            MontyRuntimeError: ModuleNotFoundError: No module named 'subprocess'
+[     0.6 ms] import socket                                MontyRuntimeError: ModuleNotFoundError: No module named 'socket'
+[     0.8 ms] __import__('os')                             MontyRuntimeError: NameError: name '__import__' is not defined
+[     0.6 ms] eval                                         OK    2
+[     0.4 ms] exec                                         OK    None
+[     0.5 ms] compile                                      MontyRuntimeError: NameError: name 'compile' is not defined
+[     0.2 ms] getattr dunder escape                        MontyRuntimeError: AttributeError: 'tuple' object has no attribute '__class__'
+[     0.4 ms] globals()                                    MontyRuntimeError: NameError: name 'globals' is not defined
+[     0.6 ms] pathlib read                                 MontyRuntimeError: PermissionError: Permission denied: '/C:/Windows/win.ini'
+[     1.7 ms] time.time (clock)                            OK    'float'
+[     0.9 ms] import random, unseeded                      OK    0.4820072135611664
+[     0.6 ms] environ                                      MontyRuntimeError: RuntimeError: 'os.environ' is not supported in this environment
+
+== FLOATS AND ORDER
+[     1.0 ms] math.sin(1.0) repr                           MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.1 ms] math.sin(1e22) repr                          MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.3 ms] math.exp(1.0) hex                            MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.1 ms] math.pow(2.5, 3.7) hex                       MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.3 ms] 2.5 ** 3.7 hex                               MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.1 ms] math.cos(0.5) hex                            MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.1 ms] math.atan2(1, 2) hex                         MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.2 ms] math.log(10.0) hex                           MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.1 ms] math.sqrt(2.0) hex                           MontyRuntimeError: AttributeError: 'float' object has no attribute 'hex'
+[     0.4 ms] set of strings order                         OK    ['alpha', 'beta', 'gamma', 'delta']
+[     0.7 ms] dict order after delete/insert               OK    ['b', 'a']
+[     0.4 ms] hash('abc')                                  OK    -1222198482973350627
+
+== LIMITS
+[   500.6 ms] infinite loop, 0.5 s feed limit              MontyRuntimeError: TimeoutError: feed time limit exceeded: 500.4009ms > 500ms
+[   530.3 ms] genexpr burn, 0.5 s feed limit               MontyRuntimeError: TimeoutError: feed time limit exceeded: 525.7611ms > 500ms
+[     0.6 ms] memory bomb list, 50 MB limit                MontyRuntimeError: MemoryError: memory limit exceeded: 1600044474 bytes > 50000000 bytes
+[     0.1 ms] memory bomb string, 50 MB limit              MontyRuntimeError: MemoryError: memory limit exceeded: 100044522 bytes > 50000000 bytes
+[    72.2 ms] memory bomb comprehension, 50 MB limit       MontyRuntimeError: MemoryError: memory limit exceeded: 67153400 bytes > 50000000 bytes
+[     0.7 ms] unbounded recursion                          MontyRuntimeError: RecursionError: maximum recursion depth exceeded
+[     1.8 ms] deep recursion default 1000                  MontyRuntimeError: RecursionError: maximum recursion depth exceeded
+[     0.1 ms] exponent blow up                             MontyRuntimeError: MemoryError: memory limit exceeded: 1000044281 bytes > 50000000 bytes
+[   310.5 ms] sum of a big range, no limit, time it        OK    49999995000000
+
+######## monty_floats.py (Windows, then identical on Linux)
+repr(math.sin(1.0))                           0.8414709848078965
+repr(math.sin(1e22))                          -0.8522008497671888
+repr(math.exp(1.0))                           2.718281828459045
+repr(math.pow(2.5, 3.7))                      29.67413253642086
+repr(2.5 ** 3.7)                              29.67413253642086
+repr(math.cos(0.5))                           0.8775825618903728
+repr(math.atan2(1.0, 2.0))                    0.4636476090008061
+repr(math.log(10.0))                          2.302585092994046
+repr(math.sqrt(2.0))                          1.4142135623730951
+repr(math.sin(1e300))                         -0.8178819121159085
+repr(math.exp(700.5))                         1.6721859620674984e+304
+struct.pack('<d', 1.1).hex()                  MontyRuntimeError: ModuleNotFoundError: No module named 'struct'
+hash('abc')                                   -1222198482973350627
+hash((1, 2))                                  -358736473817604792
+[hash(s) for s in ['a', 'b']]                 [8186225505942432243, -1453566477129800694]
+time.time()                                   1767225600.0   [frozen clock, seed 7]
+[random.random(), random.random()]            [0.32383276483316237, 0.15084917392450192]   [frozen clock, seed 7]
+(Linux output identical: NO)
+
+######## float_search.py + float_compare.py: 5,000 pseudo-random inputs x 21 math functions, hex-float results compared
+
+== monty-win vs monty-lin  (5000 rows)
+  sin    differs in   161 of 5000  worst 1 ulp  first row 94: -0x1.d5aad017a781fp-1 vs -0x1.d5aad017a7820p-1
+  cos    differs in   176 of 5000  worst 1 ulp  first row 10: 0x1.d39519f2138e1p-1 vs 0x1.d39519f2138e2p-1
+  tan    differs in   214 of 5000  worst 1 ulp  first row 10: -0x1.c8d075405d3a4p-2 vs -0x1.c8d075405d3a5p-2
+  exp    differs in    29 of 5000  worst 1 ulp  first row 515: 0x1.42285b5b5d50ep+413 vs 0x1.42285b5b5d50dp+413
+  pow    differs in    11 of 5000  worst 1 ulp  first row 118: 0x1.121114d3f7556p+0 vs 0x1.121114d3f7557p+0
+  sinh   differs in  1394 of 5000  worst 1 ulp  first row 2: 0x1.649e8c9cb839ep+2 vs 0x1.649e8c9cb839dp+2
+  cosh   differs in  1330 of 5000  worst 2 ulp  first row 1: 0x1.4bea1c9271152p+18 vs 0x1.4bea1c9271153p+18
+  tanh   differs in   140 of 5000  worst 2 ulp  first row 12: 0x1.fa85e8086bb11p-2 vs 0x1.fa85e8086bb10p-2
+  asin   differs in   335 of 5000  worst 1 ulp  first row 1: 0x1.c2f82451694b0p-1 vs 0x1.c2f82451694b1p-1
+  acos   differs in   397 of 5000  worst 1 ulp  first row 11: 0x1.149a6096016d0p+1 vs 0x1.149a6096016d1p+1
+  log10  differs in   320 of 5000  worst 1 ulp  first row 15: 0x1.fa4add6228d61p+0 vs 0x1.fa4add6228d60p+0
+  log2   differs in     6 of 5000  worst 1 ulp  first row 2013: 0x1.44ed493d8a40cp+2 vs 0x1.44ed493d8a40dp+2
+  expm1  differs in   368 of 5000  worst 2 ulp  first row 24: 0x1.132ceca7db0b9p+13 vs 0x1.132ceca7db0b8p+13
+  log1p  differs in   200 of 5000  worst 1 ulp  first row 46: 0x1.98bc6c6e271abp+1 vs 0x1.98bc6c6e271aap+1
+  cbrt   differs in  1457 of 5000  worst 2 ulp  first row 2: 0x1.98be96e751986p+1 vs 0x1.98be96e751985p+1
+  total differing values: 6538
+
+== cpy-win vs cpy-lin  (5000 rows)
+  sin    differs in   161 of 5000  worst 1 ulp  first row 94: -0x1.d5aad017a781fp-1 vs -0x1.d5aad017a7820p-1
+  cos    differs in   176 of 5000  worst 1 ulp  first row 10: 0x1.d39519f2138e1p-1 vs 0x1.d39519f2138e2p-1
+  tan    differs in   214 of 5000  worst 1 ulp  first row 10: -0x1.c8d075405d3a4p-2 vs -0x1.c8d075405d3a5p-2
+  exp    differs in    29 of 5000  worst 1 ulp  first row 515: 0x1.42285b5b5d50ep+413 vs 0x1.42285b5b5d50dp+413
+  pow    differs in    11 of 5000  worst 1 ulp  first row 118: 0x1.121114d3f7556p+0 vs 0x1.121114d3f7557p+0
+  sinh   differs in  1394 of 5000  worst 1 ulp  first row 2: 0x1.649e8c9cb839ep+2 vs 0x1.649e8c9cb839dp+2
+  cosh   differs in  1330 of 5000  worst 2 ulp  first row 1: 0x1.4bea1c9271152p+18 vs 0x1.4bea1c9271153p+18
+  tanh   differs in   140 of 5000  worst 2 ulp  first row 12: 0x1.fa85e8086bb11p-2 vs 0x1.fa85e8086bb10p-2
+  asin   differs in   335 of 5000  worst 1 ulp  first row 1: 0x1.c2f82451694b0p-1 vs 0x1.c2f82451694b1p-1
+  acos   differs in   397 of 5000  worst 1 ulp  first row 11: 0x1.149a6096016d0p+1 vs 0x1.149a6096016d1p+1
+  log10  differs in   320 of 5000  worst 1 ulp  first row 15: 0x1.fa4add6228d61p+0 vs 0x1.fa4add6228d60p+0
+  log2   differs in   290 of 5000  worst 1 ulp  first row 10: 0x1.8a6233f1db782p+0 vs 0x1.8a6233f1db781p+0
+  expm1  differs in   368 of 5000  worst 2 ulp  first row 24: 0x1.132ceca7db0b9p+13 vs 0x1.132ceca7db0b8p+13
+  log1p  differs in   200 of 5000  worst 1 ulp  first row 46: 0x1.98bc6c6e271abp+1 vs 0x1.98bc6c6e271aap+1
+  cbrt   differs in  2523 of 5000  worst 3 ulp  first row 1: 0x1.1d464be71f5b4p+2 vs 0x1.1d464be71f5b3p+2
+  total differing values: 7888
+
+== monty-win vs cpy-win  (5000 rows)
+  log2   differs in   288 of 5000  worst 1 ulp  first row 10: 0x1.8a6233f1db781p+0 vs 0x1.8a6233f1db782p+0
+  total differing values: 288
+
+== monty-lin vs cpy-lin  (5000 rows)
+  cbrt   differs in  2296 of 5000  worst 3 ulp  first row 1: 0x1.1d464be71f5b4p+2 vs 0x1.1d464be71f5b3p+2
+  total differing values: 2296
+
+######## rune_test (rune 0.14.2)
+== generators and lazy chains
+generator over a 16-cube, even sum, count            OK 2048  (1.03ms)
+infinite generator, take 5 by next()                 OK 5004  (14.80µs)
+infinite generator through .iter().take(5)           OK 5004  (42.00µs)
+range filter map collect                             OK 8  (37.90µs)
+any over range of 10^12 (lazy?)                      OK true  (13.90µs)
+nested flat_map cube, even sum, count                OK 2048  (4.09ms)
+zip / take_while / flatten (reported missing)        ERR Missing instance function `0x2a2632342d7b45f0` for `::std::slice::Iter`  (15.70µs)
+sum over mapped range                                OK 285  (12.80µs)
+closure captures + generator closure                 OK 4  (4.70µs)
+
+== limits
+infinite loop, budget 1,000,000                      ERR Halted for unexpected reason `limited`  (1.78ms)
+1M-iteration while loop, budget 100M                 OK 1000000  (33.89ms)
+1M-iteration while loop, budget 1M                   ERR Halted for unexpected reason `limited`  (4.59ms)
+10M-iteration while loop, budget 100M (speed)        OK 10000000  (322.36ms)
+memory bomb push loop, 50 MB limit                   ERR Failed to allocate 33554432 bytes of memory  (72.77ms)
+string growth, 50 MB limit                           ERR Failed to allocate 33554432 bytes of memory  (23.82ms)
+deep recursion                                       ERR Halted for unexpected reason `limited`  (112.25ms)
+
+== sandbox by absence
+std::fs::read_to_string                              COMPILE ERROR: error: Missing item ::std::fs::read_to_string
+std::process::Command                                COMPILE ERROR: error: Missing item ::std::process::Command::new
+std::time::Instant::now                              COMPILE ERROR: error: Missing item ::std::time::Instant::now
+std::env::var                                        COMPILE ERROR: error: Missing item ::std::env::var
+hi
+std::io::println (print)                             OK 1  (33.20µs)
+std::net                                             COMPILE ERROR: error: Missing item ::std::net::TcpStream::connect
+
+== determinism
+sqrt(2.0)                                            OK 1.4142135623730951  (6.00µs)
+powi + powf(2.5, 3.7)                                OK 30.67413253642086  (17.10µs)
+exp(1.0) (absent in 0.14.2?)                         ERR Missing instance function `0x4df42a6f590b963b` for `::std::f64`  (1.40µs)
+HashMap string keys, iteration order                 OK "gamma,delta,eps,alpha,beta,"  (48.50µs)
+object (struct-like) key order                       OK "alpha,delta,gamma,beta,"  (15.60µs)
+
+######## rune_resume (rune 0.14.2)
+tick 0: script yielded 0
+tick 1: script yielded 1
+tick 2: script yielded 2
+tick 3: script yielded 3
+tick 4: script yielded 4
+tick 5: script yielded 1
+tick 6: script yielded 2
+tick 7: script yielded 3
+
+######## starlark_test (starlark 0.14.2)
+== comprehensions and laziness
+16-cube, even sum, comprehension count               OK 2048  (2.87ms, 4369 ticks)
+generator expression                                 PARSE ERROR: error: Parse error: unexpected keyword 'for', expected symbol ')'
+yield                                                PARSE ERROR: error: Parse error: cannot use reserved keyword `yield`
+dict comprehension                                   OK {0: 0, 1: 1, 2: 4, 3: 9}  (33.30µs, 4 ticks)
+range(1000000000000) is lazy (len, membership)       ERR Traceback (most recent call last): / * probe.star:1, in <module> / [len(range(1000000000000)), 5 in range(10000000000000)] / error: Error unpacking value for parameter `a1` of type `int / --> probe.st  (48.80µs, 1 ticks)
+any() over range 1000000000000 (eager list?)         ERR Traceback (most recent call last): / * probe.star:1, in <module> / any([x > 2 for x in range(1000000000000)]) / error: Error unpacking value for parameter `a1` of type `int / --> probe.star:1:21 / 1 |  (19.10µs, 1 ticks)
+
+== limits
+infinite-ish loop, 1M ticks                          ERR Execution duration limit of 1000000 ticks has been exceeded  (8.98ms, 1001000 ticks)
+loop 500k iterations, 1M ticks                       OK 500000  (3.71ms, 500001 ticks)
+comprehension of 20M, 1M ticks (counted?)            ERR Execution duration limit of 1000000 ticks has been exceeded  (5.37ms, 1001000 ticks)
+comprehension of 20M, 1M ticks + 50 MB heap          ERR Execution duration limit of 1000000 ticks has been exceeded  (5.43ms, 1001000 ticks)
+list multiply bomb, 50 MB heap                       ERR Heap memory limit of 50000000 bytes exceeded. / This error is usually emitted some time after the limit is actually exceeded, so the span may not be informative.  (245.42ms, 1 ticks)
+string growth, 50 MB heap                            PANIC in the host (Rust panic inside starlark)
+recursion                                            ERR Traceback (most recent call last): / * probe.star:3, in <module> / f(0) / * probe.star:2, in f / return f(n + 1) / * probe.star:2, in f / return f(n + 1) / * probe.star:2, in f / return f(n + 1) / * p  (137.70µs, 50 ticks)
+
+== sandbox by absence and maths
+math module                                          ERR error: Variable `math` not found, did you mean `hash`? / --> probe.star:1:1 / 1 | math.sin(1.0) / | ^^^^  (28.60µs, 0 ticks)
+load / import                                        ERR error: No imports are available, you tried `x.star` (no call to `Evaluator.set_loader`) / --> probe.star:1:1 / 1 | load('x.star', 'y') / | ^^^^^^^^^^^^^^^^^^^  (18.20µs, 0 ticks)
+open / print / time names                            ERR error: Variable `print` not found, did you mean `int`? / --> probe.star:1:7 / 1 | [type(print), 'open' in dir()] / |       ^^^^^  (16.20µs, 0 ticks)
+floats                                               OK [9.25, 0.3333333333333333, 1e+22]  (43.40µs, 0 ticks)
+dict order                                           OK ["alpha", "beta", "gamma"]  (35.90µs, 1 ticks)
+set / hash order                                     OK [("b", 1), ("a", 2)]  (17.60µs, 1 ticks)
+ticks counted by a fixed program                     OK 499500  (40.40µs, 1001 ticks)
+
+######## quickjs_test (rquickjs 0.14.0, QuickJS-ng)
+== generators and iterator helpers
+generator over a 16-cube, even sum, count          OK 2048  (758.90µs, 2 polls)
+typeof Iterator, helpers present                   OK function,function,function,function,function  (26.10µs, 1 polls)
+infinite generator filter/map/take(5)              OK 0,4,16,36,64  (44.70µs, 1 polls)
+any (some) over infinite generator, lazy?          OK true  (19.50µs, 1 polls)
+flatMap cube with filter, count                    OK 2048  (2.50ms, 4 polls)
+array comprehension syntax                         ERR SyntaxError: unexpected token in expression: 'for'  (13.80µs, 0 polls)
+
+== limits
+while(true){} with 1,000 polls allowed             ERR InternalError: interrupted  (13.44ms, 1001 polls)
+10M-iteration loop, count polls (no limit)         OK 49999995000000  (376.27ms, 2001 polls)
+same loop again (poll count repeatable?)           OK 49999995000000  (375.88ms, 2001 polls)
+loop of 1M iterations, polls                       OK 499999500000  (37.78ms, 201 polls)
+loop of 1M function calls, polls                   OK 1000000  (61.88ms, 301 polls)
+memory bomb array, 50 MB limit                     ERR Null"null"  (46.94ms, 2 polls)
+string repeat bomb, 50 MB limit                    ERR RangeError: invalid string length  (44.10µs, 1 polls)
+deep recursion, 512 KB stack                       ERR RangeError: Maximum call stack size exceeded  (214.80µs, 1 polls)
+
+== sandbox by absence, clock, maths
+typeof globals                                     OK undefined,undefined,undefined,undefined,undefined,undefined,undefined,function,function  (17.80µs, 1 polls)
+Date.now (clock reachable?)                        OK number  (8.30µs, 1 polls)
+Math.random unseeded x2                            OK 0.7796544363817288,0.4073869956204552  (15.70µs, 1 polls)
+Math.sin(1), exp(1), pow(2.5,3.7)                  OK 0.8414709848078965,2.718281828459045,29.67413253642086,-0.8522008497671888  (20.10µs, 1 polls)
+Function constructor escape attempt                OK undefined  (13.10µs, 1 polls)
+object key order (integer keys first)              OK 1,2,b,a  (15.60µs, 1 polls)
+
+######## tcl_probe.tcl (Tcl 8.6.17 from Git for Windows), up to the limits section
+Tcl 8.6.17 on Windows NT
+
+== generator-style forms
+lmap with continue as filter (4096 -> 2048)        code=0 2048                                                                                            (0.7 ms)
+nested foreach cube, even sum, count               code=0 2048                                                                                            (1.1 ms)
+nested lmap flatten, count                         code=0 2048                                                                                            (1.4 ms)
+coroutine generator, take 5                        code=0 1 2 3 4 5                                                                                       (0.0 ms)
+dict map                                           code=0 a 1 b 4 c 9                                                                                     (0.0 ms)
+
+== sandbox: hidden commands
+visible: open exec file socket source load cd pwd exit code=0                                                                                                 (0.0 ms)
+try open a file                                    code=1 invalid command name "open"                                                                     (0.0 ms)
+try exec                                           code=1 invalid command name "exec"                                                                     (0.0 ms)
+clock is visible? (clock seconds)                  code=0 1794714991                                                                                      (0.0 ms)
+rand unseeded x2                                   code=0 0.06603590122705134 0.8653919230519757                                                          (0.0 ms)
+sin/exp/pow                                        code=0 0.8414709848078965 2.718281828459045 29.67413253642086 0.46261304076460175                      (0.0 ms)
+
+== limits
+
+######## tcl_limits.tcl, one process per case, 8 s kill
+case 1: no output within 8 s (killed): the limit did not stop it
+for {} {1} {incr k} {}, command limit 1000     code=1 command count limit exceeded                                           (0.1 ms)
+1M proc calls, command limit 10000             code=1 command count limit exceeded                                           (1.0 ms)
+100k plain loop, command limit 1000            code=1 command count limit exceeded                                           (0.1 ms)
+while 1 {} , time limit 1 s                    code=1 time limit exceeded                                                    (806.1 ms)
+for/incr loop, time limit 1 s                  code=1 time limit exceeded                                                    (960.0 ms)
+while 1 {set x 1}, command limit 1000          code=1 command count limit exceeded                                           (0.1 ms)
+while 1 {expr {1+1}}, command limit 1000       code=1 command count limit exceeded                                           (0.0 ms)
+unbounded recursion, no limit                  code=1 too many nested evaluations (infinite loop?)                           (1.2 ms)
+
+######## jaq 3.1.2
+$ jaq -n [range(16) as $x | range(16) as $y | range(16) as $z | select(($x+$y+$z)%2==0) | [$x,$y,$z]] | length
+2048
+$ jaq -n first(range(1000000000000))
+0
+$ jaq -nc [limit(5; repeat(1))]
+[1,1,1,1,1]
+$ jaq -nc [limit(5; range(0; 1000000000000) | select(. % 2 == 0) | . * .)]
+[0,4,16,36,64]
+$ jaq -nc [(1|sin), (1|exp), pow(2.5; 3.7), (1e22|sin)]
+[0.8414709848078965,2.7182818284590455,29.67413253642086,-0.8522008497671888]
+$ timeout 5 jaq -n until(false; .)
+exit=124 (124 means killed by the timeout)

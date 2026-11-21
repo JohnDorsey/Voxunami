@@ -31,6 +31,77 @@ fn the_default_lighting_is_a_pack_the_checks_accept_and_so_is_one_that_reads_the
 }
 
 #[test]
+fn a_pack_says_how_the_relief_is_drawn_or_leaves_it_to_the_engine() {
+    let pack = ShaderPack::new("test:pack", "Test", DEFAULT_LIGHTING).expect("a valid pack");
+    assert_eq!(pack.relief(), None);
+    assert_eq!(
+        pack.clone().with_relief(Relief::Flat).relief(),
+        Some(Relief::Flat)
+    );
+    assert_eq!(
+        pack.clone().with_relief(Relief::Prisms).relief(),
+        Some(Relief::Prisms)
+    );
+    assert_eq!(
+        pack.with_relief(Relief::ParallaxOcclusion).relief(),
+        Some(Relief::ParallaxOcclusion)
+    );
+    // Every relief, in the order of its words (the place of a word is its constant in the shaders, so a new one goes last), by the name it is usually called.
+    assert_eq!(
+        Relief::ALL.map(Relief::name),
+        ["flat", "prisms", "parallax_occlusion"]
+    );
+    for relief in Relief::ALL {
+        assert_eq!(Relief::from_name(relief.name()), Some(relief));
+    }
+    assert_eq!(Relief::from_name("bumpy"), None);
+    assert_eq!(
+        Relief::from_name("Prisms"),
+        None,
+        "the words are lower case"
+    );
+}
+
+#[test]
+fn a_pack_may_not_define_a_name_of_either_relief_and_each_relief_has_names_of_its_own() {
+    // Names every relief has (as constants in one and variables in the others), names that prisms and parallax occlusion share, and names that only one of them has: the pack is
+    // checked against all of them (`smooth_height` is only in the shader of parallax occlusion, `column_height` only in the prisms').
+    for name in [
+        "parallax_shift",
+        "picture_prepare",
+        "column_height",
+        "gather_heights",
+        "smooth_height",
+        "relief_ray",
+    ] {
+        let text = format!(
+            "fn {name}() -> f32 {{ return 1.0; }}\nfn pack_shade(s: Surface) -> vec3<f32> {{ return s.albedo; }}"
+        );
+        let problems = problems_of(&text);
+        assert_eq!(problems.len(), 1, "{name}: {problems:?}");
+    }
+}
+
+#[test]
+fn a_pack_may_read_the_constants_of_the_settings_and_may_not_define_one() {
+    // The engine's settings are constants of the shader a pack is put after, so a pack reads them...
+    let reading = "fn pack_shade(s: Surface) -> vec3<f32> { return s.albedo * (SCENE_LIFT - RELIEF_DEPTH - WALL_DARKNESS); }";
+    assert!(
+        ShaderPack::new("test:pack", "Test", reading).is_ok(),
+        "{:?}",
+        problems_of(reading)
+    );
+    // ...and may not make one of its own of the same name.
+    for name in ["SCENE_LIFT", "RELIEF_DEPTH", "WALL_DARKNESS"] {
+        let text = format!(
+            "const {name}: f32 = 2.0;\nfn pack_shade(s: Surface) -> vec3<f32> {{ return s.albedo; }}"
+        );
+        let problems = problems_of(&text);
+        assert_eq!(problems.len(), 1, "{name}: {problems:?}");
+    }
+}
+
+#[test]
 fn a_pack_that_does_not_define_pack_shade_is_refused_whole() {
     let problems = problems_of("fn something_else(s: Surface) -> vec3<f32> { return s.albedo; }");
     assert_eq!(problems.len(), 1);

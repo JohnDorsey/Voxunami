@@ -47,6 +47,16 @@ pub trait TerrainGenerator: Debug + Send + Sync {
         true
     }
 
+    /// Whether every voxel of every brick of the cube is air, as [`TerrainGenerator::generate_brick`] makes them: a ship that goes through a cube of this and has nothing built in
+    /// it needs no colliders of its bricks. `false` when unsure, which is the default (and for a cube that is air in all but a voxel).
+    ///
+    /// Unlike [`TerrainGenerator::may_show`] this is not only about what is drawn: a generator that says `true` of a cube that has ground in it leaves a ship to go through the
+    /// ground, so its answer is as much a part of the generator as its bricks are.
+    fn is_air(&self, cube: BrickCube) -> bool {
+        let _ = cube;
+        false
+    }
+
     /// A ball that is ground all through, if the generator has one: a planet has its core. What is behind it is hidden from a viewer outside it, so a view need not
     /// draw it. `None`, the default, when there is none or the generator does not say.
     ///
@@ -173,6 +183,10 @@ impl TerrainGenerator for FieldTerrainGenerator {
 
     fn may_show(&self, cube: BrickCube) -> bool {
         crate::coarse::cube_may_show(&*self.field, cube)
+    }
+
+    fn is_air(&self, cube: BrickCube) -> bool {
+        crate::coarse::cube_is_air(&*self.field, cube)
     }
 }
 

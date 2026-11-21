@@ -7,8 +7,11 @@
 //! ```
 //!
 //! `id` (a namespaced id) and `name` are required; `interface` is the version of the pack interface the pack is written for (the renderer's
-//! [`renderer::SHADER_PACK_INTERFACE`]), and a pack for another is refused; `format` may be 1; `description` is free text. `lighting.wgsl` defines `pack_shade`: the renderer's
-//! [`renderer::ShaderPack::new`] checks it. Packs are the client's own: a folder of them lives in the game data folder (`shaderpacks`), and `--shader-packs` names another.
+//! [`renderer::SHADER_PACK_INTERFACE`]), and a pack for another is refused; `format` may be 1; `description` is free text; `settings` declares settings of the pack's own (each a
+//! name with a `type` (`float`, `integer`, `switch` or `choice`), a `default`, for a number a range and for a choice its `options`; the lighting reads `steps` as `SETTING_STEPS`)
+//! and `engine_settings` the defaults it sets for the engine's (`{ "relief": "flat" }` draws the relief of block pictures flat unless the player says otherwise). `lighting.wgsl`
+//! defines `pack_shade`: the renderer's [`renderer::ShaderPack::new`] checks it. Packs are the client's own: a folder of them lives in the game data folder (`shaderpacks`), and
+//! `--shader-packs` names another. What a player chooses of a pack's settings is kept in a file next to its folder (`cel.settings.json` for `cel`; see [`crate::shader_pack_settings`]).
 
 use std::path::{Path, PathBuf};
 
@@ -17,13 +20,23 @@ use namespaced_id::NamespacedId;
 use renderer::{SHADER_PACK_INTERFACE, ShaderPack};
 
 /// The keys a `pack.json` may have.
-const KEYS: [&str; 5] = ["id", "name", "format", "interface", "description"];
+const KEYS: [&str; 7] = [
+    "id",
+    "name",
+    "format",
+    "interface",
+    "description",
+    "settings",
+    "engine_settings",
+];
 
 /// A pack the player can choose: its id and its name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShaderPackName {
     pub id: String,
     pub name: String,
+    /// The settings in play with the pack (`renderer::ShaderPack::settings`): the engine's with the pack's defaults, then its own.
+    pub settings: Vec<renderer::SettingDeclaration>,
 }
 
 /// The packs found in a folder, and what was wrong with the folders that are not packs.
@@ -33,6 +46,8 @@ pub struct ShaderPackShelf {
     pub packs: Vec<ShaderPack>,
     /// One text for each thing wrong, each naming the folder and file.
     pub problems: Vec<String>,
+    /// Where what the player chose of each pack's settings is kept, by the pack's id: next to the pack's folder, in the folder of packs it was found in.
+    pub settings_files: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl ShaderPackShelf {
@@ -43,6 +58,7 @@ impl ShaderPackShelf {
             .map(|pack| ShaderPackName {
                 id: pack.id().to_owned(),
                 name: pack.name().to_owned(),
+                settings: pack.settings(),
             })
             .collect()
     }
@@ -52,6 +68,7 @@ impl ShaderPackShelf {
     /// Adds what another shelf holds: a pack whose id is one already here is not added, and is a problem.
     fn absorb(&mut self, other: ShaderPackShelf) {
         self.problems.extend(other.problems);
+        let mut files = other.settings_files;
         for pack in other.packs {
             if let Some(first) = self.packs.iter().find(|known| known.id() == pack.id()) {
                 self.problems.push(format!(
@@ -61,6 +78,9 @@ impl ShaderPackShelf {
                     first.name()
                 ));
             } else {
+                if let Some(file) = files.remove(pack.id()) {
+                    self.settings_files.insert(pack.id().to_owned(), file);
+                }
                 self.packs.push(pack);
             }
         }
@@ -79,6 +99,18 @@ pub fn shelf_of(default: Option<&Path>, asked: Option<&Path>) -> Result<ShaderPa
         shelf.absorb(read_directory(asked)?);
     }
     Ok(shelf)
+}
+
+/// What a pack's file of chosen settings is called after the name of its folder (`cel.settings.json` for `cel`).
+pub const SETTINGS_FILE_ENDING: &str = ".settings.json";
+
+/// The name that stands for the game's own shader in a file of chosen settings, in the player's folder of packs: `default.settings.json`.
+pub const OWN_SETTINGS_NAME: &str = "default";
+
+/// The file that keeps what the player chose of the game's own shader's settings, if the data folder is known.
+pub fn own_settings_file(default_directory: Option<&Path>) -> Option<PathBuf> {
+    default_directory
+        .map(|directory| directory.join(format!("{OWN_SETTINGS_NAME}{SETTINGS_FILE_ENDING}")))
 }
 
 /// The folder of the player's shader packs in the game data folder (next to the identity), if the data folder is known. It need not exist.
@@ -158,6 +190,14 @@ pub fn read_pack(folder: &Path) -> Result<ShaderPack, Vec<String>> {
     {
         problems.push(in_file("`description` is a text".to_owned()));
     }
+    let own_settings = match object.get("settings") {
+        None => Vec::new(),
+        Some(value) => read_own_settings(value, &in_file, &mut problems),
+    };
+    let engine_defaults = match object.get("engine_settings") {
+        None => renderer::SettingChoices::new(),
+        Some(value) => read_engine_defaults(value, &in_file, &mut problems),
+    };
     let lighting = match read("lighting.wgsl") {
         Ok(lighting) => Some(lighting),
         Err(problem) => {
@@ -171,20 +211,231 @@ pub fn read_pack(folder: &Path) -> Result<ShaderPack, Vec<String>> {
     let (Some(id), Some(name), Some(lighting)) = (id, name, lighting) else {
         return Err(problems);
     };
-    ShaderPack::new(&id, &name, &lighting).map_err(|error| {
-        error
-            .problems
-            .iter()
-            .map(|problem| {
-                format!(
-                    "{shown}{}lighting.wgsl{}{}",
-                    std::path::MAIN_SEPARATOR,
-                    if problem.line.is_some() { ", " } else { ": " },
-                    problem
-                )
-            })
-            .collect()
-    })
+    ShaderPack::new_with_settings(&id, &name, &lighting, own_settings)
+        .map(|pack| {
+            pack.with_engine_defaults(engine_defaults)
+                .expect("the defaults were checked, one by one, as they were read")
+        })
+        .map_err(|error| {
+            error
+                .problems
+                .iter()
+                .map(|problem| {
+                    format!(
+                        "{shown}{}lighting.wgsl{}{}",
+                        std::path::MAIN_SEPARATOR,
+                        if problem.line.is_some() { ", " } else { ": " },
+                        problem
+                    )
+                })
+                .collect()
+        })
+}
+
+/// The keys of a setting a pack declares.
+const SETTING_KEYS: [&str; 6] = [
+    "type",
+    "description",
+    "default",
+    "minimum",
+    "maximum",
+    "options",
+];
+
+/// The settings of the `"settings"` object of a `pack.json`: each key is a name, each value an object with the type (`float`, `integer`, `switch` or `choice`), a default and, for a
+/// number, a range, and for a choice its words (`options`). Every problem is added to `problems`, and a setting that has any is left out.
+fn read_own_settings(
+    value: &serde_json::Value,
+    in_file: &dyn Fn(String) -> String,
+    problems: &mut Vec<String>,
+) -> Vec<renderer::SettingDeclaration> {
+    let Some(settings) = value.as_object() else {
+        problems.push(in_file(
+            "`settings` is an object: each key a name, each value the setting".to_owned(),
+        ));
+        return Vec::new();
+    };
+    let engine = renderer::engine_settings();
+    let mut declared = Vec::new();
+    for (name, setting) in settings {
+        match read_setting(name, setting, &engine) {
+            Ok(declaration) => declared.push(declaration),
+            Err(problem) => problems.push(in_file(problem)),
+        }
+    }
+    declared
+}
+
+fn read_setting(
+    name: &str,
+    value: &serde_json::Value,
+    engine: &[renderer::SettingDeclaration],
+) -> Result<renderer::SettingDeclaration, String> {
+    use renderer::SettingKind;
+    let Some(setting) = value.as_object() else {
+        return Err(format!(
+            "the setting `{name}` is an object with a `type` and a `default`"
+        ));
+    };
+    if let Some(key) = setting
+        .keys()
+        .find(|key| !SETTING_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!(
+            "`{key}` is not a key of the setting `{name}` (they are {})",
+            SETTING_KEYS.join(", ")
+        ));
+    }
+    if engine.iter().any(|declaration| declaration.name() == name) {
+        return Err(format!(
+            "the setting `{name}` is an engine setting's name: rename it (the engine's are set in `engine_settings`)"
+        ));
+    }
+    let description = match setting.get("description") {
+        None => "",
+        Some(serde_json::Value::String(text)) => text,
+        Some(_) => {
+            return Err(format!("`description` of the setting `{name}` is a text"));
+        }
+    };
+    let Some(kind_word) = setting.get("type").and_then(serde_json::Value::as_str) else {
+        return Err(format!(
+            "`type` of the setting `{name}` is missing, a text: float, integer, switch or choice"
+        ));
+    };
+    // (`options` are the words of a choice and nothing else has them; a number has a range and a switch and a choice have none.)
+    let only_for = |keys: &[&str], kind: &str| -> Result<(), String> {
+        match setting.keys().find(|key| {
+            ["minimum", "maximum", "options"].contains(&key.as_str())
+                && !keys.contains(&key.as_str())
+        }) {
+            Some(key) => Err(format!("`{key}` of the setting `{name}` is not for {kind}")),
+            None => Ok(()),
+        }
+    };
+    let need = |key: &str| {
+        setting
+            .get(key)
+            .ok_or_else(|| format!("`{key}` of the setting `{name}` is missing"))
+    };
+    let whole = |key: &str| -> Result<i32, String> {
+        need(key)?
+            .as_i64()
+            .and_then(|number| i32::try_from(number).ok())
+            .ok_or_else(|| format!("`{key}` of the setting `{name}` is a whole number"))
+    };
+    let number = |key: &str| -> Result<f32, String> {
+        need(key)?
+            .as_f64()
+            .map(|number| number as f32)
+            .ok_or_else(|| format!("`{key}` of the setting `{name}` is a number"))
+    };
+    let kind = match kind_word {
+        "float" => {
+            only_for(&["minimum", "maximum"], "a number")?;
+            SettingKind::Float {
+                default: number("default")?,
+                minimum: number("minimum")?,
+                maximum: number("maximum")?,
+            }
+        }
+        "integer" => {
+            only_for(&["minimum", "maximum"], "a number")?;
+            SettingKind::Integer {
+                default: whole("default")?,
+                minimum: whole("minimum")?,
+                maximum: whole("maximum")?,
+            }
+        }
+        "switch" => {
+            only_for(&[], "a switch")?;
+            SettingKind::Switch {
+                default: need("default")?
+                    .as_bool()
+                    .ok_or_else(|| format!("`default` of the setting `{name}` is true or false"))?,
+            }
+        }
+        "choice" => {
+            only_for(&["options"], "a choice")?;
+            let words = need("options")?
+                .as_array()
+                .and_then(|words| {
+                    words
+                        .iter()
+                        .map(|word| word.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<String>>>()
+                })
+                .ok_or_else(|| {
+                    format!("`options` of the setting `{name}` is a list of texts, its words")
+                })?;
+            SettingKind::Choice {
+                default: need("default")?
+                    .as_str()
+                    .ok_or_else(|| {
+                        format!("`default` of the setting `{name}` is one of its `options`, a text")
+                    })?
+                    .to_owned(),
+                options: words,
+            }
+        }
+        other => {
+            return Err(format!(
+                "`type` of the setting `{name}` is {other:?}: float, integer, switch or choice"
+            ));
+        }
+    };
+    renderer::SettingDeclaration::new(name, description, kind)
+        .map_err(|error| format!("the setting `{name}`: {error}"))
+}
+
+/// The `"engine_settings"` object of a `pack.json`: the defaults the pack sets for the engine's settings, by name, each a number, true or false, or a word of a choice.
+fn read_engine_defaults(
+    value: &serde_json::Value,
+    in_file: &dyn Fn(String) -> String,
+    problems: &mut Vec<String>,
+) -> renderer::SettingChoices {
+    let Some(defaults) = value.as_object() else {
+        problems.push(in_file(
+            "`engine_settings` is an object: each key the name of an engine setting, each value what the pack makes its default".to_owned(),
+        ));
+        return renderer::SettingChoices::new();
+    };
+    let engine = renderer::engine_settings();
+    let mut chosen = renderer::SettingChoices::new();
+    for (name, value) in defaults {
+        let Some(declaration) = engine.iter().find(|declaration| declaration.name() == name) else {
+            problems.push(in_file(format!(
+                "`engine_settings`: `{name}` is not an engine setting (they are {})",
+                engine
+                    .iter()
+                    .map(renderer::SettingDeclaration::name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+            continue;
+        };
+        let parsed = match value {
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => {
+                declaration.kind().parse(&value.to_string())
+            }
+            serde_json::Value::String(word)
+                if matches!(declaration.kind(), renderer::SettingKind::Choice { .. }) =>
+            {
+                declaration.kind().parse(word)
+            }
+            _ => Err(format!(
+                "{value} is not a value of this setting, which takes {}",
+                declaration.kind().describe()
+            )),
+        };
+        match parsed {
+            Ok(parsed) => {
+                chosen.insert(name.clone(), parsed);
+            }
+            Err(error) => problems.push(in_file(format!("`engine_settings`: `{name}`: {error}"))),
+        }
+    }
+    chosen
 }
 
 /// The packs in the folders of this folder (a file in it is not a pack and is not looked at). The packs that are good are kept whatever the others are; two with one id are one
@@ -198,6 +449,17 @@ pub fn read_directory(directory: &Path) -> Result<ShaderPackShelf, String> {
     folders.sort();
     let mut shelf = ShaderPackShelf::default();
     for folder in folders {
+        let folder_name = folder
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if folder_name == OWN_SETTINGS_NAME {
+            shelf.problems.push(format!(
+                "{}: a pack's folder is not called `{OWN_SETTINGS_NAME}`, which is the name of the file that keeps what the player chose of the game's own shader settings (`{OWN_SETTINGS_NAME}.settings.json`): rename the folder",
+                folder.display()
+            ));
+            continue;
+        }
         match read_pack(&folder) {
             Ok(pack) => {
                 if let Some(first) = shelf.packs.iter().find(|known| known.id() == pack.id()) {
@@ -208,6 +470,10 @@ pub fn read_directory(directory: &Path) -> Result<ShaderPackShelf, String> {
                         first.name()
                     ));
                 } else {
+                    shelf.settings_files.insert(
+                        pack.id().to_owned(),
+                        directory.join(format!("{folder_name}{SETTINGS_FILE_ENDING}")),
+                    );
                     shelf.packs.push(pack);
                 }
             }
@@ -277,11 +543,11 @@ pub fn run_check_shader_packs(arguments: Vec<String>) -> Result<(), String> {
         match read_pack(path) {
             Ok(pack) => ShaderPackShelf {
                 packs: vec![pack],
-                problems: Vec::new(),
+                ..ShaderPackShelf::default()
             },
             Err(problems) => ShaderPackShelf {
-                packs: Vec::new(),
                 problems,
+                ..ShaderPackShelf::default()
             },
         }
     } else {
@@ -300,4 +566,6 @@ pub fn run_check_shader_packs(arguments: Vec<String>) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests;
+mod settings_tests;
+#[cfg(test)]
+pub(crate) mod tests;

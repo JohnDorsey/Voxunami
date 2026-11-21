@@ -190,8 +190,8 @@ struct Viewer<G: GameDefinition> {
     surface_configuration: wgpu::SurfaceConfiguration,
     context: GraphicsContext,
     renderer: VoxelRenderer,
-    /// The shader packs the player has, which `.shader` chooses among (see `crate::shader_packs`).
-    shader_packs: Vec<renderer::ShaderPack>,
+    /// The shader packs the player has, which `.shader` chooses among (see `crate::shader_packs`), and the files that keep what they chose of the settings.
+    shader_packs: crate::view::ShaderPacks,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
@@ -615,12 +615,21 @@ impl<G: GameDefinition> Viewer<G> {
         // The shader the player chose (`.shader`): at once if it is the one drawn with. A pack the graphics card refuses is taken off, and the player is told.
         if let Err(error) = apply_shader_pack(
             &mut self.renderer,
-            &self.shader_packs,
+            &self.shader_packs.packs,
             self.session.settings(),
         ) {
             self.session.reject_shader_pack();
             eprintln!("{error}");
             self.reply = Some((error, now));
+        }
+        // What the player chose of the settings, kept in the files next to the packs (only what changed is written; a failure is said once).
+        for warning in self
+            .shader_packs
+            .files
+            .save_changes(&self.session.settings().pack_settings)
+        {
+            eprintln!("warning: shader settings: {warning}");
+            self.reply = Some((warning, now));
         }
         self.show_other_players_carried_on(now);
         show_entity_boxes(&mut self.renderer, &self.session);

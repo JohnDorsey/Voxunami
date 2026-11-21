@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use block_models::BlockTable;
-use coarse_cells::DetailSettings;
+use coarse_cells::{CoarseCell, CoarseNode, DetailSettings};
 use region_octree::BrickCube;
 use terrain::test_support::ball;
 use terrain::{SurfaceLayers, TerrainGenerator};
@@ -573,4 +573,393 @@ fn the_horizon_goes_with_the_viewer_what_was_hidden_is_drawn_when_the_viewer_goe
     );
     assert!(from_top > 5, "{from_top}");
     assert!(from_bottom * 2 < from_top, "{from_bottom} {from_top}");
+}
+
+// ---- a ship that is far: no brick and no generator, only the nodes the server sent ----
+
+fn far_view_settings() -> ViewSettings {
+    // (No brick is drawn of a far ship: the ball of bricks round the viewer has no radius.)
+    ViewSettings {
+        view_radius_bricks: 0,
+        worker_count: 3,
+    }
+}
+
+fn far_ship(scene: &Scene) -> ShipTerrainMesher {
+    ShipTerrainMesher::with_detail(
+        PLANET,
+        far_view_settings(),
+        ViewChannels::new(scene.material, None, None),
+        table_of(scene),
+        config(),
+        settings(),
+    )
+}
+
+/// A node that draws as a cube of the block.
+fn solid(block: u32) -> CoarseNode {
+    CoarseNode::uniform(CoarseCell {
+        block,
+        fill: 255,
+        light: 255,
+        exposure: 0,
+    })
+}
+
+/// Every cube of detail level 1 to 12 that meets the box.
+fn cubes_meeting(bounds: BrickBox) -> Vec<BrickCube> {
+    let mut cubes = Vec::new();
+    for level in 1..=12 {
+        let edge = 1i128 << level;
+        let (low, high) = (bounds.min(), bounds.max());
+        for x in low.x().div_euclid(edge)..=high.x().div_euclid(edge) {
+            for y in low.y().div_euclid(edge)..=high.y().div_euclid(edge) {
+                for z in low.z().div_euclid(edge)..=high.z().div_euclid(edge) {
+                    cubes.push(
+                        BrickCube::new(BrickCoordinate::new(x * edge, y * edge, z * edge), level)
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+    }
+    cubes
+}
+
+#[test]
+fn a_far_ship_is_drawn_as_the_nodes_it_was_given_at_the_levels_the_viewer_selects_and_never_as_bricks()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    // The ship is 4 bricks across, 30 bricks (960 voxels) from the viewer along x, within the 1,500 voxels the settings reach.
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(33, 3, 3)).unwrap();
+    let voxels = no_edits(&scene);
+    let source = ShipTerrainSource::far(&voxels, bounds);
+    let mut ship = far_ship(&scene);
+    for cube in cubes_meeting(bounds) {
+        ship.set_override(cube, Some(solid(stone)));
+    }
+    let viewer = viewer_in(brick(0, 0, 0));
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&source, viewer));
+    assert!(ship.is_settled());
+    assert!(screen.bricks.is_empty(), "a far ship has no brick to draw");
+
+    // What is drawn is what the selection from the viewer's brick chooses among the cubes of the ship, and the selection is the one a server makes.
+    let view = coarse_cells::ViewSelection {
+        detail: settings().detail,
+        zoom: None,
+        fine_radius: 0,
+        maximum_distance: settings().maximum_distance,
+    };
+    let mut expected: Vec<BrickCube> =
+        coarse_cells::select_around_brick(brick(0, 0, 0), &view, &|cube| cube.meets(bounds))
+            .into_iter()
+            .filter(|cube| cube.level() >= 1)
+            .collect();
+    expected.sort_by_key(|cube| (cube.level(), cube.origin()));
+    let mut drawn: Vec<BrickCube> = screen.nodes.keys().copied().collect();
+    drawn.sort_by_key(|cube| (cube.level(), cube.origin()));
+    assert!(drawn.len() > 3, "{drawn:?}");
+    assert_eq!(drawn, expected);
+}
+
+// ---- a far ship waits for the server to say what is in every cube of a finer picture before it draws it ----
+
+/// The cubes a client draws of a ship with `bounds` for a viewer in `viewer`, the finest first.
+fn far_selection(viewer: BrickCoordinate, bounds: BrickBox) -> Vec<BrickCube> {
+    let view = coarse_cells::ViewSelection {
+        detail: settings().detail,
+        zoom: None,
+        fine_radius: 0,
+        maximum_distance: settings().maximum_distance,
+    };
+    let mut cubes: Vec<BrickCube> =
+        coarse_cells::select_around_brick(viewer, &view, &|cube| cube.meets(bounds))
+            .into_iter()
+            .filter(|cube| cube.level() >= 1)
+            .collect();
+    cubes.sort_by_key(|cube| (cube.level(), cube.origin()));
+    cubes
+}
+
+fn drawn(screen: &Screen) -> Vec<BrickCube> {
+    let mut cubes: Vec<BrickCube> = screen.nodes.keys().copied().collect();
+    cubes.sort_by_key(|cube| (cube.level(), cube.origin()));
+    cubes
+}
+
+/// Whether the two cubes are the same, or one is inside the other.
+fn overlap(one: BrickCube, other: BrickCube) -> bool {
+    let level = one.level().max(other.level());
+    BrickCube::containing(one.origin(), level) == BrickCube::containing(other.origin(), level)
+}
+
+/// Every brick of the box is under exactly one node (none without a picture, none drawn twice).
+fn assert_each_brick_is_under_one_node(screen: &Screen, bounds: BrickBox) {
+    let (low, high) = (bounds.min(), bounds.max());
+    for x in low.x()..=high.x() {
+        for y in low.y()..=high.y() {
+            for z in low.z()..=high.z() {
+                let at = BrickCoordinate::new(x, y, z);
+                let covering = screen.nodes.keys().filter(|cube| cube.contains(at)).count();
+                assert_eq!(covering, 1, "the brick {at:?} is under {covering} nodes");
+            }
+        }
+    }
+}
+
+/// What a client has been told so far of a ship that was far when the viewer was in the brick 0: the cubes it draws then, and the cubes that hold them.
+fn tell_the_first_picture(ship: &mut ShipTerrainMesher, picture: &[BrickCube], block: u32) {
+    for cube in picture {
+        for level in cube.level()..=12 {
+            let cube = BrickCube::containing(cube.origin(), level);
+            ship.set_override(cube, Some(solid(block)));
+        }
+    }
+}
+
+#[test]
+fn a_far_ship_keeps_what_it_draws_until_it_is_told_what_is_in_every_cube_of_the_finer_picture() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(45, 15, 15)).unwrap();
+    let voxels = no_edits(&scene);
+    let source = ShipTerrainSource::far(&voxels, bounds);
+    let mut ship = far_ship(&scene);
+    let (first, second) = (
+        far_selection(brick(0, 0, 0), bounds),
+        far_selection(brick(10, 0, 0), bounds),
+    );
+    let new_cubes: Vec<BrickCube> = second
+        .iter()
+        .copied()
+        .filter(|cube| !first.contains(cube))
+        .collect();
+    assert!(new_cubes.len() > 2, "{first:?} {second:?}");
+
+    tell_the_first_picture(&mut ship, &first, stone);
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&source, viewer_in(brick(0, 0, 0))));
+    assert_eq!(drawn(&screen), first);
+
+    // The viewer comes near, and the server has not said anything of the cubes it draws there: what is drawn stays, and the view does not wait for ever.
+    let near = viewer_in(brick(10, 0, 0));
+    screen.apply_planet(ship.settle(&source, near));
+    assert_eq!(drawn(&screen), first);
+    assert_each_brick_is_under_one_node(&screen, bounds);
+    assert!(ship.is_settled());
+    // What waits is named, with the reason, and is not a stall the program is to report: the server will say.
+    assert!(!ship.stalled().is_empty());
+    assert!(
+        ship.stalled()
+            .iter()
+            .all(|stall| stall.reason.contains("server")),
+        "{:?}",
+        ship.stalled()
+    );
+    assert_eq!(ship.take_stall_report(), None);
+
+    // The server says all but one of the new cubes: what they replace is replaced, and what the last one replaces is not.
+    let (last, told) = new_cubes.split_last().unwrap();
+    for cube in told {
+        ship.set_override(*cube, Some(solid(stone)));
+    }
+    screen.apply_planet(ship.settle(&source, near));
+    assert_each_brick_is_under_one_node(&screen, bounds);
+    let waiting_for: Vec<BrickCube> = first
+        .iter()
+        .copied()
+        .filter(|cube| overlap(*cube, *last))
+        .collect();
+    assert!(!waiting_for.is_empty());
+    for cube in &waiting_for {
+        assert!(
+            screen.nodes.contains_key(cube),
+            "{cube:?} went before {last:?} came"
+        );
+    }
+    assert!(!screen.nodes.contains_key(last));
+    assert!(
+        told.iter().any(|cube| screen.nodes.contains_key(cube)),
+        "what was told is not drawn for waiting for the last"
+    );
+
+    // And when it has said that one, the finer picture is all there is.
+    ship.set_override(*last, Some(solid(stone)));
+    screen.apply_planet(ship.settle(&source, near));
+    assert_eq!(drawn(&screen), second);
+    assert_each_brick_is_under_one_node(&screen, bounds);
+}
+
+#[test]
+fn a_far_ship_draws_nothing_in_a_cube_the_server_said_is_empty_and_goes_on_without_waiting_for_a_node_of_it()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(45, 15, 15)).unwrap();
+    let voxels = no_edits(&scene);
+    let source = ShipTerrainSource::far(&voxels, bounds);
+    let mut ship = far_ship(&scene);
+    let (first, second) = (
+        far_selection(brick(0, 0, 0), bounds),
+        far_selection(brick(10, 0, 0), bounds),
+    );
+    tell_the_first_picture(&mut ship, &first, stone);
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&source, viewer_in(brick(0, 0, 0))));
+    let new_cubes: Vec<BrickCube> = second
+        .iter()
+        .copied()
+        .filter(|cube| !first.contains(cube))
+        .collect();
+    let (empty, told) = new_cubes.split_last().unwrap();
+    for cube in told {
+        ship.set_override(*cube, Some(solid(stone)));
+    }
+    ship.set_override(*empty, None);
+    screen.apply_planet(ship.settle(&source, viewer_in(brick(10, 0, 0))));
+    let expected: Vec<BrickCube> = second
+        .iter()
+        .copied()
+        .filter(|cube| cube != empty)
+        .collect();
+    assert_eq!(drawn(&screen), expected);
+    assert!(ship.stalled().is_empty(), "{:?}", ship.stalled());
+}
+
+#[test]
+fn a_far_ship_cube_that_is_empty_says_so_for_the_cubes_inside_it_as_well() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(45, 15, 15)).unwrap();
+    let voxels = no_edits(&scene);
+    let source = ShipTerrainSource::far(&voxels, bounds);
+    let mut ship = far_ship(&scene);
+    let near = brick(10, 0, 0);
+    let picture = far_selection(near, bounds);
+    // The cube that holds the finest cube drawn is told to be empty, and nothing of what is inside it is told.
+    let finest = picture[0];
+    let empty = BrickCube::containing(finest.origin(), finest.level() + 1);
+    let inside: Vec<BrickCube> = picture
+        .iter()
+        .copied()
+        .filter(|cube| cube.level() < empty.level() && overlap(*cube, empty))
+        .collect();
+    assert!(!inside.is_empty());
+    for cube in cubes_meeting(bounds) {
+        if !overlap(cube, empty) || cube.level() > empty.level() {
+            ship.set_override(cube, Some(solid(stone)));
+        }
+    }
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&source, viewer_in(near)));
+    let expected: Vec<BrickCube> = picture
+        .iter()
+        .copied()
+        .filter(|cube| !inside.contains(cube))
+        .collect();
+    // Until the server says, the cubes inside wait (and the rest is drawn).
+    assert_eq!(drawn(&screen), expected);
+    let waiting: Vec<BrickCube> = ship.stalled().iter().map(|stall| stall.cube).collect();
+    assert!(
+        inside.iter().all(|cube| waiting.contains(cube)) && !waiting.is_empty(),
+        "{waiting:?}"
+    );
+    // The cube that holds them is said to be empty after they were asked for: what waited is made.
+    ship.set_override(empty, None);
+    screen.apply_planet(ship.settle(&source, viewer_in(near)));
+    assert_eq!(drawn(&screen), expected);
+    assert!(ship.stalled().is_empty(), "{:?}", ship.stalled());
+}
+
+#[test]
+fn a_far_ship_with_a_node_for_every_cube_of_its_box_is_drawn_whole_with_nothing_waited_for_beside_it()
+ {
+    // (The cubes beside a cube with a node are drawn by a planet, so that its edits show their sides; a far ship has no cube beside its box, and nobody says what is in
+    // one.)
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let bounds = BrickBox::new(brick(30, 0, 0), brick(45, 15, 15)).unwrap();
+    let voxels = no_edits(&scene);
+    let source = ShipTerrainSource::far(&voxels, bounds);
+    let mut ship = far_ship(&scene);
+    for cube in cubes_meeting(bounds) {
+        ship.set_override(cube, Some(solid(stone)));
+    }
+    let mut screen = Screen::default();
+    for at in [
+        brick(0, 0, 0),
+        brick(10, 0, 0),
+        brick(29, 1, 1),
+        brick(31, 1, 1),
+    ] {
+        screen.apply_planet(ship.settle(&source, viewer_in(at)));
+        assert_eq!(drawn(&screen), far_selection(at, bounds), "{at:?}");
+        assert!(ship.stalled().is_empty(), "{at:?}: {:?}", ship.stalled());
+    }
+}
+
+#[test]
+fn a_far_ship_whose_box_changes_is_drawn_within_the_new_box_though_the_viewer_has_not_moved() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let voxels = no_edits(&scene);
+    let mut ship = far_ship(&scene);
+    let viewer = viewer_in(brick(0, 0, 0));
+    let small = BrickBox::new(brick(30, 0, 0), brick(33, 3, 3)).unwrap();
+    // The ship grows along each axis, at each end, one at a time (a box that changed in only one coordinate must be seen to have changed).
+    let grown = |low: [i128; 3], high: [i128; 3]| {
+        BrickBox::new(
+            brick(low[0], low[1], low[2]),
+            brick(high[0], high[1], high[2]),
+        )
+        .unwrap()
+    };
+    let boxes = [
+        grown([30, 0, 0], [45, 3, 3]),
+        grown([20, 0, 0], [33, 3, 3]),
+        grown([30, 0, 0], [33, 15, 3]),
+        grown([30, -12, 0], [33, 3, 3]),
+        grown([30, 0, 0], [33, 3, 15]),
+        grown([30, 0, -12], [33, 3, 3]),
+    ];
+    for bounds in boxes {
+        for cube in cubes_meeting(bounds) {
+            ship.set_override(cube, Some(solid(stone)));
+        }
+    }
+    let mut screen = Screen::default();
+    screen.apply_planet(ship.settle(&ShipTerrainSource::far(&voxels, small), viewer));
+    assert!(!screen.nodes.is_empty());
+    assert!(
+        screen.nodes.keys().all(|cube| cube.meets(small)),
+        "only what is in the box is drawn"
+    );
+    for bounds in boxes {
+        // The ship has grown, and the server says so: the same viewer, the new box.
+        screen.apply_planet(ship.settle(&ShipTerrainSource::far(&voxels, bounds), viewer));
+        assert_eq!(
+            drawn(&screen),
+            far_selection(brick(0, 0, 0), bounds),
+            "{bounds:?}"
+        );
+        assert!(
+            screen.nodes.keys().any(|cube| !cube.meets(small)),
+            "what grew is drawn: {bounds:?}"
+        );
+        // And smaller again.
+        screen.apply_planet(ship.settle(&ShipTerrainSource::far(&voxels, small), viewer));
+        assert_eq!(
+            drawn(&screen),
+            far_selection(brick(0, 0, 0), small),
+            "{bounds:?}"
+        );
+    }
 }

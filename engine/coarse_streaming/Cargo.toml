@@ -17,6 +17,7 @@ plugin_host.workspace = true
 protocol.workspace = true
 region_octree.workspace = true
 server.workspace = true
+terrain.workspace = true
 voxel_grid.workspace = true
 voxel_meshing.workspace = true
 voxel_space.workspace = true

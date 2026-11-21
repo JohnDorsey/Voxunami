@@ -306,6 +306,57 @@ fn the_client_generates_terrain_where_the_server_named_a_generator() {
     );
 }
 
+/// A watch of the region around `at`, as the server answers one: the default generator (0) for every cube of level 3 that covers it, or `other` for the first.
+fn watch_around(rig: &mut Rig, at: BrickCoordinate, other: Option<u32>) {
+    let region = BrickBox::around(at, 2);
+    let assignments = BrickCube::covering(region, 3)
+        .enumerate()
+        .map(|(index, cube)| GeneratorAssignment {
+            cube,
+            generator: Some(match other {
+                Some(generator) if index == 0 => generator,
+                _ => 0,
+            }),
+        })
+        .collect();
+    rig.send(ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
+        region,
+        assignments,
+    });
+}
+
+#[test]
+fn what_the_view_kept_for_the_terrain_is_kept_when_a_watch_tells_the_default_and_not_when_it_tells_another_generator()
+ {
+    // A view keeps what it worked out for one version of the terrain ([`WorldTerrain::version`]): the answers of `may_show`, for a hundred thousand cubes. The server
+    // answers every watch with the generator of every cube that covers the region, and nearly all of them are the default, so a flight that watches somewhere new at
+    // every brick must not make a new version of the terrain at every brick, or the view is worked out from nothing each time.
+    let mut rig = Rig::new();
+    let version = |rig: &Rig| rig.client.world().world().main().terrain.version();
+    watch_around(&mut rig, BrickCoordinate::ORIGIN, None);
+    rig.tick(5);
+    rig.client.poll_tick().unwrap().unwrap();
+    let kept = version(&rig);
+    // Somewhere new, which is cubes it has no word of, and some that it has.
+    for step in 1..=6 {
+        watch_around(&mut rig, BrickCoordinate::new(0, 4 * step, 0), None);
+        rig.tick(5 + step as u64);
+        rig.client.poll_tick().unwrap().unwrap();
+        assert_eq!(version(&rig), kept, "after {step} watches");
+    }
+    // A cube of the other generator (1: the one of the fancy terrain) is another matter, and one that is told once more is not.
+    watch_around(&mut rig, BrickCoordinate::new(0, 40, 0), Some(1));
+    rig.tick(12);
+    rig.client.poll_tick().unwrap().unwrap();
+    let after_another = version(&rig);
+    assert!(after_another > kept);
+    watch_around(&mut rig, BrickCoordinate::new(0, 40, 0), Some(1));
+    rig.tick(13);
+    rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(version(&rig), after_another);
+}
+
 #[test]
 fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     let mut rig = Rig::new();
@@ -1041,7 +1092,7 @@ fn spawn_a_ship(rig: &mut Rig) {
         id: a_ship(),
         level: LevelIndex::MAIN,
         pose: pose_at(0),
-        terrain: None,
+        content: protocol::GridContent::Bricks,
     }]));
 }
 
@@ -1064,7 +1115,7 @@ fn a_ship_with_terrain_is_known_by_its_generator_in_this_clients_numbering_and_h
         id: a_ship(),
         level: LevelIndex::MAIN,
         pose: pose_at(0),
-        terrain: Some(protocol::GridTerrainState {
+        content: protocol::GridContent::Generated(protocol::GridTerrainState {
             generator: generator.raw(),
             extent,
         }),
@@ -1090,6 +1141,81 @@ fn a_ship_with_terrain_is_known_by_its_generator_in_this_clients_numbering_and_h
         summary.grids[0].terrain,
         Some((id("base_terrain:flat_v1"), extent))
     );
+}
+
+#[test]
+fn a_far_ship_is_known_by_its_box_moves_with_changes_refuses_bricks_and_is_replaced_by_a_near_one_when_told_of_again()
+ {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    let bounds = BrickBox::around(BrickCoordinate::new(30, 0, 0), 4);
+    rig.send(ServerMessage::GridsSpawned(vec![protocol::GridState {
+        id: a_ship(),
+        level: LevelIndex::MAIN,
+        pose: pose_at(0),
+        content: protocol::GridContent::Far { bounds },
+    }]));
+    rig.tick(6);
+    rig.client.poll_tick().unwrap().unwrap();
+    let ship = rig.client.world().grids().get(a_ship()).unwrap();
+    assert_eq!(ship.far, Some(bounds));
+    assert_eq!(ship.voxels.brick_count(), 0);
+    // The replay's summary says it is far, and says which box.
+    assert_eq!(rig.client.world().summary().grids[0].far, Some(bounds));
+
+    // It moves like any other.
+    rig.send(ServerMessage::GridsChanged(vec![protocol::GridChange {
+        id: a_ship(),
+        pose: pose_at(5),
+    }]));
+    rig.tick(7);
+    rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        rig.client.world().grids().get(a_ship()).unwrap().pose,
+        pose_at(5)
+    );
+
+    // Near, it is told of again: taken back, then told of with its bricks, in one tick.
+    rig.send(ServerMessage::GridsDespawned(vec![a_ship()]));
+    rig.send(ServerMessage::GridsSpawned(vec![protocol::GridState {
+        id: a_ship(),
+        level: LevelIndex::MAIN,
+        pose: pose_at(5),
+        content: protocol::GridContent::Bricks,
+    }]));
+    let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
+    rig.send(ServerMessage::BrickContents {
+        grid: a_ship(),
+        brick: brick(30, 0, 0),
+        contents,
+    });
+    rig.tick(8);
+    rig.client.poll_tick().unwrap().unwrap();
+    let ship = rig.client.world().grids().get(a_ship()).unwrap();
+    assert_eq!((ship.far, ship.voxels.brick_count()), (None, 1));
+}
+
+#[test]
+fn a_brick_for_a_ship_that_was_told_of_as_far_away_is_a_mistake() {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    rig.send(ServerMessage::GridsSpawned(vec![protocol::GridState {
+        id: a_ship(),
+        level: LevelIndex::MAIN,
+        pose: pose_at(0),
+        content: protocol::GridContent::Far {
+            bounds: BrickBox::around(BrickCoordinate::ORIGIN, 3),
+        },
+    }]));
+    let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
+    rig.send(ServerMessage::BrickContents {
+        grid: a_ship(),
+        brick: brick(0, 0, 0),
+        contents,
+    });
+    rig.tick(6);
+    let error = rig.client.poll_tick().unwrap_err();
+    assert!(matches!(error, ClientError::BrickOfAFarGrid(grid) if grid == a_ship()));
 }
 
 #[test]
@@ -1217,7 +1343,7 @@ fn what_the_server_says_of_a_ship_it_never_described_or_described_twice_is_a_mis
                 id: a_ship(),
                 level: LevelIndex::MAIN,
                 pose: pose_at(0),
-                terrain: None,
+                content: protocol::GridContent::Bricks,
             }]),
             |error| matches!(error, ClientError::GridAlreadyKnown(grid) if *grid == a_ship()),
         ),
@@ -1228,7 +1354,7 @@ fn what_the_server_says_of_a_ship_it_never_described_or_described_twice_is_a_mis
                 id: a_ship(),
                 level: LevelIndex::MAIN,
                 pose: pose_at(0),
-                terrain: Some(protocol::GridTerrainState {
+                content: protocol::GridContent::Generated(protocol::GridTerrainState {
                     generator: 99,
                     extent: BrickBox::around(BrickCoordinate::ORIGIN, 3),
                 }),

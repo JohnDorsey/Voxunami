@@ -58,6 +58,9 @@ pub struct WorldData {
     clock: u64,
     /// The terrain generators that are data, in the order they were added (see `engine:generator_recipes`). Each is in the table of generators of every level.
     recipes: Vec<GeneratorRecipe>,
+    /// What makes far files of the ships a save writes the files of: a server puts what its plugins have here, so that a save of the world makes the files of the nodes too
+    /// whether the server is running or has ended. Not saved.
+    far_file_maker: HeldFarFileMaker,
 }
 
 /// Where the voxels of a brick come from.
@@ -154,9 +157,61 @@ pub struct WorldSave {
     pub new_ship_files: Vec<(ShipFileName, Vec<u8>)>,
     /// Every ship file the world file names: those, and those of the ships that were parked.
     pub named_ship_files: BTreeSet<ShipFileName>,
+    /// The far nodes made from the new ship files (see [`crate::far_nodes`]), to write beside them: a program that keeps nodes of ships puts them here (they are of
+    /// the state of the file and no other, which is why they are made when the save is: see [`WorldSave::new_ships`]). Empty when the world is saved. A far file that cannot be
+    /// written costs the ship its far view and nothing else.
+    pub new_far_files: Vec<(crate::far_nodes::FarFileName, Vec<u8>)>,
+    /// The ships among those of the new files that are planets (have terrain): their nodes are their generators', and a planet is never left in a file.
+    new_planets: BTreeSet<GridId>,
+}
+
+/// What makes the far files of the ships a save writes the files of (see [`WorldData::set_far_file_maker`]): given the ships and the format of ship files, the files, named
+/// for the ship files they are made from.
+pub type FarFileMaker = Arc<
+    dyn Fn(&[SavedShip], &ShipFormat) -> Vec<(crate::far_nodes::FarFileName, Vec<u8>)>
+        + Send
+        + Sync,
+>;
+
+/// The maker a world holds, if it has one (for the world to be `Debug`).
+#[derive(Clone, Default)]
+struct HeldFarFileMaker(Option<FarFileMaker>);
+
+impl std::fmt::Debug for HeldFarFileMaker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(if self.0.is_some() {
+            "a far file maker"
+        } else {
+            "no far file maker"
+        })
+    }
+}
+
+/// A ship that a save made the file of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavedShip {
+    pub grid: GridId,
+    pub file: ShipFileName,
+    /// The checksum of the bytes of the file, which a far file made of the ship says it was made from.
+    pub checksum: u32,
+    /// The ship is a planet.
+    pub has_terrain: bool,
 }
 
 impl WorldSave {
+    /// The ships whose files this save makes, each with the name of the file and the checksum of its bytes (what a far file of the ship says it was made from).
+    pub fn new_ships(&self) -> Vec<SavedShip> {
+        self.new_ship_files
+            .iter()
+            .map(|(name, bytes)| SavedShip {
+                grid: name.grid,
+                file: *name,
+                checksum: crc32fast::hash(bytes),
+                has_terrain: self.new_planets.contains(&name.grid),
+            })
+            .collect()
+    }
+
     /// Writes the set: the ship files into `files`, then the world file by `write_world`, then removes from `files` what the world file
     /// does not name (the files of earlier saves, and what saves that did not finish left). An error before the world file is in place
     /// leaves the previous set as it was, apart from files nobody names; the removals cannot fail the save, since the new set is
@@ -169,6 +224,10 @@ impl WorldSave {
         for (name, bytes) in &self.new_ship_files {
             files.write(name, bytes)?;
         }
+        // (The far nodes go beside the ship files they were made from. One that is not written is a ship with no far view, which the next save may mend.)
+        for (name, bytes) in &self.new_far_files {
+            let _ = files.far_files_mut().write(name, bytes);
+        }
         write_world(&self.world)?;
         if let Ok(names) = files.names() {
             for name in names {
@@ -177,6 +236,11 @@ impl WorldSave {
                 }
             }
         }
+        // (The far nodes of a ship file that is gone are of a state nobody can come to again. A file that cannot be removed stays for the next save.)
+        let _ = crate::far_nodes::remove_far_files_without_ship_file(
+            files.far_files_mut(),
+            &self.named_ship_files,
+        );
         Ok(())
     }
 
@@ -330,6 +394,7 @@ impl WorldData {
             grids: GridStore::new(),
             clock: 0,
             recipes: Vec::new(),
+            far_file_maker: HeldFarFileMaker::default(),
         }
     }
 
@@ -699,6 +764,12 @@ impl WorldData {
         Ok(write_container(&all))
     }
 
+    /// Says what makes the far files of the ships that a save writes the files of: it is asked in every [`WorldData::save_with_ships`] with the ships the save made files of, and
+    /// what it makes goes in [`WorldSave::new_far_files`]. Kept by the world, so that a world a server has given back is saved as the server saved it.
+    pub fn set_far_file_maker(&mut self, maker: FarFileMaker) {
+        self.far_file_maker = HeldFarFileMaker(Some(maker));
+    }
+
     /// Serializes the world as a world file and a file for each ship that is in memory, as they stand. The files are named with numbers the
     /// world has not used before, so none is the name of a file that the world file on the disk still names. The ships that are in files
     /// are named by the world file as they are.
@@ -723,18 +794,20 @@ impl WorldData {
                 level.clone(),
                 ship.pose,
                 ship.world_brick_bounds(),
+                ship.own_brick_box(),
                 ship.terrain.is_some(),
                 ship.rail.is_some(),
                 bytes,
             ));
         }
-        for (id, level, pose, bounds, has_terrain, on_a_rail, bytes) in made {
+        for (id, level, pose, bounds, extent, has_terrain, on_a_rail, bytes) in made {
             let serial = self.grids.take_serial();
             loaded.push(GridRecord {
                 id,
                 level,
                 pose,
                 bounds,
+                extent,
                 serial,
                 checksum: crc32fast::hash(&bytes),
                 waits_for_those_aboard: false,
@@ -743,17 +816,28 @@ impl WorldData {
             });
             new_ship_files.push((ShipFileName::new(id, serial), bytes));
         }
+        let new_planets: BTreeSet<GridId> = loaded
+            .iter()
+            .filter(|record| record.has_terrain)
+            .map(|record| record.id)
+            .collect();
         let records = self.grid_records(&loaded);
         let mut named_ship_files: BTreeSet<ShipFileName> =
             new_ship_files.iter().map(|(name, _)| *name).collect();
         named_ship_files.extend(self.grids.parked().map(|(_, parked)| parked.file));
         let mut all = self.engine_sections(registries, Some(&records))?;
         all.extend(self.opaque_sections.iter().cloned());
-        Ok(WorldSave {
+        let mut save = WorldSave {
             world: write_container(&all),
             new_ship_files,
             named_ship_files,
-        })
+            new_far_files: Vec::new(),
+            new_planets,
+        };
+        if let Some(maker) = &self.far_file_maker.0 {
+            save.new_far_files = maker(&save.new_ships(), &format);
+        }
+        Ok(save)
     }
 
     /// The ships a world file lists: those that are in memory (as `loaded` records them, in order of id) and those that are in files, in
@@ -769,6 +853,7 @@ impl WorldData {
                     .clone(),
                 pose: parked.pose,
                 bounds: parked.bounds,
+                extent: parked.extent,
                 serial: parked.file.serial,
                 checksum: parked.checksum,
                 waits_for_those_aboard: parked.waits_for_those_aboard,
@@ -896,6 +981,7 @@ impl WorldData {
             level,
             pose: ship.pose,
             bounds: ship.world_brick_bounds(),
+            extent: ship.own_brick_box(),
             file,
             checksum: crc32fast::hash(&bytes),
             waits_for_those_aboard,
@@ -1668,6 +1754,7 @@ impl ParsedWorld {
                             level,
                             pose: ship.pose,
                             bounds: ship.bounds,
+                            extent: ship.extent,
                             file: ShipFileName::new(ship.id, ship.serial),
                             checksum: ship.checksum,
                             waits_for_those_aboard: ship.waits_for_those_aboard,
@@ -1727,6 +1814,7 @@ impl ParsedWorld {
             grids,
             clock: self.clock,
             recipes: self.recipes,
+            far_file_maker: HeldFarFileMaker::default(),
         };
         Ok((world, report, translator))
     }

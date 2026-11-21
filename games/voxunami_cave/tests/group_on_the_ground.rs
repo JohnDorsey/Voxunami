@@ -167,22 +167,35 @@ fn a_chain_that_hits_the_ground_hard_does_not_go_through_it() {
     );
 }
 
+/// How many bricks of the ground the chain holds when it has come down to this many voxels over the highest voxel of the ground under it, falling at `speed` (the pull a hundredth of
+/// the game's, so that it goes on at that speed), made 4,100 voxels over the ground. The count is read at the first tick that it is that low and still has its frame of its own.
+fn ground_held_at(speed: f64, height: f64) -> u64 {
+    let mut chain = a_chain_going_over_the_planet(true, START_HARD, [0.0, -speed, 0.0]);
+    for _ in 0..5_000 {
+        if chain.height_and_speed().0 < height {
+            assert_eq!(chain.group_frames(), 1, "it has its frame of its own");
+            return (chain.report)().group_ground_bricks;
+        }
+        chain.scene.ticks(1);
+    }
+    panic!("the chain did not come down to {height} voxels over the ground going at {speed}");
+}
+
 #[test]
 fn the_ground_that_a_group_holds_grows_with_the_speed_it_closes_on_it() {
     // The lookahead of the terrain is 8 voxels and a quarter of a second of the speed against the ground, and a group is at rest in its frame: it is the speed of the ground
-    // against it that counts and not its own. The chain, made 4,100 voxels over the ground going down at 0, 100 and 400 voxels a second, holds 8, 22 and 117 bricks of the ground
-    // after 6 ticks (ran; bricks the generator makes empty are held too: the count is of the region that is looked at). With the speed in the frame it would hold 8 at all three.
-    let held = |speed: f64| {
-        let mut chain = a_chain_going_over_the_planet(true, START_HARD, [0.0, -speed, 0.0]);
-        chain.scene.ticks(4);
-        assert_eq!(chain.group_frames(), 1);
-        (chain.report)().group_ground_bricks
-    };
-    let (at_rest, slowly, fast) = (held(0.0), held(100.0), held(400.0));
-    assert!(at_rest > 0, "the ground was looked at");
+    // against it that counts and not its own. **Bricks of air are not made or held** (2026-11-20, `docs/ship-terrain-cost.md`: a cube that the generator says is air all through is
+    // not looked into), so a chain 3,700 voxels over the ground holds nothing of it at any speed, and this test used to count bricks of sky (8, 22 and 117 at 0, 100 and 400 voxels a
+    // second). What it counts now is the ground that it holds when it has come down to 40 voxels over it, the same height at each speed: the farther ahead it looks, the more of the
+    // ground is in what it holds. (Ran: 10, 17, 17 and 27 at 50, 100, 200 and 400; with the speed in the frame, which is none, it would hold the same at all four.)
+    let (slowly, fast) = (ground_held_at(50.0, 40.0), ground_held_at(400.0, 40.0));
     assert!(
-        slowly >= 2 * at_rest && fast >= 10 * at_rest,
-        "the group held {at_rest}, {slowly} and {fast} bricks of the ground at 0, 100 and 400 voxels a second"
+        slowly > 0,
+        "the ground was looked at, from 40 voxels over it, though slowly"
+    );
+    assert!(
+        fast >= 2 * slowly,
+        "the group held {slowly} bricks of the ground at 50 voxels a second and {fast} at 400"
     );
 }
 

@@ -173,7 +173,7 @@ impl Bodies {
                     (pair.first, first, pair.first_port, 1.0),
                     (pair.second, second, pair.second_port, -1.0),
                 ] {
-                    let Some(record) = self.record_of(id) else {
+                    let Some(record) = self.record_in_any_frame(id) else {
                         continue;
                     };
                     // (A ship that is held is not pulled.)
@@ -235,8 +235,10 @@ impl Bodies {
         {
             return false;
         }
-        let (Some(first), Some(second)) = (self.record_of(pair.first), self.record_of(pair.second))
-        else {
+        let (Some(first), Some(second)) = (
+            self.record_in_any_frame(pair.first),
+            self.record_in_any_frame(pair.second),
+        ) else {
             return false;
         };
         let rank = |id: GridId, record: &Ship| {
@@ -259,7 +261,7 @@ impl Bodies {
         let from: WorldPosition = grids.get(still).expect("checked above").pose.position;
         // The motion of both as the world has it (the bodies have written it: a ship on a rail is going as its rail goes), before one is moved.
         let motions = [still, moving].map(|id| {
-            let record = self.record_of(id)?;
+            let record = self.record_in_any_frame(id)?;
             let ship = grids.get(id)?;
             motion_of_a_ship(
                 record,

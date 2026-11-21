@@ -1,0 +1,71 @@
+Mutation experiments on the deterministic memory limit (2026-11-16, Windows)
+==========================================================================
+Each mutant breaks one rule in a backed-up copy of the source, runs the tests that should notice, and restores the
+file (harness: scratch script, not kept). KILLED = at least one test failed.
+
+Not a clean single run: the log below is the first full run (M1-M12), then a rerun of M4 and M10.
+- M10 first ran with a pattern that rustfmt had reflowed ("HARNESS ERROR"); the rerun at the end is the real result.
+- M4's integration test survived both times. Reason, read from the code and confirmed by the result: every bulk
+  allocation charges steps in proportion to its size (a step per 16 bytes at the least), which already carries a walk
+  past its spacing, so the "measure a bulk allocation at once" rule is a second guard that no script can currently get
+  past. Only the unit test in monty-types pins it. I kept the rule and say so in the test comment.
+- M9 (a new heap object is not reported to the tracker) is killed by four tests, one of them the bulk test added after
+  the first run, so that hook is not dead code.
+
+M1 a list is priced one slot too many
+    -p monty --test model_memory_costs: KILLED ['containers_cost_what_they_hold', 'a_shared_object_is_counted_once', 'a_sequence_costs_its_length_not_its_capacity', 'freed_objects_stop_counting', 'an_unreachable_cycle_counts_until_it_is_collected', 'sequences_cost_one_slot_per_item']
+    (22 s)
+M2 a dict entry is priced as a set element
+    -p monty --test model_memory_costs: KILLED ['containers_cost_what_they_hold']
+    (22 s)
+M3 capacity-based pre-checks feed the model
+    -p monty-types --test model_memory: KILLED ['the_pre_checks_that_come_from_buffer_capacities_never_reach_the_model']
+    -p monty --test model_memory_limit a_restored_session: KILLED ['a_restored_session_stops_where_the_original_would_have']
+    (26 s)
+M4 no immediate walk for a bulk allocation
+    -p monty-types --test model_memory: KILLED ['what_is_taken_on_counts_toward_the_bound_but_not_against_the_spacing_of_a_bulk_allocation']
+    -p monty --test model_memory_limit a_feed_that_ends: SURVIVED []
+    (25 s)
+M5 no spacing between walks
+    -p monty-types --test model_memory: KILLED ['a_big_heap_is_walked_less_often', 'a_walk_is_charged_to_the_step_count_and_restarts_the_schedule']
+    (2 s)
+M6 a walk is not charged to the steps
+    -p monty-types --test model_memory: KILLED ['a_walk_is_charged_to_the_step_count_and_restarts_the_schedule']
+    (2 s)
+M7 the end of a host turn does not measure
+    -p monty --test model_memory_limit a_feed_that_ends the_limit_holds_across_feeds: KILLED ['a_feed_that_ends_over_the_limit_is_stopped_at_its_end']
+    (23 s)
+M8 the dispatch checkpoint does not measure
+    -p monty --test model_memory_limit every_runaway_is_stopped: KILLED ['every_runaway_is_stopped_with_a_memory_error']
+    (53 s)
+M9 a new heap object is not reported
+    -p monty --test model_memory_limit: KILLED ['runaways_stop_at_pinned_steps', 'the_overshoot_is_a_tenth_of_the_limit_at_most', 'a_bulk_allocation_is_measured_at_once_even_in_a_big_heap', 'the_overshoot_is_small_when_the_heap_is_big']
+    (23 s)
+M10 the limit is not sent over the wire
+    HARNESS ERROR AssertionError('M10 the limit is not sent over the wire: pattern found 0x in E:/s/vx/monty/crates/monty-proto/src/convert/limits.rs')
+M11 a request over the limit is not refused
+    -p monty-types --test model_memory: KILLED ['one_request_bigger_than_the_whole_limit_is_refused_and_a_smaller_one_is_not']
+    (2 s)
+M12 no allowance for in-place growth
+    -p monty-types --test model_memory: KILLED ['a_big_heap_is_walked_less_often', 'a_small_heap_is_walked_when_the_bound_could_reach_the_limit', 'a_walk_is_charged_to_the_step_count_and_restarts_the_schedule', 'what_the_last_walk_found_counts_toward_the_bound']
+    -p monty --test model_memory_limit a_few_big_objects: KILLED ['a_few_big_objects_are_stopped_within_kilobytes']
+    (55 s)
+M4 no immediate walk for a bulk allocation
+    -p monty-types --test model_memory: KILLED ['what_is_taken_on_counts_toward_the_bound_but_not_against_the_spacing_of_a_bulk_allocation']
+    -p monty --test model_memory_limit a_feed_that_ends a_bulk_allocation: SURVIVED []
+    (25 s)
+M10 the limit is not sent over the wire
+    -p monty-proto --test roundtrip: KILLED ['resource_limits_round_trip', 'the_model_memory_limit_uses_its_own_wire_field']
+    (24 s)
+
+Added with the eval/exec pricing (M13: the VM leaves compiled source out; its REPL-level cost test survives because the REPL path does not use the VM's count, the limit test kills it):
+M13 the VM leaves compiled source out of the count
+    -p monty --test model_memory_limit every_runaway_is_stopped: KILLED ['every_runaway_is_stopped_with_a_memory_error']
+    -p monty --test model_memory_costs: SURVIVED []
+    (25 s)
+M14 published source bytes are not counted
+    -p monty --test model_memory_costs: KILLED ['source_compiled_by_eval_and_exec_is_kept_for_the_session_and_costs_by_its_length', 'the_count_is_the_same_after_a_dump_and_restore']
+    (22 s)
+M15 the byte counter is not rebuilt on load
+    -p monty --test model_memory_costs: KILLED ['the_count_is_the_same_after_a_dump_and_restore']
+    (22 s)

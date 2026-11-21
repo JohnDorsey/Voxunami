@@ -89,6 +89,43 @@ pub fn resolve_pictures(
     Some(Pictures { top, side, bottom })
 }
 
+/// Which companion of a picture a file is (`docs/specs/block-textures-spec.md`, section 4.4): the file `dirt_s.png` is the specular picture of `dirt`, and `dirt_n.png`
+/// its normal picture. The two endings are reserved: no picture is named with them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Companion {
+    Specular,
+    Normal,
+}
+
+impl Companion {
+    fn ending(self) -> &'static str {
+        match self {
+            Self::Specular => "_s",
+            Self::Normal => "_n",
+        }
+    }
+}
+
+/// The picture a file is the companion of, and which companion it is, if its name ends as a companion's does.
+fn companion_split(id: &NamespacedId) -> Option<(NamespacedId, Companion)> {
+    [Companion::Specular, Companion::Normal]
+        .into_iter()
+        .find_map(|kind| {
+            let stem = id.name().strip_suffix(kind.ending())?;
+            NamespacedId::new(id.namespace(), stem)
+                .ok()
+                .map(|picture| (picture, kind))
+        })
+}
+
+/// A companion file read, to be put with its picture once all the pictures are there: the picture's id, which companion, the pixels and the file it came from.
+struct PendingCompanion {
+    picture: NamespacedId,
+    kind: Companion,
+    tile: Tile,
+    file: String,
+}
+
 /// Every picture there is, each with the file it came from and whether a pack (and not the game) provided it.
 #[derive(Debug, Default)]
 pub(crate) struct Available {
@@ -106,10 +143,18 @@ impl Available {
     /// The game's own pictures. Every problem is added to `errors`.
     pub(crate) fn of_the_game(textures: &[GameTexture], errors: &mut Vec<PackError>) -> Self {
         let mut available = Self::default();
+        let mut companions = Vec::new();
         for texture in textures {
             match Tile::from_png(&texture.file, &texture.bytes) {
                 Ok(tile) => {
-                    if let Some(first) = available.tiles.get(&texture.id) {
+                    if let Some((picture, kind)) = companion_split(&texture.id) {
+                        companions.push(PendingCompanion {
+                            picture,
+                            kind,
+                            tile,
+                            file: texture.file.clone(),
+                        });
+                    } else if let Some(first) = available.tiles.get(&texture.id) {
                         errors.push(problem(
                             &texture.file,
                             "",
@@ -132,7 +177,51 @@ impl Available {
                 Err(error) => errors.push(error),
             }
         }
+        // (A companion with no picture is a mistake in the game's declaration, as a picture that is wrong is.)
+        let mut orphans = Vec::new();
+        available.attach(companions, &mut orphans, errors);
+        errors.extend(orphans.into_iter().map(|(file, picture)| {
+            problem(
+                file,
+                "",
+                format!("there is no picture {picture} for this companion"),
+            )
+        }));
         available
+    }
+
+    /// Puts each companion with its picture. A companion whose picture is not there is left out and returned as (its file, the picture's id); one of another size than
+    /// its picture's is an error in `errors`, naming both files.
+    fn attach(
+        &mut self,
+        companions: Vec<PendingCompanion>,
+        orphans: &mut Vec<(String, NamespacedId)>,
+        errors: &mut Vec<PackError>,
+    ) {
+        for companion in companions {
+            let Some(entry) = self.tiles.get_mut(&companion.picture) else {
+                orphans.push((companion.file, companion.picture));
+                continue;
+            };
+            if companion.tile.size() != entry.tile.size() {
+                errors.push(problem(
+                    &companion.file,
+                    "",
+                    format!(
+                        "this is {} pixels on a side and the picture it goes with ({}) is {}",
+                        companion.tile.size(),
+                        entry.file,
+                        entry.tile.size()
+                    ),
+                ));
+                continue;
+            }
+            let pixels = companion.tile.rgba().to_vec();
+            entry.tile = match companion.kind {
+                Companion::Specular => entry.tile.clone().with_specular(pixels),
+                Companion::Normal => entry.tile.clone().with_normal(pixels),
+            };
+        }
     }
 
     /// The pictures of a pack, which may replace pictures of the namespaces in `allowed` (its own and those it depends on). A file in the folder of the
@@ -147,6 +236,8 @@ impl Available {
     ) {
         let mut textures: Vec<&crate::load::RawTexture> = pack.textures.iter().collect();
         textures.sort_by(|first, second| first.name.cmp(&second.name));
+        // (The companions wait until every picture of the pack is in: a picture that replaces another brings its own, and the replaced one's go.)
+        let mut companions = Vec::new();
         for texture in textures {
             let file = format!("{}/textures/{}.png", pack.folder, texture.name);
             let (namespace, name) = match texture.name.split_once('/') {
@@ -185,6 +276,15 @@ impl Available {
                     continue;
                 }
             };
+            if let Some((picture, kind)) = companion_split(&id) {
+                companions.push(PendingCompanion {
+                    picture,
+                    kind,
+                    tile,
+                    file,
+                });
+                continue;
+            }
             match self.tiles.get(&id) {
                 Some(first) if !replacing => errors.push(problem(
                     &file,
@@ -192,12 +292,26 @@ impl Available {
                     format!("the picture {id} already exists (from {})", first.file),
                 )),
                 Some(first) => {
-                    warnings.push(format!("{file}: replaces {id} from {}", first.file));
+                    let dropped =
+                        if first.tile.specular().is_some() || first.tile.normal().is_some() {
+                            " (its specular and normal pictures go; the pack brings its own)"
+                        } else {
+                            ""
+                        };
+                    warnings.push(format!(
+                        "{file}: replaces {id} from {}{dropped}",
+                        first.file
+                    ));
                     self.insert(id, tile, file);
                 }
                 None => self.insert(id, tile, file),
             }
         }
+        let mut orphans = Vec::new();
+        self.attach(companions, &mut orphans, errors);
+        warnings.extend(orphans.into_iter().map(|(file, picture)| {
+            format!("{file}: there is no picture {picture} for this companion, so it is not used")
+        }));
     }
 
     fn insert(&mut self, id: NamespacedId, tile: Tile, file: String) {
@@ -372,10 +486,7 @@ fn check_limits(used: &BTreeSet<NamespacedId>, available: &Available, errors: &m
             }
         }
     }
-    let bytes: usize = used
-        .iter()
-        .map(|id| available.tiles[id].tile.rgba().len())
-        .sum();
+    let bytes: usize = used.iter().map(|id| available.tiles[id].tile.bytes()).sum();
     if bytes > MOST_TILE_BYTES {
         let biggest = used
             .iter()
@@ -672,6 +783,214 @@ mod tests {
                 .starts_with("my_pack/textures/broken.png: this is not a PNG picture: ")
         );
         assert!(result.available.contains(&id("my_pack:fine")));
+    }
+
+    // ---- companions: the specular (_s) and normal (_n) pictures of a picture ----
+
+    #[test]
+    fn a_file_ending_in_s_or_n_is_the_companion_of_the_picture_with_the_rest_of_its_name_and_is_no_picture_of_its_own()
+     {
+        let pack = pack_with(
+            "my_pack",
+            &[
+                ("oak", 16, [1, 2, 3, 255]),
+                ("oak_s", 16, [10, 20, 30, 40]),
+                ("oak_n", 16, [50, 60, 70, 80]),
+                ("oak_top", 16, [9, 9, 9, 255]),
+            ],
+        );
+        let result = added(&[], &pack, &["my_pack"]);
+        assert!(
+            result.errors.is_empty() && result.warnings.is_empty(),
+            "{:?} {:?}",
+            result.errors,
+            result.warnings
+        );
+        let ids: Vec<&str> = result
+            .available
+            .tiles
+            .keys()
+            .map(NamespacedId::as_str)
+            .collect();
+        assert_eq!(ids, ["my_pack:oak", "my_pack:oak_top"]);
+        let oak = &result.available.tiles[&id("my_pack:oak")].tile;
+        assert_eq!(&oak.rgba()[0..4], [1, 2, 3, 255]);
+        assert_eq!(&oak.specular().unwrap()[0..4], [10, 20, 30, 40]);
+        assert_eq!(&oak.normal().unwrap()[0..4], [50, 60, 70, 80]);
+        let top = &result.available.tiles[&id("my_pack:oak_top")].tile;
+        assert_eq!((top.specular(), top.normal()), (None, None));
+    }
+
+    #[test]
+    fn a_companion_is_read_as_data_exactly_as_the_file_has_it_including_the_alpha_that_holds_emission()
+     {
+        // (An alpha of 0 is a pixel with nothing in it for a picture; for a specular picture it is "no emission at all", and must be kept.)
+        let pack = pack_with(
+            "my_pack",
+            &[
+                ("lamp", 8, [200, 200, 200, 255]),
+                ("lamp_s", 8, [0, 0, 0, 0]),
+            ],
+        );
+        let result = added(&[], &pack, &["my_pack"]);
+        assert!(result.errors.is_empty());
+        let lamp = &result.available.tiles[&id("my_pack:lamp")].tile;
+        assert_eq!(&lamp.specular().unwrap()[0..4], [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_pack_gives_a_picture_of_the_game_a_companion_by_a_file_in_the_folder_of_the_games_namespace()
+     {
+        let game = [game_texture("base_blocks:dirt", 16, [100, 80, 60, 255])];
+        let pack = pack_with("bumpy", &[("base_blocks/dirt_n", 16, [128, 128, 255, 77])]);
+        let result = added(&game, &pack, &["bumpy", "base_blocks"]);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        let dirt = &result.available.tiles[&id("base_blocks:dirt")].tile;
+        assert_eq!(
+            &dirt.rgba()[0..4],
+            [100, 80, 60, 255],
+            "the picture is the game's"
+        );
+        assert_eq!(&dirt.normal().unwrap()[0..4], [128, 128, 255, 77]);
+        // It may not do so for a namespace it does not depend on, as for a picture.
+        let refused = added(&game, &pack, &["bumpy"]);
+        assert_eq!(refused.errors.len(), 1, "{:?}", refused.errors);
+        assert!(refused.errors[0].contains("can be put in by a pack that depends on it"));
+    }
+
+    #[test]
+    fn a_pack_that_replaces_a_picture_takes_the_games_companions_with_it_and_says_so() {
+        let mut game = vec![
+            game_texture("base_blocks:dirt", 16, [100, 80, 60, 255]),
+            game_texture("base_blocks:dirt_n", 16, [128, 128, 255, 255]),
+            game_texture("base_blocks:stone", 16, [90, 90, 90, 255]),
+            game_texture("base_blocks:stone_s", 16, [1, 2, 3, 4]),
+        ];
+        game.push(game_texture("base_blocks:sand", 16, [1, 1, 1, 255]));
+        let pack = pack_with(
+            "retexture",
+            &[
+                ("base_blocks/dirt", 16, [200, 0, 0, 255]),
+                ("base_blocks/stone", 16, [0, 200, 0, 255]),
+                ("base_blocks/stone_s", 16, [9, 9, 9, 9]),
+            ],
+        );
+        let result = added(&game, &pack, &["retexture", "base_blocks"]);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let dirt = &result.available.tiles[&id("base_blocks:dirt")].tile;
+        assert_eq!(
+            dirt.normal(),
+            None,
+            "the old picture's normal does not fit the new picture"
+        );
+        let stone = &result.available.tiles[&id("base_blocks:stone")].tile;
+        assert_eq!(
+            &stone.specular().unwrap()[0..4],
+            [9, 9, 9, 9],
+            "the pack's own companion is used"
+        );
+        assert_eq!(
+            result.warnings,
+            [
+                "retexture/textures/base_blocks/dirt.png: replaces base_blocks:dirt from game/base_blocks:dirt.png (its specular and normal pictures go; the pack brings its own)",
+                "retexture/textures/base_blocks/stone.png: replaces base_blocks:stone from game/base_blocks:stone.png (its specular and normal pictures go; the pack brings its own)",
+            ]
+        );
+        assert!(
+            result.available.tiles[&id("base_blocks:sand")]
+                .tile
+                .specular()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_companion_with_no_picture_is_a_warning_for_a_pack_and_an_error_for_the_game_and_a_companion_of_another_size_is_an_error_naming_both_files()
+     {
+        let pack = pack_with("my_pack", &[("ghost_s", 16, [1, 1, 1, 1])]);
+        let result = added(&[], &pack, &["my_pack"]);
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            result.warnings,
+            [
+                "my_pack/textures/ghost_s.png: there is no picture my_pack:ghost for this companion, so it is not used"
+            ]
+        );
+        assert!(result.available.tiles.is_empty(), "it is no picture");
+        let mut errors = Vec::new();
+        let game =
+            Available::of_the_game(&[game_texture("g:ghost_n", 16, [1, 1, 1, 1])], &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].to_string(),
+            "game/g:ghost_n.png: there is no picture g:ghost for this companion"
+        );
+        assert!(game.tiles.is_empty());
+        let wrong_size = pack_with("my_pack", &[("oak", 16, [1; 4]), ("oak_n", 32, [1; 4])]);
+        let result = added(&[], &wrong_size, &["my_pack"]);
+        assert_eq!(
+            result.errors,
+            [
+                "my_pack/textures/oak_n.png: this is 32 pixels on a side and the picture it goes with (my_pack/textures/oak.png) is 16"
+            ]
+        );
+        assert!(
+            result.available.tiles[&id("my_pack:oak")]
+                .tile
+                .normal()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_games_own_companions_are_attached_and_a_block_settled_with_them_hands_them_on_and_their_bytes_count_against_the_limit()
+     {
+        let game = [
+            game_texture("g:lamp", 8, [250, 240, 200, 255]),
+            game_texture("g:lamp_s", 8, [0, 0, 0, 200]),
+        ];
+        let mut blocks = vec![(id("g:lamp"), block([0.0; 3], Some("g:lamp"), true))];
+        let textures = settle_game_pictures(&mut blocks, &game).unwrap();
+        assert_eq!(textures.tiles.len(), 1, "the companion is not a tile");
+        let lamp = &textures.tiles[&id("g:lamp")];
+        assert_eq!(&lamp.specular().unwrap()[0..4], [0, 0, 0, 200]);
+        assert_eq!(textures.classes()[0].1[0].bytes(), 2 * 8 * 8 * 4);
+        // 17 pictures of 256 pixels with both companions are 51 MiB... 11 of them are 8.25 MiB, over the 8 MiB, where without companions they are 2.75.
+        let count = 11;
+        let mut game: Vec<GameTexture> = Vec::new();
+        let mut blocks = Vec::new();
+        for index in 0..count {
+            game.push(game_texture(&format!("g:p{index:02}"), 256, [1, 2, 3, 255]));
+            game.push(game_texture(
+                &format!("g:p{index:02}_s"),
+                256,
+                [1, 2, 3, 255],
+            ));
+            game.push(game_texture(
+                &format!("g:p{index:02}_n"),
+                256,
+                [1, 2, 3, 255],
+            ));
+            blocks.push((
+                id(&format!("g:b{index:02}")),
+                block([0.0; 3], Some(&format!("g:p{index:02}")), true),
+            ));
+        }
+        let errors = settle_game_pictures(&mut blocks, &game).unwrap_err();
+        assert_eq!(errors.0.len(), 1, "{errors:?}");
+        assert!(
+            errors.0[0]
+                .to_string()
+                .contains("take 8650752 bytes as pixels"),
+            "{errors:?}"
+        );
+        let without: Vec<GameTexture> = game
+            .iter()
+            .filter(|texture| !texture.file.contains("_s.") && !texture.file.contains("_n."))
+            .cloned()
+            .collect();
+        assert!(settle_game_pictures(&mut blocks, &without).is_ok());
     }
 
     // ---- settling the pictures of blocks ----

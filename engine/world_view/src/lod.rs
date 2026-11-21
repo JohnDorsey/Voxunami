@@ -5,8 +5,10 @@
 //! from the terrain generators or from what the server has said differs, see [`LodView::set_override`]) and then swaps what is on the screen for what is
 //! wanted in groups ([`coarse_cells::plan_swaps`]), so that a cube and what replaces it change in one frame and are never both on the screen or neither.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
@@ -19,6 +21,7 @@ use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
 use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 use world_storage::LevelData;
 
+use crate::cube_states::{Arrival, CubeStates, Replacement};
 use crate::horizon::{VIEWER_MARGIN, is_hidden_by, voxels_of};
 use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
 
@@ -56,6 +59,13 @@ pub trait CoarseTerrainSource: TerrainSource {
     /// the terrain of a level.
     fn solid_core(&self) -> Option<SolidBall> {
         None
+    }
+
+    /// Whether the nodes the server sends are all there is of this terrain: no generator makes the rest, so a cube that has no node is empty only if the server has said
+    /// so ([`LodView::set_override`] with `None`), and until it has the view waits to draw the cube (and what is to be drawn with it), and goes on drawing what it draws.
+    /// False, the default: a cube with no node is made by the generator, or is empty if there is none.
+    fn waits_for_nodes(&self) -> bool {
+        false
     }
 }
 
@@ -151,21 +161,35 @@ struct Done {
     mesh: PackedBrickMesh,
 }
 
-#[derive(Default)]
-struct NodeState {
-    /// The version of the picture on the screen, if the node is shown.
-    drawn: Option<u64>,
-    /// A picture that is up to date and not on the screen yet, with its version.
-    ready: Option<(u64, PackedBrickMesh)>,
-    /// The version being made.
-    requested: Option<u64>,
+/// What a thread that makes nodes says of a job.
+enum Finished {
+    Done(Done),
+    /// The job panicked, with this payload.
+    Panicked(Box<dyn Any + Send>),
 }
+
+/// A cube that is wanted and is not drawn, in a view that has nothing more to do: see [`LodView::stalled`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stalled {
+    pub cube: BrickCube,
+    /// Why nothing is being done to draw it, in words.
+    pub reason: String,
+}
+
+/// How many stalled cubes a report names.
+const STALL_REPORT_CUBES: usize = 5;
 
 pub struct LodView {
     mesher: WorldMesher,
     grid: GridId,
     /// What the server has said differs from the generators', by grid and cube.
     overrides: HashMap<(GridId, BrickCube), Override>,
+    /// The cubes the server has said are empty (a `None` for a cube that had no node), and the biggest level of them: a cube inside one of these is empty too.
+    /// Only a terrain that [`waits_for_nodes`](CoarseTerrainSource::waits_for_nodes) asks.
+    told_empty: HashSet<(GridId, BrickCube)>,
+    told_empty_top: u8,
+    /// The cubes that are wanted, have no node and have not been said to be empty, in a terrain that waits for nodes: they are made when the server says.
+    waiting_for_the_server: HashSet<BrickCube>,
     next_version: u64,
     /// Where the overrides are, for leaving out only the cubes that hold no edit and have none beside them.
     edited: EditedCubes,
@@ -174,14 +198,13 @@ pub struct LodView {
     updates_since_selection: u32,
     /// What the terrain said of the cubes at the last working out.
     may_show: MayShowMemo,
-    /// What is to be drawn, bricks (cubes of level 0) and nodes, and for what it was worked out.
-    wanted: HashSet<BrickCube>,
+    /// What is to be drawn and what is drawn, bricks (cubes of level 0) and nodes, and the records of the nodes (see [`CubeStates`]); and what the wanted cubes were
+    /// worked out for.
+    cubes: CubeStates,
     wanted_for: Option<(BrickCoordinate, LodSettings)>,
-    /// What is drawn: bricks that were shown (some with nothing to see) and nodes.
-    shown: HashSet<BrickCube>,
-    /// The shown nodes that have something on the screen.
-    uploaded: HashSet<BrickCube>,
-    nodes: HashMap<BrickCube, NodeState>,
+    /// The version of the terrain ([`CoarseTerrainSource::version`]) the cubes were last worked out for: when it is another, the answers that the cubes were chosen by are
+    /// not the terrain's any more (a far ship's box changed), and they are worked out again though the viewer has not moved.
+    selected_version: Option<u64>,
     /// Nodes to be made, the most wanted last.
     queue: Vec<BrickCube>,
     plan_needed: bool,
@@ -189,16 +212,23 @@ pub struct LodView {
     epoch: u64,
     in_flight: usize,
     jobs: Option<mpsc::Sender<Job>>,
-    results: mpsc::Receiver<Done>,
+    results: mpsc::Receiver<Finished>,
     workers: Vec<JoinHandle<()>>,
+    /// Whether the view had nothing more to do at the end of the last update, so that it is looked at once when it comes to rest and not at every update.
+    was_settled: bool,
+    /// The cubes that are wanted and not drawn, as of the last time the view came to rest.
+    stalls: Vec<Stalled>,
+    /// What the report of a stall said it was about, so that the same stall is not reported again.
+    stall_reported: HashSet<BrickCube>,
+    stall_report: Option<String>,
 }
 
 impl std::fmt::Debug for LodView {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("LodView")
-            .field("wanted", &self.wanted.len())
-            .field("shown", &self.shown.len())
+            .field("wanted", &self.cubes.wanted().len())
+            .field("shown", &self.cubes.shown().len())
             .field("in_flight", &self.in_flight)
             .finish_non_exhaustive()
     }
@@ -209,7 +239,7 @@ impl LodView {
     pub fn new(mesher: WorldMesher, config: LodConfig) -> Self {
         let mesher = mesher.with_held_back_display();
         let (job_sender, job_receiver) = mpsc::channel::<Job>();
-        let (result_sender, results) = mpsc::channel::<Done>();
+        let (result_sender, results) = mpsc::channel::<Finished>();
         let job_receiver = Arc::new(Mutex::new(job_receiver));
         let workers = (0..config.worker_count.max(1))
             .map(|_| {
@@ -220,23 +250,28 @@ impl LodView {
                         // Hold the lock only while waiting for the next job, not while running it.
                         let job = job_receiver.lock().expect("job queue lock").recv();
                         let Ok(job) = job else { return };
-                        let node = match job.source {
-                            Source::Override(node) => Some(node),
-                            Source::Generator(generator) => {
-                                generator.coarse_node(job.cube, config.unlit).map(Arc::new)
+                        // A generator with a bug panics here, on a thread nobody is watching: it is caught, and said to the view, which panics with it. (A thread that dies with
+                        // its job leaves the job in flight for ever and the view waiting for it, with nothing to say why.)
+                        let finished = catch_unwind(AssertUnwindSafe(|| {
+                            let node = match job.source {
+                                Source::Override(node) => Some(node),
+                                Source::Generator(generator) => {
+                                    generator.coarse_node(job.cube, config.unlit).map(Arc::new)
+                                }
+                                Source::Nothing => None,
+                            };
+                            let mesh = node
+                                .map(|node| mesh_coarse_node(&node, &[None; 6]).pack())
+                                .unwrap_or_default();
+                            Done {
+                                epoch: job.epoch,
+                                cube: job.cube,
+                                version: job.version,
+                                mesh,
                             }
-                            Source::Nothing => None,
-                        };
-                        let mesh = node
-                            .map(|node| mesh_coarse_node(&node, &[None; 6]).pack())
-                            .unwrap_or_default();
-                        let done = Done {
-                            epoch: job.epoch,
-                            cube: job.cube,
-                            version: job.version,
-                            mesh,
-                        };
-                        if result_sender.send(done).is_err() {
+                        }))
+                        .map_or_else(Finished::Panicked, Finished::Done);
+                        if result_sender.send(finished).is_err() {
                             return;
                         }
                     }
@@ -247,16 +282,17 @@ impl LodView {
             mesher,
             grid: GridId::MAIN,
             overrides: HashMap::new(),
+            told_empty: HashSet::new(),
+            told_empty_top: 0,
+            waiting_for_the_server: HashSet::new(),
             next_version: 0,
             edited: EditedCubes::new(),
             new_edits: false,
             updates_since_selection: 0,
             may_show: MayShowMemo::default(),
-            wanted: HashSet::new(),
+            cubes: CubeStates::new(),
             wanted_for: None,
-            shown: HashSet::new(),
-            uploaded: HashSet::new(),
-            nodes: HashMap::new(),
+            selected_version: None,
             queue: Vec::new(),
             plan_needed: false,
             seen_ready_serial: 0,
@@ -265,6 +301,10 @@ impl LodView {
             jobs: Some(job_sender),
             results,
             workers,
+            was_settled: false,
+            stalls: Vec::new(),
+            stall_reported: HashSet::new(),
+            stall_report: None,
         }
     }
 
@@ -279,12 +319,12 @@ impl LodView {
 
     /// The cubes that are drawn now: bricks, including those with nothing to see, and nodes. They do not overlap.
     pub fn shown(&self) -> &HashSet<BrickCube> {
-        &self.shown
+        self.cubes.shown()
     }
 
     /// The cubes that are to be drawn, as far as the last update worked it out.
     pub fn wanted(&self) -> &HashSet<BrickCube> {
-        &self.wanted
+        self.cubes.wanted()
     }
 
     /// Work in progress: bricks and nodes being made.
@@ -294,17 +334,23 @@ impl LodView {
 
     /// Whether anything is waiting to be made or swapped: the view is not yet what it is to be.
     pub fn is_settled(&self) -> bool {
-        self.pending_jobs() == 0 && self.queue.is_empty() && !self.plan_needed && !self.new_edits
+        self.mesher.is_settled()
+            && self.in_flight == 0
+            && self.queue.is_empty()
+            && !self.plan_needed
+            && !self.new_edits
     }
 
     /// The node the server says is the node of a cube instead of what the generators give (a `None` takes back what was said). Bricks have none, and
-    /// what is said of one is ignored.
+    /// what is said of one is ignored. For a terrain that waits for nodes ([`CoarseTerrainSource::waits_for_nodes`]) a `None` is the server saying the cube is
+    /// empty, as is everything inside it.
     pub fn set_override(&mut self, grid: GridId, cube: BrickCube, node: Option<CoarseNode>) {
         if cube.level() == 0 {
             return;
         }
         match node {
             Some(node) => {
+                self.told_empty.remove(&(grid, cube));
                 self.next_version += 1;
                 let replaced = self.overrides.insert(
                     (grid, cube),
@@ -323,11 +369,37 @@ impl LodView {
                     // Cubes that were kept for being beside the edit may be left out again.
                     self.new_edits = true;
                 }
+                self.told_empty.insert((grid, cube));
+                self.told_empty_top = self.told_empty_top.max(cube.level());
             }
         }
-        if grid == self.grid && self.nodes.contains_key(&cube) {
+        if grid == self.grid && self.cubes.has_node(cube) {
             self.queue.push(cube);
         }
+        // What waited for the server to say what is in it, and is the cube or inside it, is made now.
+        if grid == self.grid {
+            let now_known: Vec<BrickCube> = self
+                .waiting_for_the_server
+                .iter()
+                .copied()
+                .filter(|waiting| {
+                    waiting.level() <= cube.level()
+                        && BrickCube::containing(waiting.origin(), cube.level()) == cube
+                })
+                .collect();
+            for waiting in now_known {
+                self.waiting_for_the_server.remove(&waiting);
+                self.queue.push(waiting);
+            }
+        }
+    }
+
+    /// Whether the server has said that the cube, or a cube that holds it, is empty.
+    fn is_told_empty(&self, cube: BrickCube) -> bool {
+        (cube.level()..=self.told_empty_top).any(|level| {
+            self.told_empty
+                .contains(&(self.grid, BrickCube::containing(cube.origin(), level)))
+        })
     }
 
     /// The version of the data a node is made from: that of its override, or 0 if the generators make it.
@@ -340,21 +412,24 @@ impl LodView {
     /// Forgets what is wanted and shown, as when the viewer moves to another level. Returns the removal of everything on the screen.
     pub fn reset(&mut self) -> Vec<MeshUpdate> {
         let mut updates = self.mesher.reset();
-        let mut uploaded: Vec<BrickCube> = self.uploaded.drain().collect();
+        let mut uploaded = self.cubes.uploaded_nodes();
         uploaded.sort_by_key(|cube| {
             let origin = cube.origin();
             (cube.level(), origin.x(), origin.y(), origin.z())
         });
         updates.extend(uploaded.into_iter().map(MeshUpdate::RemoveCoarse));
-        self.wanted.clear();
+        self.cubes.clear();
         self.wanted_for = None;
         self.may_show.clear();
-        self.shown.clear();
-        self.nodes.clear();
         self.queue.clear();
+        self.waiting_for_the_server.clear();
         self.plan_needed = false;
         self.epoch += 1;
         self.in_flight = 0;
+        self.was_settled = false;
+        self.stalls.clear();
+        self.stall_reported.clear();
+        self.stall_report = None;
         updates
     }
 
@@ -373,7 +448,8 @@ impl LodView {
         let mut updates = self.mesher.update(source, centre);
         self.collect_nodes(&mut updates);
         self.updates_since_selection = self.updates_since_selection.saturating_add(1);
-        let moved = self.wanted_for != Some((centre, *settings));
+        let moved = self.wanted_for != Some((centre, *settings))
+            || self.selected_version != Some(source.version());
         let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
         if moved || new_edits {
             self.reselect(centre, viewer, settings, source);
@@ -384,7 +460,133 @@ impl LodView {
             self.seen_ready_serial = serial;
             self.swap(&mut updates);
         }
+        // Looked at once, when the view comes to rest (not at every update: it compares the cubes that are drawn with the ones that are wanted, and they are many).
+        let settled = self.is_settled();
+        if !settled {
+            self.stalls.clear();
+        } else if !self.was_settled {
+            self.audit(source);
+        }
+        self.was_settled = settled;
         updates
+    }
+
+    /// The cubes that are wanted and are not drawn, with nothing being done to draw them: what is left when the view has nothing more to do ([`LodView::is_settled`])
+    /// and is not drawing what it wants. Empty while work is under way (waiting for a thread is not stalling), and empty for a view that has drawn everything.
+    ///
+    /// A view that settles with something in this list is stuck for good: it will not change until the viewer moves or the world does. Which cube and why are the first
+    /// thing to know about it. As of the last time the view came to rest.
+    pub fn stalled(&self) -> &[Stalled] {
+        &self.stalls
+    }
+
+    /// What to say about the stall of the view, once: a sentence naming a few of the cubes and why they are not drawn, the first time the view comes to rest with
+    /// these cubes stalled. `None` when there is nothing new to say.
+    pub fn take_stall_report(&mut self) -> Option<String> {
+        self.stall_report.take()
+    }
+
+    /// Checks what the view's records of its cubes cannot make impossible by their shape, and says what is wrong if it is not so (the first thing found), the
+    /// mesher's own records included. Cheap enough for every update of a test.
+    pub fn check_consistency(&self) -> Result<(), String> {
+        self.mesher.check_consistency()?;
+        self.cubes.check_consistency()?;
+        // The bricks that are shown are the mesher's to hold the pictures of, and the view's to say are shown: the two must say the same.
+        let shown_bricks = self.cubes.shown().iter().filter(|cube| cube.level() == 0);
+        for cube in shown_bricks {
+            if !self.mesher.is_shown(cube.origin()) {
+                return Err(format!(
+                    "{cube:?} is shown, and the mesher does not have it shown"
+                ));
+            }
+        }
+        for coordinate in self.mesher.shown_coordinates() {
+            let cube = BrickCube::new(coordinate, 0).expect("a brick is a cube");
+            if !self.cubes.shown().contains(&cube) {
+                return Err(format!(
+                    "the mesher has {coordinate:?} shown, and the view does not"
+                ));
+            }
+        }
+        let requested = self.cubes.requested_count();
+        if requested > self.in_flight {
+            return Err(format!(
+                "{requested} pictures have been asked for and {} jobs are in flight",
+                self.in_flight
+            ));
+        }
+        Ok(())
+    }
+
+    /// Finds what is wanted and not drawn that nothing is going to draw, as the view comes to rest, and says it once.
+    fn audit(&mut self, source: &impl TerrainSource) {
+        let mut waiting: Vec<BrickCube> = self
+            .cubes
+            .wanted()
+            .difference(self.cubes.shown())
+            .copied()
+            // (A cube that is ready waits for the one beside it that is not, and that one is the one to name.)
+            .filter(|&cube| !self.is_ready(cube))
+            .collect();
+        waiting.sort_by_key(|cube| {
+            let origin = cube.origin();
+            (cube.level(), origin.x(), origin.y(), origin.z())
+        });
+        self.stalls = waiting
+            .into_iter()
+            .map(|cube| Stalled {
+                cube,
+                reason: self.why_not_ready(source, cube),
+            })
+            .collect();
+        // (A cube that waits for the server to say what is in it is not stuck for good, and is not said: the stall of a view is a defect of the program's.)
+        let stalled: HashSet<BrickCube> = self
+            .stalls
+            .iter()
+            .map(|stall| stall.cube)
+            .filter(|cube| !self.waiting_for_the_server.contains(cube))
+            .collect();
+        if stalled.is_empty() {
+            self.stall_reported.clear();
+        } else if stalled != self.stall_reported {
+            let first: Vec<String> = self
+                .stalls
+                .iter()
+                .filter(|stall| stalled.contains(&stall.cube))
+                .take(STALL_REPORT_CUBES)
+                .map(|stall| format!("{} ({})", describe(stall.cube), stall.reason))
+                .collect();
+            self.stall_report = Some(format!(
+                "the view of the terrain has nothing more to do, and {} cubes that are wanted are not drawn, first {}: {}",
+                stalled.len(),
+                first.len(),
+                first.join("; ")
+            ));
+            self.stall_reported = stalled;
+        }
+    }
+
+    /// Why the picture of a cube that is wanted is not ready, nor on its way.
+    fn why_not_ready(&self, source: &impl TerrainSource, cube: BrickCube) -> String {
+        if cube.level() == 0 {
+            return self
+                .mesher
+                .why_not_ready(source, cube.origin())
+                .unwrap_or_else(|| "it is ready".to_string());
+        }
+        if self.waiting_for_the_server.contains(&cube) {
+            return "the server has not said what is in it".to_string();
+        }
+        match self.cubes.node(cube) {
+            None => "nothing asked for its picture".to_string(),
+            Some(node) if node.is_requested() => {
+                "its picture was asked for and never came".to_string()
+            }
+            Some(node) if node.has_waiting_picture() => {
+                "its picture is of data that has changed since".to_string()
+            }
+            Some(_) => "nothing is making its picture".to_string(),
+        }
     }
 
     /// Updates until nothing is left to make or swap, returning every change. For headless rendering and tests.
@@ -406,37 +608,30 @@ impl LodView {
     }
 
     fn collect_nodes(&mut self, updates: &mut Vec<MeshUpdate>) {
-        while let Ok(done) = self.results.try_recv() {
+        while let Ok(finished) = self.results.try_recv() {
+            // As if the work had been done here: a bug in a generator is a panic of whoever asked for the node.
+            let done = match finished {
+                Finished::Done(done) => done,
+                Finished::Panicked(payload) => resume_unwind(payload),
+            };
             if done.epoch != self.epoch {
                 continue;
             }
             self.in_flight = self.in_flight.saturating_sub(1);
             let current = self.data_version(done.cube);
-            let Some(state) = self.nodes.get_mut(&done.cube) else {
-                continue;
-            };
-            if state.requested == Some(done.version) {
-                state.requested = None;
-            }
-            if done.version != current {
-                // Made from data that has been replaced since: the new data is queued already.
-                continue;
-            }
-            if self.shown.contains(&done.cube) {
-                // On the screen already: the picture is replaced where it is.
-                state.drawn = Some(done.version);
-                if !done.mesh.is_empty() {
-                    self.uploaded.insert(done.cube);
-                    updates.push(MeshUpdate::UploadCoarse {
-                        cube: done.cube,
-                        mesh: done.mesh,
-                    });
-                } else if self.uploaded.remove(&done.cube) {
-                    updates.push(MeshUpdate::RemoveCoarse(done.cube));
+            let cube = done.cube;
+            match self
+                .cubes
+                .finish_making(cube, done.version, current, done.mesh)
+            {
+                Arrival::Ignored | Arrival::Replaced(Replacement::Unchanged) => {}
+                Arrival::Waiting => self.plan_needed = true,
+                Arrival::Replaced(Replacement::Upload(mesh)) => {
+                    updates.push(MeshUpdate::UploadCoarse { cube, mesh });
                 }
-            } else {
-                state.ready = Some((done.version, done.mesh));
-                self.plan_needed = true;
+                Arrival::Replaced(Replacement::Remove) => {
+                    updates.push(MeshUpdate::RemoveCoarse(cube));
+                }
             }
         }
     }
@@ -453,10 +648,13 @@ impl LodView {
         let (grid, edited) = (self.grid, &self.edited);
         let core = source.solid_core();
         let viewer_in_voxels = voxels_of(viewer);
+        // (A terrain that has only the nodes the server sends has cubes beside a cube with a node that nobody says anything of: the server tells of the cubes of the box
+        // of the ship and no more.)
+        let draws_beside_edits = !source.waits_for_nodes();
         let memo = RefCell::new(&mut self.may_show);
         let may_hold = |cube: BrickCube| {
             let may_show = memo.borrow_mut().get_or_ask(cube, || source.may_show(cube))
-                || edited.near(grid, cube);
+                || (draws_beside_edits && edited.near(grid, cube));
             may_show
                 && !core
                     .is_some_and(|core| is_hidden_by(&core, viewer_in_voxels, cube, VIEWER_MARGIN))
@@ -474,59 +672,42 @@ impl LodView {
         self.may_show.finish_round();
         self.new_edits = false;
         self.updates_since_selection = 0;
-        self.wanted = cubes.iter().copied().collect();
+        self.cubes.want(&cubes);
         self.wanted_for = Some((centre, *settings));
-        for cube in cubes.iter().filter(|cube| cube.level() > 0) {
-            self.nodes.entry(*cube).or_default();
-        }
-        let (wanted, shown) = (&self.wanted, &self.shown);
-        self.nodes
-            .retain(|cube, _| wanted.contains(cube) || shown.contains(cube));
+        self.selected_version = Some(source.version());
         // The nearest are made first: they are the last in the queue.
+        // (What was waited for is waited for again, by the cubes that are still wanted.)
+        self.waiting_for_the_server.clear();
         self.queue = cubes.into_iter().filter(|cube| cube.level() > 0).collect();
         self.queue
             .sort_by_key(|cube| std::cmp::Reverse(squared_distance_to_middle(*cube, centre)));
         self.plan_needed = true;
     }
 
-    /// Whether the picture of a node that is wanted or shown has to be made (again).
-    fn needs_making(&self, cube: BrickCube) -> bool {
-        let Some(state) = self.nodes.get(&cube) else {
-            return false;
-        };
-        let version = self.data_version(cube);
-        if state.requested == Some(version) {
-            return false;
-        }
-        if self.shown.contains(&cube) {
-            state.drawn != Some(version)
-        } else {
-            self.wanted.contains(&cube)
-                && state.ready.as_ref().map(|(ready, _)| *ready) != Some(version)
-        }
-    }
-
     fn start_jobs(&mut self, source: &impl CoarseTerrainSource) {
+        let source_waits = source.waits_for_nodes();
         let limit = self.workers.len() * JOBS_PER_WORKER;
         while self.in_flight < limit {
             let Some(cube) = self.queue.pop() else {
                 break;
             };
-            if !self.needs_making(cube) {
+            let version = self.data_version(cube);
+            if !self.cubes.needs_making(cube, version) {
                 continue;
             }
-            let version = self.data_version(cube);
             let source = match self.overrides.get(&(self.grid, cube)) {
                 Some(held) => Source::Override(Arc::clone(&held.node)),
                 None => match source.coarse_generator(cube) {
                     Some(generator) => Source::Generator(generator),
+                    None if source_waits && !self.is_told_empty(cube) => {
+                        // Nothing is made of it: it is not known to be empty, and what is drawn in its place stays until the server says.
+                        self.waiting_for_the_server.insert(cube);
+                        continue;
+                    }
                     None => Source::Nothing,
                 },
             };
-            self.nodes
-                .get_mut(&cube)
-                .expect("it needs making, so it has a state")
-                .requested = Some(version);
+            self.cubes.start_making(cube, version);
             self.in_flight += 1;
             self.jobs
                 .as_ref()
@@ -545,15 +726,13 @@ impl LodView {
         if cube.level() == 0 {
             return self.mesher.is_ready(cube.origin());
         }
-        let version = self.data_version(cube);
-        self.nodes
-            .get(&cube)
-            .and_then(|state| state.ready.as_ref())
-            .is_some_and(|(ready, _)| *ready == version)
+        self.cubes.is_ready(cube, self.data_version(cube))
     }
 
     fn swap(&mut self, updates: &mut Vec<MeshUpdate>) {
-        let swaps = plan_swaps(&self.shown, &self.wanted, |cube| self.is_ready(cube));
+        let swaps = plan_swaps(self.cubes.shown(), self.cubes.wanted(), |cube| {
+            self.is_ready(cube)
+        });
         let mut shown_now = 0;
         let mut complete = true;
         for swap in swaps {
@@ -574,41 +753,23 @@ impl LodView {
     }
 
     fn hide(&mut self, cube: BrickCube, updates: &mut Vec<MeshUpdate>) {
-        self.shown.remove(&cube);
         if cube.level() == 0 {
+            self.cubes.hide_brick(cube);
             updates.extend(self.mesher.hide(cube.origin()));
-            return;
-        }
-        if self.uploaded.remove(&cube) {
+        } else if self.cubes.hide_node(cube) {
             updates.push(MeshUpdate::RemoveCoarse(cube));
-        }
-        if let Some(state) = self.nodes.get_mut(&cube) {
-            state.drawn = None;
-        }
-        if !self.wanted.contains(&cube) {
-            self.nodes.remove(&cube);
         }
     }
 
     fn show(&mut self, cube: BrickCube, updates: &mut Vec<MeshUpdate>) {
         if cube.level() == 0 {
-            self.shown.insert(cube);
+            self.cubes.show_brick(cube);
             updates.extend(self.mesher.show(cube.origin()));
-            return;
-        }
-        let state = self
-            .nodes
-            .get_mut(&cube)
-            .expect("a node that is ready has a state");
-        let (version, mesh) = state
-            .ready
-            .take()
-            .expect("the planner only adds what is ready");
-        state.drawn = Some(version);
-        self.shown.insert(cube);
-        if !mesh.is_empty() {
-            self.uploaded.insert(cube);
-            updates.push(MeshUpdate::UploadCoarse { cube, mesh });
+        } else {
+            let mesh = self.cubes.show_node(cube);
+            if !mesh.is_empty() {
+                updates.push(MeshUpdate::UploadCoarse { cube, mesh });
+            }
         }
     }
 }
@@ -621,6 +782,18 @@ impl Drop for LodView {
             let _ = worker.join();
         }
     }
+}
+
+/// A cube in words: its detail level and where its lowest brick is.
+fn describe(cube: BrickCube) -> String {
+    let origin = cube.origin();
+    format!(
+        "level {} at ({}, {}, {})",
+        cube.level(),
+        origin.x(),
+        origin.y(),
+        origin.z()
+    )
 }
 
 /// The square of the distance in bricks from `centre` to the middle of `cube` (the order in which cubes are made: nearest first). It saturates, since the square

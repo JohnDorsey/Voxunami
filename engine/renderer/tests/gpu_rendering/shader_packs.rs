@@ -23,8 +23,10 @@ fn paints(red: f32, green: f32, blue: f32) -> ShaderPack {
 
 const MAGENTA: [u8; 3] = [255, 0, 255];
 
-/// The byte of an 8-bit sRGB picture that a linear value comes out as.
+/// The byte of an 8-bit sRGB picture that a linear value a pack gives comes out as: lifted by the engine like the rest of the scene (`lifted` in `voxel.wgsl`: the light to the
+/// power of one over 1.2), and encoded.
 fn srgb_byte(linear: f64) -> u8 {
+    let linear = libm::pow(linear, 1.0 / 1.2);
     let encoded = if linear <= 0.003_130_8 {
         linear * 12.92
     } else {
@@ -34,7 +36,9 @@ fn srgb_byte(linear: f64) -> u8 {
 }
 
 /// The shadow tests' block scene, lit by the sun over the east with the shadows on, and the camera and the places probed.
-fn block_scene(context: &GraphicsContext) -> (VoxelRenderer, Camera, Vec<(u32, u32, bool)>) {
+pub(super) fn block_scene(
+    context: &GraphicsContext,
+) -> (VoxelRenderer, Camera, Vec<(u32, u32, bool)>) {
     let mut renderer = new_renderer(context);
     upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
     let (camera, cells, probes) = shadow_scene_setup(ShadowScene::Block, 0);
@@ -110,9 +114,13 @@ fn a_pack_is_given_the_colour_and_the_normal_of_the_face() {
             )))
             .unwrap();
         let [red, green, blue, _] = pixel(&render(&mut renderer, &camera), x, y);
-        // The palette's green, (0.1, 0.8, 0.1) in sRGB as the palette is given, comes out as the same bytes, within two.
+        // The palette's green, (0.1, 0.8, 0.1) in sRGB as the palette is given, comes out as the bytes the lift of the scene makes of it, within two.
         assert!(
-            close_to([red, green, blue, 255], [26, 204, 26], 2),
+            close_to(
+                [red, green, blue, 255],
+                [0.1, 0.8, 0.1].map(super::lift::lifted_byte),
+                2
+            ),
             "{name}: the albedo is ({red}, {green}, {blue})"
         );
         renderer
@@ -121,9 +129,13 @@ fn a_pack_is_given_the_colour_and_the_normal_of_the_face() {
             )))
             .unwrap();
         let [red, green, blue, _] = pixel(&render(&mut renderer, &camera), x, y);
-        // (0.5, 1, 0.5) in linear light is (188, 255, 188) as bytes.
+        // (0.5, 1, 0.5) in linear light is (188, 255, 188) as bytes, and (197, 255, 197) once the scene is lifted.
         assert!(
-            close_to([red, green, blue, 255], [188, 255, 188], 2),
+            close_to(
+                [red, green, blue, 255],
+                [srgb_byte(0.5), srgb_byte(1.0), srgb_byte(0.5)],
+                2
+            ),
             "{name}: the normal is ({red}, {green}, {blue})"
         );
     }
@@ -397,14 +409,39 @@ fn a_pack_is_told_how_much_of_the_sky_is_over_the_place() {
 }
 
 /// The text of the lighting file of an example pack of the renderer's `example_shader_packs` folder.
-fn example(name: &str) -> ShaderPack {
+pub(super) fn example(name: &str) -> ShaderPack {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("example_shader_packs")
         .join(name);
     let lighting =
         std::fs::read_to_string(folder.join("lighting.wgsl")).expect("the example's lighting file");
-    ShaderPack::new(&format!("voxunami:{name}"), name, &lighting)
-        .expect("an example is a good pack")
+    // (The renderer's tests do not read `pack.json`: the settings an example declares are written here, and the shell's tests check that its file says the same.)
+    ShaderPack::new_with_settings(
+        &format!("voxunami:{name}"),
+        name,
+        &lighting,
+        example_settings(name),
+    )
+    .expect("an example is a good pack")
+}
+
+/// The settings the example pack of this name declares in its `pack.json`.
+pub(super) fn example_settings(name: &str) -> Vec<renderer::SettingDeclaration> {
+    match name {
+        "cel" => vec![
+            renderer::SettingDeclaration::new(
+                "steps",
+                "",
+                renderer::SettingKind::Integer {
+                    default: 3,
+                    minimum: 2,
+                    maximum: 8,
+                },
+            )
+            .expect("a good declaration"),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 #[test]

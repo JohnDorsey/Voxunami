@@ -15,6 +15,7 @@
 pub mod container;
 pub mod engine_sections;
 mod exact_offset;
+pub mod far_nodes;
 pub mod file;
 mod fit_orbit;
 mod grid_frame;
@@ -46,6 +47,7 @@ pub use ship_files::{
 pub use translation::{SourceTranslator, TranslationError};
 pub use voxel_space::LevelIndex;
 pub use world::{
-    BrickSource, LevelData, LevelError, LoadContext, LoadError, LoadReport, ParsedWorld,
-    RecipeError, SaveError, ShipLoadError, ShipParkError, WorldData, WorldSave,
+    BrickSource, FarFileMaker, LevelData, LevelError, LoadContext, LoadError, LoadReport,
+    ParsedWorld, RecipeError, SaveError, SavedShip, ShipLoadError, ShipParkError, WorldData,
+    WorldSave,
 };

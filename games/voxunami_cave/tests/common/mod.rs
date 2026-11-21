@@ -684,6 +684,9 @@ impl ShipFiles for FlakyFiles {
     fn names(&self) -> io::Result<Vec<ShipFileName>> {
         self.inner.names()
     }
+    fn far_files_mut(&mut self) -> &mut dyn world_storage::far_nodes::FarFiles {
+        self.inner.far_files_mut()
+    }
 }
 
 /// The id of the ship made `number`th (counting from 0) in a world with no ships before.
@@ -875,6 +878,8 @@ pub struct Scene {
     pub rig: Rig,
     actions: Arc<Mutex<VecDeque<Action>>>,
     watchers: Arc<Mutex<Vec<Watcher>>>,
+    /// What the plugin that moves ships reports, for a scene that was made to report (`reporting`, `reporting_in`): the scene itself can then tell whether a ship is still being made.
+    bodies_report: Option<Arc<dyn Fn() -> grid_bodies::BodiesReport + Send + Sync>>,
 }
 
 impl Scene {
@@ -910,14 +915,25 @@ impl Scene {
         let files = MemoryShipFiles::new();
         let disk = Box::new(files.clone());
         let rig = Rig::with_plugins_on_disk(content, world, plugins, files, disk);
+        let shared: Arc<dyn Fn() -> grid_bodies::BodiesReport + Send + Sync> = Arc::new(report);
+        let asked = Arc::clone(&shared);
         (
             Self {
                 rig,
                 actions,
                 watchers,
+                bodies_report: Some(shared),
             },
-            report,
+            move || asked(),
         )
+    }
+
+    /// How many ships are being made now, if the scene reports (a ship that comes into memory with more bricks than a tick's budget is held while its bricks are made:
+    /// `grid_bodies::SHIP_BRICKS_PER_TICK`, all the ships together), and `None` if it does not.
+    pub fn ships_being_made(&self) -> Option<u64> {
+        self.bodies_report
+            .as_ref()
+            .map(|report| report().ships_being_made)
     }
 
     /// A scene in the world a new game starts in: space with the planet in it, and the overworld second.
@@ -957,6 +973,7 @@ impl Scene {
             rig: Rig::with_plugins_on_disk(content, world, plugins, files, disk),
             actions,
             watchers,
+            bodies_report: None,
         }
     }
 
@@ -1024,6 +1041,7 @@ impl Scene {
                 rig: Rig::with_plugins_and_files(content, world, plugins, files),
                 actions,
                 watchers,
+                bodies_report: None,
             },
             extra,
         )

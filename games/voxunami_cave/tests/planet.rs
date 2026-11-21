@@ -263,6 +263,111 @@ fn the_game_draws_a_planet_out_to_where_it_is_a_few_pixels_across_and_the_terrai
     assert_eq!(Cave::coarse_detail(), None);
 }
 
+/// The coarse nodes of a planet the renderer holds, as the updates say.
+fn apply_nodes(
+    nodes: &mut std::collections::HashMap<region_octree::BrickCube, world_view::MeshUpdate>,
+    updates: Vec<world_view::MeshUpdate>,
+) {
+    use world_view::MeshUpdate;
+    for update in updates {
+        match update {
+            MeshUpdate::UploadGridCoarse { cube, ref mesh, .. } if !mesh.is_empty() => {
+                nodes.insert(cube, update);
+            }
+            MeshUpdate::UploadGridCoarse { cube, .. }
+            | MeshUpdate::RemoveGridCoarse { cube, .. } => {
+                nodes.remove(&cube);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Everything the player's view changes while the server ticks and the player takes in what it says, until the view is quiet.
+fn settle_collecting(
+    scene: &mut Scene,
+    player: &mut common::Player,
+) -> Vec<world_view::MeshUpdate> {
+    player.send_pose();
+    let mut updates = Vec::new();
+    for _ in 0..3 {
+        let server = &mut scene.rig.server;
+        updates.extend(
+            player
+                .settle(|| {
+                    server.step();
+                })
+                .unwrap(),
+        );
+    }
+    updates
+}
+
+#[test]
+fn a_hole_dug_in_a_planet_is_in_its_far_nodes_for_a_player_who_is_far_above_it() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    let top = top_of_the_column(0, 0) + 1;
+    // Six kilometres over the top of the planet, looking down, in a game that draws planets in nodes and is told of the edits to them.
+    let mut player = scene
+        .rig
+        .join([0.5, TOP_OF_THE_PLANET + 6000.0, 0.5], 0.0, -90.0);
+    player.enable_grid_detail(Cave::grid_detail().expect("a planet is drawn in detail"));
+    let mut nodes = std::collections::HashMap::new();
+    apply_nodes(&mut nodes, settle_collecting(&mut scene, &mut player));
+    let before = nodes.clone();
+    assert!(before.len() > 5, "{} nodes of the planet", before.len());
+
+    // A hole 16 voxels square and 12 deep in the top of the planet.
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let mut planet_view = world.grid(planet()).unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in (top - 12)..=top {
+                    planet_view
+                        .set(
+                            content.block_channel(),
+                            VoxelCoordinate::new(x, y, z),
+                            content.blocks.air,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+    });
+    // The server makes the nodes on a thread of its own and sends them as it does: wait for the hole to show, with a deadline.
+    let changed_since = |nodes: &std::collections::HashMap<_, _>| -> Vec<region_octree::BrickCube> {
+        nodes
+            .iter()
+            .filter(|(cube, update)| before.get(*cube) != Some(*update))
+            .map(|(cube, _)| *cube)
+            .chain(
+                before
+                    .keys()
+                    .filter(|cube| !nodes.contains_key(*cube))
+                    .copied(),
+            )
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut changed = Vec::new();
+    while changed.is_empty() && std::time::Instant::now() < deadline {
+        apply_nodes(&mut nodes, settle_collecting(&mut scene, &mut player));
+        changed = changed_since(&nodes);
+    }
+    assert!(!changed.is_empty(), "the hole is not in the picture");
+    for cube in changed {
+        let origin = cube.origin();
+        let edge = cube.edge_length() as i128 * 32;
+        let (x, y, z) = (origin.x() * 32, origin.y() * 32, origin.z() * 32);
+        assert!(
+            x < 16 && x + edge > 0 && z < 16 && z + edge > 0 && y < top + 1 && y + edge > top - 12,
+            "{cube:?} changed and is not over the hole"
+        );
+    }
+}
+
 #[test]
 fn a_trench_across_a_stored_brick_of_a_planet_does_not_cut_the_planet_in_two() {
     let mut scene = Scene::new();
@@ -664,9 +769,10 @@ fn a_planet_has_colliders_only_for_the_bricks_near_the_ships_that_can_hit_it() {
     assert_eq!(near_held, far_held);
     assert_eq!(near_held, bricks_made_by_a_cube(10.0, true, false, 60));
     // One that is free has the bricks of the planet near it made (the bricks it falls through on the way to the ground are made as it comes to them): a few
-    // for the one on the ground, and for the one in the sky the bricks of the air around it (which have none of the cost of a brick of ground, but are counted).
+    // for the one on the ground. For the one in the sky there are none (until 2026-11-20 the bricks of the air around it were made, which have none of the cost of a
+    // brick of ground, but were counted): a cube of air all through, by the generator of the planet, with nothing built in it, has no ground to meet.
     assert!(near_free.0 > near_held.0, "{near_free:?} {near_held:?}");
-    assert!(far_free.0 > far_held.0, "{far_free:?} {far_held:?}");
+    assert_eq!(far_free, far_held, "air is given no colliders");
     // And never many, and never many in one tick, however large the planet is.
     for (total, most) in [near_free, far_free] {
         assert!(total <= 24 && most <= 12, "{total} {most}");

@@ -51,6 +51,9 @@ struct Frame {
     avatars: array<vec4<f32>, 16>,
     // x: how far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
     pictures: vec4<f32>,
+    // x: how much one level of the shade of the corners of a face darkens it: the colour is multiplied by one minus this times the level (the default, a fifth, leaves the darkest
+    // corner, level 3, with two fifths of what it was).
+    shade: vec4<f32>,
 }
 
 // What a shader pack is told of a face at a pixel (`docs/specs/shader-pack-spec.md`): the engine works out what is lit and what is not, and the pack's `pack_shade` makes a colour
@@ -74,7 +77,50 @@ struct Surface {
     // The share of the sky's light that reaches the place past the terrain's shadow (0 to 1), and the share of it that reaches the place past what is over it (0 to 1).
     sky_visible: f32,
     uncovered: f32,
+    // How much of the pixel shines by itself, whatever light reaches it (0 to 1; from the alpha of the picture's specular companion, 0 where it has none).
+    emission: f32,
+    // How smooth the pixel is and how much light it throws back straight on (0 to 1; the red and green bytes of the picture's specular companion, 0 where it has none), and
+    // whether it is a metal (1 from a green byte of 230: it throws back its own colour; 0 otherwise). A pack that does not look has no glints.
+    smoothness: f32,
+    reflectance: f32,
+    metal: f32,
+    // `normal` tilted by the picture's normal companion (a unit vector in the world's axes; the same as `normal` where the picture has none, or none is drawn). The light of the
+    // sun is the cosine of this one, where it is the cosine of `normal` for a pack that does not look: the tilt is for the sun's light alone (it has a direction; the lamps'
+    // light and the sky's have none), and the shadow is the face's own.
+    shading_normal: vec3<f32>,
+    // The share of the ambient light that reaches the pixel, past the picture's ambient occlusion (0 to 1; 1 where the picture has none, or none is drawn): the light of the lamps
+    // and the ambient light, and the sky's, are cut to it in a pack that looks; the sun's is not (it has a direction, and the shadow is the engine's).
+    ambient_occlusion: f32,
+    // How much of the sun's light the pixel lets through from the far side of its block (0 to 1; from the blue byte of the picture's specular companion, 0 where it has none), and
+    // the share of the sun's light that reaches the far side of the block: the horizon and the terrain's shadow, looked up past the block, for a face that looks away from the
+    // sun (0 for one that looks at it, and wherever `subsurface` is 0). A pack that does not look has no scattered light.
+    subsurface: f32,
+    sun_behind: f32,
+    // The share of the sun's light that gets past the picture's own relief (0 to 1; from the alpha of the picture's normal companion, its height, where it has one; 1 where it has
+    // none, or none is drawn): a pixel that a higher one toward the sun stands over is in its shade. It is the picture's alone: the terrain's shadow is `sun_visible`, and a pack
+    // that wants the shade of the relief multiplies the sun's light by this one too.
+    relief_sun: f32,
 }
+
+// What the picture's normal companion says of a pixel (`picture_bump`, in `pictures_on.wgsl` and `pictures_off.wgsl`), faded out with the picture: how much it tilts the face's
+// normal (the tilted normal minus the face's own, in the world's axes), how much of the ambient light gets to it, and how much of the sun's light gets past the relief.
+struct PictureBump {
+    tilt: vec3<f32>,
+    open: f32,
+    sun: f32,
+}
+
+// What the picture's specular companion says of a pixel (`picture_material`, in `pictures_on.wgsl` and `pictures_off.wgsl`), each 0 to 1 and faded out with the picture.
+struct PictureMaterial {
+    smoothness: f32,
+    reflectance: f32,
+    metal: f32,
+    emission: f32,
+    subsurface: f32,
+}
+
+// The most a block's thickness along the sun's ray is taken to be (voxels): a face the sun grazes scatters next to nothing, by the cosine, however far the ray goes.
+const SCATTER_MOST_THICKNESS: f32 = 4.0;
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
 const AVATAR_BASE: u32 = 0xFFFFF0u;
@@ -131,6 +177,8 @@ struct VertexOutput {
     @location(6) @interpolate(flat) picture: u32,
     // The window of voxels that block the sun that the face is traced in (`Placement::volume`).
     @location(7) @interpolate(flat) volume: u32,
+    // Whether the face is a whole voxel's, whose corners are shaded by the cubes beside it (`volume_shade_level`): 1 for a whole quad, 0 for a detailed one.
+    @location(8) @interpolate(flat) shaded: u32,
 }
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
@@ -257,7 +305,7 @@ fn along(local: vec3<f32>, face_index: u32) -> f32 {
     return select(-1.0, 1.0, (face_index & 1u) == 1u) * dot(local, axis_unit(face_index / 2u));
 }
 
-fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
+fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32, shaded: u32) -> VertexOutput {
     // The face's normal in the grid's own axes, turned to the world's, where the sun is.
     let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
@@ -280,6 +328,7 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
     var out: VertexOutput;
     out.picture = picture;
     out.volume = placement.volume.x;
+    out.shaded = shaded;
     out.uv = vec2<f32>(0.0);
     if (picture != 0u) {
         // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
@@ -336,13 +385,13 @@ fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let corner = whole_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u, 1u);
 }
 
 @vertex
 fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
     let corner = detailed_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u, 0u);
 }
 
 // The same quads for the shadow map: where they are in the cascade (the frame's matrix is the cascade's) and nothing else.
@@ -453,8 +502,21 @@ fn sky_openness(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> f32 {
     return open;
 }
 
+// The normal with the picture's bump added, a unit vector (the normal itself where there is no bump, or where the sum would have no direction).
+fn tilted_normal(normal: vec3<f32>, bump: vec3<f32>) -> vec3<f32> {
+    let sum = normal + bump;
+    let length_squared = dot(sum, sum);
+    if (length_squared < 1.0e-8) {
+        return normal;
+    }
+    return sum * inverseSqrt(length_squared);
+}
+
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // SPIKE: where the eye's ray meets the relief of the picture, which the functions that read the picture then read at (`picture_prepare`, in the same two files; it takes
+    // derivatives, so it is first).
+    picture_prepare(in);
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
     // renderer's pipeline is made with).
     let picture = picture_albedo(in);
@@ -462,6 +524,14 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // `pictures_off.wgsl` or `pictures_on.wgsl`; it takes derivatives, so it is here before anything branches).
     var shadow_face = in;
     shadow_face.relative = pixelated_place(in);
+    // What the specular picture says of the pixel: how smooth, how reflective, whether a metal, and how much it shines by itself (`picture_material` is in the same two files;
+    // it takes derivatives too).
+    let material = picture_material(in);
+    let emission = material.emission;
+    // How much the picture's bumps tilt the normal, how much of the ambient light its occlusion lets through, and how much of the sun's light its relief lets through
+    // (`picture_bump`, in the same two files; it takes derivatives too).
+    let relief = picture_bump(in);
+    let bump = relief.tilt;
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
     // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
@@ -485,6 +555,22 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surface.sun_visible = 1.0;
     surface.sky_visible = 1.0;
     surface.uncovered = 1.0;
+    surface.emission = emission;
+    surface.smoothness = material.smoothness;
+    surface.reflectance = material.reflectance;
+    surface.metal = material.metal;
+    surface.shading_normal = tilted_normal(in.normal, bump);
+    // The picture's ambient occlusion, and the shade of the corners of the voxel the face is (worked out from the voxels that block the sun, blended across the voxel; a detailed
+    // quad has none): both cut the ambient light, so they are one share. It is the pack's to use (the default one cuts the lamps', the ambient and the sky's light by it, and not
+    // the sun's).
+    var shade_level = 0.0;
+    if (in.shaded != 0u) {
+        shade_level = volume_shade_level(in);
+    }
+    surface.ambient_occlusion = relief.open * (1.0 - frame.shade.x * shade_level);
+    surface.subsurface = material.subsurface;
+    surface.sun_behind = 0.0;
+    surface.relief_sun = relief.sun;
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
@@ -517,16 +603,43 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             uncovered = mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
             sky_visible = sky_visible * uncovered;
         }
+        // A face that looks away from the sun, on a pixel that lets light through: the sun's light that reaches the far side of the block (where the ray leaves its slab, one
+        // voxel thick along the face's normal), by the horizon and the terrain's shadow as for any place. The place is on the far face, not past it: the sun's maps keep the
+        // backs of things, so a place on the face of a block against that side (stone over leaves) is behind that block's back and in its shadow, where one inside it would not
+        // be. (Only the pixels that scatter and look away pay for the second lookup, and it is the shadow map's alone: the walk of the sun's ray, which closes the map's gap at a
+        // contact, is not run for it, since the place is in the open on the far face, and it cost +1.0 ms on the integrated GPU in a view full of leaves for no change in any test.)
+        var sun_behind = 0.0;
+        let looks_away = -dot(light.normal, frame.sun_direction.xyz);
+        if (material.subsurface > 0.0 && looks_away > 0.0) {
+            sun_behind = light.visible;
+            if (frame.shadow.x > 0.5) {
+                let far_side = shadow_face.relative + frame.sun_direction.xyz * min(1.0 / looks_away, SCATTER_MOST_THICKNESS);
+                sun_behind = sun_behind * terrain_light(far_side, distance);
+            }
+        }
+        surface.sun_behind = sun_behind;
         surface.normal = light.normal;
+        surface.shading_normal = tilted_normal(light.normal, bump);
         surface.above_horizon = light.visible;
         surface.sun_visible = sun_visible;
         surface.sky_visible = sky_visible;
         surface.uncovered = uncovered;
     }
-    // The pack makes the colour of it; the fog is the engine's.
+    // The pack makes the colour of it; the fog and the lift of the whole scene (`lifted`) are the engine's.
     let color = pack_shade(surface);
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
-    return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
+    return vec4<f32>(lifted(mix(color, frame.fog_color.rgb, fog)), 1.0);
+}
+
+// The whole scene a little brighter than the light says, black still black and full brightness still full: the colour raised to the power of one over `SCENE_LIFT` (the setting
+// `scene_lift`, 1.2 unless it is changed: the renderer writes it above), which lifts the darks most (0.1 becomes 0.147, 0.5 becomes 0.561) and leaves 0 and 1 where they are. The
+// terrain, the entities and the sky go through it after the fog, so that they still agree where the fog meets the sky.
+
+fn lifted(colour: vec3<f32>) -> vec3<f32> {
+    let positive = max(colour, vec3<f32>(0.0));
+    // (pow of 0 is 0 and of 1 is 1 on every adapter, but not by the standard's word: the two ends are kept by hand.)
+    let raised = pow(positive, vec3<f32>(1.0 / SCENE_LIFT));
+    return select(raised, positive, positive <= vec3<f32>(0.0));
 }
 
 // The sky: one triangle that covers the picture, drawn before the terrain, from the direction each pixel looks in.
@@ -626,5 +739,5 @@ fn sky_fragment(in: SkyVertex) -> @location(0) vec4<f32> {
     let has_sun = step(0.0, max(frame.sun_disc.r, max(frame.sun_disc.g, frame.sun_disc.b)) - 1.0e-6);
     let disc = has_sun * (1.0 - smoothstep(radius - pixel_angle, radius + pixel_angle, angle));
     colour = mix(colour, frame.sun_disc.rgb, disc);
-    return vec4<f32>(colour, 1.0);
+    return vec4<f32>(lifted(colour), 1.0);
 }

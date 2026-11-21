@@ -6,6 +6,8 @@
 //! and state comes from a [`block_models::BlockTable`]. [`cast_ray`] finds the voxel
 //! under a crosshair using that answer.
 
+mod brick_states;
+mod cube_states;
 mod grid_mesher;
 mod horizon;
 mod lod;
@@ -17,7 +19,7 @@ mod sun_boxes;
 mod sun_ray;
 
 pub use grid_mesher::GridMesher;
-pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
+pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
 pub use mesher::{
     BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
 };

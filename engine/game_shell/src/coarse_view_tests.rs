@@ -22,7 +22,9 @@ use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
 use crate::session::{Mode, Session};
-use crate::test_support::{ExampleContent, ExampleDetailGame, ExampleGame};
+use crate::test_support::{
+    CoarseWatch, ExampleContent, ExampleDetailGame, ExampleGame, ExampleOneCoarseLevelGame,
+};
 use crate::view::camera_at;
 
 type Player = Session<Box<dyn Connection>, ExampleGame>;
@@ -124,12 +126,24 @@ struct Rig {
     server: Server,
     connector: LoopbackConnector,
     queue: Arc<Mutex<Vec<VoxelCoordinate>>>,
+    nodes: CoarseWatch,
 }
 
 impl Rig {
     fn new() -> Self {
-        let content: ExampleContent = ExampleGame::new_content();
-        let world = content.new_world(7);
+        Self::of::<ExampleGame>()
+    }
+
+    /// A server of the world of `ExampleContent` (which has a second level, `test_content:other`, of flat ground) for the game `G`.
+    fn of<G: GameDefinition<Content = ExampleContent>>() -> Self {
+        let content: ExampleContent = G::new_content();
+        let mut world = content.new_world(7);
+        world
+            .add_level(
+                "test_content:other".parse().unwrap(),
+                content.game.new_level("base_terrain:flat_v1"),
+            )
+            .unwrap();
         let players = PlayersPlugin::new(true);
         let block = content.view_channels().blocks;
         let air = content.game.raw_block("base_blocks:air");
@@ -144,23 +158,23 @@ impl Rig {
         config.view_distance = detail().maximum_distance;
         let queue: Arc<Mutex<Vec<VoxelCoordinate>>> = Arc::default();
         let digger = Digger::new(GridId::MAIN, block, air, Arc::clone(&queue));
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(players),
-            Box::new(CoarseServerPlugin::new(config)),
-            Box::new(digger),
-        ];
+        let coarse = CoarseServerPlugin::new(config);
+        let nodes = CoarseWatch::of(coarse.handle());
+        let plugins: Vec<Box<dyn Plugin>> =
+            vec![Box::new(players), Box::new(coarse), Box::new(digger)];
         let (server, connector) =
-            build_server_with_plugins::<ExampleGame>(&content, world, 3, plugins).unwrap();
+            build_server_with_plugins::<G>(&content, world, 3, plugins).unwrap();
         Self {
             server,
             connector,
             queue,
+            nodes,
         }
     }
 
     /// A player who draws far terrain, at `position`, over a connection.
     fn join(&mut self, connection: Box<dyn Connection>, who: u8, position: [f64; 3]) -> Player {
-        let server = &mut self.server;
+        let (server, nodes) = (&mut self.server, &self.nodes);
         let mut player = Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
@@ -168,11 +182,34 @@ impl Rig {
             3,
             camera_at(position, 0.0, 0.0),
             || {
-                server.step();
+                nodes.step(server);
             },
         )
         .unwrap();
         player.enable_coarse_detail(detail());
+        player
+    }
+
+    /// A player of the game `G` at `position`, who draws each level as `G::level_detail` says.
+    fn join_following_levels<G: GameDefinition<Content = ExampleContent>>(
+        &mut self,
+        connection: Box<dyn Connection>,
+        who: u8,
+        position: [f64; 3],
+    ) -> Session<Box<dyn Connection>, G> {
+        let (server, nodes) = (&mut self.server, &self.nodes);
+        let mut player = Session::<_, G>::connect(
+            connection,
+            &Identity::from_secret([who; 32]),
+            Mode::Playing,
+            3,
+            camera_at(position, 0.0, 0.0),
+            || {
+                nodes.step(server);
+            },
+        )
+        .unwrap();
+        player.enable_level_detail();
         player
     }
 
@@ -181,16 +218,29 @@ impl Rig {
     }
 
     /// Takes in everything the server has said and the player has to do about it, until the view is quiet.
-    fn settle(&mut self, player: &mut Player, screen: &mut Screen) {
+    fn settle<G: GameDefinition>(
+        &mut self,
+        player: &mut Session<Box<dyn Connection>, G>,
+        screen: &mut Screen,
+    ) {
         player.send_pose();
-        for _ in 0..3 {
-            let server = &mut self.server;
+        // Three rounds, and more until the server has made the nodes it was to (which it does on a thread of its own, a level of nodes in a tick): the round
+        // after that takes them in.
+        let mut rounds = 0;
+        let mut rounds_after_done = 0;
+        while rounds < 3 || rounds_after_done < 1 {
+            let (server, nodes) = (&mut self.server, &self.nodes);
             let updates = player
                 .settle(|| {
-                    server.step();
+                    nodes.step(server);
                 })
                 .unwrap();
             screen.apply(updates);
+            rounds += 1;
+            if self.nodes.is_done() {
+                rounds_after_done += 1;
+            }
+            assert!(rounds < 200, "the server is still making nodes");
         }
     }
 
@@ -297,6 +347,57 @@ fn a_recording_of_the_watcher_shows_what_the_watcher_saw() {
     assert!(replay_screen.nodes.len() > 50);
     assert_same_nodes(&replay_screen, &screen);
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Moves a player to the level called `name` by the command a player types, and takes in what the server says of it.
+fn go_to<G: GameDefinition>(
+    rig: &mut Rig,
+    player: &mut Session<Box<dyn Connection>, G>,
+    screen: &mut Screen,
+    name: &str,
+) {
+    player.send_command(&format!("/level go {name}"));
+    rig.settle(player, screen);
+    rig.settle(player, screen);
+}
+
+#[test]
+fn an_edit_the_server_told_of_is_still_drawn_far_away_after_a_visit_to_a_level_that_is_drawn_in_bricks_only()
+ {
+    let mut rig = Rig::of::<ExampleOneCoarseLevelGame>();
+    let connection = rig.connection();
+    let mut watcher =
+        rig.join_following_levels::<ExampleOneCoarseLevelGame>(connection, 1, WATCHER);
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    assert!(watcher.draws_coarse_terrain());
+    let before = screen.nodes.clone();
+    assert!(
+        before.len() > 50,
+        "the watcher sees terrain far away: {} nodes",
+        before.len()
+    );
+
+    rig.dig_a_crater();
+    rig.settle(&mut watcher, &mut screen);
+    let with_the_crater = Screen {
+        nodes: screen.nodes.clone(),
+        bricks: HashMap::new(),
+    };
+    assert_ne!(
+        with_the_crater.nodes, before,
+        "the crater is in the picture before the visit"
+    );
+
+    // A visit to the level that is drawn in bricks only: the nodes are taken down, and the picture of the level is another view.
+    go_to(&mut rig, &mut watcher, &mut screen, "other");
+    assert!(!watcher.draws_coarse_terrain());
+    assert!(screen.nodes.is_empty());
+
+    // Back where they were: the server has told this client of the crater and does not say it again, so the picture has to keep it.
+    go_to(&mut rig, &mut watcher, &mut screen, "main");
+    assert!(watcher.draws_coarse_terrain());
+    assert_same_nodes(&screen, &with_the_crater);
 }
 
 #[test]

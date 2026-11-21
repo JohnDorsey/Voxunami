@@ -88,6 +88,47 @@ fn a_brick_is_shown_by_asking_and_hidden_by_asking_and_air_has_nothing_to_show()
 }
 
 #[test]
+fn a_brick_that_was_shown_and_hidden_and_is_wanted_again_becomes_ready_again() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 8);
+    let mut mesher = held_back_mesher(&scene, 3);
+    mesher.settle(scene.world.main(), brick(0, 0, 0));
+    let ground = brick(0, 0, 0);
+    assert!(mesher.show(ground).is_some());
+    assert!(mesher.hide(ground).is_some());
+    // Nothing about the world changed and the viewer did not move: the brick is wanted as it was, and its picture was handed out, so it has to be made again.
+    mesher.settle(scene.world.main(), brick(0, 0, 0));
+    assert!(
+        mesher.is_ready(ground),
+        "hidden, and wanted again, but never made again"
+    );
+}
+
+#[test]
+fn a_wanted_brick_beside_an_edit_that_is_not_wanted_is_ready_when_the_mesher_has_nothing_more_to_do()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 14);
+    let mut mesher = held_back_mesher(&scene, 2);
+    let centre = brick(2, 0, 0);
+    mesher.settle(scene.world.main(), centre);
+    // The edited brick is outside what is drawn as bricks, and its neighbour is inside.
+    let region = FineRegion::new(centre, 2);
+    let (edited, beside) = (brick(-1, 0, 0), brick(0, 0, 0));
+    assert!(!region.wants_brick(edited) && region.wants_brick(beside));
+
+    assert_eq!(scene.edit([-32, 0, 0], "base_blocks:air"), edited);
+    mesher.brick_changed(edited);
+    assert!(!mesher.is_ready(beside), "its picture is of the old brick");
+    // The edited brick is loaded as it is, which starts no job, and only then is the neighbour whole again.
+    mesher.settle(scene.world.main(), centre);
+    assert!(
+        mesher.is_ready(beside),
+        "settled, with a wanted brick that is not ready"
+    );
+}
+
+#[test]
 fn a_brick_that_is_not_ready_cannot_be_shown() {
     let mut scene = scene();
     scene.assign_around(brick(0, 0, 0), 8);

@@ -115,6 +115,9 @@ impl ShipFiles for Flaky {
     fn names(&self) -> io::Result<Vec<ShipFileName>> {
         self.inner.names()
     }
+    fn far_files_mut(&mut self) -> &mut dyn world_storage::far_nodes::FarFiles {
+        self.inner.far_files_mut()
+    }
 }
 
 pub struct Rig {

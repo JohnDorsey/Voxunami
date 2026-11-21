@@ -1,0 +1,93 @@
+Monty memory limit: measurements behind `max_model_memory` (2026-11-16)
+=====================================================================
+
+All measured on the owner's Windows machine (x86-64). "debug" = unoptimized test build, "release" = optimized.
+The probe source is `monty_memory_probe/memory_probe.rs` (a scratch example that was built inside the fork's
+`crates/monty-runtime/examples/` and removed again; it installs `monty-alloc` as the global allocator).
+
+1. Is the allocator-backed `max_memory` repeatable? (debug, limit 1,000,000 bytes, step at which MemoryError fired)
+-------------------------------------------------------------------------------------------------------------
+condition                                   small lists   strings      dict of ints
+quiet process, 4 runs, 2 processes          55,296 x8     425,995 x8   157,706 x8
+another thread allocating 20-170 KB blocks  32,776-41,216 214,341-249,675   90,122
+host structure grew 300 KB after arming     36,864        425,995      90,122
+(The "strings" script of that probe appended 'k%d' % i. I infer, from the model counting exactly 16 bytes an iteration
+on it, that such strings live inside the value and cost no heap object, so that script really measured one list growing
+in place. The numbers are repeatable only in a quiet process, which is the point.)
+
+Reading: repeatable only when nothing else in the process allocates; up to 40 percent earlier with a busy thread.
+Without monty-alloc installed (an embedding in another program) the limit stops only single oversized requests; a loop
+that keeps many small objects ran until the time limit.
+
+2. How close is the deterministic model to the allocator? (debug, 64-bit; real = growth of LIVE_MEMORY while a fresh
+   session ran the script, model = MontyRepl::model_bytes() afterwards)
+-------------------------------------------------------------------------------------------------------------
+session                          real bytes   model bytes   model/real
+10k small lists                   1,499,209     1,280,112     0.85
+10k long strings                  1,910,151     1,691,232     0.89
+dict of 10k ints                    840,681       720,112     0.86
+list of 100k ints                 2,135,025     1,600,112     0.75
+list grown by 100k appends        2,135,009     1,600,128     0.75
+dict grown by 10k inserts           840,689       720,128     0.86
+1k instances, 3 attributes          454,285       440,480     0.97
+1k big integers                     334,329       312,424     0.93
+10k tuples of 3                   1,818,809     1,600,112     0.88
+set of 10k ints                     425,311       400,112     0.94
+1k lists of 100 strings           2,182,135     1,712,112     0.78
+one 1 MB string                   1,037,791     1,000,112     0.96
+First attempt (dict entry 48, set entry 32, no boxed-payload price): dicts 0.57, instances 0.56, sets 0.75; the prices
+were raised to the values above. Measured sizes of boxed payloads: Instance 104, NamedTuple 104, Class 152, Module 152,
+ReMatch 160, Partial 64, LruCache 120 bytes (one price of 112 is used for all). A heap entry is 96 bytes, not the 104 I
+first guessed; a unit test now compares the price with `size_of::<HeapEntry>()`.
+
+3. What does it cost in time? (release, median of 7 runs, ns per step; committed state `ad80eef5` against the new tree)
+-----------------------------------------------------------------------------------------------------------------------
+case                                  committed   new, no model limit   new, limit far away   new, 15 MB hugged
+plain arithmetic loop (27M steps)        4.20           4.23                 4.24                  4.26
+allocating loop, garbage (7M steps)     13.04          12.50                12.54                 12.58
+allocating loop, 100k-object live heap  12.95          12.79                13.28                 11.80 (but +44% steps, +33% time)
+The first round on the new tree was 7-17 percent slower across the board with the machine busy (another session was
+running tests); the second round, quieter, is the one above. Hugging the limit with a large heap costs time because walks
+must be frequent there; the price is bounded (at most two slot visits per step) and is charged to the step budget.
+
+4. Mutation experiments on the new tests (Windows; each breaks one rule in a backed-up copy and runs the tests)
+-------------------------------------------------------------------------------------------------------------
+see `monty_mutation_results_2026-11-16.txt` beside this file.
+
+5. Disk lesson
+--------------
+Cargo's `target/debug/incremental` directories held about 34 GB on E:. Deleting them freed the drive; building with
+CARGO_INCREMENTAL=0 keeps them from coming back. The release build of `monty-runtime` (it links the type checker) needs
+many GB for bitcode and filled the drive; the timing was done with a test in the `monty` crate alone.
+
+6. Source kept by eval/exec and by imported files (2026-11-17; release build, Windows, 500 repeats of one retained source)
+--------------------------------------------------------------------------------------------------------------------------
+A file whose body raises is forgotten and read again by the next `import`, so `try: import m` in a loop keeps one more
+copy of its source and code each time. Probe: `monty_memory_probe/file_source_probe.rs` (a counting global allocator
+inside a test of the `monty` crate; the first measurement of the real growth per repeat against the model's growth).
+Price: 640 per snippet plus 12 per byte of source.
+
+source (all in a file that raises at the end)      bytes   real/repeat   model/repeat   model/real
+tiny (the raise alone)                                22        1,069            904         0.85
+10 statements                                         82        1,629          1,624         1.00
+33 statements                                        220        3,685          3,280         0.89
+330 statements                                     2,002       23,389         24,664         1.05
+2 KB of comment, then the raise                    2,023        3,069         24,916         8.12
+20 function definitions, then the raise              622       14,642          8,584         0.59
+
+the same through exec(source) (no raise)           bytes   real/repeat   model/repeat   model/real
+x = 1                                                  6          893            712         0.80
+33 statements                                        198        3,253          3,016         0.93
+330 statements                                     1,980       21,165         24,400         1.15
+2 KB of comment                                    2,007        2,893         24,724         8.55
+20 function definitions                              600       13,930          7,840         0.56
+
+Correction to the 2026-11-16 report: "0.95 to 1.08 of real" held only for the plain assignments measured then. Source made of
+function definitions is priced at about half its real cost and source that is mostly comment at eight times it. The price is
+by byte, deterministic, and right for plain code; pricing each compiled function (the interner already knows how many there
+are) would fix the first shape but then counts functions from the host's own program too, so it was not done.
+
+Mutants of the file hook (each breaks one rule in a backed-up copy; `file_import` tests): M16 (a restored session forgets
+the files' bytes) caught by 2 tests; M17 (the tracker is not told what an import kept) survived the first two tests and is
+caught by `one_large_file_stops_the_script_at_the_import`; M18 (files not in the price) caught by 1; M19 (file bytes not
+added to the running counter) caught by 2.

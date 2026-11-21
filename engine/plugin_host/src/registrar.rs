@@ -8,14 +8,15 @@ use entities::{EntityCatalog, EntityError, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Message, check_message};
 use voxel_grid::ChannelIndex;
-use world_storage::{Section, WorldData};
+use world_storage::far_nodes::FarFileName;
+use world_storage::{SavedShip, Section, ShipFormat, WorldData};
 
 use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
 use crate::error::RegistrationError;
 use crate::event::{
     ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft,
-    PromptAnswered, UiResponded, Verdict,
+    PromptAnswered, ShipParked, UiResponded, Verdict,
 };
 use crate::order::{Node, order, reachable};
 use crate::registry::{
@@ -64,6 +65,8 @@ pub(crate) struct Builder {
     commands: BTreeMap<String, CommandEntry>,
     catalog: EntityCatalog,
     saves: Vec<SaveEntry>,
+    far_file_savers: Vec<crate::registry::FarFileSaver>,
+    pending_work: Vec<crate::registry::PendingWork>,
     watched: BTreeSet<ChannelIndex>,
     errors: Vec<RegistrationError>,
 }
@@ -80,6 +83,8 @@ impl Builder {
             .insert(TypeId::of::<PromptAnswered>(), PromptAnswered::id());
         self.events
             .insert(TypeId::of::<UiResponded>(), UiResponded::id());
+        self.events
+            .insert(TypeId::of::<ShipParked>(), ShipParked::id());
         self.events
             .insert(TypeId::of::<EntitySpawned>(), EntitySpawned::id());
         self.events
@@ -315,6 +320,22 @@ impl<'a> Registrar<'a> {
         );
     }
 
+    /// The far files this plugin keeps for ships (the nodes a far view is made of): called whenever the world is saved, with the ships whose files the save makes (each with the
+    /// name of its file and the checksum of its bytes, which a far file says it was made from) and the format of ship files (the names of blocks). What it returns is written beside
+    /// the ship files.
+    pub fn save_far_files(
+        &mut self,
+        write: impl Fn(&[SavedShip], &ShipFormat) -> Vec<(FarFileName, Vec<u8>)> + Send + Sync + 'static,
+    ) {
+        self.builder.far_file_savers.push(Box::new(write));
+    }
+
+    /// Says whether this plugin has work in hand that goes on between ticks (nodes it is making on a thread): asked by [`crate::PluginHost`]'s `work_pending`, which a
+    /// program that wants the plugins finished (to save a world with everything made) waits on.
+    pub fn pending_work(&mut self, pending: impl Fn() -> bool + Send + Sync + 'static) {
+        self.builder.pending_work.push(Box::new(pending));
+    }
+
     /// State this plugin saves with the world: called whenever the world is saved.
     pub fn save_section(
         &mut self,
@@ -369,6 +390,8 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         commands,
         catalog,
         saves,
+        far_file_savers,
+        pending_work,
         watched,
         mut errors,
     } = builder;
@@ -582,6 +605,8 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         commands,
         catalog: Arc::new(catalog),
         saves,
+        far_file_savers: Arc::new(far_file_savers),
+        pending_work,
         watched,
     })
 }

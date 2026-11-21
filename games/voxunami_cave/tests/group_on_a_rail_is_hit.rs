@@ -278,15 +278,9 @@ fn a_chain_that_was_hit_is_put_on_a_new_rail_when_the_wall_has_gone_and_the_rail
 fn a_hit_on_another_chain_far_off_does_not_kick_a_chain_on_its_rail() {
     // Chain B, 600 voxels along from chain A (which is on its rail), is hit by a wall: A is not near anything, and what the ghost of B does to B is none of A's.
     let ticks = 120;
-    let (mut alone, _, ships, _, _) = a_chain_on_its_rail();
-    // (Making chain B and the wall takes a tick and setting the wall going another: the chain alone has two as well.)
-    alone.ticks(2);
-    let mut baseline = Vec::new();
-    for _ in 0..ticks {
-        alone.ticks(1);
-        baseline.extend(turns(&alone, &ships));
-    }
     let (mut scene, report, ships, speed, rail) = a_chain_on_its_rail();
+    let clock = |scene: &Scene| scene.rig.server.world().clock();
+    let before_making = clock(&scene);
     let mut made = Vec::new();
     let mut at = 600.0;
     for (blocks, length) in a_chain() {
@@ -303,6 +297,16 @@ fn a_hit_on_another_chain_far_off_does_not_kick_a_chain_on_its_rail() {
             .set_grid_velocity(wall, [going[0] - 50.0, going[1], going[2]], [0.0; 3])
             .unwrap();
     });
+    // (Making chain B and the wall takes as many ticks as it takes (the ships are made a few bricks a tick) and setting the wall going one more: the chain alone is given the
+    // same number, to have swung as far when the wall is let go.)
+    let setting_up = clock(&scene) - before_making;
+    let (mut alone, _, alone_ships, _, _) = a_chain_on_its_rail();
+    alone.ticks(setting_up as usize);
+    let mut baseline = Vec::new();
+    for _ in 0..ticks {
+        alone.ticks(1);
+        baseline.extend(turns(&alone, &alone_ships));
+    }
     let mut watched = Vec::new();
     for tick in 0..ticks {
         scene.ticks(1);

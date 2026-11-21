@@ -1,0 +1,29 @@
+== pipeline setup, in process, 60 textures + 120 passes + 500 settings
+host calls per run: 180; first run 1.579ms; 200 runs: median 801.700µs, p99 1.032ms
+
+== limits
+while True: pass, 50 ms feed limit           ERROR  50.033ms  TimeoutError: feed time limit exceeded: 50.0125ms > 50ms
+same, no limit set -> skipped (would hang)   ok      7.300µs  1
+sum(range(10**9)), 50 ms feed limit          ERROR  50.012ms  TimeoutError: feed time limit exceeded: 50.0029ms > 50ms
+[0]*10**8, max_memory 50 MB (no monty-alloc) ERROR  50.800µs  MemoryError: memory limit exceeded: 1600000000 bytes > 50000000 bytes
+unbounded recursion, default depth 1000      ok    864.200µs  'caught'
+genexpr over range(10**12), 200 ms + 50 MB   ERROR 202.164ms  TimeoutError: feed time limit exceeded: 200.0094ms > 200ms
+generator function (yield)                   ERROR  49.100µs  NotImplementedError: The monty syntax parser does not yet support yield expressions
+append forever, 300 ms + 50 MB               ERROR 246.610ms  MemoryError: memory limit exceeded: 67108864 bytes > 50000000 bytes
+string doubling x40, 300 ms + 50 MB          ERROR   9.064ms  MemoryError: memory limit exceeded: 67108864 bytes > 50000000 bytes
+append small lists forever, 400 ms + 50 MB   ERROR 466.954ms  TimeoutError: feed time limit exceeded: 400.0078ms > 400ms
+dict of ints forever, 400 ms + 50 MB         ERROR 198.287ms  MemoryError: memory limit exceeded: 83886080 bytes > 50000000 bytes
+append short strings, 400 ms + 50 MB         ERROR 401.915ms  TimeoutError: feed time limit exceeded: 400.0086ms > 400ms
+sum(x*x for x in range(10))                  ok     80.000µs  285
+
+== frozen clock and seed (two fresh runs must agree)
+run 0                                        ok     85.100µs  (1700000000.0, '2023-11-14 22:13:20', 0.5016930963015209, 0.9018654590720995)
+run 1                                        ok     15.100µs  (1700000000.0, '2023-11-14 22:13:20', 0.5016930963015209, 0.9018654590720995)
+
+== ambient authority
+open('/etc/passwd')                          ERROR  29.300µs  PermissionError: Permission denied: '/etc/passwd'
+import os; os.getenv('PATH')                 ERROR  23.500µs  RuntimeError: 'os.getenv' is not supported in this environment
+import socket                                ERROR   6.500µs  ModuleNotFoundError: No module named 'socket'
+import subprocess                            ERROR   2.900µs  ModuleNotFoundError: No module named 'subprocess'
+__import__('os').system                      ok     73.600µs  'suspended: FunctionCall(FunctionCall { function_name: "__imp'
+eval('1+1')                                  ok     18.600µs  2

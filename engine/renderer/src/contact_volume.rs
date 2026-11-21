@@ -1,5 +1,5 @@
 //! The graphics card's side of the voxels that block the sun: the tables of the windows, the pool of slots, the pool of partial slots, the shapes, the uniform that says where each window is, and the variant of the voxel
-//! shader that walks them (`contact_on.wgsl`). The books are kept by [`crate::occupancy_volume::Volume`]; this writes what it hands over.
+//! shader that walks them (`volume_table.wgsl`). The books are kept by [`crate::occupancy_volume::Volume`]; this writes what it hands over.
 //!
 //! It is made when the first voxel that blocks the sun is told of, and not before: a renderer without such voxels draws with the shader that has no walk in it (a binding the
 //! default fragment shader uses made two shadow tests flake on the integrated AMD GPU: `docs/specs/contact-trace-spec.md`, 4.4).
@@ -11,10 +11,11 @@ use bytemuck::{Pod, Zeroable};
 use crate::occupancy_volume::{
     Changes, MAXIMUM_WINDOWS, PARTIAL_SLOT_BYTES, SLOT_BYTES, WINDOW_ENTRIES,
 };
+use crate::shader_pack::Shading;
 use crate::sun_boxes::{MAXIMUM_SUN_BOXES, SunBoxUniform};
 use crate::voxel_renderer::{SunWalk, voxel_pipelines, voxel_shader};
 
-/// Where a window is, as the shader has it (`Window` in `contact_on.wgsl`).
+/// Where a window is, as the shader has it (`Window` in `volume_table.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct WindowUniform {
@@ -29,7 +30,7 @@ pub(crate) struct WindowUniform {
     pub bounds_high: [f32; 4],
 }
 
-/// The windows, and what to draw of the walk (`Windows` in `contact_on.wgsl`).
+/// The windows, and what to draw of the walk (`Windows` in `volume_table.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct WindowsUniform {
@@ -51,6 +52,8 @@ const SHAPE_BYTES: usize = 64;
 pub(crate) struct ContactGpu {
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    /// The same with the specular pictures as the fourth group, for the shaders that draw pictures.
+    pipeline_layout_with_pictures: wgpu::PipelineLayout,
     windows: wgpu::Buffer,
     tables: wgpu::Buffer,
     pool: wgpu::Buffer,
@@ -67,10 +70,10 @@ pub(crate) struct ContactGpu {
     /// The voxel shader with the walk, with and without the pictures, the walk through shapes, the walk through the windows of other grids and the test against the boxes of
     /// entities, and the pipelines made with each (the number of the kind is `usize::from(with_pictures) + 2 * usize::from(with_shapes) + 4 * usize::from(with_other_windows) +
     /// 8 * usize::from(with_entities)`): made when they are first wanted.
-    shaders: [Option<wgpu::ShaderModule>; 16],
-    /// The text of the shader pack's `pack_shade` the shaders are made with.
-    lighting: String,
-    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 16],
+    shaders: [Option<wgpu::ShaderModule>; 18],
+    /// What the shaders are made with besides the engine's text: the pack's lighting, how the shaders with pictures draw their relief, and the values of the settings.
+    shading: Shading,
+    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 18],
 }
 
 fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -88,10 +91,11 @@ fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 
 impl ContactGpu {
     pub(crate) fn new(
-        lighting: &str,
+        shading: &Shading,
         device: &wgpu::Device,
         frame_layout: &wgpu::BindGroupLayout,
         placement_layout: &wgpu::BindGroupLayout,
+        companion_layout: &wgpu::BindGroupLayout,
         maximum_slots: usize,
         maximum_partial_slots: usize,
     ) -> Self {
@@ -119,6 +123,17 @@ impl ContactGpu {
             bind_group_layouts: &[Some(frame_layout), Some(placement_layout), Some(&layout)],
             immediate_size: 0,
         });
+        let pipeline_layout_with_pictures =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("contact pipeline layout with pictures"),
+                bind_group_layouts: &[
+                    Some(frame_layout),
+                    Some(placement_layout),
+                    Some(&layout),
+                    Some(companion_layout),
+                ],
+                immediate_size: 0,
+            });
         let windows = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("contact windows"),
             size: size_of::<WindowsUniform>() as u64,
@@ -144,6 +159,7 @@ impl ContactGpu {
         Self {
             layout,
             pipeline_layout,
+            pipeline_layout_with_pictures,
             windows,
             tables,
             pool,
@@ -155,7 +171,7 @@ impl ContactGpu {
             shapes,
             bind_group,
             shaders: std::array::from_fn(|_| None),
-            lighting: lighting.to_owned(),
+            shading: shading.clone(),
             pipelines: std::array::from_fn(|_| None),
         }
     }
@@ -336,10 +352,10 @@ impl ContactGpu {
         &self.bind_group
     }
 
-    /// Makes the shaders of the variants with the walk from this text of the shader pack's `pack_shade` from now on: the ones made before are forgotten.
-    pub(crate) fn set_lighting(&mut self, lighting: &str) {
-        if lighting != self.lighting {
-            self.lighting = lighting.to_owned();
+    /// Makes the shaders of the variants with the walk from this lighting, relief and settings from now on: the ones made before are forgotten.
+    pub(crate) fn set_shading(&mut self, shading: &Shading) {
+        if *shading != self.shading {
+            self.shading = shading.clone();
             self.shaders = std::array::from_fn(|_| None);
             self.pipelines = std::array::from_fn(|_| None);
         }
@@ -358,13 +374,13 @@ impl ContactGpu {
             return;
         }
         let shader = self.shaders[index]
-            .get_or_insert_with(|| voxel_shader(device, with_pictures, walk, &self.lighting));
-        self.pipelines[index] = Some(voxel_pipelines(
-            device,
-            &self.pipeline_layout,
-            shader,
-            color_format,
-        ));
+            .get_or_insert_with(|| voxel_shader(device, with_pictures, walk, &self.shading));
+        let layout = if with_pictures {
+            &self.pipeline_layout_with_pictures
+        } else {
+            &self.pipeline_layout
+        };
+        self.pipelines[index] = Some(voxel_pipelines(device, layout, shader, color_format));
     }
 
     /// The number of the kind of shader: with the pictures or without, and what of the walk it has.
@@ -375,7 +391,9 @@ impl ContactGpu {
             entities,
         } = walk
         else {
-            panic!("a variant with the walk has a walk");
+            assert_eq!(walk, SunWalk::Shade, "a variant with the voxels has them");
+            // (After the sixteen kinds of the walk.)
+            return 16 + usize::from(with_pictures);
         };
         usize::from(with_pictures)
             + 2 * usize::from(shapes)

@@ -7,7 +7,7 @@
 //! plugin registers its own commands (see [`crate::client_plugin`]).
 
 /// What the client commands change, and what a command can say about it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ClientSettings {
     /// How bright, from 0 to 255, a face is drawn that no light reaches (see
     /// `renderer::Atmosphere::ambient_light`).
@@ -28,6 +28,10 @@ pub struct ClientSettings {
     /// graphics card refuses is taken off the second by the window.
     pub shader_packs: Vec<ShaderPackName>,
     pub shader_pack: Option<String>,
+    /// The values the player has chosen for the settings of each shader (`.shadersetting`: the engine's, `renderer::engine_settings`, and the pack's own), by the id of the pack
+    /// (`None` for the game's own) and then the name; a setting that is not here is its default. The shell keeps them in files next to the packs
+    /// ([`crate::shader_pack_settings`]).
+    pub pack_settings: crate::shader_pack_settings::PackChoices,
 }
 
 impl ClientSettings {
@@ -43,8 +47,118 @@ impl ClientSettings {
             texture_distance: renderer::DEFAULT_PICTURE_DISTANCE as u32,
             shader_packs: Vec::new(),
             shader_pack: None,
+            pack_settings: std::collections::BTreeMap::new(),
         }
     }
+
+    /// The settings that are in play with the shader in use: the engine's alone for the game's own, and for a pack the engine's with the pack's defaults, then the pack's own.
+    pub fn settings_in_play(&self) -> Vec<renderer::SettingDeclaration> {
+        self.shader_pack
+            .as_ref()
+            .and_then(|id| self.shader_packs.iter().find(|pack| &pack.id == id))
+            .map_or_else(renderer::engine_settings, |pack| pack.settings.clone())
+    }
+
+    /// What the renderer is told of the player's choices: those for the shader in use (the engine's settings and the pack's own).
+    pub fn chosen_settings(&self) -> renderer::SettingChoices {
+        self.pack_settings
+            .get(&self.shader_pack)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Goes back to the game's own shader after the graphics card refused the one in use (or its settings), and forgets what was chosen of that shader's settings, so that it is not
+    /// refused again in the next frame. What was chosen of the other shaders is kept.
+    pub fn forget_the_refused_shader(&mut self) {
+        let refused = self.shader_pack.take();
+        self.pack_settings.remove(&refused);
+    }
+
+    /// The value the player has chosen for the setting of this name in play, if any.
+    fn chosen_value(&self, name: &str) -> Option<renderer::SettingValue> {
+        self.pack_settings
+            .get(&self.shader_pack)
+            .and_then(|choices| choices.get(name).cloned())
+    }
+
+    /// Chooses a value for the setting of this name of the shader in use, or none (its default again). What is chosen is for this shader alone: another pack, or the game's own,
+    /// has its own choices.
+    fn choose_value(&mut self, name: &str, value: Option<renderer::SettingValue>) {
+        match value {
+            Some(value) => {
+                self.pack_settings
+                    .entry(self.shader_pack.clone())
+                    .or_default()
+                    .insert(name.to_owned(), value);
+            }
+            None => {
+                if let Some(choices) = self.pack_settings.get_mut(&self.shader_pack) {
+                    choices.remove(name);
+                    if choices.is_empty() {
+                        self.pack_settings.remove(&self.shader_pack);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The setting of these a player's text names: its name, or the beginning of one name only.
+fn pick_setting<'a>(
+    declarations: &'a [renderer::SettingDeclaration],
+    text: &str,
+) -> Result<&'a renderer::SettingDeclaration, String> {
+    let lower = text.to_lowercase();
+    let found = declarations
+        .iter()
+        .find(|declaration| declaration.name() == lower)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            let beginnings: Vec<_> = declarations
+                .iter()
+                .filter(|declaration| declaration.name().starts_with(&lower))
+                .collect();
+            match beginnings.as_slice() {
+                [one] => Ok(*one),
+                _ => Err(()),
+            }
+        });
+    found.map_err(|()| {
+        let names: Vec<&str> = declarations
+            .iter()
+            .map(renderer::SettingDeclaration::name)
+            .collect();
+        format!(
+            "there is no shader setting called {text:?}; there are {}",
+            names.join(", ")
+        )
+    })
+}
+
+/// What `.shadersetting` says with no name: each setting with its value, and its default where the player has changed it.
+fn settings_listed(settings: &ClientSettings) -> String {
+    let listed: Vec<String> = settings
+        .settings_in_play()
+        .iter()
+        .map(|declaration| {
+            let value = settings
+                .chosen_value(declaration.name())
+                .unwrap_or_else(|| declaration.default_value());
+            if value == declaration.default_value() {
+                format!("{} {value}", declaration.name())
+            } else {
+                format!(
+                    "{} {value} (the default is {})",
+                    declaration.name(),
+                    declaration.default_value()
+                )
+            }
+        })
+        .collect();
+    format!(
+        "shader settings: {}; .shadersetting NAME says what one is for, .shadersetting NAME VALUE changes it",
+        listed.join(", ")
+    )
 }
 
 /// Whether a line typed in the window is a client command rather than the server's.
@@ -306,6 +420,54 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
     );
     registrar.command(
         CommandSpec::new(
+            "shadersetting",
+            "changes a number of how the engine draws, by eye (how deep the relief of block pictures is, how dark the foot of a prism's wall is, how much brighter the darks of the whole scene are made, and the settings of the shader pack in use): .shadersetting NAME VALUE (the beginning of a name will do), .shadersetting NAME default goes back, .shadersetting NAME says what one is for, .shadersetting alone lists them; a change makes the shaders again, a pause of a moment",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("setting").optional())
+        .argument(Argument::word("value").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return settings_listed(settings);
+            }
+            let declarations = settings.settings_in_play();
+            let declaration = match pick_setting(&declarations, arguments.word(0)) {
+                Ok(declaration) => declaration,
+                Err(error) => return error,
+            };
+            let name = declaration.name();
+            let default = declaration.default_value();
+            let current = settings
+                .chosen_value(name)
+                .unwrap_or_else(|| default.clone());
+            if !arguments.present(1) {
+                return format!(
+                    "{name} is {current}{}: {}; it takes {}",
+                    if current == default { " (the default)" } else { "" },
+                    declaration.description(),
+                    declaration.kind().describe()
+                );
+            }
+            let wanted = match arguments.word(1) {
+                "default" => default.clone(),
+                text => match declaration.kind().parse(text) {
+                    Ok(value) => value,
+                    Err(error) => return format!("{name}: {error}"),
+                },
+            };
+            if wanted == default {
+                settings.choose_value(name, None);
+                return format!("{name} is {default}, the default");
+            }
+            settings.choose_value(name, Some(wanted.clone()));
+            format!(
+                "{name} is now {wanted} (the default is {default}); .shadersetting {name} default goes back"
+            )
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
             "choose",
             "answers the question the game is asking: .choose 1 is the first option",
         )
@@ -330,6 +492,9 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
 }
 
 #[cfg(test)]
+mod pack_settings_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -341,7 +506,7 @@ mod tests {
     use crate::view::camera_at;
 
     /// Runs a typed line the way the window does, against these settings.
-    fn run(line: &str, settings: &mut ClientSettings) -> String {
+    pub(super) fn run(line: &str, settings: &mut ClientSettings) -> String {
         run_with_questions(line, settings, &[]).0
     }
 
@@ -396,6 +561,7 @@ mod tests {
             .map(|(id, name)| ShaderPackName {
                 id: id.to_owned(),
                 name: name.to_owned(),
+                settings: renderer::engine_settings(),
             })
             .to_vec();
         settings
@@ -454,6 +620,128 @@ mod tests {
             "the shader is the game's own; there are no shader packs"
         );
         assert!(run(".shader any", &mut none).contains("there are none"));
+    }
+
+    #[test]
+    fn shadersetting_lists_the_settings_with_what_they_are_and_says_what_one_is_for() {
+        let mut settings = ClientSettings::new(0);
+        assert_eq!(
+            run(".shadersetting", &mut settings),
+            "shader settings: relief prisms, relief_depth 0.1, wall_darkness 0.2, scene_lift 1.2; \
+             .shadersetting NAME says what one is for, .shadersetting NAME VALUE changes it"
+        );
+        let reply = run(".shadersetting scene_lift", &mut settings);
+        assert!(
+            reply.starts_with("scene_lift is 1.2 (the default)")
+                && reply.contains("a number from 0.5 to 3")
+                && reply.contains("black stays black"),
+            "{reply}"
+        );
+        let reply = run(".shadersetting relief", &mut settings);
+        assert!(
+            reply.starts_with("relief is prisms (the default)")
+                && reply.contains("it takes one of flat, prisms"),
+            "{reply}"
+        );
+        assert!(settings.pack_settings.is_empty(), "asking changes nothing");
+    }
+
+    #[test]
+    fn shadersetting_chooses_a_word_of_a_choice_in_any_case_and_refuses_a_word_that_is_not_there() {
+        use renderer::SettingValue;
+        let mut settings = ClientSettings::new(0);
+        assert_eq!(
+            run(".shadersetting relief flat", &mut settings),
+            "relief is now flat (the default is prisms); .shadersetting relief default goes back"
+        );
+        assert_eq!(
+            settings.pack_settings[&None].get("relief"),
+            Some(&SettingValue::Choice("flat".to_owned()))
+        );
+        assert!(
+            run(".shadersetting", &mut settings)
+                .starts_with("shader settings: relief flat (the default is prisms), ")
+        );
+        // The case of a word does not matter; and a whole name wins over a longer one it begins (`relief` is also the beginning of `relief_depth`).
+        assert_eq!(
+            run(".shadersetting relief PRISMS", &mut settings),
+            "relief is prisms, the default"
+        );
+        assert!(settings.pack_settings.is_empty());
+        let before = settings.pack_settings.clone();
+        for text in [
+            ".shadersetting relief bumpy",
+            ".shadersetting relief 1",
+            ".shadersetting relief on",
+        ] {
+            let reply = run(text, &mut settings);
+            assert!(
+                reply.starts_with("relief: ") && reply.contains("one of flat, prisms"),
+                "{text}: {reply}"
+            );
+        }
+        assert_eq!(settings.pack_settings, before, "nothing changed");
+    }
+
+    #[test]
+    fn shadersetting_sets_a_value_by_name_or_the_beginning_of_it_and_goes_back_to_the_default() {
+        use renderer::SettingValue;
+        let mut settings = ClientSettings::new(0);
+        assert_eq!(
+            run(".shadersetting scene_lift 1.5", &mut settings),
+            "scene_lift is now 1.5 (the default is 1.2); .shadersetting scene_lift default goes back"
+        );
+        assert_eq!(
+            settings.pack_settings[&None].get("scene_lift"),
+            Some(&SettingValue::Float(1.5))
+        );
+        assert_eq!(
+            run(".shadersetting", &mut settings),
+            "shader settings: relief prisms, relief_depth 0.1, wall_darkness 0.2, scene_lift 1.5 (the default is 1.2); \
+             .shadersetting NAME says what one is for, .shadersetting NAME VALUE changes it"
+        );
+        // The beginning of a name is a name if it is the beginning of one only.
+        run(".shadersetting wall 0.75", &mut settings);
+        assert_eq!(
+            settings.pack_settings[&None].get("wall_darkness"),
+            Some(&SettingValue::Float(0.75))
+        );
+        // The default, as a number or as a word, is no choice at all.
+        assert_eq!(
+            run(".shadersetting scene_lift 1.2", &mut settings),
+            "scene_lift is 1.2, the default"
+        );
+        assert!(!settings.pack_settings[&None].contains_key("scene_lift"));
+        run(".shadersetting wall_darkness default", &mut settings);
+        assert!(
+            settings.pack_settings.is_empty(),
+            "no choice left is no entry"
+        );
+    }
+
+    #[test]
+    fn shadersetting_with_a_bad_name_or_value_changes_nothing_and_says_what_there_is() {
+        let mut settings = ClientSettings::new(0);
+        run(".shadersetting relief_depth 0.15", &mut settings);
+        let before = settings.pack_settings.clone();
+        let reply = run(".shadersetting brightness 1", &mut settings);
+        assert!(
+            reply.contains("there is no shader setting called \"brightness\"")
+                && reply.contains("relief, relief_depth, wall_darkness, scene_lift"),
+            "{reply}"
+        );
+        for text in [
+            ".shadersetting relief_depth 9",
+            ".shadersetting relief_depth deep",
+            ".shadersetting relief_depth -1",
+        ] {
+            let reply = run(text, &mut settings);
+            assert!(
+                reply.contains("relief_depth") && reply.contains("a number from 0 to 0.2"),
+                "{text}: {reply}"
+            );
+        }
+        assert_eq!(settings.pack_settings, before, "nothing changed");
     }
 
     #[test]
@@ -695,18 +983,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

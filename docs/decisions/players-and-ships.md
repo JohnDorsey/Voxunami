@@ -64,6 +64,7 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   or over a wall. If there is no room within 64 it stays where it was put. A voxel the world does not have counts as solid.
 - **Why it is explicit**: the physics alone did not resolve it. Rapier's depenetration pushed a body some way sideways and left it inside
   blocks, and the brick colliders omit boxes buried in solid terrain, so a body deep in the ground touched nothing and fell through it.
+- **The colliders of a brick are made from the voxels of the bricks beside it too** (found 2026-11-16): a box is left out where nothing open touches it, and reaches a little into a brick that is solid across the seam, and both are found by looking at the voxels just across the face of the brick. So a changed voxel on a face of its brick changes the colliders of the brick across that face as well, and both are made again (`physics::bricks_whose_colliders_read`, used by the walkers' bodies and by the plugin that moves ships). A brick that is solid with solid all round it has no collider at all, so a dig to its face that remade only the brick dug left a floor with nothing in it: a walker sank 3 voxels into the rock below a shaft 8 deep, and a ship over such a shaft did not come to rest on it.
 - A body that is not inside anything is never moved (teleporting to where it already stands changes nothing, to the bit).
 - Cost: only on placement, and only when inside terrain; a failed search is about a millisecond plus the generation of the bricks it looks at,
   which is why the limit is two bricks and not more.
@@ -110,6 +111,7 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   blocks occupies a whole brick, so the bricks around its bricks were 16 to 64 of them at a time and stopped the game for a quarter of a second as it came to the
   ground (found by the owner playing, 2026-10-21). A walking player is the same: terrain within 8 voxels of the character and a quarter of a second of its speed, let go
   16 voxels farther out, where it had the 27 bricks around its brick (a hitch of 100 to 125 ms at each new brick edge).
+- **A brick of air is not asked for** (owner's report, 2026-11-20: a rocket at full throttle for 24 hours, 420 km/s, ticks of 9 to 20 seconds): a ship is given no colliders for a cube that the one generator that makes all of it says is air all through (`TerrainGenerator::is_air`, which is as much a part of the generator as its bricks: a generator that says air of a cube with ground in it lets a ship through the ground) and that has no stored brick in it, whatever its speed; for a ship in empty space that is nothing, so the server's tick is the same at 420 km/s as at rest (1.5 ms against 0.4). The stored bricks (built or dug) are kept from the bricks that changed in each tick and checked against the grid's count every tick, and a mistake there is a ship through what was built, so it is made again from the grid if the two disagree (tested with a floor built in empty space). A generator that does not say (the default) is asked for everything as before.
 - **A ship's collision with thin ground is kept by solver steps, not by Rapier's continuous collision detection (planned as 32j; measured 2026-10-21):** a ship's whole cubes are
   one `Voxels` collider, which Rapier's CCD leaves out, so the flags do nothing. `BodyWorld::step` will use more solver steps for the tick when a body is fast (3 below about
   48 voxels a second, 24 at most), which leaves every slower scene bit for bit as it was. A floor of one voxel is gone through from about 96 voxels a second today.
@@ -188,3 +190,10 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   frame of its ship with its place in the world.
 - **A player who comes back is told where they are** (`player_presence:placed`, in the world), because a client watches around its camera and a
   returning player may be anywhere. (Not yet done for `/tp`; a follow-up.)
+
+## Decided (a ship too big for a tick comes alive over several; the owner, 2026-11-19; built, `build-log.md`)
+
+- **A ship that comes into memory and has more bricks than a tick's budget (4, all the ships together) is made over several ticks, and held where it is meanwhile** (a fixed body whatever it is to be; the world keeps its weight and
+  speed; no docking or coupling; the terrain it needs after its own bricks, 2 costly bricks a tick); it goes on from where the world has it in the tick it is made. A ship whose bricks fit is made whole in its tick, as before. The owner's words:
+  "Spread the work out over multiple ticks, please", after the first tick of a ship of 20,480 bricks was found to stop the server for minutes. The budget is a count, never a time (the hard rule about machines). *Mine, the owner's to
+  overrule:* held rather than going on with half its colliders and weight (a half-weighed ship would fly wrongly); the order of coordinate; a brick of each ship in turn so that a small ship is not kept waiting by a big one.

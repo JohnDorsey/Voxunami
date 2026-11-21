@@ -125,6 +125,11 @@ impl Server {
         logic: Box<dyn GameLogic>,
         listener: Box<dyn Listener>,
     ) -> Result<Self, ServerError> {
+        let mut world = world;
+        // (What the plugins keep of the ships that a save writes the files of goes with the world, whoever saves it.)
+        if let Some(maker) = logic.far_file_maker() {
+            world.set_far_file_maker(maker);
+        }
         let world_description = world.describe(registries)?;
         let challenges = config
             .challenge_seed
@@ -235,6 +240,11 @@ impl Server {
             self.world.data_mut().set_opaque_section(section);
         }
         self.world.data_mut().save_with_ships(registries)
+    }
+
+    /// Whether the game still has work in hand that a save should wait for ([`GameLogic::work_pending`]): nodes the coarse plugin is still making.
+    pub fn work_pending(&self) -> bool {
+        self.logic.work_pending()
     }
 
     /// Ends the server and returns its world, for saving, with the game's own state in its plugin
@@ -692,7 +702,10 @@ impl Server {
             known_grids,
             current,
             aboard,
-            self.config.maximum_ship_bricks,
+            grid_replication::ShipLimits {
+                maximum_bricks: self.config.maximum_ship_bricks,
+                far: self.config.far_ships,
+            },
             edited,
         ));
         messages.extend(entity_messages(
@@ -702,6 +715,12 @@ impl Server {
             current,
             known_grids,
         ));
+        let far_ships: BTreeSet<GridId> = known_grids
+            .iter()
+            .filter(|(_, known)| known.far)
+            .map(|(ship, _)| *ship)
+            .collect();
+        self.world.set_far_ships(id, far_ships);
         for outgoing in &self.world.outgoing {
             if reaches(outgoing, id, current) {
                 messages.push(ServerMessage::GameMessage {

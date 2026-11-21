@@ -3,17 +3,18 @@
 //!
 //! It is a [`WorldMesher`] (or a [`LodView`] over one) reading from a ship instead of a level (see [`TerrainSource`] and [`CoarseTerrainSource`]), and saying what it
 //! draws as parts of the ship. A brick outside the extent of the generator is empty, and the face of a brick against it is drawn, so the edge of a planet that is cut
-//! off shows its side. The nodes of a planet are not corrected by the server (edits show in the bricks round the viewer, and not in the nodes farther away).
+//! off shows its side. The server corrects the nodes of a planet where it was edited (`ShipTerrainMesher::set_override`); the rest are the generator's.
 
 use std::sync::Arc;
 
 use block_models::BlockTable;
+use coarse_cells::CoarseNode;
 use region_octree::BrickCube;
 use terrain::{SolidBall, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
 
-use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
+use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
 use crate::mesher::{MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher};
 use crate::occupancy::{OccupancyChange, OccupancyStatistics};
 
@@ -23,6 +24,8 @@ pub struct ShipTerrainSource<'a> {
     voxels: &'a Grid,
     generator: Option<Arc<dyn TerrainGenerator>>,
     extent: BrickBox,
+    /// Whether the ship is far (see [`ShipTerrainSource::far`]).
+    far: bool,
 }
 
 impl std::fmt::Debug for ShipTerrainSource<'_> {
@@ -32,6 +35,7 @@ impl std::fmt::Debug for ShipTerrainSource<'_> {
             .field("stored", &self.voxels.brick_count())
             .field("has_generator", &self.generator.is_some())
             .field("extent", &self.extent)
+            .field("far", &self.far)
             .finish()
     }
 }
@@ -48,6 +52,18 @@ impl<'a> ShipTerrainSource<'a> {
             voxels,
             generator,
             extent,
+            far: false,
+        }
+    }
+
+    /// A ship that is far away: it has no brick here and no generator, and its picture is the nodes the server sends (see [`ShipTerrainMesher::set_override`]) and
+    /// nothing else. `bounds` are the bricks the ship occupies, in its own coordinates; no cube that does not meet them can show anything.
+    pub fn far(voxels: &'a Grid, bounds: BrickBox) -> Self {
+        Self {
+            voxels,
+            generator: None,
+            extent: bounds,
+            far: true,
         }
     }
 }
@@ -56,6 +72,10 @@ impl TerrainSource for ShipTerrainSource<'_> {
     fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
         if let Some(stored) = self.voxels.brick(coordinate) {
             return Some(Arc::clone(stored));
+        }
+        // A far ship has no brick anywhere: what is not drawn as a node is not drawn.
+        if self.far {
+            return Some(Arc::new(Brick::new(self.voxels.layout())));
         }
         // Beyond what the generator makes there is nothing.
         (!self.extent.contains(coordinate)).then(|| Arc::new(Brick::new(self.voxels.layout())))
@@ -70,39 +90,51 @@ impl TerrainSource for ShipTerrainSource<'_> {
     }
 }
 
-/// Whether any brick of the cube is inside the extent.
-fn meets(extent: BrickBox, cube: BrickCube) -> bool {
-    let origin = cube.origin();
-    let last = i128::try_from(cube.edge_length() - 1).unwrap_or(i128::MAX);
-    let far = |coordinate: i128| coordinate.saturating_add(last);
-    BrickBox::new(
-        origin,
-        BrickCoordinate::new(far(origin.x()), far(origin.y()), far(origin.z())),
-    )
-    .is_some_and(|whole| extent.intersection(whole).is_some())
-}
-
 impl CoarseTerrainSource for ShipTerrainSource<'_> {
-    /// (The generator and the extent of a planet do not change, so the answers never go stale.)
+    /// (The generator and the extent of a planet do not change, so the answers never go stale. The box of a far ship does: an edit makes the ship bigger, and the
+    /// server tells of it again with the new box.)
     fn version(&self) -> u64 {
+        if self.far {
+            return version_of_box(self.extent);
+        }
         0
     }
 
-    /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (the server does not correct the nodes of a planet,
-    /// so no edit makes something to see where the generator would not).
+    /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (a node the server corrected is kept by the view whatever the
+    /// generator says: an edit can make something to see where the generator would not).
     fn may_show(&self, cube: BrickCube) -> bool {
+        if self.far {
+            return cube.meets(self.extent);
+        }
         self.generator
             .as_ref()
-            .is_some_and(|generator| meets(self.extent, cube) && generator.may_show(cube))
+            .is_some_and(|generator| cube.meets(self.extent) && generator.may_show(cube))
     }
 
     fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
-        self.generator.clone().filter(|_| meets(self.extent, cube))
+        self.generator.clone().filter(|_| cube.meets(self.extent))
     }
 
     fn solid_core(&self) -> Option<SolidBall> {
         self.generator.as_ref()?.solid_core()
     }
+
+    /// A far ship has no generator: what it is drawn from is what the server says (see [`ShipTerrainSource::far`]).
+    fn waits_for_nodes(&self) -> bool {
+        self.far
+    }
+}
+
+/// A number that is the same for the same box and, but for a chance in 2^64, another for another: the version of the answers of a far ship (FNV-1a over the six coordinates).
+fn version_of_box(bounds: BrickBox) -> u64 {
+    let (low, high) = (bounds.min(), bounds.max());
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for value in [low.x(), low.y(), low.z(), high.x(), high.y(), high.z()] {
+        for byte in value.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 /// How a planet is drawn.
@@ -193,6 +225,14 @@ impl ShipTerrainMesher {
         self.grid
     }
 
+    /// The node the server says is the node of a cube of the planet instead of the generator's (a `None` takes back what was said), see
+    /// [`LodView::set_override`]. A mesher of the bricks alone draws no nodes, so there is nothing to change.
+    pub fn set_override(&mut self, cube: BrickCube, node: Option<CoarseNode>) {
+        if let Drawn::Detailed { view, .. } = &mut self.drawn {
+            view.set_override(self.grid, cube, node);
+        }
+    }
+
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.
     pub fn set_detail(&mut self, detail: LodSettings) {
         if let Drawn::Detailed { settings, .. } = &mut self.drawn {
@@ -252,6 +292,24 @@ impl ShipTerrainMesher {
         self.of_the_ship_all(updates)
     }
 
+    /// What to say, once, when the planet's detailed view has come to rest without drawing what it wants ([`LodView::take_stall_report`]); always `None` for a mesher of
+    /// the bricks alone.
+    pub fn take_stall_report(&mut self) -> Option<String> {
+        match &mut self.drawn {
+            Drawn::Bricks(_) => None,
+            Drawn::Detailed { view, .. } => view.take_stall_report(),
+        }
+    }
+
+    /// The cubes that are wanted and not drawn, as of the last time the planet's view came to rest ([`LodView::stalled`]); always empty for a mesher of the bricks
+    /// alone.
+    pub fn stalled(&self) -> &[Stalled] {
+        match &self.drawn {
+            Drawn::Bricks(_) => &[],
+            Drawn::Detailed { view, .. } => view.stalled(),
+        }
+    }
+
     /// Updates until no work is pending or schedulable, returning every change. For tests and headless rendering.
     pub fn settle(
         &mut self,
@@ -302,7 +360,7 @@ impl ShipTerrainMesher {
     /// Whether there is nothing more to make or to put on the screen.
     pub fn is_settled(&self) -> bool {
         match &self.drawn {
-            Drawn::Bricks(mesher) => mesher.pending_jobs() == 0,
+            Drawn::Bricks(mesher) => mesher.is_settled(),
             Drawn::Detailed { view, .. } => view.is_settled(),
         }
     }

@@ -1,8 +1,12 @@
 //! Ships with docking ports, for the tests of docking and of what docks where the world moves.
 
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
 use game_shell::GameContent;
+use grid_bodies::SHIP_BRICKS_PER_TICK;
 use server::GridView;
-use voxel_space::{FaceDirection, GridPose, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, GridPose, LevelIndex, VoxelCoordinate};
 use voxunami_cave::content::{CaveContent, dev_docking_port_id};
 use voxunami_cave::placement::turn_carrying;
 
@@ -71,9 +75,27 @@ pub fn make_going(scene: &mut Scene, at: GridPose, blocks: Vec<Placed>, velocity
     make_all_going(scene, vec![(at, blocks)], velocity);
 }
 
+/// How many bricks (of 32 voxels a side) blocks fill.
+fn bricks_filled(blocks: &[Placed]) -> usize {
+    blocks
+        .iter()
+        .map(|([x, y, z], _, _)| [x, y, z].map(|part| part.div_euclid(32)))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 /// Makes several ships in one tick, each going at `velocity` from it: ships that go as fast as this one goes would be far apart after the ticks that made them one by one.
+///
+/// **A tick makes only `SHIP_BRICKS_PER_TICK` bricks of ships, all the ships together** (the rest are held where they are until a later tick makes them), so a batch of more bricks than
+/// that would have its first ships going and the rest not yet there: the cars of a chain would be a tick of their speed apart before their joint ends could meet. A batch that
+/// size is made held, at rest, and **let go together, each at `velocity`, once the last is made** (in the tick after it is: the scene must report, `Scene::reporting*`, to be
+/// asked). A batch that fits is made going, as it always was.
 pub fn make_all_going(scene: &mut Scene, ships: Vec<(GridPose, Vec<Placed>)>, velocity: [f64; 3]) {
     let content = CaveContent::new();
+    let bricks: usize = ships.iter().map(|(_, blocks)| bricks_filled(blocks)).sum();
+    let over_the_budget = bricks > SHIP_BRICKS_PER_TICK;
+    let made: Arc<Mutex<Vec<GridId>>> = Arc::default();
+    let record = Arc::clone(&made);
     scene.run(move |world| {
         for (at, blocks) in ships {
             let grid = world.create_grid(LevelIndex::MAIN, at).unwrap();
@@ -88,6 +110,32 @@ pub fn make_all_going(scene: &mut Scene, ships: Vec<(GridPose, Vec<Placed>)>, ve
                     view.set(content.block_channel(), voxel, block).unwrap();
                 }
             }
+            if over_the_budget {
+                world.set_grid_held(grid, true).unwrap();
+            } else {
+                world.set_grid_velocity(grid, velocity, [0.0; 3]).unwrap();
+            }
+            record.lock().unwrap().push(grid);
+        }
+    });
+    if !over_the_budget {
+        return;
+    }
+    // (A count of ticks and not a time: what a tick makes is a count of bricks.)
+    let mut waited = 0;
+    while scene
+        .ships_being_made()
+        .expect("a batch of more bricks than a tick makes is let go once it is made, and only a scene that reports can say so")
+        > 0
+    {
+        scene.ticks(1);
+        waited += 1;
+        assert!(waited < 10_000, "the ships were not made in {waited} ticks");
+    }
+    let made = std::mem::take(&mut *made.lock().unwrap());
+    scene.run(move |world| {
+        for grid in made {
+            world.set_grid_held(grid, false).unwrap();
             world.set_grid_velocity(grid, velocity, [0.0; 3]).unwrap();
         }
     });
