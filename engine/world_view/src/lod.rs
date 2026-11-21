@@ -24,6 +24,7 @@ use world_storage::LevelData;
 
 use crate::cube_states::{Arrival, CubeStates, Replacement};
 use crate::horizon::{VIEWER_MARGIN, is_hidden_by, voxels_of};
+use crate::job_feed::jobs_to_hold;
 use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
 
 /// How much a picture is asked to show.
@@ -90,9 +91,6 @@ const RESELECT_MINIMUM_UPDATES: u32 = 10;
 
 /// How many cubes that are to come may be put on the screen in one update: each is a buffer made on the GPU.
 const SHOWN_PER_UPDATE: usize = 64;
-
-/// How many nodes are being made at once for each thread.
-const JOBS_PER_WORKER: usize = 4;
 
 /// What the terrain said of whether a cube may show anything, kept for the next time the cubes are worked out, which asks about nearly the same cubes (moving a
 /// brick changes the cubes at the edges of the levels of detail and no others) and about a hundred thousand of them in a view to 100 million voxels. An answer
@@ -212,6 +210,8 @@ pub struct LodView {
     seen_ready_serial: u64,
     epoch: u64,
     in_flight: usize,
+    /// How many nodes the threads finished since the update before (what [`jobs_to_hold`] sizes what is handed to them by).
+    finished_last_update: usize,
     jobs: Option<mpsc::Sender<Job>>,
     results: mpsc::Receiver<Finished>,
     workers: Vec<JoinHandle<()>>,
@@ -299,6 +299,7 @@ impl LodView {
             seen_ready_serial: 0,
             epoch: 0,
             in_flight: 0,
+            finished_last_update: 0,
             jobs: Some(job_sender),
             results,
             workers,
@@ -331,6 +332,11 @@ impl LodView {
     /// Work in progress: bricks and nodes being made.
     pub fn pending_jobs(&self) -> usize {
         self.mesher.pending_jobs() + self.in_flight
+    }
+
+    /// How many coarse nodes the threads have been handed and the view has not collected yet (the part of [`LodView::pending_jobs`] that is not bricks).
+    pub fn nodes_being_made(&self) -> usize {
+        self.in_flight
     }
 
     /// Whether anything is waiting to be made or swapped: the view is not yet what it is to be.
@@ -427,6 +433,7 @@ impl LodView {
         self.plan_needed = false;
         self.epoch += 1;
         self.in_flight = 0;
+        self.finished_last_update = 0;
         self.was_settled = false;
         self.stalls.clear();
         self.stall_reported.clear();
@@ -609,6 +616,7 @@ impl LodView {
     }
 
     fn collect_nodes(&mut self, updates: &mut Vec<MeshUpdate>) {
+        let mut finished_now = 0;
         while let Ok(finished) = self.results.try_recv() {
             // As if the work had been done here: a bug in a generator is a panic of whoever asked for the node.
             let done = match finished {
@@ -619,6 +627,7 @@ impl LodView {
                 continue;
             }
             self.in_flight = self.in_flight.saturating_sub(1);
+            finished_now += 1;
             let current = self.data_version(done.cube);
             let cube = done.cube;
             match self
@@ -635,6 +644,7 @@ impl LodView {
                 }
             }
         }
+        self.finished_last_update = finished_now;
     }
 
     fn reselect(
@@ -723,7 +733,7 @@ impl LodView {
 
     fn start_jobs(&mut self, source: &impl CoarseTerrainSource) {
         let source_waits = source.waits_for_nodes();
-        let limit = self.workers.len() * JOBS_PER_WORKER;
+        let limit = jobs_to_hold(self.workers.len(), self.finished_last_update);
         while self.in_flight < limit {
             let Some(cube) = self.queue.pop() else {
                 break;

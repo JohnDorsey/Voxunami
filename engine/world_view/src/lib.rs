@@ -10,6 +10,7 @@ mod brick_states;
 mod cube_states;
 mod grid_mesher;
 mod horizon;
+mod job_feed;
 mod lod;
 mod mesher;
 mod occupancy;

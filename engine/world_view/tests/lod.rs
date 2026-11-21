@@ -435,6 +435,46 @@ fn a_view_that_jumps_from_far_away_to_the_ground_is_refined_a_level_at_a_time_an
     );
 }
 
+/// How many nodes a view hands its threads at a time sets how fast it builds at the rate the screen is updated, because it hands out more only when it is updated: at 4 for
+/// each thread, 11 threads were given 44 nodes a frame, and the 15,000 nodes of a view from 264 km up back to the ground took 7.5 s at 60 frames a second where the threads
+/// can do it in 3.2 s (`job_feed.rs`; measured 2026-11-21, `docs/history/build-log.md`). So a view whose threads finished everything they were handed before the next update
+/// hands them more, and never the whole queue: what is handed cannot be taken back when the view moves on.
+#[test]
+fn a_view_whose_threads_run_dry_hands_them_more_and_never_the_whole_queue() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let workers = 2;
+    let mut view = LodView::new(
+        scene.mesher(3),
+        LodConfig {
+            unlit: 0,
+            worker_count: workers,
+        },
+    );
+    let viewer = viewer_in(brick(0, 0, 0));
+    view.update(GridId::MAIN, scene.world.main(), viewer, &settings());
+    assert!(view.wanted().len() > 1000, "{} cubes", view.wanted().len());
+    // The threads have finished nothing yet: the least is handed out, 4 for each.
+    assert_eq!(view.nodes_being_made(), workers * 4);
+    // Given time to finish them (the condition is that they have, which the view says by handing out more), the threads are handed more, up to a most.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut most = 0;
+    while most <= workers * 4 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never handed more than {most}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        view.update(GridId::MAIN, scene.world.main(), viewer, &settings());
+        most = most.max(view.nodes_being_made());
+        assert!(
+            view.nodes_being_made() <= workers * 64,
+            "{} nodes handed out to {workers} threads",
+            view.nodes_being_made()
+        );
+    }
+}
+
 /// One thing a player does.
 #[derive(Clone, Debug)]
 enum Move {
