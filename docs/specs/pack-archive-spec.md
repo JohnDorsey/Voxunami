@@ -111,12 +111,12 @@ A pack inside the world's own folder makes any world **portable**: copy the fold
 
 Some things have no source on the client (the clock, entities the client did not see, anything the server's own code kept), and the integrated server that loads the folder needs *something* there: defaults. **That piece, a world writer driven by the client's view and not by a server's state, is new, and I have not looked at how much of the world file's format a client can fill.** I would look before promising it (a spike: write a world file from a client that has joined a test server, load it in singleplayer, compare what is seen).
 
-**Two things the owner should decide:** (a) a server operator may not want its builds to leave the server as a world file: a **server setting** (`allow_world_copy`, say) is cheap and the default is the owner's choice (I lean to allowing it: the player has seen all of it already); (b) while the world is a copy of what one player saw, `remote.json` says so, and a loaded copy is a **snapshot**: it will not know anything that happened after the last join.
+**Two things the owner should decide:** (a) a server operator may not want its builds to leave the server as a world file: a **server setting** (`allow_world_replication`) is cheap and the default is the owner's choice (I lean to allowing it: the player has seen all of it already); (b) while the world is a copy of what one player saw, `remote.json` says so, and a loaded copy is a **snapshot**: it will not know anything that happened after the last join.
 
 ## Decided 2026-11-22 (second answer) and what is still open
 
 - **The folder shape is approved** (`worlds/NAME/` and `worlds/HOST-NAME/`, one shape, `packs/ID-HASH.zip` inside, `remote.json` only in a remote one).
-- **Copying a server's world is on by default and the operator opts out** (owner, 2026-11-22): the server setting (my name for it, `allow_world_copy`, default true) turns it off. The name is still mine to confirm.
+- **Copying a server's world is on by default and the operator opts out** (owner, 2026-11-22): the server setting `allow_world_replication` (name chosen by the owner, 2026-11-22; default true) turns it off.
 - **The cache goes in the world folder from the start**; the world file inside it comes later (my pick, taken as agreed since the folder was approved).
 - Still open: the world writer's spike (what of a world file a client can fill), and the generator-identity questions in `generator-identity-spec.md`.
 
