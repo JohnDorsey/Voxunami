@@ -122,3 +122,11 @@ proptest! {
         prop_assert_eq!(back.to_bytes(), bytes);
     }
 }
+
+#[test]
+fn a_dash_is_allowed_in_a_path_and_round_trips() {
+    let archive =
+        Archive::from_files([("textures/my-texture.png".to_owned(), vec![1, 2])]).unwrap();
+    let back = Archive::from_bytes(&archive.to_bytes(), &Limits::default()).unwrap();
+    assert_eq!(back.get("textures/my-texture.png"), Some(&[1u8, 2][..]));
+}

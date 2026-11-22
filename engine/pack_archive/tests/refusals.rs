@@ -210,7 +210,6 @@ fn bad_paths_are_refused_by_the_reader_and_by_the_writer() {
         "tab\t.txt",
         "nul\0.txt",
         "é.txt",
-        "dash-name.txt",
     ];
     for path in bad {
         let bytes = unchecked_zip(&[(path, b"x")]);

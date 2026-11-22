@@ -5,7 +5,7 @@ use thiserror::Error;
 /// A reason to refuse. Paths are named as the archive spells them.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ArchiveError {
-    /// A path that is not one of the allowed form: 1 to 255 characters of `a-z`, `0-9`, `_`, `.` and `/`, in parts that are not empty, `.` or `..`.
+    /// A path that is not one of the allowed form: 1 to 255 characters of `a-z`, `0-9`, `_`, `-`, `.` and `/`, in parts that are not empty, `.` or `..`.
     #[error("the path {path:?} is not allowed: {reason}")]
     InvalidPath { path: String, reason: &'static str },
     /// Two entries with one path.

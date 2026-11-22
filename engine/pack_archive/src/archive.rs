@@ -42,7 +42,7 @@ impl Default for Limits {
 ///
 /// The form (the *canonical* one): entries sorted by the bytes of their paths; every entry stored, never compressed; the date fixed at 1980-01-01 00:00; no
 /// flags, extra fields, comments, data descriptors or zip64; the central directory right after the last file and the end record right after it, with no
-/// comment; paths of only `a-z`, `0-9`, `_`, `.` and `/` (so two paths can never differ in case alone). [`Archive::from_bytes`] accepts only that and
+/// comment; paths of only `a-z`, `0-9`, `_`, `-`, `.` and `/` (so two paths can never differ in case alone). [`Archive::from_bytes`] accepts only that and
 /// [`Archive::to_bytes`] writes only that, so the same files are the same bytes on every machine and in every order they were given.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Archive {
@@ -65,9 +65,9 @@ pub(crate) fn check_path(path: &str) -> Result<(), ArchiveError> {
     }
     if !path
         .bytes()
-        .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'/'))
+        .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/'))
     {
-        return refuse("it has a character other than a-z, 0-9, _, . and /");
+        return refuse("it has a character other than a-z, 0-9, _, -, . and /");
     }
     for part in path.split('/') {
         match part {
