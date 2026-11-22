@@ -186,6 +186,23 @@ fn read_zip(path: &Path, errors: &mut Vec<PackError>) -> Option<Files> {
     }
 }
 
+/// Every file of a pack is replicated, a README and a licence too, and an archive's names are lower case (`a-z 0-9 _ - . /`): a folder with a file
+/// that is named otherwise is an error that names the file (owner, 2026-11-22), as a zip with one cannot be read at all.
+fn refuse_names_an_archive_cannot_hold(pack: &str, files: &Files, errors: &mut Vec<PackError>) {
+    for path in files.keys() {
+        if let Err(pack_archive::ArchiveError::InvalidPath { reason, .. }) =
+            pack_archive::check_path(path)
+        {
+            errors.push(problem(
+                format!("{pack}/{path}"),
+                format!(
+                    "this file name is not allowed in a pack, because every file of a pack is replicated and names there are lower case letters, digits, _ - . and /: {reason}"
+                ),
+            ));
+        }
+    }
+}
+
 /// The files of every pack in `root` by the pack's name, sorted by name: each folder, and each `.zip` file. A folder and a zip of one name are an error.
 fn collect_packs(
     root: &Path,
@@ -219,6 +236,7 @@ fn collect_packs(
             None => {
                 let mut files = Files::new();
                 read_folder(&root.join(&name), "", 0, &name, &mut files, errors);
+                refuse_names_an_archive_cannot_hold(&name, &files, errors);
                 Some(files)
             }
         };

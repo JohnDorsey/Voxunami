@@ -81,7 +81,7 @@ fn a_folder_in_a_pack_that_nothing_reads_is_an_error_not_a_silence() {
     scratch.write("mine/recipes/plank.json", "R");
     scratch.write("mine/sounds/hit.ogg", "S");
     scratch.write("mine/.git/config", "left alone");
-    scratch.write("mine/README.md", "a file beside pack.json is allowed");
+    scratch.write("mine/readme.md", "a file beside pack.json is allowed");
     let errors = read_directory(scratch.path()).unwrap_err();
     assert_eq!(
         errors.to_string(),
@@ -169,5 +169,25 @@ fn a_folder_inside_a_folder_of_pictures_is_not_read_and_so_is_an_error() {
     assert_eq!(
         errors.to_string(),
         "my_pack/textures/base_blocks/deeper: nothing reads this folder; pictures are in `textures` or in a folder of it named for a namespace"
+    );
+}
+
+/// The owner's decision of 2026-11-22: the archive of a pack holds every file (a README and a licence too), and its names are lower case, so a folder with a
+/// file named otherwise is an error that names the file.
+#[test]
+fn a_file_name_that_an_archive_cannot_hold_is_an_error_naming_the_file() {
+    let scratch = Scratch::new("upper_case_name");
+    scratch.write("mine/pack.json", "{\"id\":\"mine\"}");
+    scratch.write("mine/README.md", "x");
+    scratch.write("mine/blocks/Marble.json", "{}");
+    scratch.write("mine/blocks/fine-name.json", "{}");
+    let errors = read_directory(scratch.path()).unwrap_err();
+    let lines: Vec<String> = errors.0.iter().map(|error| error.file.clone()).collect();
+    assert_eq!(lines, ["mine/README.md", "mine/blocks/Marble.json"]);
+    assert!(
+        errors.0[0]
+            .message
+            .contains("every file of a pack is replicated"),
+        "{errors}"
     );
 }

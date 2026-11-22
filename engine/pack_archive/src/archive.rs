@@ -49,8 +49,8 @@ pub struct Archive {
     files: BTreeMap<String, Vec<u8>>,
 }
 
-/// Whether `path` is allowed, and if not, why.
-pub(crate) fn check_path(path: &str) -> Result<(), ArchiveError> {
+/// Whether `path` is allowed in an archive, and if not, why: the one rule for a file name in a pack, of a folder or a zip.
+pub fn check_path(path: &str) -> Result<(), ArchiveError> {
     let refuse = |reason| {
         Err(ArchiveError::InvalidPath {
             path: path.to_owned(),

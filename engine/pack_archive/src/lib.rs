@@ -9,6 +9,6 @@ mod archive;
 mod error;
 mod index;
 
-pub use archive::{Archive, Limits};
+pub use archive::{Archive, Limits, check_path};
 pub use error::ArchiveError;
 pub use index::{FileIndex, Hash, IndexEntry, cache_file_name};

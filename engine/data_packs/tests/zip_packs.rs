@@ -263,8 +263,7 @@ fn a_folder_that_cannot_be_archived_says_which_file_and_why() {
     let mut files = sample_files();
     files.push(("Credits.md".to_owned(), b"x".to_vec()));
     write_folder(&scratch, "mine", &files);
-    let identities = pack_identities(scratch.path()).unwrap();
-    assert_eq!(identities.len(), 1);
-    let message = identities[0].1.clone().unwrap_err();
-    assert!(message.contains("Credits.md"), "{message}");
+    let errors = pack_identities(scratch.path()).unwrap_err();
+    assert_eq!(errors.0.len(), 1);
+    assert_eq!(errors.0[0].file, "mine/Credits.md");
 }
