@@ -2187,6 +2187,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pack_archive"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "proptest",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

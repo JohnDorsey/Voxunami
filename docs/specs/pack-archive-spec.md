@@ -113,14 +113,16 @@ Some things have no source on the client (the clock, entities the client did not
 
 **Two things the owner should decide:** (a) a server operator may not want its builds to leave the server as a world file: a **server setting** (`allow_world_copy`, say) is cheap and the default is the owner's choice (I lean to allowing it: the player has seen all of it already); (b) while the world is a copy of what one player saw, `remote.json` says so, and a loaded copy is a **snapshot**: it will not know anything that happened after the last join.
 
-## Still open
+## Decided 2026-11-22 (second answer) and what is still open
 
-- The name `allow_world_copy` and its default (above).
-- Whether the world folder (with `packs/` inside) is built *before* the pack cache, so the first cache is already in its final place. My pick: yes, the cache goes in the world folder from the start; the world file inside it comes later.
+- **The folder shape is approved** (`worlds/NAME/` and `worlds/HOST-NAME/`, one shape, `packs/ID-HASH.zip` inside, `remote.json` only in a remote one).
+- **Copying a server's world is on by default and the operator opts out** (owner, 2026-11-22): the server setting (my name for it, `allow_world_copy`, default true) turns it off. The name is still mine to confirm.
+- **The cache goes in the world folder from the start**; the world file inside it comes later (my pick, taken as agreed since the folder was approved).
+- Still open: the world writer's spike (what of a world file a client can fill), and the generator-identity questions in `generator-identity-spec.md`.
 
 ## Steps (each ends with tests, clippy, fmt, doc; estimates are **[believed]**)
 
-1. **`pack_archive`** (a crate under `engine/`): a `RawPack` to and from the canonical archive, the root hash, the file index. Tests first: the same files in any order give the same bytes (a property test that shuffles), refusal of every non-canonical form (a corpus of bad zips: absolute paths, `..`, duplicates, case twins, compressed entries, extra fields, an entry larger than it says, a short archive), a round trip with the existing example packs. About two days. This is the safe piece: nothing else changes.
+1. **BUILT (2026-11-22): `pack_archive`** (a crate under `engine/`; see "What step 1 built" below): a `RawPack` to and from the canonical archive, the root hash, the file index. Tests first: the same files in any order give the same bytes (a property test that shuffles), refusal of every non-canonical form (a corpus of bad zips: absolute paths, `..`, duplicates, case twins, compressed entries, extra fields, an entry larger than it says, a short archive), a round trip with the existing example packs. About two days. This is the safe piece: nothing else changes.
 2. **Packs from a folder or a zip**: `--packs` and `check-pack` read both; `pack-schemas` unchanged. The data pack layout (`textures/NAMESPACE/NAME.png`) is the layout of an archive, so the client's texture folder reads it too (and keeps `NAMESPACE/textures/NAME.png` for `plugins/` until step 4). A day.
 3. **Built-in content as an archive**: `base_blocks` and Cave's own blocks are read as packs from archives built by `build.rs` (every file of the folder is in it, so nothing is "forgotten"); the Rust list that fixes their numbers stays and a test checks the archive against it. This removes `TEXTURE_FILES`. The pins (`PINNED_PACKAGE`, `PINNED`) must not move, which is the check that the step changes nothing. Two days, the first step with a risk.
 4. **The wire and the cache**: protocol 13, the messages above, the cache folder, the recorder. The first piece that touches replay, so tests first for replay equals live. Three to four days.
@@ -134,3 +136,13 @@ Some things have no source on the client (the clock, entities the client did not
 - **A client that has the pack can read everything in it**: blocks, patches, bodies. Packs are data and meant to be public, but a server author must know it: anything secret is code, and code is withheld.
 - **PNG decoding of bytes from a server** is attack surface on the client that the raw-RGBA package avoids today. The `png` crate decodes with limits and the size rules are already strict (square, 8 to 256, a power of two); I would cap the decoded size before decoding **[believed]**.
 - **Archive size**: a pack with many large pictures makes a bigger welcome than the package. Chunking and the cache answer it; the number to watch is first-join time with an empty cache.
+
+## What step 1 built (2026-11-22)
+
+`engine/pack_archive`, depending only on `sha2`, `crc32fast` and `thiserror` (all already in the lock file; no engine crate). **Verified:** 44 tests pass (writer pinned byte by byte; a shuffle property; a refusal corpus of 28 cases each asserting its own error; a changed-byte property that what is accepted writes back identically; random bytes never panic; the solar-system data pack and the three example shader packs round-trip), and four deliberate breaks of the code (the date, the canonical comparison, the checksum, the sort check) each failed the tests that should catch them.
+
+- `Archive::from_files` (any order; refuses paths that are not allowed, twice, or a file and a folder) and `to_bytes`; `Archive::from_bytes(bytes, &Limits)` reads the canonical form only. It reads every field to name the reason, then **rewrites the archive and compares bytes**, so no second spelling of one archive can pass. Limits (default 10,000 files, 256 MiB a file, 1 GiB in all) are checked before a file is copied.
+- Paths: 1 to 255 bytes of `a-z 0-9 _ . /`, no empty, `.` or `..` part. **A `-` in a path is refused** (the spec's alphabet had none); the example packs have none, but an author's file name with a dash must be renamed when the server rewrites a zip, which step 2 must say plainly.
+- `FileIndex` (path, size, SHA-256, sent), `root_hash` = SHA-256 of the index bytes (`VXPI`, version 1, count, entries), `to_bytes`/`from_bytes` (strict), `verify` (a whole archive) and `verify_received` (what a client was sent: withheld files absent, none unlisted).
+- `cache_file_name(pack_id, &root)` gives `my_pack-<first 32 hex>.zip`.
+- **Not decided here, believed fine:** SHA-256 over BLAKE3 (already in the lock, no new dependency); the entry time is 00:00 on 1980-01-01.

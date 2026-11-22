@@ -1,0 +1,18 @@
+[package]
+name = "pack_archive"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The canonical archive of a pack: one byte sequence for one set of files, a strict reader that refuses anything else, and the file index and root hash that name a pack's identity."
+
+[dependencies]
+crc32fast = "1"
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
