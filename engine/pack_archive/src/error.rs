@@ -54,6 +54,9 @@ pub enum ArchiveError {
     /// All the files together larger than allowed.
     #[error("the files add up to more than the {max} bytes allowed")]
     TooLarge { max: u64 },
+    /// An author's zip that cannot be imported: not a zip, a symbolic link, an encrypted or damaged entry (only with the `import` feature).
+    #[error("this zip cannot be imported: {reason}")]
+    Import { reason: String },
     /// A hash that is not 64 lower-case hexadecimal digits.
     #[error("{text:?} is not a hash: it must be 64 lower-case hexadecimal digits")]
     BadHash { text: String },

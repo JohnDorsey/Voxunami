@@ -165,7 +165,7 @@ pub fn read_archive(pack: &str, archive: &Archive) -> Result<RawPack, PackErrors
     }
 }
 
-/// Reads a `.zip` file, which must be in the canonical form (`pack_archive`), and tells whoever wrote it if it is not.
+/// Reads a `.zip` file: the canonical archive, or an author's own zip, which is taken into the canonical form (`pack_archive::import_zip`).
 fn read_zip(path: &Path, errors: &mut Vec<PackError>) -> Option<Files> {
     let label = path
         .file_name()
@@ -177,7 +177,12 @@ fn read_zip(path: &Path, errors: &mut Vec<PackError>) -> Option<Files> {
             return None;
         }
     };
-    match Archive::from_bytes(&bytes, &Limits::default()) {
+    // the canonical form is what the server writes and a client keeps; an author's own zip is taken into it here (owner, 2026-11-21), so what is told of
+    // a zip that is neither is what the import says
+    let limits = Limits::default();
+    match Archive::from_bytes(&bytes, &limits)
+        .or_else(|_| pack_archive::import_zip(&bytes, &limits))
+    {
         Ok(archive) => Some(files_of(&archive)),
         Err(error) => {
             errors.push(problem(label, error.to_string()));

@@ -185,22 +185,61 @@ fn a_zip_without_a_manifest_is_an_error_naming_the_pack() {
 }
 
 #[test]
-fn a_zip_that_is_not_canonical_is_refused_with_its_file_name_and_the_reason() {
-    let scratch = Scratch::new("not_canonical");
-    let mut bytes = Archive::from_files(sample_files()).unwrap().to_bytes();
-    bytes[8] = 8; // the first entry says it is deflated
-    scratch.write("mine.zip", &bytes);
-    let errors = read_directory(scratch.path()).unwrap_err();
-    assert_eq!(errors.0.len(), 1);
-    assert_eq!(errors.0[0].file, "mine.zip");
-    assert!(
-        errors.0[0].message.contains("not canonical") || errors.0[0].message.contains("compressed"),
-        "{errors}"
-    );
+fn an_authors_own_zip_gives_the_pack_its_folder_gives() {
+    let scratch = Scratch::new("authors_zip");
+    // deflated, inside a wrapper folder, with a folder entry and a Mac's leftover
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    writer.add_directory("mine/", options).unwrap();
+    for (path, bytes) in sample_files() {
+        writer.start_file(format!("mine/{path}"), options).unwrap();
+        std::io::Write::write_all(&mut writer, &bytes).unwrap();
+    }
+    writer.start_file("__MACOSX/._pack.json", options).unwrap();
+    scratch.write("mine.zip", &writer.finish().unwrap().into_inner());
 
-    scratch.write("mine.zip", b"this is not a zip at all");
+    let folder = Scratch::new("authors_zip_folder");
+    write_folder(&folder, "mine", &sample_files());
+    assert_eq!(
+        read_directory(scratch.path()).unwrap(),
+        read_directory(folder.path()).unwrap()
+    );
+    assert_eq!(
+        pack_identities(scratch.path()).unwrap(),
+        pack_identities(folder.path()).unwrap(),
+        "the identity is that of the canonical rewrite, so it is the folder's too"
+    );
+}
+
+#[test]
+fn a_zip_that_is_no_zip_or_holds_a_file_that_cannot_be_kept_is_refused_with_its_name_and_the_reason()
+ {
+    let scratch = Scratch::new("bad_zips");
+    scratch.write("garbage.zip", b"this is not a zip at all");
+    let mut files = sample_files();
+    files.push(("Credits.md".to_owned(), b"x".to_vec()));
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (path, bytes) in &files {
+        writer
+            .start_file(path, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut writer, bytes).unwrap();
+    }
+    scratch.write("upper.zip", &writer.finish().unwrap().into_inner());
     let errors = read_directory(scratch.path()).unwrap_err();
-    assert_eq!(errors.0[0].file, "mine.zip");
+    let described: Vec<(String, bool)> = errors
+        .0
+        .iter()
+        .map(|error| (error.file.clone(), error.message.contains("Credits.md")))
+        .collect();
+    assert_eq!(
+        described,
+        [
+            ("garbage.zip".to_owned(), false),
+            ("upper.zip".to_owned(), true)
+        ]
+    );
 }
 
 #[test]

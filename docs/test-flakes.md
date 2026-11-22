@@ -42,6 +42,10 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   The message: `AMD Radeon(TM) Graphics (IntegratedGpu, Dx12) roof level 20: [16.0, 1.0, 12.0] at pixel (52, 41) is lit but is 20.783 of the light` (line 2968; the whole binary: `202 passed; 1 failed; 3 ignored ... finished in 1075.40s`).
   The same adapter, the same point and the same pixel as the entry just below (a different test of the same file, 'roof level 15' there).
 - **Reruns.** Alone twice, in a clean copy of HEAD plus the change, with `VOX_REQUIRE_GPU=1`: 0 failures in 2. The whole binary was not run again.
+- **Occurrence 2: 2026-11-22**, the full gate (`cargo test --workspace`, dev profile) on **Windows**, with the pack archive work in the tree (`pack_archive`, `data_packs`: nothing the renderer uses). The message:
+  `AMD Radeon(TM) Graphics (IntegratedGpu, Dx12) roof level 1: [16.0, 1.0, 12.0] at pixel (52, 41) is lit but is 20.783 of the light` (line 2968; `202 passed; 1 failed; 3 ignored ... finished in 884.89s`).
+  **The same adapter, the same point, the same pixel and the same 20.783 as occurrence 1**, with a different roof level (1, not 20): the value does not move, which says the pixel's light is a fixed wrong value and not noise.
+  **Reruns:** alone once: passed (6.41 s); the whole workspace again with `--no-fail-fast` (the whole binary included, 3,979 passed): 0 failures.
 - **Beliefs about the cause.** **Believed, not tested**: the same as the entry below (the integrated AMD GPU leaving out pixels of a fresh renderer's first frames; two tests failing on one point of one adapter in two gate runs makes a shared cause likelier than two). **Not checked**: how this test takes its picture.
 - **What would settle it.** As the entry below: read how both tests take their pictures and take them with `settled`.
 
