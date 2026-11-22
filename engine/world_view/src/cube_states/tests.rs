@@ -277,3 +277,266 @@ fn a_step_on_the_way_has_a_record_is_made_and_goes_when_it_is_not_one_any_more()
     assert!(!states.has_node(node(2)));
     assert_consistent(&states);
 }
+
+/// A picture of `quads` quads: `quads * 8` bytes.
+fn picture_of(quads: usize) -> PackedBrickMesh {
+    PackedBrickMesh {
+        quads: vec![
+            PackedQuad {
+                geometry: 1,
+                material: 1,
+            };
+            quads
+        ],
+        detailed: Vec::new(),
+    }
+}
+
+/// A node shown with the picture made of data of version 0, with `states` holding up to `budget` bytes of pictures that leave the screen.
+fn shown_with_budget(
+    states: &mut CubeStates,
+    cube: BrickCube,
+    mesh: PackedBrickMesh,
+    budget: usize,
+) {
+    states.set_budget(budget);
+    waiting(states, cube, mesh);
+    states.show_node(cube);
+}
+
+#[test]
+fn without_a_budget_a_node_taken_down_is_dropped_as_it_always_was() {
+    let mut states = CubeStates::new();
+    waiting(&mut states, node(1), picture());
+    states.show_node(node(1));
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 0), Taken::Removed);
+    assert!(!states.has_node(node(1)));
+    assert_eq!(states.held_pictures(), HeldPictures::default());
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_node_taken_down_with_a_budget_is_held_and_ready_and_a_reveal_puts_it_back_without_a_new_picture()
+ {
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture_of(100), 1 << 20);
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 0), Taken::Hidden);
+    assert!(states.has_node(node(1)), "its picture is kept");
+    assert!(!states.shown().contains(&node(1)));
+    assert_eq!(
+        states.held_pictures(),
+        HeldPictures {
+            nodes: 1,
+            with_mesh: 1,
+            bytes: 800
+        }
+    );
+    assert_eq!(
+        states.uploaded_nodes(),
+        [node(1)],
+        "the renderer has a mesh of it"
+    );
+    assert!(states.is_ready(node(1), 0), "it can be shown at once");
+    assert!(states.is_held(node(1)));
+    states.want(&[node(1)]);
+    assert!(
+        !states.needs_making(node(1), 0),
+        "nothing is made for a picture that is held"
+    );
+    assert_consistent(&states);
+
+    assert!(states.reveal_node(node(1)), "the renderer is to show it");
+    assert!(states.shown().contains(&node(1)));
+    assert_eq!(states.held_pictures(), HeldPictures::default());
+    assert_eq!(states.uploaded_nodes(), [node(1)]);
+    assert!(
+        !states.is_ready(node(1), 0),
+        "it is on the screen, not waiting"
+    );
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_picture_with_nothing_to_see_is_held_without_a_mesh_and_costs_a_little_so_that_the_records_are_bounded()
+ {
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), PackedBrickMesh::default(), 1 << 20);
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 0), Taken::Nothing);
+    assert_eq!(
+        states.held_pictures(),
+        HeldPictures {
+            nodes: 1,
+            with_mesh: 0,
+            bytes: MINIMUM_HELD_COST
+        }
+    );
+    assert!(states.uploaded_nodes().is_empty());
+    assert!(
+        states.is_ready(node(1), 0),
+        "known to be empty: not made again"
+    );
+    assert!(
+        !states.reveal_node(node(1)),
+        "the renderer has nothing to show"
+    );
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_node_with_a_job_in_flight_or_of_older_data_is_not_held_for_what_would_come_of_it_is_unclear() {
+    // Out of date: the data is version 1 now and the picture is of 0.
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 1), Taken::Removed);
+    assert!(!states.has_node(node(1)));
+
+    // A job is making it again.
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.start_making(node(1), 0);
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 0), Taken::Removed);
+    assert_eq!(states.held_pictures(), HeldPictures::default());
+    assert_consistent(&states);
+}
+
+#[test]
+fn held_pictures_over_the_budget_go_oldest_first_and_never_the_ones_that_are_wanted() {
+    let mut states = CubeStates::new();
+    // Four pictures of 800 bytes, held in the order 1, 2, 3, 4; room for two.
+    for x in 1..=4 {
+        shown_with_budget(&mut states, node(x), picture_of(100), 1600);
+    }
+    states.want(&[]);
+    for x in 1..=4 {
+        assert_eq!(states.hold_node(node(x), 0), Taken::Hidden);
+    }
+    assert_eq!(states.held_pictures().bytes, 3200);
+    // The oldest, 1, is wanted again: it is pinned, so 2 and 3 go and 1 stays.
+    states.want(&[node(1)]);
+    assert_eq!(states.evict_over_budget(), [node(2), node(3)]);
+    assert!(states.is_held(node(1)) && states.is_held(node(4)));
+    assert!(!states.has_node(node(2)) && !states.has_node(node(3)));
+    assert_eq!(
+        states.held_pictures(),
+        HeldPictures {
+            nodes: 2,
+            with_mesh: 2,
+            bytes: 1600
+        }
+    );
+    assert!(
+        states.evict_over_budget().is_empty(),
+        "within the budget: nothing more"
+    );
+    assert_consistent(&states);
+
+    // Everything over the budget is wanted: the budget is passed by what is pinned, and nothing is taken.
+    states.want(&[node(1), node(4)]);
+    states.set_budget(0);
+    assert!(states.evict_over_budget().is_empty());
+    assert_eq!(states.held_pictures().nodes, 2);
+    // Not wanted any more: they go, the oldest first.
+    states.want(&[]);
+    assert_eq!(states.evict_over_budget(), [node(1), node(4)]);
+    assert_eq!(states.held_pictures(), HeldPictures::default());
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_picture_of_nothing_that_is_evicted_says_nothing_to_the_renderer() {
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), PackedBrickMesh::default(), 1 << 20);
+    states.want(&[]);
+    states.hold_node(node(1), 0);
+    states.set_budget(0);
+    assert!(
+        states.evict_over_budget().is_empty(),
+        "the renderer holds nothing of it"
+    );
+    assert!(!states.has_node(node(1)), "and the record is gone");
+}
+
+#[test]
+fn a_held_picture_of_older_data_waits_until_it_is_wanted_and_is_then_dropped_and_made_again() {
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.want(&[]);
+    states.hold_node(node(1), 0);
+    // The data has changed (version 1), and nobody wants the node: nothing is done.
+    assert!(!states.needs_making(node(1), 1));
+    assert!(
+        !states.is_ready(node(1), 1),
+        "the picture is of the old data"
+    );
+    // Wanted: it is to be made, and the picture the renderer holds hidden goes first.
+    states.want(&[node(1)]);
+    assert!(states.needs_making(node(1), 1));
+    assert_eq!(states.drop_stale_held(node(1), 1), Taken::Removed);
+    assert!(!states.is_held(node(1)));
+    assert!(states.has_node(node(1)), "wanted, so it keeps a record");
+    assert!(states.needs_making(node(1), 1));
+    assert_eq!(states.held_pictures(), HeldPictures::default());
+    assert_consistent(&states);
+    // A picture of the data now is not dropped.
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.want(&[node(1)]);
+    states.hold_node(node(1), 0);
+    assert_eq!(states.drop_stale_held(node(1), 0), Taken::Nothing);
+    assert!(states.is_held(node(1)));
+}
+
+#[test]
+fn clearing_forgets_held_pictures_and_the_renderer_is_to_take_down_their_meshes() {
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    shown_with_budget(&mut states, node(2), picture(), 1 << 20);
+    states.want(&[]);
+    states.hold_node(node(1), 0);
+    let mut uploaded = states.uploaded_nodes();
+    uploaded.sort_by_key(|cube| cube.origin().x());
+    assert_eq!(uploaded, [node(1), node(2)], "held and on the screen");
+    states.clear();
+    assert_eq!(states.held_pictures(), HeldPictures::default());
+    assert!(states.uploaded_nodes().is_empty());
+    assert!(states.evict_over_budget().is_empty());
+    assert_consistent(&states);
+}
+
+#[test]
+fn what_the_check_says_of_held_pictures() {
+    // Held and on the screen at once.
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.want(&[]);
+    states.hold_node(node(1), 0);
+    states.shown.insert(node(1));
+    let problem = states.check_consistency().unwrap_err();
+    assert!(problem.contains("is held and shown"), "{problem}");
+
+    // Held with a job in flight.
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.want(&[]);
+    states.hold_node(node(1), 0);
+    states.nodes.get_mut(&node(1)).unwrap().requested = Some(0);
+    let problem = states.check_consistency().unwrap_err();
+    assert!(
+        problem.contains("is held and a job is making it"),
+        "{problem}"
+    );
+
+    // The total is not the sum.
+    let mut states = CubeStates::new();
+    shown_with_budget(&mut states, node(1), picture(), 1 << 20);
+    states.want(&[]);
+    states.hold_node(node(1), 0);
+    states.held_bytes += 1;
+    let problem = states.check_consistency().unwrap_err();
+    assert!(problem.contains("held pictures"), "{problem}");
+}

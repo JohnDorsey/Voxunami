@@ -24,7 +24,10 @@ use common::{Scene, scene, scene_of};
 #[derive(Default)]
 struct Screen {
     bricks: HashMap<BrickCoordinate, PackedBrickMesh>,
+    /// The nodes that are drawn.
     nodes: HashMap<BrickCube, PackedBrickMesh>,
+    /// The nodes the renderer holds and does not draw.
+    hidden: HashMap<BrickCube, PackedBrickMesh>,
 }
 
 impl Screen {
@@ -42,12 +45,33 @@ impl Screen {
                 }
                 MeshUpdate::UploadCoarse { cube, mesh } if mesh.is_empty() => {
                     self.nodes.remove(&cube);
+                    self.hidden.remove(&cube);
                 }
+                // (As the renderer does it: a mesh that is held hidden is replaced where it is, and stays hidden.)
                 MeshUpdate::UploadCoarse { cube, mesh } => {
-                    self.nodes.insert(cube, mesh);
+                    if let Some(held) = self.hidden.get_mut(&cube) {
+                        *held = mesh;
+                    } else {
+                        self.nodes.insert(cube, mesh);
+                    }
                 }
                 MeshUpdate::RemoveCoarse(cube) => {
                     self.nodes.remove(&cube);
+                    self.hidden.remove(&cube);
+                }
+                MeshUpdate::HideCoarse(cube) => {
+                    let mesh = self
+                        .nodes
+                        .remove(&cube)
+                        .unwrap_or_else(|| panic!("{cube:?} is hidden and was not drawn"));
+                    self.hidden.insert(cube, mesh);
+                }
+                MeshUpdate::ShowCoarse(cube) => {
+                    let mesh = self
+                        .hidden
+                        .remove(&cube)
+                        .unwrap_or_else(|| panic!("{cube:?} is shown and was not hidden"));
+                    self.nodes.insert(cube, mesh);
                 }
                 other => panic!("an update for a ship: {other:?}"),
             }
@@ -300,9 +324,21 @@ fn settle_checked(
     settings: &LodSettings,
     context: &str,
 ) {
+    settle_checked_in(view, screen, scene.world.main(), viewer, settings, context);
+}
+
+/// The same, for any terrain.
+fn settle_checked_in(
+    view: &mut LodView,
+    screen: &mut Screen,
+    terrain: &impl CoarseTerrainSource,
+    viewer: WorldPosition,
+    settings: &LodSettings,
+    context: &str,
+) {
     let started = std::time::Instant::now();
     loop {
-        screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, settings));
+        screen.apply(view.update(GridId::MAIN, terrain, viewer, settings));
         if let Err(problem) = view.check_consistency() {
             panic!("{context}: the view's records disagree: {problem}");
         }
@@ -531,16 +567,37 @@ proptest! {
     /// else, with the ground dug under it. (A cube that is wanted and is not drawn, with nothing being made that would bring it, is a view that waits for ever.)
     #[test]
     fn whatever_path_the_viewer_takes_the_view_ends_up_drawing_what_is_wanted(path in moves()) {
+        follow_path(&path, 0);
+    }
+
+    /// The same with the pictures that leave the screen held, under a budget small enough that some are let go of (an eighth of a megabyte is a few hundred nodes).
+    #[test]
+    fn whatever_path_the_viewer_takes_the_view_ends_up_drawing_what_is_wanted_with_pictures_held(path in moves()) {
+        follow_path(&path, 100_000);
+    }
+}
+
+/// A viewer follows `path`, and the view is drawing what is wanted each time it comes to rest; with `held_budget` bytes of pictures held if it is more than 0.
+fn follow_path(path: &[Move], held_budget: usize) {
+    {
         let mut scene = scene();
         scene.assign_around(brick(0, 0, 0), 60);
         let mut view = view_of(&scene, 3);
+        view.hold_hidden_pictures(held_budget);
         let mut screen = Screen::default();
         let mut places = vec![[0i128, 0, 0]];
         let mut detail = steady();
         // What the server has said, to take back.
         let mut said: Vec<BrickCube> = Vec::new();
         let stone = scene.game.raw_block("base_blocks:stone");
-        settle_checked(&mut view, &mut screen, &scene, viewer_in(brick(0, 0, 0)), &detail, "the start");
+        settle_checked(
+            &mut view,
+            &mut screen,
+            &scene,
+            viewer_in(brick(0, 0, 0)),
+            &detail,
+            "the start",
+        );
         assert_converged(&view, "the start");
         for (index, step) in path.iter().enumerate() {
             let mut at = *places.last().expect("it starts somewhere");
@@ -552,12 +609,31 @@ proptest! {
                     let edited = scene.edit([at[0] * 32 + 5, 9, at[2] * 32 + 5], "base_blocks:air");
                     view.mesher_mut().brick_changed(edited);
                 }
-                Move::Override { which, stone: is_stone } => {
-                    let mut nodes: Vec<BrickCube> = view.shown().iter().copied().filter(|cube| cube.level() > 0).collect();
-                    nodes.sort_by_key(|cube| (cube.level(), cube.origin().x(), cube.origin().y(), cube.origin().z()));
+                Move::Override {
+                    which,
+                    stone: is_stone,
+                } => {
+                    let mut nodes: Vec<BrickCube> = view
+                        .shown()
+                        .iter()
+                        .copied()
+                        .filter(|cube| cube.level() > 0)
+                        .collect();
+                    nodes.sort_by_key(|cube| {
+                        (
+                            cube.level(),
+                            cube.origin().x(),
+                            cube.origin().y(),
+                            cube.origin().z(),
+                        )
+                    });
                     if !nodes.is_empty() {
                         let cube = nodes[which % nodes.len()];
-                        let node = if *is_stone { node_of(stone) } else { CoarseNode::uniform(CoarseCell::empty(scene.air, 0)) };
+                        let node = if *is_stone {
+                            node_of(stone)
+                        } else {
+                            CoarseNode::uniform(CoarseCell::empty(scene.air, 0))
+                        };
                         view.set_override(GridId::MAIN, cube, Some(node));
                         said.push(cube);
                     }
@@ -572,17 +648,466 @@ proptest! {
                 Move::Reset => screen.apply(view.reset()),
             }
             // Within the ground that has generators, and not far above or below it.
-            at = [at[0].clamp(-30, 30), at[1].clamp(-2, 2), at[2].clamp(-30, 30)];
+            at = [
+                at[0].clamp(-30, 30),
+                at[1].clamp(-2, 2),
+                at[2].clamp(-30, 30),
+            ];
             places.push(at);
             let context = format!("move {index} {step:?}, at {at:?}, after {places:?}");
-            settle_checked(&mut view, &mut screen, &scene, viewer_in(brick(at[0], at[1], at[2])), &detail, &context);
+            settle_checked(
+                &mut view,
+                &mut screen,
+                &scene,
+                viewer_in(brick(at[0], at[1], at[2])),
+                &detail,
+                &context,
+            );
             assert_converged(&view, &context);
             assert_nothing_overlaps(view.shown());
             // (The ground is flat and the pictures are what the generators make of it, until the server has said otherwise.)
             if said.is_empty() {
                 assert_screen_matches(&screen, &view);
             }
+            assert_held_pictures_match(&screen, &view, held_budget, &context);
         }
+    }
+}
+
+/// What the renderer holds hidden is what the view holds, within the budget, and none of it is drawn or shown.
+fn assert_held_pictures_match(screen: &Screen, view: &LodView, budget: usize, context: &str) {
+    let held = view.held_pictures();
+    assert_eq!(
+        screen.hidden.len(),
+        held.with_mesh,
+        "{context}: the renderer holds {} hidden meshes and the view says it holds {}",
+        screen.hidden.len(),
+        held.with_mesh
+    );
+    for cube in screen.hidden.keys() {
+        assert!(
+            !screen.nodes.contains_key(cube) && !view.shown().contains(cube),
+            "{context}: {cube:?} is hidden and drawn or shown"
+        );
+    }
+    assert!(
+        held.bytes <= budget,
+        "{context}: {} bytes are held of {budget}",
+        held.bytes
+    );
+    if budget == 0 {
+        assert!(screen.hidden.is_empty(), "{context}: nothing is to be held");
+    }
+}
+
+/// The terrain of a level, that counts how many nodes the view asks it to make.
+struct Making<'a> {
+    level: &'a LevelData,
+    made: &'a Cell<u64>,
+}
+
+impl TerrainSource for Making<'_> {
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
+        self.level.known(coordinate)
+    }
+
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        self.level.generator_for(coordinate)
+    }
+
+    fn layout(&self) -> &Arc<GridLayout> {
+        self.level.layout()
+    }
+}
+
+impl CoarseTerrainSource for Making<'_> {
+    fn version(&self) -> u64 {
+        self.level.version()
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        self.level.may_show(cube)
+    }
+
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        self.made.set(self.made.get() + 1);
+        self.level.coarse_generator(cube)
+    }
+}
+
+/// What a view that goes from the ground to far above it and back is given to do, for the tests of held pictures: the view, what is on the screen at the ground, how many
+/// nodes were made to draw it, and the settings of a view that reaches far.
+struct Trip {
+    scene: Scene,
+    far: LodSettings,
+}
+
+impl Trip {
+    fn new() -> Self {
+        let mut scene = scene();
+        scene.assign_around(brick(0, 0, 0), 40);
+        let far = LodSettings {
+            maximum_distance: 4.0e4,
+            ..settings()
+        };
+        Self { scene, far }
+    }
+
+    fn ground() -> WorldPosition {
+        viewer_in(brick(0, 0, 0))
+    }
+
+    fn sky() -> WorldPosition {
+        viewer_in(brick(0, 400, 0))
+    }
+}
+
+#[test]
+fn a_view_that_goes_up_and_comes_back_makes_no_node_again_and_draws_what_it_drew() {
+    let trip = Trip::new();
+    let made = Cell::new(0);
+    let terrain = Making {
+        level: trip.scene.world.main(),
+        made: &made,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let (ground_nodes, ground_shown) = (screen.nodes.clone(), view.shown().clone());
+    let made_for_the_ground = made.get();
+    assert!(ground_nodes.len() > 100 && made_for_the_ground > 100);
+    assert!(screen.hidden.is_empty(), "nothing has been taken down yet");
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    // Each node of the ground is drawn from the sky, if the sky wants it too (the biggest are in both), and held, hidden, if not.
+    let mut held_from_the_ground = 0;
+    for cube in ground_nodes.keys() {
+        let drawn = screen.nodes.contains_key(cube);
+        let hidden = screen.hidden.contains_key(cube);
+        assert_eq!(
+            drawn,
+            view.wanted().contains(cube),
+            "{cube:?} is drawn from the sky if the sky wants it"
+        );
+        assert_eq!(hidden, !drawn, "{cube:?} is drawn or held");
+        held_from_the_ground += usize::from(hidden);
+    }
+    assert!(
+        held_from_the_ground * 4 >= ground_nodes.len() * 3,
+        "{held_from_the_ground} of {} nodes of the ground are held",
+        ground_nodes.len()
+    );
+    assert_held_pictures_match(&screen, &view, 256 << 20, "the sky");
+    let made_before_coming_back = made.get();
+
+    // Back: what was drawn is drawn again, and what is made is a few steps on the way, not the nodes that were held.
+    let mut uploads = 0;
+    let mut shows = 0;
+    let started = std::time::Instant::now();
+    loop {
+        let updates = view.update(GridId::MAIN, &terrain, Trip::ground(), &trip.far);
+        uploads += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::UploadCoarse { .. }))
+            .count();
+        shows += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::ShowCoarse(_)))
+            .count();
+        screen.apply(updates);
+        view.check_consistency().expect("the records agree");
+        if view.is_settled() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "does not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    let made_coming_back = made.get() - made_before_coming_back;
+    println!(
+        "ground: {} nodes shown, {made_for_the_ground} made; back from the sky: {made_coming_back} made, {uploads} uploaded, {shows} shown from hold",
+        ground_nodes.len()
+    );
+    assert_eq!(view.shown(), &ground_shown, "the same cubes are drawn");
+    assert_eq!(screen.nodes, ground_nodes, "with the same pictures");
+    assert_converged(&view, "back on the ground");
+    assert!(
+        shows >= ground_nodes.len() / 2,
+        "{shows} of {} nodes were shown from hold",
+        ground_nodes.len()
+    );
+    assert!(
+        made_coming_back * 10 <= made_for_the_ground,
+        "{made_coming_back} nodes were made coming back, {made_for_the_ground} for the ground: it is built again"
+    );
+    assert!(
+        uploads * 10 <= ground_nodes.len(),
+        "{uploads} pictures were uploaded coming back, of {} nodes",
+        ground_nodes.len()
+    );
+}
+
+#[test]
+fn the_cap_of_pictures_shown_in_an_update_does_not_hold_back_pictures_that_are_held() {
+    let trip = Trip::new();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    let terrain = trip.scene.world.main();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_nodes = screen.nodes.len();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+
+    // In one update after the viewer is back, more nodes are shown than the cap of an update allows to be put on the screen (64): they are moves.
+    let updates = view.update(GridId::MAIN, terrain, Trip::ground(), &trip.far);
+    let shows = updates
+        .iter()
+        .filter(|update| matches!(update, MeshUpdate::ShowCoarse(_)))
+        .count();
+    assert!(
+        shows > 64,
+        "{shows} nodes were shown in the first update of {ground_nodes}"
+    );
+}
+
+#[test]
+fn the_budget_of_held_pictures_lets_go_of_the_oldest_and_what_is_let_go_of_is_made_again() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    // How much the ground takes, held.
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_nodes = screen.nodes.clone();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    let all = view.held_pictures();
+    assert!(all.with_mesh > 100, "{all:?}");
+
+    // A budget of a third of that: the rest is let go of, and the ground is made again where it was.
+    let budget = all.bytes / 3;
+    let made = Cell::new(0);
+    let counted = Making {
+        level: terrain,
+        made: &made,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(budget);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &counted,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let made_for_the_ground = made.get();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &counted,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert_held_pictures_match(&screen, &view, budget, "the sky");
+    let held = view.held_pictures();
+    assert!(
+        held.bytes > budget / 2 && held.with_mesh < all.with_mesh,
+        "{held:?} of {all:?} held for {budget}"
+    );
+    let before = made.get();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &counted,
+        Trip::ground(),
+        &trip.far,
+        "back",
+    );
+    let made_again = made.get() - before;
+    assert_eq!(screen.nodes, ground_nodes, "the same pictures");
+    assert!(
+        made_again > 0 && made_again < made_for_the_ground,
+        "{made_again} made again of {made_for_the_ground}: some were held and some were not"
+    );
+}
+
+#[test]
+fn a_held_picture_of_a_node_the_server_has_changed_since_is_not_shown_and_the_node_is_made_again() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_nodes = screen.nodes.clone();
+    let cube = a_drawn_node(&view, &screen);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert!(screen.hidden.contains_key(&cube), "{cube:?} is held");
+
+    // The server says what is in it while it is held: nothing is done until it is wanted.
+    let stone = trip.scene.game.raw_block("base_blocks:stone");
+    view.set_override(GridId::MAIN, cube, Some(node_of(stone)));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky, told",
+    );
+    assert!(
+        screen.hidden.contains_key(&cube),
+        "still held, and no work was done for it"
+    );
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "back",
+    );
+    assert_eq!(
+        screen.nodes[&cube],
+        mesh_coarse_node(&node_of(stone), &[None; 6]).pack(),
+        "the picture of what the server said, not the one that was held"
+    );
+    assert!(!screen.hidden.contains_key(&cube));
+    // The others are what they were (the cubes round an edit are drawn that were left out, so more may be drawn).
+    for (other, mesh) in &ground_nodes {
+        if *other != cube {
+            assert_eq!(screen.nodes.get(other), Some(mesh), "{other:?}");
+        }
+    }
+}
+
+#[test]
+fn a_reset_takes_down_the_pictures_that_are_held_too() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert!(!screen.hidden.is_empty());
+    screen.apply(view.reset());
+    assert!(screen.nodes.is_empty() && screen.hidden.is_empty());
+    assert_eq!(view.held_pictures(), world_view::HeldPictures::default());
+    view.check_consistency().expect("the records agree");
+}
+
+#[test]
+fn without_a_budget_nothing_is_hidden_and_the_updates_are_what_they_were() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    let mut screen = Screen::default();
+    for (viewer, context) in [
+        (Trip::ground(), "ground"),
+        (Trip::sky(), "sky"),
+        (Trip::ground(), "back"),
+    ] {
+        let started = std::time::Instant::now();
+        loop {
+            let updates = view.update(GridId::MAIN, terrain, viewer, &trip.far);
+            assert!(
+                !updates.iter().any(|update| matches!(
+                    update,
+                    MeshUpdate::HideCoarse(_) | MeshUpdate::ShowCoarse(_)
+                )),
+                "{context}: a picture was hidden or shown"
+            );
+            screen.apply(updates);
+            if view.is_settled() {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "does not settle"
+            );
+            std::thread::sleep(std::time::Duration::from_micros(300));
+        }
+        assert!(screen.hidden.is_empty());
+        assert_eq!(view.held_pictures(), world_view::HeldPictures::default());
     }
 }
 

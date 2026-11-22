@@ -205,6 +205,12 @@ impl PackedBrickMesh {
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty() && self.detailed.is_empty()
     }
+
+    /// How many bytes the quads take, which is what the mesh takes on the graphics card.
+    pub fn byte_size(&self) -> usize {
+        std::mem::size_of_val(self.quads.as_slice())
+            + std::mem::size_of_val(self.detailed.as_slice())
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +226,26 @@ mod tests {
             material: 0,
             light: FULL_LIGHT,
         }
+    }
+
+    #[test]
+    fn a_mesh_takes_the_bytes_of_its_quads_of_both_kinds() {
+        let mut mesh = PackedBrickMesh::default();
+        assert_eq!(mesh.byte_size(), 0);
+        mesh.quads.resize(
+            3,
+            PackedQuad {
+                geometry: 0,
+                material: 0,
+            },
+        );
+        assert_eq!(mesh.byte_size(), 3 * std::mem::size_of::<PackedQuad>());
+        mesh.detailed
+            .resize(2, PackedDetailedQuad { words: [0; 4] });
+        assert_eq!(
+            mesh.byte_size(),
+            3 * std::mem::size_of::<PackedQuad>() + 2 * std::mem::size_of::<PackedDetailedQuad>()
+        );
     }
 
     #[test]

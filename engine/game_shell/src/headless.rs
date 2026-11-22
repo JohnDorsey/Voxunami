@@ -71,6 +71,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.hold_hidden_pictures(crate::session::HELD_PICTURE_BUDGET);
     enable_sun_ray(&mut session);
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
@@ -151,6 +152,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.hold_hidden_pictures(crate::session::HELD_PICTURE_BUDGET);
     enable_sun_ray(&mut session);
     session.pin_time(view.time);
     session.set_shadows(view.shadows);

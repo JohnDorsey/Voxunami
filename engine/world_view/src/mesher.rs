@@ -182,6 +182,22 @@ pub enum MeshUpdate {
         grid: GridId,
         cube: BrickCube,
     },
+    /// Takes the picture of a coarse node of the terrain out of what is drawn and keeps it on the graphics card (`renderer::VoxelRenderer::hide_mesh`): the view holds it
+    /// so that the node can be shown again without making it again ([`crate::LodView::hold_hidden_pictures`]). A later [`MeshUpdate::ShowCoarse`] shows it, and a
+    /// [`MeshUpdate::RemoveCoarse`] lets go of it.
+    HideCoarse(BrickCube),
+    /// Shows the picture of a coarse node that was hidden.
+    ShowCoarse(BrickCube),
+    /// [`MeshUpdate::HideCoarse`] for a node of a planet.
+    HideGridCoarse {
+        grid: GridId,
+        cube: BrickCube,
+    },
+    /// [`MeshUpdate::ShowCoarse`] for a node of a planet.
+    ShowGridCoarse {
+        grid: GridId,
+        cube: BrickCube,
+    },
 }
 
 struct NeighbourhoodSnapshot {

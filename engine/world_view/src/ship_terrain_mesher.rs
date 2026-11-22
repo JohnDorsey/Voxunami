@@ -233,6 +233,14 @@ impl ShipTerrainMesher {
         }
     }
 
+    /// Keeps the pictures of the nodes that leave the screen, up to `budget_bytes` of them (see [`LodView::hold_hidden_pictures`]). A mesher of the bricks alone has no
+    /// nodes to keep.
+    pub fn hold_hidden_pictures(&mut self, budget_bytes: usize) {
+        if let Drawn::Detailed { view, .. } = &mut self.drawn {
+            view.hold_hidden_pictures(budget_bytes);
+        }
+    }
+
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.
     pub fn set_detail(&mut self, detail: LodSettings) {
         if let Drawn::Detailed { settings, .. } = &mut self.drawn {
@@ -268,6 +276,8 @@ impl ShipTerrainMesher {
                 MeshUpdate::UploadGridCoarse { grid, cube, mesh }
             }
             MeshUpdate::RemoveCoarse(cube) => MeshUpdate::RemoveGridCoarse { grid, cube },
+            MeshUpdate::HideCoarse(cube) => MeshUpdate::HideGridCoarse { grid, cube },
+            MeshUpdate::ShowCoarse(cube) => MeshUpdate::ShowGridCoarse { grid, cube },
             other => unreachable!("a mesher of terrain makes nothing else: {other:?}"),
         }
     }

@@ -7,10 +7,19 @@
 //! screen and a picture waiting that could not both be, and a third set of the nodes the renderer had a mesh of); now a change is a method here, which changes
 //! all of what it touches, and [`CubeStates::check_consistency`] says what the shape of the records cannot.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use region_octree::BrickCube;
 use voxel_meshing::PackedBrickMesh;
+
+/// What a picture that is held costs the budget at least, whatever its mesh takes: a node with nothing to see is held without a mesh (so that it is not made again to
+/// find that out), and the records are many.
+pub(crate) const MINIMUM_HELD_COST: usize = 64;
+
+/// What the budget is charged for a picture: the bytes of its mesh, and at least [`MINIMUM_HELD_COST`].
+fn cost_of(mesh: &PackedBrickMesh) -> usize {
+    mesh.byte_size().max(MINIMUM_HELD_COST)
+}
 
 /// What is known of the picture of a node.
 enum Picture {
@@ -19,7 +28,42 @@ enum Picture {
     /// A picture made from data of this version, up to date, not on the screen.
     Waiting { version: u64, mesh: PackedBrickMesh },
     /// A picture made from data of this version is on the screen. `uploaded` is whether the renderer holds a mesh of it (a node with nothing to see has none).
-    OnScreen { version: u64, uploaded: bool },
+    /// `cost` is what the budget is charged for it if it is taken down and held.
+    OnScreen {
+        version: u64,
+        uploaded: bool,
+        cost: usize,
+    },
+    /// A picture made from data of this version, up to date, **kept** though the node is not shown: the renderer holds a mesh of it, hidden, if `uploaded`, and showing
+    /// it again is a move. `order` says how long ago it was taken down (a number that is never used twice and counts up: no clock), which is the order it is let go in.
+    Held {
+        version: u64,
+        uploaded: bool,
+        cost: usize,
+        order: u64,
+    },
+}
+
+/// What the renderer is to do about a node that was taken down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Taken {
+    /// It had no mesh in the renderer.
+    Nothing,
+    /// The renderer had a mesh of it, which it is to take down for good.
+    Removed,
+    /// The renderer had a mesh of it, which it is to **hide** and keep (the picture is held).
+    Hidden,
+}
+
+/// What is held: the pictures of nodes that are not shown and are kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldPictures {
+    /// How many nodes have a picture held.
+    pub nodes: usize,
+    /// Of those, how many the renderer holds a mesh of, hidden (the rest have nothing to see).
+    pub with_mesh: usize,
+    /// What the budget is charged for them: their meshes' bytes, a node with nothing to see being charged a little.
+    pub bytes: usize,
 }
 
 /// The record of one node.
@@ -80,13 +124,52 @@ pub(crate) struct CubeStates {
     shown: HashSet<BrickCube>,
     /// The cubes that stand between what is shown and what is wanted ([`coarse_cells::intermediate_cubes`]): made and shown on the way, though they are not wanted.
     steps: HashSet<BrickCube>,
-    /// The records of the nodes that are wanted, shown or steps on the way, and of no others.
+    /// The records of the nodes that are wanted, shown or steps on the way, and of those whose pictures are held, and of no others.
     nodes: HashMap<BrickCube, Node>,
+    /// How many bytes of pictures that are not shown are kept, at most (not counting the ones that are wanted: those are on their way to the screen). 0, the default, keeps none.
+    budget: usize,
+    /// What the pictures that are held are charged, in all.
+    held_bytes: usize,
+    /// The nodes whose pictures are held, by how long ago they were taken down: the first is the oldest.
+    held_order: BTreeMap<u64, BrickCube>,
+    /// The number the next picture that is held is given.
+    next_order: u64,
 }
 
 impl CubeStates {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets how many bytes of pictures of nodes that are not shown are kept ([`CubeStates::evict_over_budget`] lets go of the ones over it).
+    pub(crate) fn set_budget(&mut self, bytes: usize) {
+        self.budget = bytes;
+    }
+
+    /// What is held now.
+    pub(crate) fn held_pictures(&self) -> HeldPictures {
+        let with_mesh = self
+            .held_order
+            .values()
+            .filter(|cube| {
+                matches!(
+                    self.nodes.get(cube).map(|node| &node.picture),
+                    Some(Picture::Held { uploaded: true, .. })
+                )
+            })
+            .count();
+        HeldPictures {
+            nodes: self.held_order.len(),
+            with_mesh,
+            bytes: self.held_bytes,
+        }
+    }
+
+    /// Whether the node's picture is held (it is not shown, and is ready to be).
+    pub(crate) fn is_held(&self, cube: BrickCube) -> bool {
+        self.nodes
+            .get(&cube)
+            .is_some_and(|node| matches!(node.picture, Picture::Held { .. }))
     }
 
     /// What is to be drawn, bricks and nodes.
@@ -117,8 +200,11 @@ impl CubeStates {
             self.nodes.entry(*cube).or_insert_with(Node::new);
         }
         let (wanted, shown, steps) = (&self.wanted, &self.shown, &self.steps);
-        self.nodes.retain(|cube, _| {
-            wanted.contains(cube) || shown.contains(cube) || steps.contains(cube)
+        self.nodes.retain(|cube, node| {
+            wanted.contains(cube)
+                || shown.contains(cube)
+                || steps.contains(cube)
+                || matches!(node.picture, Picture::Held { .. })
         });
     }
 
@@ -141,6 +227,8 @@ impl CubeStates {
             Picture::Waiting { version: ready, .. } => {
                 self.is_to_be_made(&cube) && ready != version
             }
+            // A picture that is held of data that has changed is made again when the node is wanted, and not before.
+            Picture::Held { version: held, .. } => self.is_to_be_made(&cube) && held != version,
             Picture::Missing => self.is_to_be_made(&cube),
         }
     }
@@ -171,12 +259,17 @@ impl CubeStates {
             // Made from data that has been replaced since: the new data is queued already.
             return Arrival::Ignored;
         }
+        if matches!(node.picture, Picture::Held { .. }) {
+            // (A picture is held only when no job is making another, and one that is held of old data is dropped before a job is started: this does not happen.)
+            return Arrival::Ignored;
+        }
         if let Picture::OnScreen { uploaded, .. } = node.picture {
             // On the screen already: the picture is replaced where it is.
             let something_to_see = !mesh.is_empty();
             node.picture = Picture::OnScreen {
                 version: made,
                 uploaded: something_to_see,
+                cost: cost_of(&mesh),
             };
             return Arrival::Replaced(if something_to_see {
                 Replacement::Upload(mesh)
@@ -196,7 +289,11 @@ impl CubeStates {
     /// Whether the node has a picture waiting that is of data of this version.
     pub(crate) fn is_ready(&self, cube: BrickCube, version: u64) -> bool {
         self.nodes.get(&cube).is_some_and(|node| {
-            matches!(node.picture, Picture::Waiting { version: ready, .. } if ready == version)
+            matches!(
+                node.picture,
+                Picture::Waiting { version: ready, .. } | Picture::Held { version: ready, .. }
+                    if ready == version
+            )
         })
     }
 
@@ -224,9 +321,140 @@ impl CubeStates {
         node.picture = Picture::OnScreen {
             version,
             uploaded: !mesh.is_empty(),
+            cost: cost_of(&mesh),
         };
         self.shown.insert(cube);
         mesh
+    }
+
+    /// A node whose picture is held is shown with it: returns whether the renderer has a mesh of it, which it is to show (it is hidden).
+    pub(crate) fn reveal_node(&mut self, cube: BrickCube) -> bool {
+        let node = self
+            .nodes
+            .get_mut(&cube)
+            .expect("a node that is ready has a record");
+        let Picture::Held {
+            version,
+            uploaded,
+            cost,
+            order,
+        } = node.picture
+        else {
+            panic!("only a picture that is held is revealed");
+        };
+        node.picture = Picture::OnScreen {
+            version,
+            uploaded,
+            cost,
+        };
+        self.held_order.remove(&order);
+        self.held_bytes -= cost;
+        self.shown.insert(cube);
+        uploaded
+    }
+
+    /// A node is taken down, and its picture is kept if it can be (there is a budget, the picture is of the data of version `current` and no job is making another):
+    /// held, hidden in the renderer. If not, as [`CubeStates::hide_node`].
+    pub(crate) fn hold_node(&mut self, cube: BrickCube, current: u64) -> Taken {
+        let holds = self.budget > 0 && self.nodes.get(&cube).is_some_and(|node| {
+            node.requested.is_none()
+                && matches!(node.picture, Picture::OnScreen { version, .. } if version == current)
+        });
+        if !holds {
+            return if self.hide_node(cube) {
+                Taken::Removed
+            } else {
+                Taken::Nothing
+            };
+        }
+        self.shown.remove(&cube);
+        let node = self.nodes.get_mut(&cube).expect("it was checked");
+        let Picture::OnScreen {
+            version,
+            uploaded,
+            cost,
+        } = node.picture
+        else {
+            unreachable!("it was checked");
+        };
+        let order = self.next_order;
+        self.next_order += 1;
+        node.picture = Picture::Held {
+            version,
+            uploaded,
+            cost,
+            order,
+        };
+        self.held_order.insert(order, cube);
+        self.held_bytes += cost;
+        if uploaded {
+            Taken::Hidden
+        } else {
+            Taken::Nothing
+        }
+    }
+
+    /// The picture of a node that is wanted and is held of data that has changed is let go of, to be made again: returns what the renderer is to do (take down its hidden
+    /// mesh). Nothing if the node's picture is not held, or is of the data of version `current`.
+    pub(crate) fn drop_stale_held(&mut self, cube: BrickCube, current: u64) -> Taken {
+        let Some(node) = self.nodes.get_mut(&cube) else {
+            return Taken::Nothing;
+        };
+        let Picture::Held {
+            version,
+            uploaded,
+            cost,
+            order,
+        } = node.picture
+        else {
+            return Taken::Nothing;
+        };
+        if version == current {
+            return Taken::Nothing;
+        }
+        node.picture = Picture::Missing;
+        self.held_order.remove(&order);
+        self.held_bytes -= cost;
+        if uploaded {
+            Taken::Removed
+        } else {
+            Taken::Nothing
+        }
+    }
+
+    /// Lets go of held pictures, the oldest first, until what is held is within the budget, and returns the nodes whose hidden meshes the renderer is to take down. A
+    /// picture of a node that is wanted or a step on the way is not let go of (it is about to be shown): what is held may pass the budget by those.
+    pub(crate) fn evict_over_budget(&mut self) -> Vec<BrickCube> {
+        let mut excess = self.held_bytes.saturating_sub(self.budget);
+        if excess == 0 {
+            return Vec::new();
+        }
+        let mut victims = Vec::new();
+        for (&order, &cube) in &self.held_order {
+            if excess == 0 {
+                break;
+            }
+            if self.is_to_be_made(&cube) {
+                continue;
+            }
+            let Some(Picture::Held { cost, uploaded, .. }) =
+                self.nodes.get(&cube).map(|node| &node.picture)
+            else {
+                unreachable!("a node in the order of the held has a held picture");
+            };
+            excess = excess.saturating_sub(*cost);
+            victims.push((order, cube, *cost, *uploaded));
+        }
+        let mut taken_down = Vec::new();
+        for (order, cube, cost, uploaded) in victims {
+            self.held_order.remove(&order);
+            self.held_bytes -= cost;
+            self.nodes.remove(&cube);
+            if uploaded {
+                taken_down.push(cube);
+            }
+        }
+        taken_down
     }
 
     /// A node is taken down: returns whether the renderer had a mesh of it, which it is to be told to take down. The record is dropped if the node is not wanted.
@@ -248,11 +476,16 @@ impl CubeStates {
         self.nodes.contains_key(&cube)
     }
 
-    /// The nodes the renderer holds a mesh of, in no order.
+    /// The nodes the renderer holds a mesh of, drawn or hidden, in no order.
     pub(crate) fn uploaded_nodes(&self) -> Vec<BrickCube> {
         self.nodes
             .iter()
-            .filter(|(_, node)| matches!(node.picture, Picture::OnScreen { uploaded: true, .. }))
+            .filter(|(_, node)| {
+                matches!(
+                    node.picture,
+                    Picture::OnScreen { uploaded: true, .. } | Picture::Held { uploaded: true, .. }
+                )
+            })
             .map(|(cube, _)| *cube)
             .collect()
     }
@@ -271,6 +504,8 @@ impl CubeStates {
         self.shown.clear();
         self.steps.clear();
         self.nodes.clear();
+        self.held_order.clear();
+        self.held_bytes = 0;
     }
 
     /// Checks what the shape of the records cannot make impossible, and says what is wrong if it is not so (the first thing found).
@@ -280,9 +515,16 @@ impl CubeStates {
                 return Err(format!("{cube:?} is a brick and has the record of a node"));
             }
             let shown = self.shown.contains(cube);
-            if !shown && !self.is_to_be_made(cube) {
+            let held = matches!(node.picture, Picture::Held { .. });
+            if held && shown {
+                return Err(format!("{cube:?} is held and shown"));
+            }
+            if held && node.is_requested() {
+                return Err(format!("{cube:?} is held and a job is making it"));
+            }
+            if !shown && !held && !self.is_to_be_made(cube) {
                 return Err(format!(
-                    "{cube:?} has a record and is neither wanted nor shown (nor a step on the way)"
+                    "{cube:?} has a record and is neither wanted nor shown (nor a step on the way, nor held)"
                 ));
             }
             if node.is_on_screen() != shown {
@@ -296,6 +538,26 @@ impl CubeStates {
             if !self.nodes.contains_key(cube) {
                 return Err(format!("{cube:?} is shown and has no record"));
             }
+        }
+        let mut held_nodes = 0;
+        let mut held_cost = 0;
+        for (cube, node) in &self.nodes {
+            if let Picture::Held { cost, order, .. } = node.picture {
+                held_nodes += 1;
+                held_cost += cost;
+                if self.held_order.get(&order) != Some(cube) {
+                    return Err(format!(
+                        "{cube:?} is held and is not in the order of the held"
+                    ));
+                }
+            }
+        }
+        if held_nodes != self.held_order.len() || held_cost != self.held_bytes {
+            return Err(format!(
+                "{held_nodes} nodes are held for {held_cost} bytes, and the totals of the held pictures say {} for {}",
+                self.held_order.len(),
+                self.held_bytes
+            ));
         }
         for cube in self.wanted.iter().filter(|cube| cube.level() > 0) {
             if !self.nodes.contains_key(cube) {

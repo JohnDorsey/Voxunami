@@ -22,7 +22,7 @@ use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
 use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 use world_storage::LevelData;
 
-use crate::cube_states::{Arrival, CubeStates, Replacement};
+use crate::cube_states::{Arrival, CubeStates, HeldPictures, Replacement, Taken};
 use crate::horizon::{VIEWER_MARGIN, is_hidden_by, voxels_of};
 use crate::job_feed::jobs_to_hold;
 use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
@@ -339,6 +339,19 @@ impl LodView {
         self.in_flight
     }
 
+    /// Keeps the pictures of nodes that leave the screen, up to `budget_bytes` of them, instead of dropping them: a node that is taken down is **hidden** in the renderer
+    /// ([`MeshUpdate::HideCoarse`]) and its record kept, and when it is wanted again it is shown by a move ([`MeshUpdate::ShowCoarse`]) and not made again. The
+    /// oldest are let go of (a [`MeshUpdate::RemoveCoarse`]) when more is held than the budget, never one that is wanted. 0, the default, keeps nothing. Bricks are
+    /// not held (they are the mesher's).
+    pub fn hold_hidden_pictures(&mut self, budget_bytes: usize) {
+        self.cubes.set_budget(budget_bytes);
+    }
+
+    /// What is held now ([`LodView::hold_hidden_pictures`]).
+    pub fn held_pictures(&self) -> HeldPictures {
+        self.cubes.held_pictures()
+    }
+
     /// Whether anything is waiting to be made or swapped: the view is not yet what it is to be.
     pub fn is_settled(&self) -> bool {
         self.mesher.is_settled()
@@ -462,12 +475,18 @@ impl LodView {
         if moved || new_edits {
             self.reselect(centre, viewer, settings, source);
         }
-        self.start_jobs(source);
+        self.start_jobs(source, &mut updates);
         let serial = self.mesher.ready_serial();
         if self.plan_needed || serial != self.seen_ready_serial {
             self.seen_ready_serial = serial;
             self.swap(&mut updates);
         }
+        updates.extend(
+            self.cubes
+                .evict_over_budget()
+                .into_iter()
+                .map(MeshUpdate::RemoveCoarse),
+        );
         // Looked at once, when the view comes to rest (not at every update: it compares the cubes that are drawn with the ones that are wanted, and they are many).
         let settled = self.is_settled();
         if !settled {
@@ -696,6 +715,8 @@ impl LodView {
                         .coming
                         .iter()
                         .any(|cube| cube.level() + 1 < group.going.level())
+                        // (What is to come is shown at once if it is all ready, held pictures among it: no step is made on the way.)
+                        && !group.coming.iter().all(|cube| self.is_ready(*cube))
                 })
                 .collect();
             let hurried: HashSet<BrickCube> = groups
@@ -731,7 +752,7 @@ impl LodView {
         self.plan_needed = true;
     }
 
-    fn start_jobs(&mut self, source: &impl CoarseTerrainSource) {
+    fn start_jobs(&mut self, source: &impl CoarseTerrainSource, updates: &mut Vec<MeshUpdate>) {
         let source_waits = source.waits_for_nodes();
         let limit = jobs_to_hold(self.workers.len(), self.finished_last_update);
         while self.in_flight < limit {
@@ -741,6 +762,10 @@ impl LodView {
             let version = self.data_version(cube);
             if !self.cubes.needs_making(cube, version) {
                 continue;
+            }
+            // A picture that was held of data that has changed since is let go of, and the node is made again.
+            if self.cubes.drop_stale_held(cube, version) == Taken::Removed {
+                updates.push(MeshUpdate::RemoveCoarse(cube));
             }
             let source = match self.overrides.get(&(self.grid, cube)) {
                 Some(held) => Source::Override(Arc::clone(&held.node)),
@@ -791,8 +816,10 @@ impl LodView {
                 self.hide(cube, updates);
             }
             for cube in swap.add {
-                self.show(cube, updates);
-                shown_now += 1;
+                // (Showing a picture that is held is a move and costs the graphics card nothing: it is not counted.)
+                if self.show(cube, updates) {
+                    shown_now += 1;
+                }
             }
         }
         // What was left waits for readiness (a result will say) or for the next update (the limit).
@@ -803,21 +830,32 @@ impl LodView {
         if cube.level() == 0 {
             self.cubes.hide_brick(cube);
             updates.extend(self.mesher.hide(cube.origin()));
-        } else if self.cubes.hide_node(cube) {
-            updates.push(MeshUpdate::RemoveCoarse(cube));
+        } else {
+            match self.cubes.hold_node(cube, self.data_version(cube)) {
+                Taken::Nothing => {}
+                Taken::Removed => updates.push(MeshUpdate::RemoveCoarse(cube)),
+                Taken::Hidden => updates.push(MeshUpdate::HideCoarse(cube)),
+            }
         }
     }
 
-    fn show(&mut self, cube: BrickCube, updates: &mut Vec<MeshUpdate>) {
+    /// Shows a cube. Returns whether that cost the graphics card a picture to make (everything but showing one that was held).
+    fn show(&mut self, cube: BrickCube, updates: &mut Vec<MeshUpdate>) -> bool {
         if cube.level() == 0 {
             self.cubes.show_brick(cube);
             updates.extend(self.mesher.show(cube.origin()));
+        } else if self.cubes.is_held(cube) {
+            if self.cubes.reveal_node(cube) {
+                updates.push(MeshUpdate::ShowCoarse(cube));
+            }
+            return false;
         } else {
             let mesh = self.cubes.show_node(cube);
             if !mesh.is_empty() {
                 updates.push(MeshUpdate::UploadCoarse { cube, mesh });
             }
         }
+        true
     }
 }
 

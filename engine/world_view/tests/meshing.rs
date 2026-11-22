@@ -41,7 +41,11 @@ fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<Mesh
             MeshUpdate::UploadCoarse { .. }
             | MeshUpdate::RemoveCoarse(_)
             | MeshUpdate::UploadGridCoarse { .. }
-            | MeshUpdate::RemoveGridCoarse { .. } => {
+            | MeshUpdate::RemoveGridCoarse { .. }
+            | MeshUpdate::HideCoarse(_)
+            | MeshUpdate::ShowCoarse(_)
+            | MeshUpdate::HideGridCoarse { .. }
+            | MeshUpdate::ShowGridCoarse { .. } => {
                 panic!("the mesher of bricks made an update for a coarse node")
             }
         }

@@ -136,6 +136,10 @@ fn lod_settings_of(request: &SetDetail, detail: &CoarseDetail) -> LodSettings {
 /// The height of the picture, in pixels, until a window or a screenshot says otherwise.
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 1080.0;
 
+/// How many bytes of the pictures of nodes that have left the screen a view of terrain keeps on the graphics card in the game ([`Session::hold_hidden_pictures`]): the cut of
+/// a ship's view near the ground is about 23 MB (`docs/specs/viewpoints-spec.md`, section 3), so this holds that and what a map adds to it.
+pub const HELD_PICTURE_BUDGET: usize = 64 << 20;
+
 #[derive(Debug)]
 pub struct Session<C: Connection, G: GameDefinition> {
     client: Client<C>,
@@ -157,6 +161,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     planets: BTreeMap<GridId, ShipTerrainMesher>,
     /// How far, and how fine, the terrain of a planet is drawn beyond its bricks, if the game says.
     grid_detail: Option<CoarseDetail>,
+    /// How many bytes of pictures of nodes that have left the screen each view of terrain keeps, hidden, to show again without making them again (0: none).
+    held_picture_budget: usize,
     /// The nodes the server has told this session of, which it does not tell again: a view of the terrain that is made again is given them.
     coarse_overrides: CoarseOverrides,
     /// What the server was last asked about how the terrain is drawn (or would have been, in a replay).
@@ -283,6 +289,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             grid_mesher,
             planets: BTreeMap::new(),
             grid_detail: None,
+            held_picture_budget: 0,
             coarse_overrides: CoarseOverrides::default(),
             asked: None,
             occupancy_wanted: false,
@@ -448,6 +455,16 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.follows_level_detail = true;
     }
 
+    /// Makes each view of terrain (the level's, and each planet's) keep the pictures of the nodes that leave the screen, up to `budget_bytes` of them, hidden on the graphics
+    /// card, so that a node that comes back is shown by a move and not made again (`docs/specs/viewpoints-spec.md`, phase 2). Done before anything is drawn.
+    pub fn hold_hidden_pictures(&mut self, budget_bytes: usize) {
+        self.held_picture_budget = budget_bytes;
+        self.planets.clear();
+        if let TerrainView::Coarse(coarse) = &mut self.terrain {
+            coarse.view.hold_hidden_pictures(budget_bytes);
+        }
+    }
+
     /// Pins the sun at a time of day, in minutes from midnight, for this player (what `.time` does), or lets the world's clock move it again.
     pub fn pin_time(&mut self, minutes: Option<u16>) {
         self.settings.pinned_time = minutes;
@@ -488,6 +505,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 worker_count: self.view_settings.worker_count,
             },
         );
+        view.hold_hidden_pictures(self.held_picture_budget);
         // (What the server said before this view was made, of the root grids of levels: it says nothing twice.)
         for (grid, cube, node) in self.coarse_overrides.in_order() {
             if grid.root_level().is_some() {
@@ -1015,6 +1033,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 } else {
                     mesher
                 };
+                mesher.hold_hidden_pictures(self.held_picture_budget);
                 // (What the server said of the planet before its mesher was made: it says nothing twice.)
                 // (The cubes it said are empty too: a far ship waits to be told.)
                 self.coarse_overrides

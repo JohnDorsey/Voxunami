@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use block_models::BlockTable;
 use data_packs::Tile;
-use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, ShaderPack, VoxelRenderer};
+use renderer::{
+    Atmosphere, Avatar, Camera, HeldMesh, OverlayRect, PictureSize, ShaderPack, VoxelRenderer,
+};
 use transport::Connection;
 use voxel_space::WorldPosition;
 use world_view::{MeshUpdate, OccupancyChange};
@@ -236,6 +238,18 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             }
             MeshUpdate::RemoveGridCoarse { grid, cube } => {
                 renderer.remove_grid_coarse_node(grid, cube);
+            }
+            MeshUpdate::HideCoarse(cube) => {
+                renderer.hide_mesh(HeldMesh::Node(cube));
+            }
+            MeshUpdate::ShowCoarse(cube) => {
+                renderer.show_mesh(HeldMesh::Node(cube));
+            }
+            MeshUpdate::HideGridCoarse { grid, cube } => {
+                renderer.hide_mesh(HeldMesh::GridNode(grid, cube));
+            }
+            MeshUpdate::ShowGridCoarse { grid, cube } => {
+                renderer.show_mesh(HeldMesh::GridNode(grid, cube));
             }
         }
     }
