@@ -209,7 +209,7 @@ impl CubeStates {
     }
 
     /// Whether the cube is to be made: it is wanted, or a step on the way to what is.
-    fn is_to_be_made(&self, cube: &BrickCube) -> bool {
+    pub(crate) fn is_to_be_made(&self, cube: &BrickCube) -> bool {
         self.wanted.contains(cube) || self.steps.contains(cube)
     }
 

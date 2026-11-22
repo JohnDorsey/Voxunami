@@ -136,6 +136,11 @@ impl BrickOccupancy {
             Self::Empty | Self::Full | Self::Mixed(_) => &[],
         }
     }
+
+    /// How many bytes the bits and the shapes take (what is kept of a brick whose picture is held, `docs/specs/viewpoints-spec.md` 9f): nothing for `Empty` and `Full`.
+    pub fn byte_size(&self) -> usize {
+        self.words().map_or(0, std::mem::size_of_val) + std::mem::size_of_val(self.partials())
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +285,24 @@ mod tests {
         assert!(matches!(whole, BrickOccupancy::Mixed(_)));
         assert!(whole.blocks(at));
         assert_eq!(whole.partial_shape(at), None);
+    }
+
+    #[test]
+    fn what_an_occupancy_takes_is_its_bits_and_its_partial_voxels_and_nothing_for_empty_and_full() {
+        assert_eq!(BrickOccupancy::Empty.byte_size(), 0);
+        assert_eq!(BrickOccupancy::Full.byte_size(), 0);
+        let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
+        words[3] = 1;
+        let mixed = BrickOccupancy::from_words(words.clone());
+        assert!(matches!(mixed, BrickOccupancy::Mixed(_)));
+        assert_eq!(mixed.byte_size(), 4 * OCCUPANCY_WORDS);
+        let partial = PartialVoxel { voxel: 5, shape: 1 };
+        let shaped =
+            BrickOccupancy::from_parts(words, vec![partial, PartialVoxel { voxel: 9, shape: 1 }]);
+        assert_eq!(
+            shaped.byte_size(),
+            4 * OCCUPANCY_WORDS + 2 * std::mem::size_of::<PartialVoxel>()
+        );
     }
 
     #[test]

@@ -10,11 +10,14 @@ use proptest::prelude::*;
 use region_octree::BrickCube;
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, GridLayout};
-use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
-use voxel_space::{BrickCoordinate, GridId, LevelIndex, WorldPosition};
+use voxel_meshing::{BrickOccupancy, PackedBrickMesh, mesh_coarse_node};
+use voxel_space::{BrickCoordinate, FaceDirection, GridId, LevelIndex, WorldPosition};
 use world_storage::LevelData;
 use world_storage::test_support::{Plugin, brick};
-use world_view::{CoarseTerrainSource, LodConfig, LodSettings, LodView, MeshUpdate, TerrainSource};
+use world_view::{
+    CoarseTerrainSource, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange,
+    TerrainSource,
+};
 
 mod common;
 
@@ -24,6 +27,10 @@ use common::{Scene, scene, scene_of};
 #[derive(Default)]
 struct Screen {
     bricks: HashMap<BrickCoordinate, PackedBrickMesh>,
+    /// The bricks the renderer holds and does not draw.
+    hidden_bricks: HashMap<BrickCoordinate, PackedBrickMesh>,
+    /// What the renderer has been told of which voxels block the sun, if the mesher was asked to say.
+    occupancy: HashMap<BrickCoordinate, BrickOccupancy>,
     /// The nodes that are drawn.
     nodes: HashMap<BrickCube, PackedBrickMesh>,
     /// The nodes the renderer holds and does not draw.
@@ -31,6 +38,20 @@ struct Screen {
 }
 
 impl Screen {
+    /// What the mesher has said of the occupancy of its bricks (nothing unless it was asked to).
+    fn apply_occupancy(&mut self, changes: Vec<(BrickCoordinate, OccupancyChange)>) {
+        for (coordinate, change) in changes {
+            match change {
+                OccupancyChange::Set(occupancy) => {
+                    self.occupancy.insert(coordinate, occupancy);
+                }
+                OccupancyChange::Clear => {
+                    self.occupancy.remove(&coordinate);
+                }
+            }
+        }
+    }
+
     fn apply(&mut self, updates: Vec<MeshUpdate>) {
         for update in updates {
             match update {
@@ -38,10 +59,29 @@ impl Screen {
                     self.bricks.remove(&coordinate);
                 }
                 MeshUpdate::Upload { coordinate, mesh } => {
+                    assert!(
+                        !self.hidden_bricks.contains_key(&coordinate),
+                        "{coordinate:?} is uploaded where the renderer holds a hidden mesh of it"
+                    );
                     self.bricks.insert(coordinate, mesh);
                 }
                 MeshUpdate::Remove(coordinate) => {
                     self.bricks.remove(&coordinate);
+                    self.hidden_bricks.remove(&coordinate);
+                }
+                MeshUpdate::HideBrick(coordinate) => {
+                    let mesh = self
+                        .bricks
+                        .remove(&coordinate)
+                        .unwrap_or_else(|| panic!("{coordinate:?} is hidden and was not drawn"));
+                    self.hidden_bricks.insert(coordinate, mesh);
+                }
+                MeshUpdate::ShowBrick(coordinate) => {
+                    let mesh = self
+                        .hidden_bricks
+                        .remove(&coordinate)
+                        .unwrap_or_else(|| panic!("{coordinate:?} is shown and was not hidden"));
+                    self.bricks.insert(coordinate, mesh);
                 }
                 MeshUpdate::UploadCoarse { cube, mesh } if mesh.is_empty() => {
                     self.nodes.remove(&cube);
@@ -339,6 +379,7 @@ fn settle_checked_in(
     let started = std::time::Instant::now();
     loop {
         screen.apply(view.update(GridId::MAIN, terrain, viewer, settings));
+        screen.apply_occupancy(view.mesher_mut().take_occupancy_updates());
         if let Err(problem) = view.check_consistency() {
             panic!("{context}: the view's records disagree: {problem}");
         }
@@ -584,6 +625,10 @@ fn follow_path(path: &[Move], held_budget: usize) {
         scene.assign_around(brick(0, 0, 0), 60);
         let mut view = view_of(&scene, 3);
         view.hold_hidden_pictures(held_budget);
+        if held_budget > 0 {
+            // (What the sun is told is looked at too, with the pictures: a brick that is shown from hold is told again.)
+            view.mesher_mut().enable_occupancy();
+        }
         let mut screen = Screen::default();
         let mut places = vec![[0i128, 0, 0]];
         let mut detail = steady();
@@ -670,6 +715,12 @@ fn follow_path(path: &[Move], held_budget: usize) {
                 assert_screen_matches(&screen, &view);
             }
             assert_held_pictures_match(&screen, &view, held_budget, &context);
+            if held_budget > 0 {
+                // The bricks are those of a view that has been nowhere else, whatever was held on the way, and edited while it was held.
+                assert_held_bricks_match(&screen, &view, held_budget, &context);
+                let fresh = what_a_fresh_view_draws(&scene, brick(at[0], at[1], at[2]), &detail);
+                assert_bricks_are_what_a_fresh_view_draws(&screen, &fresh, &context);
+            }
         }
     }
 }
@@ -1112,6 +1163,662 @@ fn without_a_budget_nothing_is_hidden_and_the_updates_are_what_they_were() {
 }
 
 /// Finds a node of the ground that is drawn.
+/// What the renderer holds hidden of the bricks is what the view holds of them, within the budget, and none of it is drawn or shown.
+fn assert_held_bricks_match(screen: &Screen, view: &LodView, budget: usize, context: &str) {
+    let held = view.held_brick_pictures();
+    assert_eq!(
+        screen.hidden_bricks.len(),
+        held.with_mesh,
+        "{context}: the renderer holds {} hidden meshes of bricks and the view says it holds {}",
+        screen.hidden_bricks.len(),
+        held.with_mesh
+    );
+    for coordinate in screen.hidden_bricks.keys() {
+        assert!(
+            !screen.bricks.contains_key(coordinate)
+                && !view
+                    .shown()
+                    .contains(&BrickCube::new(*coordinate, 0).unwrap()),
+            "{context}: {coordinate:?} is hidden and drawn or shown"
+        );
+    }
+    assert!(
+        held.bytes <= budget,
+        "{context}: {} bytes of bricks are held of {budget}",
+        held.bytes
+    );
+    if budget == 0 {
+        assert!(
+            screen.hidden_bricks.is_empty(),
+            "{context}: nothing is to be held"
+        );
+    }
+}
+
+/// The bricks drawn and the occupancy told, by a view that has never been anywhere but at `at` (nothing held), to compare a view that has with.
+fn what_a_fresh_view_draws(scene: &Scene, at: BrickCoordinate, detail: &LodSettings) -> Screen {
+    let mut view = view_of(scene, 3);
+    view.mesher_mut().enable_occupancy();
+    let mut screen = Screen::default();
+    settle_checked(
+        &mut view,
+        &mut screen,
+        scene,
+        viewer_in(at),
+        detail,
+        "a fresh view",
+    );
+    screen
+}
+
+/// The bricks that are drawn are those a fresh view draws, picture for picture, and what the sun was told of each of the bricks a fresh view tells of is the same.
+fn assert_bricks_are_what_a_fresh_view_draws(screen: &Screen, fresh: &Screen, context: &str) {
+    if screen.bricks != fresh.bricks {
+        let mut differ: Vec<BrickCoordinate> = screen
+            .bricks
+            .keys()
+            .chain(fresh.bricks.keys())
+            .filter(|coordinate| screen.bricks.get(coordinate) != fresh.bricks.get(coordinate))
+            .copied()
+            .collect();
+        differ.sort();
+        differ.dedup();
+        differ.truncate(6);
+        panic!(
+            "{context}: {} bricks are drawn and a fresh view draws {}; first that differ: {differ:?}",
+            screen.bricks.len(),
+            fresh.bricks.len()
+        );
+    }
+    let mut wrong: Vec<BrickCoordinate> = fresh
+        .occupancy
+        .iter()
+        .filter(|(coordinate, occupancy)| screen.occupancy.get(coordinate) != Some(occupancy))
+        .map(|(coordinate, _)| *coordinate)
+        .collect();
+    wrong.sort();
+    wrong.truncate(6);
+    assert!(
+        wrong.is_empty(),
+        "{context}: what the sun is told of these bricks is not what a fresh view tells: {wrong:?}"
+    );
+}
+
+/// A view that goes from the ground to the sky and back, in the loop of an update at a time, and what that did.
+struct Return {
+    /// The pictures of bricks put up (not shown from hold).
+    brick_uploads: usize,
+    /// The bricks shown from hold.
+    brick_shows: usize,
+    /// The updates until the view had nothing more to do.
+    updates: usize,
+    /// The bricks that were shown after the first update.
+    shown_after_the_first_update: HashSet<BrickCube>,
+}
+
+fn come_back(
+    view: &mut LodView,
+    screen: &mut Screen,
+    terrain: &impl CoarseTerrainSource,
+    settings: &LodSettings,
+) -> Return {
+    let mut result = Return {
+        brick_uploads: 0,
+        brick_shows: 0,
+        updates: 0,
+        shown_after_the_first_update: HashSet::new(),
+    };
+    let started = std::time::Instant::now();
+    loop {
+        let updates = view.update(GridId::MAIN, terrain, Trip::ground(), settings);
+        result.brick_uploads += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::Upload { mesh, .. } if !mesh.is_empty()))
+            .count();
+        result.brick_shows += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::ShowBrick(_)))
+            .count();
+        screen.apply(updates);
+        screen.apply_occupancy(view.mesher_mut().take_occupancy_updates());
+        view.check_consistency().expect("the records agree");
+        result.updates += 1;
+        if result.updates == 1 {
+            result.shown_after_the_first_update = view.shown().clone();
+        }
+        if view.is_settled() {
+            return result;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "does not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+}
+
+#[test]
+fn a_view_that_goes_up_and_comes_back_makes_no_brick_again_and_draws_the_bricks_it_drew() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let (ground_bricks, ground_shown) = (screen.bricks.clone(), view.shown().clone());
+    assert!(
+        ground_bricks.len() > 20,
+        "{} bricks are drawn on the ground",
+        ground_bricks.len()
+    );
+    assert!(
+        screen.hidden_bricks.is_empty(),
+        "nothing has been taken down yet"
+    );
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert!(
+        screen.bricks.is_empty(),
+        "no brick of the ground is drawn from the sky"
+    );
+    assert_eq!(
+        screen.hidden_bricks, ground_bricks,
+        "every brick of the ground is held, hidden, with the picture it had"
+    );
+    assert_held_bricks_match(&screen, &view, 256 << 20, "the sky");
+    assert!(view.held_brick_pictures().bricks >= ground_bricks.len());
+    let pictures_made_before = view.mesher().ready_serial();
+
+    let back = come_back(&mut view, &mut screen, terrain, &trip.far);
+    println!(
+        "back from the sky: {} updates, {} bricks shown from hold, {} uploaded; shown after the first update: {} of {} cubes of the ground",
+        back.updates,
+        back.brick_shows,
+        back.brick_uploads,
+        back.shown_after_the_first_update.len(),
+        ground_shown.len()
+    );
+    assert_eq!(view.shown(), &ground_shown, "the same cubes are drawn");
+    assert_eq!(screen.bricks, ground_bricks, "with the same pictures");
+    assert!(screen.hidden_bricks.is_empty());
+    assert_eq!(back.brick_uploads, 0, "no picture of a brick was uploaded");
+    assert_eq!(
+        back.brick_shows,
+        ground_bricks.len(),
+        "each brick was shown from hold"
+    );
+    assert_eq!(
+        view.mesher().ready_serial(),
+        pictures_made_before,
+        "no brick was meshed again"
+    );
+    assert_held_bricks_match(&screen, &view, 256 << 20, "back");
+    assert_converged(&view, "back on the ground");
+}
+
+#[test]
+fn what_the_sun_is_told_of_the_bricks_is_told_again_when_they_are_shown_from_hold() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.mesher_mut().enable_occupancy();
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_occupancy = screen.occupancy.clone();
+    assert!(
+        ground_occupancy.len() > 100,
+        "{} bricks",
+        ground_occupancy.len()
+    );
+    assert!(
+        ground_occupancy
+            .values()
+            .any(|occupancy| matches!(occupancy, BrickOccupancy::Full))
+            && ground_occupancy
+                .values()
+                .any(|occupancy| matches!(occupancy, BrickOccupancy::Mixed(_))),
+        "the ground has bricks that are full and bricks that are part stone"
+    );
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    // (The bricks of the ground are out of range, and the renderer is told it does not know them; the picture is held and what the sun is told of it with it.)
+    assert!(
+        ground_occupancy
+            .keys()
+            .all(|coordinate| !screen.occupancy.contains_key(coordinate)),
+        "the renderer is told nothing of the bricks of the ground from the sky"
+    );
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "back",
+    );
+    for (coordinate, occupancy) in &ground_occupancy {
+        assert_eq!(
+            screen.occupancy.get(coordinate),
+            Some(occupancy),
+            "{coordinate:?}"
+        );
+    }
+}
+
+#[test]
+fn an_edit_to_a_brick_while_its_picture_is_held_is_never_put_up_and_the_bricks_are_what_a_fresh_view_draws()
+ {
+    let mut trip = Trip::new();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.mesher_mut().enable_occupancy();
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_bricks = screen.bricks.clone();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    let held_before = screen.hidden_bricks.len();
+
+    // A hole in the grass at the edge of the first brick, said while it is up: the pictures of the brick and of the bricks beside it are out of date (the brick beside
+    // it has a face against the hole now).
+    let edited = trip.scene.edit([0, 9, 5], "base_blocks:air");
+    assert_eq!(edited, brick(0, 0, 0));
+    view.mesher_mut().brick_changed(edited);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::sky(),
+        &trip.far,
+        "the sky, told",
+    );
+    let affected: Vec<BrickCoordinate> = std::iter::once(edited)
+        .chain(
+            FaceDirection::ALL
+                .iter()
+                .filter_map(|&face| edited.neighbour(face)),
+        )
+        .collect();
+    for coordinate in &affected {
+        assert!(
+            !screen.hidden_bricks.contains_key(coordinate),
+            "{coordinate:?} is held and its picture is out of date"
+        );
+    }
+    assert!(
+        screen.hidden_bricks.len() < held_before && screen.hidden_bricks.len() > held_before / 2,
+        "{} of {held_before} are still held: the rest were not touched",
+        screen.hidden_bricks.len()
+    );
+    assert_held_bricks_match(&screen, &view, 256 << 20, "the sky, told");
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &trip.far,
+        "back",
+    );
+    let fresh = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &trip.far);
+    assert_bricks_are_what_a_fresh_view_draws(&screen, &fresh, "back, after the edit");
+    assert_ne!(
+        screen.bricks[&edited], ground_bricks[&edited],
+        "the hole is in the picture"
+    );
+    assert_ne!(
+        screen.bricks[&brick(-1, 0, 0)],
+        ground_bricks[&brick(-1, 0, 0)],
+        "and the face of the brick beside it"
+    );
+}
+
+#[test]
+fn a_change_of_what_is_drawn_from_lets_go_of_every_held_picture_and_the_bricks_are_made_from_the_new()
+ {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_bricks = screen.bricks.clone();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert!(!screen.hidden_bricks.is_empty());
+
+    // A game changes its light: what the bricks are drawn from is not what the held pictures were made from.
+    let hook = Arc::new(common::LitBrick {
+        lit: brick(0, 0, 0),
+        brightness: 200,
+    });
+    view.mesher_mut()
+        .set_channels(trip.scene.channels_lit_by(&hook));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky, changed",
+    );
+    assert!(
+        screen.hidden_bricks.is_empty(),
+        "{} pictures are held that were made from what was drawn from before",
+        screen.hidden_bricks.len()
+    );
+    assert_eq!(
+        view.held_brick_pictures(),
+        world_view::HeldBricks::default()
+    );
+
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "back",
+    );
+    let mut fresh_view = LodView::new(
+        trip.scene
+            .mesher_seeing(3, trip.scene.channels_lit_by(&hook)),
+        config(),
+    );
+    let mut fresh = Screen::default();
+    settle_checked_in(
+        &mut fresh_view,
+        &mut fresh,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "a fresh view",
+    );
+    assert_eq!(
+        screen.bricks, fresh.bricks,
+        "the bricks are drawn from the new light"
+    );
+    assert_ne!(screen.bricks, ground_bricks, "and it is not the old one");
+}
+
+#[test]
+fn a_reset_takes_down_the_hidden_meshes_of_pictures_that_went_out_of_date_before_the_view_was_updated_too()
+ {
+    let mut trip = Trip::new();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    let edited = trip.scene.edit([0, 9, 5], "base_blocks:air");
+    view.mesher_mut().brick_changed(edited);
+    // (The renderer still holds the hidden meshes of the pictures that are out of date, and nothing has been said of them yet.)
+    screen.apply(view.reset());
+    assert!(
+        screen.bricks.is_empty() && screen.hidden_bricks.is_empty(),
+        "{} drawn and {} hidden",
+        screen.bricks.len(),
+        screen.hidden_bricks.len()
+    );
+}
+
+#[test]
+fn the_budget_of_held_bricks_lets_go_of_the_oldest_and_what_is_let_go_of_is_meshed_again() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_bricks = screen.bricks.clone();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    let all = view.held_brick_pictures();
+    assert!(all.with_mesh > 20, "{all:?}");
+
+    // A budget of a third of that: the rest is let go of, and the bricks are meshed again where they were.
+    let budget = all.bytes / 3;
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(budget);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert_held_bricks_match(&screen, &view, budget, "the sky");
+    let held = view.held_brick_pictures();
+    assert!(
+        held.bytes > budget / 2 && held.bricks < all.bricks,
+        "{held:?} of {all:?} held for {budget}"
+    );
+    let pictures_made_before = view.mesher().ready_serial();
+    let back = come_back(&mut view, &mut screen, terrain, &trip.far);
+    let meshed_again = view.mesher().ready_serial() - pictures_made_before;
+    assert_eq!(screen.bricks, ground_bricks, "the same pictures");
+    // Exactly the bricks that were let go of are meshed again: every one that was held is shown as it is (the ones that have something to see are shown from hold, which
+    // of them are kept being a matter of the order they were taken down in).
+    assert_eq!(
+        meshed_again,
+        (all.bricks - held.bricks) as u64,
+        "{} bricks were shown from hold, of {} held with room for all and {} held for the budget",
+        back.brick_shows,
+        all.bricks,
+        held.bricks
+    );
+    assert!(meshed_again > 0 && held.bricks > 0);
+}
+
+#[test]
+fn the_cap_of_pictures_shown_in_an_update_does_not_hold_back_bricks_that_are_held() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    // A ball of bricks that is more than the cap of an update (64) of them with something to draw.
+    let mut view = view_of(&trip.scene, 6);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let ground_bricks = screen.bricks.clone();
+    assert!(
+        ground_bricks.len() > 100,
+        "{} bricks are drawn",
+        ground_bricks.len()
+    );
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    // In one update after the viewer is back, every brick is shown: they are moves, and the cap is of pictures put on the graphics card.
+    screen.apply(view.update(GridId::MAIN, terrain, Trip::ground(), &trip.far));
+    assert_eq!(
+        screen.bricks,
+        ground_bricks,
+        "{} of {} bricks are drawn after the first update",
+        screen.bricks.len(),
+        ground_bricks.len()
+    );
+}
+
+#[test]
+fn a_reset_takes_down_the_held_bricks_too() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.mesher_mut().enable_occupancy();
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        terrain,
+        Trip::sky(),
+        &trip.far,
+        "the sky",
+    );
+    assert!(!screen.hidden_bricks.is_empty());
+    screen.apply(view.reset());
+    screen.apply_occupancy(view.mesher_mut().take_occupancy_updates());
+    assert!(screen.bricks.is_empty() && screen.hidden_bricks.is_empty());
+    assert!(screen.occupancy.is_empty(), "the sun is told of no brick");
+    assert_eq!(
+        view.held_brick_pictures(),
+        world_view::HeldBricks::default()
+    );
+    view.check_consistency().expect("the records agree");
+}
+
+#[test]
+fn without_a_budget_no_brick_is_hidden_or_shown_and_the_updates_are_what_they_were() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    let mut screen = Screen::default();
+    for (viewer, context) in [
+        (Trip::ground(), "ground"),
+        (Trip::sky(), "sky"),
+        (Trip::ground(), "back"),
+    ] {
+        let started = std::time::Instant::now();
+        loop {
+            let updates = view.update(GridId::MAIN, terrain, viewer, &trip.far);
+            assert!(
+                !updates.iter().any(|update| matches!(
+                    update,
+                    MeshUpdate::HideBrick(_) | MeshUpdate::ShowBrick(_)
+                )),
+                "{context}: a brick was hidden or shown"
+            );
+            screen.apply(updates);
+            if view.is_settled() {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "does not settle"
+            );
+            std::thread::sleep(std::time::Duration::from_micros(300));
+        }
+        assert!(screen.hidden_bricks.is_empty());
+        assert_eq!(
+            view.held_brick_pictures(),
+            world_view::HeldBricks::default()
+        );
+    }
+}
+
 fn a_drawn_node(view: &LodView, screen: &Screen) -> BrickCube {
     let mut nodes: Vec<BrickCube> = screen.nodes.keys().copied().collect();
     nodes.sort_by_key(|cube| {

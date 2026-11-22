@@ -278,6 +278,8 @@ impl ShipTerrainMesher {
             MeshUpdate::RemoveCoarse(cube) => MeshUpdate::RemoveGridCoarse { grid, cube },
             MeshUpdate::HideCoarse(cube) => MeshUpdate::HideGridCoarse { grid, cube },
             MeshUpdate::ShowCoarse(cube) => MeshUpdate::ShowGridCoarse { grid, cube },
+            MeshUpdate::HideBrick(coordinate) => MeshUpdate::HideGridBrick { grid, coordinate },
+            MeshUpdate::ShowBrick(coordinate) => MeshUpdate::ShowGridBrick { grid, coordinate },
             other => unreachable!("a mesher of terrain makes nothing else: {other:?}"),
         }
     }

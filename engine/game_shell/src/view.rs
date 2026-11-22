@@ -251,6 +251,18 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             MeshUpdate::ShowGridCoarse { grid, cube } => {
                 renderer.show_mesh(HeldMesh::GridNode(grid, cube));
             }
+            MeshUpdate::HideBrick(coordinate) => {
+                renderer.hide_mesh(HeldMesh::Brick(coordinate));
+            }
+            MeshUpdate::ShowBrick(coordinate) => {
+                renderer.show_mesh(HeldMesh::Brick(coordinate));
+            }
+            MeshUpdate::HideGridBrick { grid, coordinate } => {
+                renderer.hide_mesh(HeldMesh::GridBrick(grid, coordinate));
+            }
+            MeshUpdate::ShowGridBrick { grid, coordinate } => {
+                renderer.show_mesh(HeldMesh::GridBrick(grid, coordinate));
+            }
         }
     }
 }

@@ -19,6 +19,7 @@ mod ship_terrain_mesher;
 mod sun_boxes;
 mod sun_ray;
 
+pub use brick_states::HeldBricks;
 pub use cube_states::HeldPictures;
 pub use grid_mesher::GridMesher;
 pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};

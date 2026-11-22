@@ -71,6 +71,15 @@ impl Screen {
                 ),
                 MeshUpdate::Remove(coordinate) => {
                     self.held.remove(&(None, Self::brick(coordinate)));
+                    self.hidden.remove(&(None, Self::brick(coordinate)));
+                }
+                MeshUpdate::HideBrick(coordinate) => self.hide((None, Self::brick(coordinate))),
+                MeshUpdate::ShowBrick(coordinate) => self.show((None, Self::brick(coordinate))),
+                MeshUpdate::HideGridBrick { grid, coordinate } => {
+                    self.hide((Some(grid), Self::brick(coordinate)));
+                }
+                MeshUpdate::ShowGridBrick { grid, coordinate } => {
+                    self.show((Some(grid), Self::brick(coordinate)));
                 }
                 MeshUpdate::UploadGridBrick {
                     grid,
@@ -83,6 +92,7 @@ impl Screen {
                 ),
                 MeshUpdate::RemoveGridBrick { grid, coordinate } => {
                     self.held.remove(&(Some(grid), Self::brick(coordinate)));
+                    self.hidden.remove(&(Some(grid), Self::brick(coordinate)));
                 }
                 MeshUpdate::UploadCoarse { cube, mesh } => {
                     self.put((None, cube), mesh.quads.len(), mesh.detailed.len())

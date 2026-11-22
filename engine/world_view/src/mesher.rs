@@ -26,7 +26,8 @@ use voxel_meshing::{
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, VoxelCoordinate};
 use world_storage::LevelData;
 
-use crate::brick_states::{BrickState, BrickStates};
+use crate::brick_states::{BrickState, BrickStates, HeldBricks};
+use crate::cube_states::Taken;
 use crate::occupancy::{OccupancyChange, OccupancyLog, OccupancyStatistics};
 
 /// Where the bricks around a viewer come from: the terrain of a level, or the terrain of a ship (a planet). A brick is either known as it is (an edited one) or
@@ -198,6 +199,21 @@ pub enum MeshUpdate {
         grid: GridId,
         cube: BrickCube,
     },
+    /// Takes the picture of a brick of the terrain out of what is drawn and keeps it on the graphics card, as [`MeshUpdate::HideCoarse`] does for a node: the mesher holds
+    /// it ([`WorldMesher::hold_hidden_pictures`]). A later [`MeshUpdate::ShowBrick`] shows it, and a [`MeshUpdate::Remove`] lets go of it.
+    HideBrick(BrickCoordinate),
+    /// Shows the picture of a brick that was hidden.
+    ShowBrick(BrickCoordinate),
+    /// [`MeshUpdate::HideBrick`] for a brick of a planet.
+    HideGridBrick {
+        grid: GridId,
+        coordinate: BrickCoordinate,
+    },
+    /// [`MeshUpdate::ShowBrick`] for a brick of a planet.
+    ShowGridBrick {
+        grid: GridId,
+        coordinate: BrickCoordinate,
+    },
 }
 
 struct NeighbourhoodSnapshot {
@@ -316,6 +332,9 @@ pub struct WorldMesher {
     epoch: u64,
     /// Which voxels of the bricks block the sun, as far as the renderer has been told (off until asked for).
     occupancy: OccupancyLog<BrickCoordinate>,
+    /// The bricks whose pictures were held, whose hidden meshes the renderer is to take down: their pictures went out of date (an edit, a change of what is drawn from)
+    /// since the last update, which says so.
+    pending_removals: Vec<BrickCoordinate>,
 }
 
 impl std::fmt::Debug for WorldMesher {
@@ -428,6 +447,7 @@ impl WorldMesher {
             scheduled_last_update: 0,
             epoch: 0,
             occupancy: OccupancyLog::new(),
+            pending_removals: Vec::new(),
         }
     }
 
@@ -461,6 +481,35 @@ impl WorldMesher {
         self
     }
 
+    /// Keeps the pictures of the bricks that are taken down ([`WorldMesher::hide`]), up to `budget_bytes` of them: the renderer is to **hide** the mesh
+    /// ([`MeshUpdate::HideBrick`]) and not take it down, and showing the brick again ([`WorldMesher::show`]) is a move ([`MeshUpdate::ShowBrick`]) and makes nothing, even
+    /// after the brick went out of range and its voxels were let go of. What the sun is told of the brick is kept with it, and told again then. A picture goes out of
+    /// date with an edit ([`WorldMesher::brick_changed`]) or a change of what is drawn from, and is let go of ([`MeshUpdate::Remove`], at the next update). 0, the default,
+    /// keeps nothing. Only for a mesher that holds its pictures back ([`WorldMesher::with_held_back_display`]); the oldest are let go of by [`WorldMesher::evict_held`].
+    pub fn hold_hidden_pictures(&mut self, budget_bytes: usize) {
+        self.states.set_budget(budget_bytes);
+    }
+
+    /// What is held now ([`WorldMesher::hold_hidden_pictures`]).
+    pub fn held_pictures(&self) -> HeldBricks {
+        self.states.held_pictures()
+    }
+
+    /// Whether the picture of the brick is held: it is not shown, and is shown again without making anything.
+    pub fn is_held(&self, coordinate: BrickCoordinate) -> bool {
+        self.states.is_held(coordinate)
+    }
+
+    /// Lets go of held pictures, the oldest first, until what is held is within the budget, except those of the bricks `keep` says are kept (the ones that are wanted: they
+    /// are about to be shown, so what is held may pass the budget by them). Returns what the renderer is to do.
+    pub fn evict_held(&mut self, keep: impl Fn(BrickCoordinate) -> bool) -> Vec<MeshUpdate> {
+        self.states
+            .evict_over_budget(keep)
+            .into_iter()
+            .map(MeshUpdate::Remove)
+            .collect()
+    }
+
     /// How many pictures have become ready since the mesher was made (when held back).
     pub fn ready_serial(&self) -> u64 {
         self.ready_serial
@@ -471,9 +520,9 @@ impl WorldMesher {
         self.settings.view_radius_bricks
     }
 
-    /// Whether a picture of the brick is waiting to be shown (when held back).
+    /// Whether a picture of the brick is waiting to be shown, or is held, so that it is shown without making anything (when held back).
     pub fn is_ready(&self, coordinate: BrickCoordinate) -> bool {
-        self.states.is_waiting(coordinate)
+        self.states.is_ready(coordinate)
     }
 
     /// Whether the brick has been asked to be shown and not hidden since (when held back).
@@ -493,7 +542,7 @@ impl WorldMesher {
         source: &impl TerrainSource,
         coordinate: BrickCoordinate,
     ) -> Option<String> {
-        if self.states.is_waiting(coordinate) {
+        if self.states.is_ready(coordinate) {
             return None;
         }
         let made_by_nothing = |coordinate: BrickCoordinate| {
@@ -531,8 +580,18 @@ impl WorldMesher {
     }
 
     /// Shows the picture of a brick that [`WorldMesher::is_ready`]: returns what the renderer must be given for it, which is nothing if there is nothing to see
-    /// (the brick is shown all the same). Nothing happens, and nothing is returned, for a brick that is not ready.
+    /// (the brick is shown all the same), or the order to show the mesh it holds hidden if the picture was held. Nothing happens, and nothing is returned, for a brick that
+    /// is not ready.
     pub fn show(&mut self, coordinate: BrickCoordinate) -> Option<MeshUpdate> {
+        if let Some(displayed) = self.states.reveal(coordinate) {
+            // The sun is told again what it was told of the brick: the renderer was told to forget it if the brick went out of range, and nothing is sent if it did not.
+            if self.occupancy.is_enabled()
+                && let Some(occupancy) = self.states.occupancy(coordinate).cloned()
+            {
+                self.occupancy.set(coordinate, occupancy);
+            }
+            return displayed.then_some(MeshUpdate::ShowBrick(coordinate));
+        }
         let mesh = self.states.hand_out(coordinate)?;
         if mesh.is_empty() {
             return None;
@@ -542,11 +601,14 @@ impl WorldMesher {
     }
 
     /// Takes a shown brick down: returns what the renderer must do, which is nothing if it had nothing on the screen. The picture is gone with it (it was handed
-    /// out by [`WorldMesher::show`]), so the brick has none, and is made again if it is wanted again.
+    /// out by [`WorldMesher::show`]), so the brick has none, and is made again if it is wanted again; unless pictures are held ([`WorldMesher::hold_hidden_pictures`]),
+    /// and then the renderer is to hide the mesh and not take it down, and the brick is ready.
     pub fn hide(&mut self, coordinate: BrickCoordinate) -> Option<MeshUpdate> {
-        self.states
-            .take_down(coordinate)?
-            .then_some(MeshUpdate::Remove(coordinate))
+        match self.states.hold_down(coordinate)? {
+            Taken::Nothing => None,
+            Taken::Removed => Some(MeshUpdate::Remove(coordinate)),
+            Taken::Hidden => Some(MeshUpdate::HideBrick(coordinate)),
+        }
     }
 
     /// Jobs handed to workers and not yet finished.
@@ -631,7 +693,9 @@ impl WorldMesher {
                 .filter_map(|&f| coordinate.neighbour(f)),
         ) {
             *self.versions.entry(affected).or_insert(0) += 1;
-            self.states.drop_picture(affected);
+            if self.states.drop_picture(affected) {
+                self.pending_removals.push(affected);
+            }
         }
     }
 
@@ -645,14 +709,19 @@ impl WorldMesher {
         for coordinate in self.states.loaded_coordinates() {
             *self.versions.entry(coordinate).or_insert(0) += 1;
         }
-        self.states.drop_all_pictures();
+        let held = self.states.drop_all_pictures();
+        self.pending_removals.extend(held);
     }
 
     /// Forgets every brick and all work in progress, as when the viewer moves to another level whose
     /// bricks have nothing to do with the old ones. Returns the removal of every mesh displayed.
     pub fn reset(&mut self) -> Vec<MeshUpdate> {
         self.epoch += 1;
-        let displayed = self.states.clear();
+        let mut displayed = self.states.clear();
+        // (The renderer still holds the hidden meshes of the pictures that went out of date, and nothing else of them.)
+        displayed.append(&mut self.pending_removals);
+        displayed.sort();
+        displayed.dedup();
         self.versions.clear();
         self.scheduled_last_update = 0;
         self.occupancy.clear_all();
@@ -670,7 +739,12 @@ impl WorldMesher {
         source: &impl TerrainSource,
         center: BrickCoordinate,
     ) -> Vec<MeshUpdate> {
-        let mut updates = Vec::new();
+        // What went out of date since the last update is taken down first: a picture made for the brick comes after it.
+        let mut updates: Vec<MeshUpdate> = self
+            .pending_removals
+            .drain(..)
+            .map(MeshUpdate::Remove)
+            .collect();
         let view_radius = self.settings.view_radius_bricks;
         let keep_radius = view_radius + if self.held_back { 4 } else { 2 };
         let fine_region = FineRegion::new(center, u32::try_from(view_radius).unwrap_or(0));
@@ -701,15 +775,27 @@ impl WorldMesher {
                     {
                         continue; // unloaded, or changed since: the brick will be meshed again
                     }
+                    // (A copy is kept with the picture when pictures are held, to tell the sun again when the brick is shown from hold.)
+                    let to_keep = if self.states.holds_pictures() {
+                        occupancy.clone()
+                    } else {
+                        None
+                    };
                     if let Some(occupancy) = occupancy {
                         self.occupancy.set(coordinate, occupancy);
                     }
                     if self.held_back && !self.states.is_shown(coordinate) {
                         self.states.hold(coordinate, mesh);
+                        if let Some(occupancy) = to_keep {
+                            self.states.keep_occupancy(coordinate, occupancy);
+                        }
                         self.ready_serial += 1;
                         continue;
                     }
-                    self.states.deliver(coordinate);
+                    self.states.deliver(coordinate, mesh.byte_size());
+                    if let Some(occupancy) = to_keep {
+                        self.states.keep_occupancy(coordinate, occupancy);
+                    }
                     if mesh.is_empty() && !self.states.is_displayed(coordinate) {
                         continue;
                     }

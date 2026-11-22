@@ -22,6 +22,7 @@ use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
 use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 use world_storage::LevelData;
 
+use crate::brick_states::HeldBricks;
 use crate::cube_states::{Arrival, CubeStates, HeldPictures, Replacement, Taken};
 use crate::horizon::{VIEWER_MARGIN, is_hidden_by, voxels_of};
 use crate::job_feed::jobs_to_hold;
@@ -341,15 +342,21 @@ impl LodView {
 
     /// Keeps the pictures of nodes that leave the screen, up to `budget_bytes` of them, instead of dropping them: a node that is taken down is **hidden** in the renderer
     /// ([`MeshUpdate::HideCoarse`]) and its record kept, and when it is wanted again it is shown by a move ([`MeshUpdate::ShowCoarse`]) and not made again. The
-    /// oldest are let go of (a [`MeshUpdate::RemoveCoarse`]) when more is held than the budget, never one that is wanted. 0, the default, keeps nothing. Bricks are
-    /// not held (they are the mesher's).
+    /// oldest are let go of (a [`MeshUpdate::RemoveCoarse`]) when more is held than the budget, never one that is wanted. 0, the default, keeps nothing. The bricks are
+    /// held the same way, the mesher's ([`WorldMesher::hold_hidden_pictures`]), under a budget of the same size of their own.
     pub fn hold_hidden_pictures(&mut self, budget_bytes: usize) {
         self.cubes.set_budget(budget_bytes);
+        self.mesher.hold_hidden_pictures(budget_bytes);
     }
 
-    /// What is held now ([`LodView::hold_hidden_pictures`]).
+    /// What is held now of the nodes ([`LodView::hold_hidden_pictures`]).
     pub fn held_pictures(&self) -> HeldPictures {
         self.cubes.held_pictures()
+    }
+
+    /// What is held now of the bricks ([`LodView::hold_hidden_pictures`]).
+    pub fn held_brick_pictures(&self) -> HeldBricks {
+        self.mesher.held_pictures()
     }
 
     /// Whether anything is waiting to be made or swapped: the view is not yet what it is to be.
@@ -487,6 +494,11 @@ impl LodView {
                 .into_iter()
                 .map(MeshUpdate::RemoveCoarse),
         );
+        // (A brick that is wanted is not let go of: it is about to be shown.)
+        let cubes = &self.cubes;
+        updates.extend(self.mesher.evict_held(|coordinate| {
+            BrickCube::new(coordinate, 0).is_ok_and(|cube| cubes.is_to_be_made(&cube))
+        }));
         // Looked at once, when the view comes to rest (not at every update: it compares the cubes that are drawn with the ones that are wanted, and they are many).
         let settled = self.is_settled();
         if !settled {
@@ -845,8 +857,11 @@ impl LodView {
     /// Shows a cube. Returns whether that cost the graphics card a picture to make (everything but showing one that was held).
     fn show(&mut self, cube: BrickCube, updates: &mut Vec<MeshUpdate>) -> bool {
         if cube.level() == 0 {
+            // (Showing a brick that is held is a move as well.)
+            let held = self.mesher.is_held(cube.origin());
             self.cubes.show_brick(cube);
             updates.extend(self.mesher.show(cube.origin()));
+            return !held;
         } else if self.cubes.is_held(cube) {
             if self.cubes.reveal_node(cube) {
                 updates.push(MeshUpdate::ShowCoarse(cube));
