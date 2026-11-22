@@ -73,18 +73,50 @@ Whether the pack is **replicated as a zip on the client's machine** is the autho
 - A pack whose wasm the client must run (the world generator) **must** have `replicate: true`; the loader refuses the other combination.
 - Default: my pick is `true` (moddability first: a player can take what they were sent and host it), confidence medium.
 
-## The owner's answers (2026-11-21)
+## The owner's answers (2026-11-21 and 2026-11-22)
 
-1. **Withheld code, and the index:** asked what a root hash is and how it is used; answered above. **Not yet decided: X (the index and root hash) or hashing the whole zip until something is withheld.**
-2. **Canonical form, and an author's zip rewritten by the server: yes** ("I agree to using that canonical form of zips").
-3. **Wasm:** a client may run wasm, **later**; the owner definitely wants it for world generation.
-4. **Both ways, by the pack's author:** packs are sent as archives or only as the resolved package, according to `pack.json` (the `replicate` key above). So **the resolved package stays on the wire in any case**; whether it also stays when a pack is replicated is open (my pick: yes, until the client's own load has been cross-checked clean for a while).
+1. **The index and the root hash are built from the start** (2026-11-22). The first archive crate writes and checks them.
+2. **Canonical form, and an author's zip rewritten by the server: yes** (2026-11-21).
+3. **Wasm:** a client may run wasm, **later**; the owner definitely wants it for world generation (`generator-identity-spec.md`).
+4. **Both ways, by the pack's author: accepted as proposed** (2026-11-22): the key is `"replicate"`, `true` is the default, `false` means the client is sent only the resolved package, and a pack with wasm the client must run needs `true`. The resolved package stays on the wire in any case.
+5. **A client keeps a replicated zip after it disconnects** (2026-11-22).
+6. **A cached pack's file name has the pack's own id and the hash being looked for**: `my_pack-HASH.zip`, where `my_pack` is the `id` of its `pack.json` (the author's intended name; it is already a safe file name: lower case, digits and `_`). My pick for `HASH`: the first 32 hex characters of the root hash. It is only the key to look the file up by; the whole root hash is checked when the file is loaded, so a clash of the short form can never put a wrong pack in use. (A full 64 characters would make long paths on Windows, a trap this project has met.)
+7. **The client's folder for a server should strongly resemble a world folder, and ideally be one** (2026-11-22): see the next section.
+
+## The client's folder for a server (owner's idea, 2026-11-22; a discussion)
+
+The idea: the folder a client makes for a remote server holds the replicated packs *and anything else it caches of that server*, in the shape of a world folder, so that long after the player stopped playing there, it is **a world that can be played in singleplayer, though it may be incomplete**.
+
+**A fact first, which changes the question: there is no world folder today.** A world is one file named by `--world FILE`, with its ships in `FILE.ships/` beside it; the game data folder holds the identity and `shaderpacks` and nothing else **[read: `options.rs`, `ship_files.rs`, `identity`]**. So the first thing to design is the world folder; the server folder is then the same shape with a marker. My proposal (confidence medium-high that one shape for both is right; medium on the details):
+
+```
+DATA/worlds/NAME/              a world made here
+DATA/worlds/HOST-NAME/         a world made from a remote server (the same shape)
+    world.voxunami             the world file, as the server writes it today
+    world.voxunami.ships/      its ships
+    packs/my_pack-HASH.zip     the replicated packs the world uses
+    remote.json                only in a remote one: the server's address and name, when it was last joined
+```
+
+A pack inside the world's own folder makes any world **portable**: copy the folder and the world and the content it needs go together. Packs are copied into each world that uses them rather than shared; they are small (Cave's whole package is 24 KB **[measured]**) and a shared cache is one more place to get out of step **[believed]**.
+
+**What a client could write, and what it could not.** The client's view of the world comes only from the server's message stream (a hard rule), so the client can save only what the stream told it. That is exactly why the world is "incomplete", and it also says what it can hold **[believed from the design; not tried]**:
+
+| Kept | Why it is there | Missing, so it plays as the pristine generator would |
+|---|---|---|
+| the packs, the block order, the generator recipes, which generator is used where | all in the welcome | |
+| the **override bricks the client was sent** (what players built or dug in what it saw) | the stream sends exactly these | those it was never sent: edits out of its view |
+| the ships it saw | the stream carries them | ships it never saw; the other players |
+| unmodified terrain | **regenerated from the generators**, so it is complete by construction wherever the generator is in the packs | |
+
+Some things have no source on the client (the clock, entities the client did not see, anything the server's own code kept), and the integrated server that loads the folder needs *something* there: defaults. **That piece, a world writer driven by the client's view and not by a server's state, is new, and I have not looked at how much of the world file's format a client can fill.** I would look before promising it (a spike: write a world file from a client that has joined a test server, load it in singleplayer, compare what is seen).
+
+**Two things the owner should decide:** (a) a server operator may not want its builds to leave the server as a world file: a **server setting** (`allow_world_copy`, say) is cheap and the default is the owner's choice (I lean to allowing it: the player has seen all of it already); (b) while the world is a copy of what one player saw, `remote.json` says so, and a loaded copy is a **snapshot**: it will not know anything that happened after the last join.
 
 ## Still open
 
-- X, or the whole-zip hash first (item 1).
-- The key's name, its default, and the meaning of `false` as I wrote it.
-- Whether a client keeps a replicated zip after leaving the server (cache) or only while joined.
+- The name `allow_world_copy` and its default (above).
+- Whether the world folder (with `packs/` inside) is built *before* the pack cache, so the first cache is already in its final place. My pick: yes, the cache goes in the world folder from the start; the world file inside it comes later.
 
 ## Steps (each ends with tests, clippy, fmt, doc; estimates are **[believed]**)
 
