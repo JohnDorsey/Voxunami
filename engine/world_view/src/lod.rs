@@ -723,7 +723,10 @@ impl LodView {
                 .iter()
                 .flat_map(|group| group.coming.iter().copied())
                 .collect();
-            (intermediate_cubes(&groups), hurried)
+            (
+                intermediate_cubes(&groups, |cube| self.is_ready(cube)),
+                hurried,
+            )
         };
         self.cubes.want_with_steps(&cubes, &steps);
         self.wanted_for = Some((centre, *settings));

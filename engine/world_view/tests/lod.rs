@@ -855,7 +855,7 @@ fn a_view_that_goes_up_and_comes_back_makes_no_node_again_and_draws_what_it_drew
         ground_nodes.len()
     );
     assert!(
-        made_coming_back * 10 <= made_for_the_ground,
+        made_coming_back * 50 <= made_for_the_ground,
         "{made_coming_back} nodes were made coming back, {made_for_the_ground} for the ground: it is built again"
     );
     assert!(
