@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use data_packs::{pack_schemas, read_directory};
+use data_packs::{pack_identities, pack_schemas, read_directory};
 
 use crate::definition::{GameContent, GameDefinition};
 
@@ -86,7 +86,8 @@ fn problems(text: &str, packs: Option<usize>) -> String {
 const CHECK_USAGE: &str = "Check data packs the way a server loads them.
 
 Usage: voxunami check-pack GAME DIRECTORY
-  DIRECTORY holds a folder for each pack, each with a pack.json and the folders blocks, patches and bodies.
+  DIRECTORY holds a folder or a canonical .zip for each pack, each with a pack.json and the folders blocks, patches, bodies and textures.
+  After the check each pack's root hash is printed: the pack's identity, the same for a folder and for its zip.
   Every problem found is printed with its file and the place in it; the exit status says whether there were any.
   `voxunami pack-schema GAME DIRECTORY` writes the JSON Schemas that editors use to check the files as you type.";
 
@@ -131,6 +132,17 @@ pub fn run_check_packs<G: GameDefinition>(
             )
         }
     );
+    // what a pack is, whatever its form (the root hash of its file index): two servers run the same pack when these are equal
+    if let Ok(identities) = pack_identities(&directory) {
+        for (name, identity) in identities {
+            match identity {
+                Ok(root) => println!("  {name}: root {root}"),
+                Err(why) => {
+                    println!("  {name}: no root hash yet, it cannot be made into an archive: {why}")
+                }
+            }
+        }
+    }
     Ok(())
 }
 

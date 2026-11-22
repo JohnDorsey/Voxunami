@@ -9,6 +9,7 @@ mod directory;
 mod error;
 mod face_colors;
 mod family;
+mod files;
 mod load;
 mod manifest;
 mod patch;
@@ -24,7 +25,9 @@ pub use body::{
     OrbitData, POSITION_LIMIT, SMALLEST_ORBIT_RATIO, SpinData, Weight, read_body,
     read_family_parameters,
 };
-pub use directory::read_directory;
+pub use directory::{
+    PackIdentity, pack_identities, pack_name_of_zip, read_archive, read_directory,
+};
 pub use error::{PackError, PackErrors};
 pub use family::{FamilyData, FamilyParameters, FamilyProblem};
 pub use load::{Loaded, RawFile, RawPack, RawTexture, load_packs};

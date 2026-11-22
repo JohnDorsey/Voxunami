@@ -1,19 +1,14 @@
-//! Finding packs on disk: a directory of folders, each with a `pack.json` and the folders `blocks`, `patches` and `bodies`.
+//! Finding packs on disk: a directory of folders and of canonical `.zip` archives, each with a `pack.json` and the folders `blocks`, `patches`, `bodies` and
+//! `textures`. A folder and an archive of the same files give the same [`RawPack`], because both become one map of files first (`files.rs`).
 
 use std::fs;
 use std::path::Path;
 
-use crate::error::{PackError, PackErrors};
-use crate::load::{RawFile, RawPack, RawTexture};
-use crate::walk::nearest;
+use pack_archive::{Archive, FileIndex, Hash, Limits};
 
-fn problem(file: String, message: impl Into<String>) -> PackError {
-    PackError {
-        file,
-        path: String::new(),
-        message: message.into(),
-    }
-}
+use crate::error::{PackError, PackErrors};
+use crate::files::{Files, problem, raw_pack};
+use crate::load::RawPack;
 
 /// The names of what is in a directory, sorted: only folders if `folders`, only `.json` files (without the
 /// extension) otherwise. Names that start with a dot are left alone.
@@ -63,182 +58,215 @@ fn names_with(
     Ok(names)
 }
 
-fn read_text(path: &Path, label: &str) -> Result<String, PackError> {
-    fs::read_to_string(path)
-        .map_err(|error| problem(label.to_owned(), format!("cannot read this file: {error}")))
-}
+/// How deep a pack's folders may nest; a folder that goes deeper than anything a pack has is a loop or a mistake.
+const MOST_FOLDER_DEPTH: usize = 16;
 
-fn files_in(
-    pack: &Path,
-    folder_name: &str,
-    folder: &str,
+/// Every file under `folder` by its path from the pack's folder, leaving alone names that start with a dot (a `.git` folder, a `.hidden.png`).
+fn read_folder(
+    folder: &Path,
+    relative: &str,
+    depth: usize,
+    label: &str,
+    files: &mut Files,
     errors: &mut Vec<PackError>,
-) -> Vec<RawFile> {
-    let directory = pack.join(folder);
-    if !directory.is_dir() {
-        return Vec::new();
-    }
-    let label = format!("{folder_name}/{folder}");
-    let names = match names_in(&directory, &label, false) {
-        Ok(names) => names,
-        Err(error) => {
-            errors.push(error);
-            return Vec::new();
+) {
+    let named = |relative: &str| {
+        if relative.is_empty() {
+            label.to_owned()
+        } else {
+            format!("{label}/{relative}")
         }
     };
-    names
-        .into_iter()
-        .filter_map(|name| {
-            let label = format!("{label}/{name}.json");
-            match read_text(&directory.join(format!("{name}.json")), &label) {
-                Ok(text) => Some(RawFile { name, text }),
-                Err(error) => {
-                    errors.push(error);
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-/// The pictures of a pack: its `.png` files, named by the file's name, and the `.png` files in the folders of `textures` (named `namespace/name`), which put
-/// pictures into the namespace of the folder. A folder inside those is an error, as an unread folder anywhere is.
-fn textures_in(pack: &Path, folder_name: &str, errors: &mut Vec<PackError>) -> Vec<RawTexture> {
-    let directory = pack.join("textures");
-    if !directory.is_dir() {
-        return Vec::new();
-    }
-    let label = format!("{folder_name}/textures");
-    let mut textures = Vec::new();
-    let mut read = |relative: &str, file: &str, errors: &mut Vec<PackError>| match fs::read(
-        directory.join(file),
-    ) {
-        Ok(bytes) => textures.push(RawTexture {
-            name: relative.to_owned(),
-            bytes,
-        }),
-        Err(error) => errors.push(problem(
-            format!("{label}/{file}"),
-            format!("cannot read this file: {error}"),
-        )),
-    };
-    match names_with(&directory, &label, Some(".png")) {
-        Ok(names) => {
-            for name in names {
-                read(&name, &format!("{name}.png"), errors);
-            }
-        }
-        Err(error) => errors.push(error),
-    }
-    match names_with(&directory, &label, None) {
-        Ok(namespaces) => {
-            for namespace in namespaces {
-                let inner = directory.join(&namespace);
-                let inner_label = format!("{label}/{namespace}");
-                match names_with(&inner, &inner_label, Some(".png")) {
-                    Ok(names) => {
-                        for name in names {
-                            read(
-                                &format!("{namespace}/{name}"),
-                                &format!("{namespace}/{name}.png"),
-                                errors,
-                            );
-                        }
-                    }
-                    Err(error) => errors.push(error),
-                }
-                match names_with(&inner, &inner_label, None) {
-                    Ok(deeper) => {
-                        for name in deeper {
-                            errors.push(problem(
-                                format!("{inner_label}/{name}"),
-                                "nothing reads this folder; pictures are in `textures` or in a folder of it named for a namespace",
-                            ));
-                        }
-                    }
-                    Err(error) => errors.push(error),
-                }
-            }
-        }
-        Err(error) => errors.push(error),
-    }
-    textures.sort_by(|first, second| first.name.cmp(&second.name));
-    textures
-}
-
-/// The folders of a pack that are read. Anything else is an error: a pack with a `recipes` folder that nothing reads
-/// would be reported as fine and then do nothing, which is the worst thing a checker can say.
-const READ_FOLDERS: [&str; 4] = ["blocks", "patches", "bodies", "textures"];
-
-fn check_for_unread_folders(pack: &Path, folder_name: &str, errors: &mut Vec<PackError>) {
-    let label = folder_name.to_owned();
-    let names = match names_in(pack, &label, true) {
-        Ok(names) => names,
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
         Err(error) => {
-            errors.push(error);
+            errors.push(problem(
+                named(relative),
+                format!("cannot read this folder: {error}"),
+            ));
             return;
         }
     };
-    for name in names {
-        if READ_FOLDERS.contains(&name.as_str()) {
-            continue;
-        }
-        let hint = nearest(&name, &READ_FOLDERS)
-            .map(|near| format!(" (did you mean \"{near}\"?)"))
-            .unwrap_or_default();
-        errors.push(problem(
-            format!("{folder_name}/{name}"),
-            format!(
-                "nothing reads this folder{hint}; a pack's folders are \"blocks\", \"patches\", \"bodies\" and \"textures\""
-            ),
-        ));
-    }
-}
-
-/// Reads every pack in the folders of `root`. A folder without a `pack.json` is an error (it is probably not meant to
-/// be there, and quietly skipping it would hide a misplaced pack). A `root` that does not exist is an error.
-pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
-    let root_label = root.display().to_string();
-    let folders = names_in(root, &root_label, true).map_err(|error| PackErrors(vec![error]))?;
-    let mut errors = Vec::new();
-    let mut packs = Vec::new();
-    for folder in folders {
-        let pack = root.join(&folder);
-        let manifest_path = pack.join("pack.json");
-        let manifest_label = format!("{folder}/pack.json");
-        if !manifest_path.is_file() {
-            let mut message =
-                "this file is missing: every folder here is a pack and has a pack.json".to_owned();
-            if pack.join("shaderpack.json").is_file() {
-                message.push_str(" (this folder has a shaderpack.json, which is the manifest of a shader pack: those are the client's and go in the game data folder's shaderpacks, or `--shader-packs`)");
-            }
-            errors.push(problem(manifest_label, message));
-            continue;
-        }
-        let manifest = match read_text(&manifest_path, &manifest_label) {
-            Ok(text) => text,
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
             Err(error) => {
-                errors.push(error);
+                errors.push(problem(
+                    named(relative),
+                    format!("cannot read this folder: {error}"),
+                ));
                 continue;
             }
         };
-        check_for_unread_folders(&pack, &folder, &mut errors);
-        let blocks = files_in(&pack, &folder, "blocks", &mut errors);
-        let patches = files_in(&pack, &folder, "patches", &mut errors);
-        let bodies = files_in(&pack, &folder, "bodies", &mut errors);
-        let textures = textures_in(&pack, &folder, &mut errors);
-        packs.push(RawPack {
-            textures,
-            folder,
-            manifest,
-            blocks,
-            patches,
-            bodies,
-        });
+        let Ok(name) = entry.file_name().into_string() else {
+            continue; // a name that is not text is not a pack's name
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let here = if relative.is_empty() {
+            name
+        } else {
+            format!("{relative}/{name}")
+        };
+        if path.is_dir() {
+            if depth < MOST_FOLDER_DEPTH {
+                read_folder(&path, &here, depth + 1, label, files, errors);
+            } else {
+                errors.push(problem(
+                    named(&here),
+                    "this folder is nested deeper than any pack goes",
+                ));
+            }
+        } else {
+            match fs::read(&path) {
+                Ok(bytes) => {
+                    files.insert(here, bytes);
+                }
+                Err(error) => errors.push(problem(
+                    named(&here),
+                    format!("cannot read this file: {error}"),
+                )),
+            }
+        }
+    }
+}
+
+/// The pack a zip file holds is named by its file name without `.zip`, and without the `-` and 32 hexadecimal digits of a cached pack's name
+/// (`my_pack-0123456789abcdef0123456789abcdef.zip` is the pack `my_pack`). `None` if the name does not end in `.zip`.
+pub fn pack_name_of_zip(file_name: &str) -> Option<String> {
+    let stem = file_name.strip_suffix(".zip")?;
+    if let Some((name, key)) = stem.rsplit_once('-')
+        && key.len() == 32
+        && key
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Some(name.to_owned());
+    }
+    Some(stem.to_owned())
+}
+
+fn files_of(archive: &Archive) -> Files {
+    archive
+        .files()
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+        .collect()
+}
+
+/// Reads one pack from a canonical archive, naming it `pack` in messages. The archive's files are understood by the same code as a folder's.
+pub fn read_archive(pack: &str, archive: &Archive) -> Result<RawPack, PackErrors> {
+    let mut errors = Vec::new();
+    let raw = raw_pack(pack, &files_of(archive), &mut errors);
+    match raw {
+        Some(raw) if errors.is_empty() => Ok(raw),
+        _ => Err(PackErrors(errors)),
+    }
+}
+
+/// Reads a `.zip` file, which must be in the canonical form (`pack_archive`), and tells whoever wrote it if it is not.
+fn read_zip(path: &Path, errors: &mut Vec<PackError>) -> Option<Files> {
+    let label = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            errors.push(problem(label, format!("cannot read this file: {error}")));
+            return None;
+        }
+    };
+    match Archive::from_bytes(&bytes, &Limits::default()) {
+        Ok(archive) => Some(files_of(&archive)),
+        Err(error) => {
+            errors.push(problem(label, error.to_string()));
+            None
+        }
+    }
+}
+
+/// The files of every pack in `root` by the pack's name, sorted by name: each folder, and each `.zip` file. A folder and a zip of one name are an error.
+fn collect_packs(
+    root: &Path,
+    errors: &mut Vec<PackError>,
+) -> Result<Vec<(String, Files)>, PackError> {
+    let root_label = root.display().to_string();
+    let folders = names_in(root, &root_label, true)?;
+    let zips = names_with(root, &root_label, Some(".zip"))?;
+    // every pack: its name, and the zip's file name if it is a zip
+    let mut entries: Vec<(String, Option<String>)> =
+        folders.into_iter().map(|name| (name, None)).collect();
+    for stem in zips {
+        let file_name = format!("{stem}.zip");
+        if let Some(name) = pack_name_of_zip(&file_name) {
+            entries.push((name, Some(file_name)));
+        }
+    }
+    entries.sort();
+    for pair in entries.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            errors.push(problem(
+                pair[1].0.clone(),
+                "two packs have this name (a folder and a zip, or two zips)",
+            ));
+        }
+    }
+    let mut packs = Vec::new();
+    for (name, zip) in entries {
+        let files = match zip {
+            Some(file_name) => read_zip(&root.join(file_name), errors),
+            None => {
+                let mut files = Files::new();
+                read_folder(&root.join(&name), "", 0, &name, &mut files, errors);
+                Some(files)
+            }
+        };
+        if let Some(files) = files {
+            packs.push((name, files));
+        }
+    }
+    Ok(packs)
+}
+
+/// Reads every pack in `root`: each folder, and each `.zip` file (a canonical archive). A folder without a `pack.json` is an error (it is probably not meant to
+/// be there, and quietly skipping it would hide a misplaced pack). A `root` that does not exist is an error. Packs come back sorted by name; a folder and a
+/// zip of one name are an error.
+pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
+    let mut errors = Vec::new();
+    let collected = collect_packs(root, &mut errors).map_err(|error| PackErrors(vec![error]))?;
+    let mut packs = Vec::new();
+    for (name, files) in collected {
+        if let Some(pack) = raw_pack(&name, &files, &mut errors) {
+            packs.push(pack);
+        }
     }
     if errors.is_empty() {
         Ok(packs)
     } else {
         Err(PackErrors(errors))
     }
+}
+
+/// A pack's name and its identity: the root hash of its file index, or why it cannot be archived.
+pub type PackIdentity = (String, Result<Hash, String>);
+
+/// The identity of each pack in `root`: its name and the root hash of its file index (all files sent), or why it cannot be archived (a file name that is not
+/// lower case, for one). A zip is canonical already; a folder's files are written into the canonical form to be hashed. Read with the same rules as
+/// [`read_directory`], which says what is wrong with the content; this says only what the identity is.
+pub fn pack_identities(root: &Path) -> Result<Vec<PackIdentity>, PackErrors> {
+    let mut errors = Vec::new();
+    let collected = collect_packs(root, &mut errors).map_err(|error| PackErrors(vec![error]))?;
+    if !errors.is_empty() {
+        return Err(PackErrors(errors));
+    }
+    Ok(collected
+        .into_iter()
+        .map(|(name, files)| {
+            let identity = Archive::from_files(files)
+                .map(|archive| FileIndex::of(&archive, |_| true).root_hash())
+                .map_err(|error| error.to_string());
+            (name, identity)
+        })
+        .collect())
 }

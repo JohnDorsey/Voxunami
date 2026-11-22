@@ -646,6 +646,7 @@ dependencies = [
  "jsonschema",
  "libm",
  "namespaced_id",
+ "pack_archive",
  "png",
  "proptest",
  "serde_json",

@@ -10,6 +10,7 @@ description = "Packs of JSON that add blocks and patch others: the reader, the l
 block_models.workspace = true
 libm = "0.2"
 namespaced_id.workspace = true
+pack_archive.workspace = true
 png = "0.18.1"
 serde_json.workspace = true
 voxel_space.workspace = true
