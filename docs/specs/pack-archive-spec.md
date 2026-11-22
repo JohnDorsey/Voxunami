@@ -1,6 +1,6 @@
 # One pack archive for servers and clients (proposal)
 
-Asked for by the owner on 2026-11-20 after `folder-structures-review.md`: *"server packs and client packs are literally exactly the same zip file. The client would create the zip file based on packets they received from the server. That would include blocks and manifests and all such things. Packs would be verifiably identical on the server side and client side, with the exception of code, which will not be downloaded unless it is wasm."* **A proposal and my opinion; nothing in it is built.** Labels: **[read]** I read the code or document; **[measured]** a run; **[believed]** reasoning I did not run.
+Asked for by the owner on 2026-11-20 after `folder-structures-review.md`: *"server packs and client packs are literally exactly the same zip file. The client would create the zip file based on packets they received from the server. That would include blocks and manifests and all such things. Packs would be verifiably identical on the server side and client side, with the exception of code, which will not be downloaded unless it is wasm."* **A proposal and my opinion; nothing in it is built. The owner answered on 2026-11-21: see "The owner's answers" at the end.** Labels: **[read]** I read the code or document; **[measured]** a run; **[believed]** reasoning I did not run.
 
 ## What exists now
 
@@ -36,6 +36,56 @@ New messages (protocol 13, **[believed]** the right shape, not tried):
 
 A client with a pack in its cache (a folder named by hash in the game data folder) asks for nothing. A **recording** embeds the archives it was started with and every one it was sent later (once each), so replay still depends on nothing installed; this is the "way for recordings to embed what was fetched" the old decision waited for. Singleplayer's integrated server hands the same archives over in memory.
 
+## How the hashes are used (the concrete picture)
+
+A pack has a **file index**: one line per file, sorted by path, each with the size, the hash of the file's bytes and whether it is **sent** to clients. The **root hash** `R` is the hash of that index's canonical bytes. Example, a pack `my_pack`:
+
+```
+path                    size   hash   sent
+blocks/lava.json         230   h2     yes
+pack.json                412   h1     yes
+scripts/rules.py         900   h4     no   (server code that is not wasm: never sent)
+textures/lava.png       1190   h3     yes
+worldgen/hills.wasm    41000   h5     yes  (code a client may run, once wasm exists)
+```
+
+`R = hash(this list)`. **The root hash does not manage code. It makes the code part of the pack's identity while the client cannot read it**: change one byte of `rules.py` and `h4` changes, so the index changes, so `R` changes; every client then knows the pack is not the one it had, though it never held the script.
+
+What happens, in order:
+
+1. **Welcome** carries, for each pack in load order, `(id, R, the index)`. An index is about 50 bytes a file.
+2. The client looks for `R` in its **cache** (a folder in the game data folder, one canonical zip per pack named by `R`). If it is there, it **asks for nothing**. It checks the file once on loading (hash each file against the index, hash the index against `R`).
+3. If not, the client sends `RequestPack(R)`. The server answers with `PackChunk`s: the canonical zip of **the files marked sent**, in pieces. When the last piece is in, the client checks every entry against its line of the index, and the index against `R`, and refuses the pack if anything differs. Only then does it write the zip into the cache (the bytes it received, which are canonical already).
+4. **When nothing is withheld, the client's zip is byte for byte the server's zip.** When something is, it is the server's zip minus those files, and the index says exactly what is missing and what its fingerprint is.
+5. **A reload** (`PackageReplaced`) carries the new index. The client compares it line by line with the old: a file whose hash is unchanged is kept, and only the changed files are asked for (`RequestFiles(R_new, paths)`). A modder who repaints one picture of a pack of 40 sends one picture. Hashing the whole zip alone could not tell which part changed.
+6. **A recording** keeps the index and the sent files of every pack it was sent, once each, so replay depends on nothing installed.
+7. **Two servers** (or a server and a recording) are running the same pack if the `R` are equal. `check-pack` prints `R`.
+
+Wasm for world generation (wanted by the owner, later) fits without a new rule: `worldgen/hills.wasm` is a file that is sent, its `h5` is in the index, and **a generator's identity is its id and the hash of its module**, so a changed module cannot pass for the old generator (the hard rule that a released generator version is never edited). How a world records which module made it is a question for that step: saved files hold ids only, so the version in `pack.json` or the hash would need an owner's decision.
+
+## The `replicate` entry of `pack.json` (owner, 2026-11-21)
+
+Whether the pack is **replicated as a zip on the client's machine** is the author's choice, a key of `pack.json`: `"replicate": true` or `false`. My proposed meaning, to confirm:
+
+- `true`: the pack goes to the client as the archive above and is kept in its cache; the client can verify it, and can host it again.
+- `false`: the client is sent **only the resolved package** (as today: the block table and the pictures as pixels), and no file copy is made.
+- **It is not a secrecy switch.** Whatever a client draws or reads, it has: a block's boxes and a picture's pixels are in the resolved package either way. The key decides whether there is a verified **file** copy, not what can be seen. Secret rules belong in code, and code is withheld.
+- A pack whose wasm the client must run (the world generator) **must** have `replicate: true`; the loader refuses the other combination.
+- Default: my pick is `true` (moddability first: a player can take what they were sent and host it), confidence medium.
+
+## The owner's answers (2026-11-21)
+
+1. **Withheld code, and the index:** asked what a root hash is and how it is used; answered above. **Not yet decided: X (the index and root hash) or hashing the whole zip until something is withheld.**
+2. **Canonical form, and an author's zip rewritten by the server: yes** ("I agree to using that canonical form of zips").
+3. **Wasm:** a client may run wasm, **later**; the owner definitely wants it for world generation.
+4. **Both ways, by the pack's author:** packs are sent as archives or only as the resolved package, according to `pack.json` (the `replicate` key above). So **the resolved package stays on the wire in any case**; whether it also stays when a pack is replicated is open (my pick: yes, until the client's own load has been cross-checked clean for a while).
+
+## Still open
+
+- X, or the whole-zip hash first (item 1).
+- The key's name, its default, and the meaning of `false` as I wrote it.
+- Whether a client keeps a replicated zip after leaving the server (cache) or only while joined.
+
 ## Steps (each ends with tests, clippy, fmt, doc; estimates are **[believed]**)
 
 1. **`pack_archive`** (a crate under `engine/`): a `RawPack` to and from the canonical archive, the root hash, the file index. Tests first: the same files in any order give the same bytes (a property test that shuffles), refusal of every non-canonical form (a corpus of bad zips: absolute paths, `..`, duplicates, case twins, compressed entries, extra fields, an entry larger than it says, a short archive), a round trip with the existing example packs. About two days. This is the safe piece: nothing else changes.
@@ -52,10 +102,3 @@ A client with a pack in its cache (a folder named by hash in the game data folde
 - **A client that has the pack can read everything in it**: blocks, patches, bodies. Packs are data and meant to be public, but a server author must know it: anything secret is code, and code is withheld.
 - **PNG decoding of bytes from a server** is attack surface on the client that the raw-RGBA package avoids today. The `png` crate decodes with limits and the size rules are already strict (square, 8 to 256, a power of two); I would cap the decoded size before decoding **[believed]**.
 - **Archive size**: a pack with many large pictures makes a bigger welcome than the package. Chunking and the cache answer it; the number to watch is first-join time with an empty cache.
-
-## Questions for the owner
-
-1. **X or Y** for code that is not sent (item 3)? I pick X.
-2. **Canonical re-zip on the server** (an author's zip is rewritten into the canonical form, and the canonical one is what is hashed and sent), or **the author's zip as given**? The second is more literally "the same file" but makes every client parse arbitrary zips from a network. I pick the first.
-3. **May a client run wasm** that a pack brings (sandbox, fuel, a narrow host API), or is wasm server-only for now, as `architecture-review.md` has it?
-4. **Keep the resolved package on the wire** after the cross-check holds (cheap insurance, a second copy of the truth), or derive it on the client and drop it?
