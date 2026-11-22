@@ -2120,6 +2120,62 @@ fn a_view_at_rest_does_not_ask_the_terrain_again_when_a_watch_only_tells_it_the_
 }
 
 #[test]
+fn a_view_that_goes_up_and_comes_back_does_not_ask_the_terrain_again_about_the_cubes_it_worked_out_on_the_ground()
+ {
+    // What the terrain says of a cube is kept for more than the last two workings out of the cubes: a view that leaves in several moves, and comes back, asks about
+    // the cubes of the ground again only if it asked about none of them on the way (measured, from 264 km up: 32,338 of the 33,030 cubes asked again).
+    let trip = Trip::new();
+    let asked = Cell::new(0);
+    let terrain = Counting {
+        level: trip.scene.world.main(),
+        asked: &asked,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground",
+    );
+    let asked_for_the_ground = asked.get();
+    let ground_shown = view.shown().clone();
+    assert!(asked_for_the_ground > 100 && ground_shown.len() > 100);
+
+    // Up in six moves, each its own working out of the cubes (a view that is flown up asks again at each brick it passes), as far as a map.
+    for (step, height) in [30, 60, 120, 200, 300, 400].into_iter().enumerate() {
+        settle_checked_in(
+            &mut view,
+            &mut screen,
+            &terrain,
+            viewer_in(brick(0, height, 0)),
+            &trip.far,
+            &format!("up, step {step}"),
+        );
+    }
+    assert_ne!(view.shown(), &ground_shown);
+
+    asked.set(0);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &trip.far,
+        "the ground again",
+    );
+    assert_eq!(view.shown(), &ground_shown, "the ground is what it was");
+    assert_eq!(
+        asked.get(),
+        0,
+        "the terrain was asked again about {} cubes of the {asked_for_the_ground} it was asked about for the ground",
+        asked.get()
+    );
+}
+
+#[test]
 fn a_view_at_rest_works_out_its_cubes_again_when_a_watch_tells_it_another_generator_than_the_one_that_made_them()
  {
     let mut scene = scene_of(&[Plugin::BaseBlocks, Plugin::FancyTerrain]);

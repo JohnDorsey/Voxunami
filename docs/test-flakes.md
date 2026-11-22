@@ -12,6 +12,14 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 
 ## Open
 
+### `world_view/tests/lod.rs`: `a_view_that_jumps_from_far_away_to_the_ground_is_refined_a_level_at_a_time_and_never_has_a_hole`
+
+- **The test.** A view settled at 100,000 voxels up jumps to the ground; the test watches the updates and asserts that at least 2 of the shown states had a step on the way (`between_seen >= 2`, `lod.rs` about line 502).
+- **Occurrence 1: 2026-11-22**, working tree of phase 3a (the memo of `may_show` moved and kept longer; commit `8b2e438` plus it), `cargo test -p world_view` (the whole `lod` binary, 38 tests in parallel, 179 s), Windows, dev profile. The assertion on `between_seen` failed (the message said it went from the far picture to the near one with fewer than 2 steps on the way).
+- **Reruns.** 3 alone (43 s each), 2 as the whole binary (138 and 144 s), 12 alone with 6 copies running at once to load the machine: **0 failures in 17**; the later whole-workspace run passed.
+- **What it depends on [read].** How many of the steps of a refinement a polling loop sees: the threads make the steps while the test polls every 50 microseconds, so a fast enough machine shows fewer states. The memo change does not touch the cubes chosen on that jump (they were new to the memo). **Believed** a race of the test with the threads, present before this change; **not checked** on the commit before it.
+- **What would settle it.** The same test run in a loop on `8b2e438` under load, and a count of the states instead of a poll.
+
 ### `transport/tests/tcp.rs`: `a_listener_has_nobody_until_somebody_connects_and_then_hands_them_out_in_order`
 
 - **The test.** A listener is bound on `127.0.0.1:0`; a client connects and sends `[1]`; a second client connects and sends `[2]`; the test accepts twice (`accept` waits for a connection with a 10 s deadline) and

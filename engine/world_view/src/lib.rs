@@ -12,6 +12,7 @@ mod grid_mesher;
 mod horizon;
 mod job_feed;
 mod lod;
+mod may_show_memo;
 mod mesher;
 mod occupancy;
 mod ray;

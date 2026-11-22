@@ -26,6 +26,7 @@ use crate::brick_states::HeldBricks;
 use crate::cube_states::{Arrival, CubeStates, HeldPictures, Replacement, Taken};
 use crate::horizon::{VIEWER_MARGIN, is_hidden_by, voxels_of};
 use crate::job_feed::jobs_to_hold;
+use crate::may_show_memo::MayShowMemo;
 use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
 
 /// How much a picture is asked to show.
@@ -92,47 +93,6 @@ const RESELECT_MINIMUM_UPDATES: u32 = 10;
 
 /// How many cubes that are to come may be put on the screen in one update: each is a buffer made on the GPU.
 const SHOWN_PER_UPDATE: usize = 64;
-
-/// What the terrain said of whether a cube may show anything, kept for the next time the cubes are worked out, which asks about nearly the same cubes (moving a
-/// brick changes the cubes at the edges of the levels of detail and no others) and about a hundred thousand of them in a view to 100 million voxels. An answer
-/// that was not asked for in the latest working out or the one before is forgotten, so what is kept is no more than two views.
-#[derive(Default)]
-struct MayShowMemo {
-    /// The version of the terrain ([`terrain::WorldTerrain::version`]) the answers are for.
-    version: u64,
-    current: HashMap<BrickCube, bool>,
-    previous: HashMap<BrickCube, bool>,
-}
-
-impl MayShowMemo {
-    /// The kept answer for `cube`, or the one `ask` gives (which is then kept).
-    fn get_or_ask(&mut self, cube: BrickCube, ask: impl FnOnce() -> bool) -> bool {
-        if let Some(&answer) = self.current.get(&cube) {
-            return answer;
-        }
-        let answer = self.previous.remove(&cube).unwrap_or_else(ask);
-        self.current.insert(cube, answer);
-        answer
-    }
-
-    /// Forgets the answers of the working out before this one, as a working out ends.
-    fn finish_round(&mut self) {
-        self.previous = std::mem::take(&mut self.current);
-    }
-
-    /// Forgets everything if the terrain is not the version the answers are for.
-    fn keep_for(&mut self, version: u64) {
-        if self.version != version {
-            self.clear();
-            self.version = version;
-        }
-    }
-
-    fn clear(&mut self) {
-        self.current.clear();
-        self.previous.clear();
-    }
-}
 
 struct Override {
     node: Arc<CoarseNode>,
@@ -919,23 +879,9 @@ fn squared_distance_to_middle(cube: BrickCube, centre: BrickCoordinate) -> u128 
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-
     use voxel_space::BrickCoordinate;
 
     use super::*;
-
-    fn cube(x: i128) -> BrickCube {
-        BrickCube::new(BrickCoordinate::new(x, 0, 0), 0).unwrap()
-    }
-
-    /// Asks the memo about the cube at `x`, noting in `asked` that the terrain was asked, and giving `answer` if it was.
-    fn ask(memo: &mut MayShowMemo, asked: &RefCell<Vec<i128>>, x: i128, answer: bool) -> bool {
-        memo.get_or_ask(cube(x), || {
-            asked.borrow_mut().push(x);
-            answer
-        })
-    }
 
     #[test]
     fn cubes_are_made_nearest_first_by_the_square_of_the_distance_to_their_middle_and_a_far_one_does_not_overflow()
@@ -969,59 +915,6 @@ mod tests {
         assert!(
             squared_distance_to_middle(across, from_the_other_end)
                 > squared_distance_to_middle(at(4, 0, 0, 1), centre)
-        );
-    }
-
-    #[test]
-    fn an_answer_is_asked_for_once_kept_for_the_next_round_and_forgotten_after_that() {
-        let mut memo = MayShowMemo::default();
-        let asked = RefCell::new(Vec::new());
-        assert!(ask(&mut memo, &asked, 1, true));
-        assert!(!ask(&mut memo, &asked, 2, false));
-        // Again in the same round it is the answer it had, whatever the terrain would say now.
-        assert!(ask(&mut memo, &asked, 1, false));
-        assert!(!ask(&mut memo, &asked, 2, true));
-        assert_eq!(*asked.borrow(), [1, 2]);
-
-        // In the next round, only the first is asked about: it is kept, and the second is forgotten with the round.
-        memo.finish_round();
-        assert!(ask(&mut memo, &asked, 1, false));
-        assert_eq!(*asked.borrow(), [1, 2]);
-        memo.finish_round();
-        assert!(
-            ask(&mut memo, &asked, 1, false),
-            "asked about in the round before"
-        );
-        assert!(
-            ask(&mut memo, &asked, 2, true),
-            "not asked about in the round before that, so asked again"
-        );
-        assert_eq!(*asked.borrow(), [1, 2, 2]);
-    }
-
-    #[test]
-    fn answers_are_kept_for_one_version_of_the_terrain_and_forgotten_when_it_is_another() {
-        let mut memo = MayShowMemo::default();
-        let asked = RefCell::new(Vec::new());
-        memo.keep_for(0);
-        assert!(ask(&mut memo, &asked, 1, true));
-        memo.finish_round();
-        memo.keep_for(0);
-        assert!(ask(&mut memo, &asked, 1, false), "the same version: kept");
-        assert_eq!(*asked.borrow(), [1]);
-        memo.keep_for(1);
-        assert!(
-            !ask(&mut memo, &asked, 1, false),
-            "another version: asked again"
-        );
-        assert_eq!(*asked.borrow(), [1, 1]);
-        memo.keep_for(1);
-        assert!(!ask(&mut memo, &asked, 1, true), "and kept for that");
-        assert_eq!(*asked.borrow(), [1, 1]);
-        memo.clear();
-        assert!(
-            ask(&mut memo, &asked, 1, true),
-            "a clear forgets everything"
         );
     }
 }
