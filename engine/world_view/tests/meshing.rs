@@ -44,8 +44,12 @@ fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<Mesh
             | MeshUpdate::RemoveGridCoarse { .. }
             | MeshUpdate::HideCoarse(_)
             | MeshUpdate::ShowCoarse(_)
+            | MeshUpdate::UploadHiddenCoarse { .. }
+            | MeshUpdate::UploadHiddenGridCoarse { .. }
             | MeshUpdate::HideGridCoarse { .. }
             | MeshUpdate::ShowGridCoarse { .. }
+            | MeshUpdate::UploadHiddenBrick { .. }
+            | MeshUpdate::UploadHiddenGridBrick { .. }
             | MeshUpdate::HideBrick(_)
             | MeshUpdate::ShowBrick(_)
             | MeshUpdate::HideGridBrick { .. }

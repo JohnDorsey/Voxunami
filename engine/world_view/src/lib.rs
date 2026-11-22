@@ -23,7 +23,7 @@ mod sun_ray;
 pub use brick_states::HeldBricks;
 pub use cube_states::HeldPictures;
 pub use grid_mesher::GridMesher;
-pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
+pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled, Viewpoint};
 pub use mesher::{
     BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
 };

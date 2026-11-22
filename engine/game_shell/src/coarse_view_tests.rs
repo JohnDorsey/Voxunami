@@ -34,6 +34,8 @@ type Player = Session<Box<dyn Connection>, ExampleGame>;
 struct Screen {
     bricks: HashMap<BrickCoordinate, PackedBrickMesh>,
     nodes: HashMap<BrickCube, PackedBrickMesh>,
+    /// The nodes the renderer holds and does not draw.
+    hidden_nodes: HashMap<BrickCube, PackedBrickMesh>,
 }
 
 impl Screen {
@@ -57,6 +59,22 @@ impl Screen {
                 }
                 MeshUpdate::RemoveCoarse(cube) => {
                     self.nodes.remove(&cube);
+                    self.hidden_nodes.remove(&cube);
+                }
+                MeshUpdate::UploadHiddenCoarse { cube, mesh } => {
+                    if let Some(drawn) = self.nodes.get_mut(&cube) {
+                        *drawn = mesh;
+                    } else {
+                        self.hidden_nodes.insert(cube, mesh);
+                    }
+                }
+                MeshUpdate::HideCoarse(cube) => {
+                    let mesh = self.nodes.remove(&cube).expect("it was drawn");
+                    self.hidden_nodes.insert(cube, mesh);
+                }
+                MeshUpdate::ShowCoarse(cube) => {
+                    let mesh = self.hidden_nodes.remove(&cube).expect("it was hidden");
+                    self.nodes.insert(cube, mesh);
                 }
                 _ => {}
             }
@@ -314,6 +332,51 @@ fn an_edit_far_away_shows_in_the_coarse_view_of_a_player_who_is_far_from_it_and_
 }
 
 #[test]
+fn a_place_that_is_kept_ready_is_held_hidden_and_a_player_who_stands_there_draws_what_is_held() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, WATCHER);
+    watcher.hold_hidden_pictures(64 << 20);
+    let there = camera_at([8.5, 60.0, 8.5], 0.0, 0.0).position;
+    watcher.keep_ready(GridId::MAIN, Some(there));
+    assert_eq!(
+        watcher.camera_place_in(GridId::MAIN),
+        Some(watcher.camera.position)
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    assert!(
+        screen.hidden_nodes.len() > 20,
+        "the place kept ready is held hidden: {} nodes",
+        screen.hidden_nodes.len()
+    );
+
+    // A player who stands there draws nodes that the watcher draws or holds, the same pictures.
+    let connection = rig.connection();
+    let mut near = rig.join(connection, 2, [8.5, 60.0, 8.5]);
+    let mut near_screen = Screen::default();
+    rig.settle(&mut near, &mut near_screen);
+    assert!(near_screen.nodes.len() > 20);
+    for (cube, mesh) in &near_screen.nodes {
+        assert_eq!(
+            screen
+                .nodes
+                .get(cube)
+                .or_else(|| screen.hidden_nodes.get(cube)),
+            Some(mesh),
+            "{cube:?} is drawn where the watcher keeps ready, and neither drawn nor held by the watcher"
+        );
+    }
+
+    // Not kept ready any more: what was held beyond the budget goes (nothing here is over it), and nothing new is made for the place.
+    watcher.keep_ready(GridId::MAIN, None);
+    assert_eq!(
+        watcher.camera_place_in(GridId::MAIN),
+        Some(watcher.camera.position)
+    );
+}
+
+#[test]
 fn a_recording_of_the_watcher_shows_what_the_watcher_saw() {
     let directory =
         std::env::temp_dir().join(format!("voxunami_coarse_view_{}", std::process::id()));
@@ -383,6 +446,7 @@ fn an_edit_the_server_told_of_is_still_drawn_far_away_after_a_visit_to_a_level_t
     let with_the_crater = Screen {
         nodes: screen.nodes.clone(),
         bricks: HashMap::new(),
+        hidden_nodes: HashMap::new(),
     };
     assert_ne!(
         with_the_crater.nodes, before,

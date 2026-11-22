@@ -495,6 +495,29 @@ impl BrickStates {
         })
     }
 
+    /// A picture that is waiting is **kept** as if the brick had been shown and taken down, though the renderer never had it (the brick is not to be shown: it is made for a
+    /// viewpoint that is kept warm): returns the mesh, which the renderer is to be given hidden unless it is empty, and the brick is shown later by [`BrickStates::reveal`].
+    /// `None` if there is no budget or the picture is not waiting.
+    pub(crate) fn park(&mut self, coordinate: BrickCoordinate) -> Option<PackedBrickMesh> {
+        if self.budget == 0 || !self.is_waiting(coordinate) {
+            return None;
+        }
+        let order = self.next_order;
+        self.next_order += 1;
+        self.change_if_known(coordinate, |state| {
+            let Picture::Waiting(mesh) = std::mem::replace(&mut state.picture, Picture::Missing)
+            else {
+                unreachable!("it was checked");
+            };
+            state.picture = Picture::Held {
+                mesh_bytes: mesh.byte_size(),
+                order,
+            };
+            state.displayed = !mesh.is_empty();
+            mesh
+        })
+    }
+
     /// Shows a brick whose picture is held, with it: returns whether the renderer holds a mesh of it, which it is to show (it is hidden). `None` if the picture of the
     /// brick is not held.
     pub(crate) fn reveal(&mut self, coordinate: BrickCoordinate) -> Option<bool> {

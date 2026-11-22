@@ -38,6 +38,41 @@ pub struct LodSettings {
     pub maximum_distance: f64,
 }
 
+/// A place a view is to be ready to draw from: where the viewer is, in the grid's coordinates, and how much it is asked to show
+/// ([`LodView::set_warm_viewpoint`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewpoint {
+    pub viewer: WorldPosition,
+    pub settings: LodSettings,
+}
+
+/// The cubes a view draws from a place, as they were worked out, with what they were worked out from: they are the cubes of another working out for the same place if
+/// nothing here has changed, so that the select, which asks the terrain about tens of thousands of cubes, is not done again.
+struct KeptCut {
+    centre: BrickCoordinate,
+    settings: LodSettings,
+    /// The version of the terrain ([`CoarseTerrainSource::version`]).
+    version: u64,
+    /// How many times the edits had changed (`LodView::edit_generation`).
+    edits: u64,
+    cubes: Vec<BrickCube>,
+}
+
+impl KeptCut {
+    fn is_for(
+        &self,
+        centre: BrickCoordinate,
+        settings: &LodSettings,
+        version: u64,
+        edits: u64,
+    ) -> bool {
+        self.centre == centre
+            && self.settings == *settings
+            && self.version == version
+            && self.edits == edits
+    }
+}
+
 /// What the view needs to know of the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LodConfig {
@@ -90,6 +125,10 @@ impl CoarseTerrainSource for LevelData {
 /// The fewest updates between two times the cubes are worked out again because the server has told of an edit somewhere new (the cubes round an edit are not
 /// left out as empty or buried, so a new place can bring cubes in).
 const RESELECT_MINIMUM_UPDATES: u32 = 10;
+
+/// The fewest updates between two workings out of the cubes of the warm viewpoint when it moves (counted, never timed): about a second at 60 updates a second. The working out
+/// is on the thread of the update, and asks about a good many cubes.
+const WARM_RESELECT_MINIMUM_UPDATES: u32 = 60;
 
 /// How many cubes that are to come may be put on the screen in one update: each is a buffer made on the GPU.
 const SHOWN_PER_UPDATE: usize = 64;
@@ -162,6 +201,16 @@ pub struct LodView {
     /// worked out for.
     cubes: CubeStates,
     wanted_for: Option<(BrickCoordinate, LodSettings)>,
+    /// How many times the edits have changed what the cubes are worked out from ([`LodView::set_override`]), and the number they were last worked out at.
+    edit_generation: u64,
+    selected_edits: u64,
+    /// The place kept warm, as it was asked for ([`LodView::set_warm_viewpoint`]), the cubes it was worked out as, and the nodes of them still to make (the first made last).
+    warm_wanted: Option<Viewpoint>,
+    warm_cut: Option<KeptCut>,
+    warm_queue: Vec<BrickCube>,
+    updates_since_warm_selection: u32,
+    /// How many times the cubes have been worked out ([`LodView::selections`]).
+    selections: u64,
     /// The version of the terrain ([`CoarseTerrainSource::version`]) the cubes were last worked out for: when it is another, the answers that the cubes were chosen by are
     /// not the terrain's any more (a far ship's box changed), and they are worked out again though the viewer has not moved.
     selected_version: Option<u64>,
@@ -254,6 +303,13 @@ impl LodView {
             may_show: MayShowMemo::default(),
             cubes: CubeStates::new(),
             wanted_for: None,
+            edit_generation: 0,
+            selected_edits: 0,
+            warm_wanted: None,
+            warm_cut: None,
+            warm_queue: Vec::new(),
+            updates_since_warm_selection: 0,
+            selections: 0,
             selected_version: None,
             queue: Vec::new(),
             plan_needed: false,
@@ -324,8 +380,41 @@ impl LodView {
         self.mesher.is_settled()
             && self.in_flight == 0
             && self.queue.is_empty()
+            && self.warm_queue.is_empty()
+            && self.warm_is_worked_out()
             && !self.plan_needed
             && !self.new_edits
+    }
+
+    /// Keeps a second place ready: the cubes it would draw are worked out and their nodes made, after those of the place that is drawn, and each picture is held hidden in the
+    /// renderer ([`MeshUpdate::UploadHiddenCoarse`]) and not let go of by the budget, so that drawing from there is a move of pictures and nothing is made
+    /// ([`LodView::hold_hidden_pictures`] first: with no budget nothing is held, and the place is not kept). Worked out when it is set and, when it moves, at most about once a
+    /// second (60 updates); a place that is the one that was drawn last, or is the one that is drawn next, is not worked out again. `None`, the default, keeps nothing warm and lets
+    /// the pictures that were kept for it go to the budget.
+    pub fn set_warm_viewpoint(&mut self, viewpoint: Option<Viewpoint>) {
+        self.warm_wanted = viewpoint;
+    }
+
+    /// How many times the cubes of a place have been worked out from what the terrain says may show (the work that a place kept ready, or the one that was just left, saves
+    /// when the view goes there): a count for the tests and for the curious.
+    pub fn selections(&self) -> u64 {
+        self.selections
+    }
+
+    /// Whether the warm viewpoint, if there is one, has had its cubes worked out for the place it is at.
+    fn warm_is_worked_out(&self) -> bool {
+        match (&self.warm_wanted, &self.warm_cut) {
+            (Some(asked), cut) if self.cubes.holds_pictures() => cut.as_ref().is_some_and(|cut| {
+                cut.centre == asked.viewer.brick() && cut.settings == asked.settings
+            }),
+            _ => true,
+        }
+    }
+
+    /// The edits have changed what the cubes are worked out from.
+    fn edits_changed(&mut self) {
+        self.new_edits = true;
+        self.edit_generation += 1;
     }
 
     /// The node the server says is the node of a cube instead of what the generators give (a `None` takes back what was said). Bricks have none, and
@@ -347,14 +436,14 @@ impl LodView {
                     },
                 );
                 if replaced.is_none() && self.edited.add(grid, cube) {
-                    self.new_edits = true;
+                    self.edits_changed();
                 }
             }
             None => {
                 if self.overrides.remove(&(grid, cube)).is_some() && self.edited.remove(grid, cube)
                 {
                     // Cubes that were kept for being beside the edit may be left out again.
-                    self.new_edits = true;
+                    self.edits_changed();
                 }
                 self.told_empty.insert((grid, cube));
                 self.told_empty_top = self.told_empty_top.max(cube.level());
@@ -407,6 +496,8 @@ impl LodView {
         updates.extend(uploaded.into_iter().map(MeshUpdate::RemoveCoarse));
         self.cubes.clear();
         self.wanted_for = None;
+        self.warm_cut = None;
+        self.warm_queue.clear();
         self.may_show.clear();
         self.queue.clear();
         self.waiting_for_the_server.clear();
@@ -433,15 +524,25 @@ impl LodView {
     ) -> Vec<MeshUpdate> {
         self.grid = grid;
         let centre = viewer.brick();
+        // The bricks round the warm viewpoint are made after those round the viewer, whenever it is somewhere else.
+        let warm_centre = self
+            .warm_wanted
+            .filter(|_| self.cubes.holds_pictures())
+            .map(|warm| warm.viewer.brick());
+        self.mesher.set_warm_centre(warm_centre);
         let mut updates = self.mesher.update(source, centre);
         self.collect_nodes(&mut updates);
         self.updates_since_selection = self.updates_since_selection.saturating_add(1);
+        self.updates_since_warm_selection = self.updates_since_warm_selection.saturating_add(1);
         let moved = self.wanted_for != Some((centre, *settings))
             || self.selected_version != Some(source.version());
         let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
+        let mut left = None;
         if moved || new_edits {
-            self.reselect(centre, viewer, settings, source);
+            left = self.reselect(centre, viewer, settings, source);
         }
+        self.update_warm(source, left);
+        updates.extend(self.mesher.park_ready());
         self.start_jobs(source, &mut updates);
         let serial = self.mesher.ready_serial();
         if self.plan_needed || serial != self.seen_ready_serial {
@@ -626,7 +727,14 @@ impl LodView {
                 .finish_making(cube, done.version, current, done.mesh)
             {
                 Arrival::Ignored | Arrival::Replaced(Replacement::Unchanged) => {}
-                Arrival::Waiting => self.plan_needed = true,
+                // (A picture that is for the warm viewpoint only is held, hidden; one that is to be drawn waits for the planner.)
+                Arrival::Waiting => match self.cubes.park(cube) {
+                    Some(mesh) if !mesh.is_empty() => {
+                        updates.push(MeshUpdate::UploadHiddenCoarse { cube, mesh });
+                    }
+                    Some(_) => {}
+                    None => self.plan_needed = true,
+                },
                 Arrival::Replaced(Replacement::Upload(mesh)) => {
                     updates.push(MeshUpdate::UploadCoarse { cube, mesh });
                 }
@@ -644,34 +752,30 @@ impl LodView {
         viewer: WorldPosition,
         settings: &LodSettings,
         source: &impl CoarseTerrainSource,
-    ) {
-        // A cube that is all air or buried is left out, unless an edit is in it or beside it; and one that is behind the horizon of the terrain's core.
-        self.may_show.keep_for(source.version());
-        let (grid, edited) = (self.grid, &self.edited);
-        let core = source.solid_core();
-        let viewer_in_voxels = voxels_of(viewer);
-        // (A terrain that has only the nodes the server sends has cubes beside a cube with a node that nobody says anything of: the server tells of the cubes of the box
-        // of the ship and no more.)
-        let draws_beside_edits = !source.waits_for_nodes();
-        let memo = RefCell::new(&mut self.may_show);
-        let may_hold = |cube: BrickCube| {
-            let may_show = memo.borrow_mut().get_or_ask(cube, || source.may_show(cube))
-                || (draws_beside_edits && edited.near(grid, cube));
-            may_show
-                && !core
-                    .is_some_and(|core| is_hidden_by(&core, viewer_in_voxels, cube, VIEWER_MARGIN))
+    ) -> Option<KeptCut> {
+        // The cubes that were drawn before, for the warm viewpoint to be worked out from if it is the place that was left.
+        let left = (self.warm_wanted.is_some() && self.cubes.holds_pictures())
+            .then(|| {
+                let ((centre, settings), version) = self.wanted_for.zip(self.selected_version)?;
+                Some(KeptCut {
+                    centre,
+                    settings,
+                    version,
+                    edits: self.selected_edits,
+                    cubes: self.cubes.wanted().iter().copied().collect(),
+                })
+            })
+            .flatten();
+        // The cubes of the warm viewpoint are these if that is where the viewer is now (and nothing has changed since): nothing is asked of the terrain.
+        let version = source.version();
+        let kept = self
+            .warm_cut
+            .take_if(|cut| cut.is_for(centre, settings, version, self.edit_generation));
+        let cubes = match kept {
+            Some(kept) => kept.cubes,
+            None => self.select_cut(centre, viewer, settings, source),
         };
-        let cubes = select_around_brick(
-            centre,
-            &ViewSelection {
-                detail: settings.detail,
-                zoom: settings.zoom,
-                fine_radius: u32::try_from(self.mesher.view_radius_bricks()).unwrap_or(0),
-                maximum_distance: settings.maximum_distance,
-            },
-            &may_hold,
-        );
-        self.may_show.finish_round();
+        self.selected_edits = self.edit_generation;
         self.new_edits = false;
         self.updates_since_selection = 0;
         // What is shown is replaced a level at a time where what replaces it is much finer (a jump from far away): the cubes between are made too, first.
@@ -725,13 +829,122 @@ impl LodView {
         });
         self.queue.extend(jump);
         self.plan_needed = true;
+        left
+    }
+
+    /// The cubes a view at `viewer` draws, worked out from what the terrain says may show.
+    fn select_cut(
+        &mut self,
+        centre: BrickCoordinate,
+        viewer: WorldPosition,
+        settings: &LodSettings,
+        source: &impl CoarseTerrainSource,
+    ) -> Vec<BrickCube> {
+        self.selections += 1;
+        // A cube that is all air or buried is left out, unless an edit is in it or beside it; and one that is behind the horizon of the terrain's core.
+        self.may_show.keep_for(source.version());
+        let (grid, edited) = (self.grid, &self.edited);
+        let core = source.solid_core();
+        let viewer_in_voxels = voxels_of(viewer);
+        // (A terrain that has only the nodes the server sends has cubes beside a cube with a node that nobody says anything of: the server tells of the cubes of the box
+        // of the ship and no more.)
+        let draws_beside_edits = !source.waits_for_nodes();
+        let memo = RefCell::new(&mut self.may_show);
+        let may_hold = |cube: BrickCube| {
+            let may_show = memo.borrow_mut().get_or_ask(cube, || source.may_show(cube))
+                || (draws_beside_edits && edited.near(grid, cube));
+            may_show
+                && !core
+                    .is_some_and(|core| is_hidden_by(&core, viewer_in_voxels, cube, VIEWER_MARGIN))
+        };
+        let cubes = select_around_brick(
+            centre,
+            &ViewSelection {
+                detail: settings.detail,
+                zoom: settings.zoom,
+                fine_radius: u32::try_from(self.mesher.view_radius_bricks()).unwrap_or(0),
+                maximum_distance: settings.maximum_distance,
+            },
+            &may_hold,
+        );
+        self.may_show.finish_round();
+        cubes
+    }
+
+    /// Keeps the warm viewpoint's cubes worked out, pinned and queued ([`LodView::set_warm_viewpoint`]). `left` is what was drawn before this update if that changed.
+    fn update_warm(&mut self, source: &impl CoarseTerrainSource, left: Option<KeptCut>) {
+        let Some(asked) = self.warm_wanted.filter(|_| self.cubes.holds_pictures()) else {
+            if self.warm_cut.take().is_some() {
+                self.cubes.pin(&[]);
+                self.warm_queue.clear();
+            }
+            return;
+        };
+        let centre = asked.viewer.brick();
+        let (version, edits) = (source.version(), self.edit_generation);
+        let current = self
+            .warm_cut
+            .as_ref()
+            .is_some_and(|cut| cut.is_for(centre, &asked.settings, version, edits));
+        if !current {
+            let cut = if let Some(left) =
+                left.filter(|cut| cut.is_for(centre, &asked.settings, version, edits))
+            {
+                // The place that was drawn is the one kept warm now.
+                Some(left)
+            } else if self.wanted_for == Some((centre, asked.settings))
+                && self.selected_version == Some(version)
+                && self.selected_edits == edits
+            {
+                // The place that is drawn is the one kept warm too.
+                Some(KeptCut {
+                    centre,
+                    settings: asked.settings,
+                    version,
+                    edits,
+                    cubes: self.cubes.wanted().iter().copied().collect(),
+                })
+            } else if self.warm_cut.is_none()
+                || self.updates_since_warm_selection >= WARM_RESELECT_MINIMUM_UPDATES
+            {
+                let cubes = self.select_cut(centre, asked.viewer, &asked.settings, source);
+                Some(KeptCut {
+                    centre,
+                    settings: asked.settings,
+                    version,
+                    edits,
+                    cubes,
+                })
+            } else {
+                None
+            };
+            if let Some(cut) = cut {
+                self.updates_since_warm_selection = 0;
+                self.cubes.pin(&cut.cubes);
+                // Coarsest first, the nearest of those first: the first in the queue are the last made.
+                self.warm_queue = cut
+                    .cubes
+                    .iter()
+                    .copied()
+                    .filter(|cube| cube.level() > 0)
+                    .collect();
+                self.warm_queue.sort_by_key(|cube| {
+                    (
+                        cube.level(),
+                        std::cmp::Reverse(squared_distance_to_middle(*cube, centre)),
+                    )
+                });
+                self.warm_cut = Some(cut);
+            }
+        }
     }
 
     fn start_jobs(&mut self, source: &impl CoarseTerrainSource, updates: &mut Vec<MeshUpdate>) {
         let source_waits = source.waits_for_nodes();
         let limit = jobs_to_hold(self.workers.len(), self.finished_last_update);
         while self.in_flight < limit {
-            let Some(cube) = self.queue.pop() else {
+            // (What the warm viewpoint needs waits for what is drawn.)
+            let Some(cube) = self.queue.pop().or_else(|| self.warm_queue.pop()) else {
                 break;
             };
             let version = self.data_version(cube);

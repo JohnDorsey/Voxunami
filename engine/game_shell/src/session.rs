@@ -26,8 +26,8 @@ use voxel_space::{
 use winit::keyboard::KeyCode;
 use world_view::{
     GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange, OccupancyStatistics,
-    RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, WorldMesher,
-    cast_ray,
+    RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, Viewpoint,
+    WorldMesher, cast_ray,
 };
 
 use crate::client_commands::ClientSettings;
@@ -163,6 +163,9 @@ pub struct Session<C: Connection, G: GameDefinition> {
     grid_detail: Option<CoarseDetail>,
     /// How many bytes of pictures of nodes that have left the screen each view of terrain keeps, hidden, to show again without making them again (0: none).
     held_picture_budget: usize,
+    /// The places the terrain of a grid (a level's root grid, or a planet) is kept ready to be drawn from, besides the camera's, in that grid's coordinates
+    /// ([`Session::keep_ready`]).
+    warm_places: BTreeMap<GridId, WorldPosition>,
     /// The nodes the server has told this session of, which it does not tell again: a view of the terrain that is made again is given them.
     coarse_overrides: CoarseOverrides,
     /// What the server was last asked about how the terrain is drawn (or would have been, in a replay).
@@ -290,6 +293,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             planets: BTreeMap::new(),
             grid_detail: None,
             held_picture_budget: 0,
+            warm_places: BTreeMap::new(),
             coarse_overrides: CoarseOverrides::default(),
             asked: None,
             occupancy_wanted: false,
@@ -463,6 +467,35 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         if let TerrainView::Coarse(coarse) = &mut self.terrain {
             coarse.view.hold_hidden_pictures(budget_bytes);
         }
+    }
+
+    /// Keeps the terrain of a grid (the root grid of a level, or a planet) ready to be drawn from `place`, in that grid's own coordinates, besides the camera's place: what is
+    /// drawn from there is made, after what the camera needs, and held hidden on the graphics card (`docs/specs/viewpoints-spec.md`, phase 3), so that the camera going there is
+    /// a move of pictures. It reads the same detail settings as the camera, and the server is not told of it (it sends the edits of the camera's region only, so an edit near
+    /// `place` and far from the camera is not seen until the camera is there). Needs [`Session::hold_hidden_pictures`]. `None`, the default, keeps nothing ready.
+    pub fn keep_ready(&mut self, grid: GridId, place: Option<WorldPosition>) {
+        match place {
+            Some(place) => {
+                self.warm_places.insert(grid, place);
+            }
+            None => {
+                self.warm_places.remove(&grid);
+            }
+        }
+    }
+
+    /// Where the camera is, in the coordinates of a grid: the same place in the level's root grid, and in a ship or planet its own coordinates (for [`Session::keep_ready`]).
+    /// `None` if the session does not know the grid, or it is not placed.
+    pub fn camera_place_in(&self, grid: GridId) -> Option<WorldPosition> {
+        if grid.root_level().is_some() {
+            return Some(self.camera.position);
+        }
+        self.client
+            .world()
+            .grids()
+            .get(grid)?
+            .pose
+            .world_to_local(self.camera.position)
     }
 
     /// Pins the sun at a time of day, in minutes from midnight, for this player (what `.time` does), or lets the world's clock move it again.
@@ -909,6 +942,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         match (&mut self.terrain, request) {
             (TerrainView::Coarse(coarse), Some(request)) => {
                 let settings = lod_settings_of(&request, &coarse.detail);
+                coarse.view.set_warm_viewpoint(
+                    self.warm_places
+                        .get(&GridId::root(level))
+                        .map(|&viewer| Viewpoint { viewer, settings }),
+                );
                 updates.extend(coarse.view.update(
                     GridId::root(level),
                     data,
@@ -1043,6 +1081,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);
             }
+            planet.keep_ready(self.warm_places.get(&id).copied());
             let source = match (ship.terrain, ship.far) {
                 (Some(terrain), _) => {
                     let generator = world

@@ -540,3 +540,172 @@ fn what_the_check_says_of_held_pictures() {
     let problem = states.check_consistency().unwrap_err();
     assert!(problem.contains("held pictures"), "{problem}");
 }
+
+/// A node of the warm cut that has been made: it is pinned, not wanted, and its picture is waiting.
+fn made_for_the_warm_cut(states: &mut CubeStates, cube: BrickCube, mesh: PackedBrickMesh) {
+    let mut pinned: Vec<BrickCube> = states.pinned.iter().copied().collect();
+    pinned.push(cube);
+    states.pin(&pinned);
+    assert!(states.needs_making(cube, 0));
+    states.start_making(cube, 0);
+    assert_eq!(states.finish_making(cube, 0, 0, mesh), Arrival::Waiting);
+}
+
+#[test]
+fn a_pinned_node_has_a_record_and_is_made_though_nothing_wants_it_and_an_unpinned_one_that_was_never_made_has_none()
+ {
+    let mut states = CubeStates::new();
+    states.pin(&[brick(0), node(1), node(2)]);
+    assert!(states.has_node(node(1)) && states.has_node(node(2)));
+    assert!(!states.has_node(brick(0)), "a brick is the mesher's");
+    assert!(states.needs_making(node(1), 0));
+    assert!(states.wanted().is_empty(), "nothing is to be drawn");
+    assert_consistent(&states);
+
+    states.pin(&[node(2)]);
+    assert!(
+        !states.has_node(node(1)),
+        "no longer pinned, and never made"
+    );
+    assert!(states.has_node(node(2)));
+    states.pin(&[]);
+    assert!(!states.has_node(node(2)));
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_picture_of_the_warm_cut_that_is_made_is_parked_as_a_held_one_the_renderer_is_given_hidden() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture_of(100));
+    let mesh = states.park(node(1)).expect("it is waiting and pinned");
+    assert_eq!(mesh, picture_of(100));
+    assert!(states.is_held(node(1)) && !states.shown().contains(&node(1)));
+    assert!(states.is_ready(node(1), 0));
+    assert_eq!(
+        states.held_pictures(),
+        HeldPictures {
+            nodes: 1,
+            with_mesh: 1,
+            bytes: 800
+        }
+    );
+    assert!(states.park(node(1)).is_none(), "once");
+    assert_eq!(states.uploaded_nodes(), [node(1)]);
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_picture_of_nothing_in_the_warm_cut_is_held_without_a_mesh_in_the_renderer() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), PackedBrickMesh::default());
+    let mesh = states.park(node(1)).expect("parked");
+    assert!(mesh.is_empty(), "nothing is to be uploaded");
+    assert_eq!(states.held_pictures().with_mesh, 0);
+    assert!(states.uploaded_nodes().is_empty());
+    assert!(states.is_ready(node(1), 0), "and it is not made again");
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_picture_that_is_wanted_is_not_parked_for_the_planner_shows_it_and_without_a_budget_none_is() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    waiting(&mut states, node(1), picture());
+    states.pin(&[node(1)]);
+    assert!(states.park(node(1)).is_none(), "it is wanted");
+    assert!(!states.is_held(node(1)));
+
+    let mut states = CubeStates::new();
+    made_for_the_warm_cut(&mut states, node(1), picture());
+    assert!(states.park(node(1)).is_none(), "no budget: nothing is held");
+    assert!(!states.is_held(node(1)));
+}
+
+#[test]
+fn a_parked_picture_is_ready_for_the_planner_and_shown_by_a_move_when_it_is_wanted() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture());
+    states.park(node(1));
+    states.want(&[node(1)]);
+    assert!(states.is_ready(node(1), 0));
+    assert!(
+        !states.needs_making(node(1), 0),
+        "wanted and pinned, and held of this version"
+    );
+    assert!(states.reveal_node(node(1)), "the renderer shows its mesh");
+    assert!(states.shown().contains(&node(1)));
+    assert_eq!(states.held_pictures().nodes, 0);
+    assert_consistent(&states);
+}
+
+#[test]
+fn what_is_pinned_is_not_let_go_of_over_the_budget_and_is_when_it_is_not_pinned() {
+    let mut states = CubeStates::new();
+    states.set_budget(800);
+    for x in 1..=3 {
+        made_for_the_warm_cut(&mut states, node(x), picture_of(100));
+        states.park(node(x));
+    }
+    assert_eq!(states.held_pictures().bytes, 2400);
+    assert!(
+        states.evict_over_budget().is_empty(),
+        "all three are pinned: the budget is passed by them"
+    );
+    // The oldest is not pinned any more, and goes; then nothing is pinned, and the next oldest goes, which is enough.
+    states.pin(&[node(2), node(3)]);
+    assert_eq!(states.evict_over_budget(), [node(1)]);
+    assert_eq!(states.held_pictures().nodes, 2);
+    states.pin(&[]);
+    assert_eq!(states.evict_over_budget(), [node(2)]);
+    assert_eq!(states.held_pictures().nodes, 1);
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_node_that_is_shown_and_taken_down_while_pinned_stays_held_and_clearing_forgets_the_pins() {
+    let mut states = CubeStates::new();
+    states.set_budget(100);
+    states.pin(&[node(1)]);
+    states.want(&[node(1)]);
+    states.start_making(node(1), 0);
+    states.finish_making(node(1), 0, 0, picture_of(100));
+    states.show_node(node(1));
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 0), Taken::Hidden);
+    assert!(
+        states.evict_over_budget().is_empty(),
+        "800 bytes against 100, and it is pinned"
+    );
+    assert!(states.is_held(node(1)));
+    assert_consistent(&states);
+
+    states.clear();
+    assert!(!states.has_node(node(1)));
+    assert!(!states.is_pinned(node(1)));
+}
+
+#[test]
+fn a_pinned_picture_of_data_that_has_changed_is_made_again_and_an_unpinned_one_waits() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture());
+    states.park(node(1));
+    assert!(
+        states.needs_making(node(1), 1),
+        "pinned and held of version 0"
+    );
+    assert_eq!(states.drop_stale_held(node(1), 1), Taken::Removed);
+    assert!(!states.is_held(node(1)));
+    assert!(states.needs_making(node(1), 1));
+
+    // Not pinned: held of old data, it is made again only when it is to be made.
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture());
+    states.park(node(1));
+    states.pin(&[]);
+    assert!(!states.needs_making(node(1), 1));
+}

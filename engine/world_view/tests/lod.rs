@@ -16,10 +16,15 @@ use world_storage::LevelData;
 use world_storage::test_support::{Plugin, brick};
 use world_view::{
     CoarseTerrainSource, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange,
-    TerrainSource,
+    TerrainSource, Viewpoint,
 };
 
 mod common;
+
+/// How long a test waits for a view to come to rest before it says the view does not: the tests of this file run together, a dozen at a time, each with threads of its own, and a
+/// view that is made from nothing in the dev profile takes a minute of that machine's time when the others are busy (a run of the whole file took 205 s, and the 60 s deadline
+/// this was before was passed by two tests that pass alone in 40 s). It is for a view that is stuck, not for a slow one.
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
 use common::{Scene, scene, scene_of};
 
@@ -69,6 +74,18 @@ impl Screen {
                     self.bricks.remove(&coordinate);
                     self.hidden_bricks.remove(&coordinate);
                 }
+                // (As the renderer does it: a mesh that is drawn is replaced where it is, one that is held hidden is, and a new one is held hidden.)
+                MeshUpdate::UploadHiddenBrick { coordinate, mesh } if mesh.is_empty() => {
+                    self.bricks.remove(&coordinate);
+                    self.hidden_bricks.remove(&coordinate);
+                }
+                MeshUpdate::UploadHiddenBrick { coordinate, mesh } => {
+                    if let Some(drawn) = self.bricks.get_mut(&coordinate) {
+                        *drawn = mesh;
+                    } else {
+                        self.hidden_bricks.insert(coordinate, mesh);
+                    }
+                }
                 MeshUpdate::HideBrick(coordinate) => {
                     let mesh = self
                         .bricks
@@ -98,6 +115,18 @@ impl Screen {
                 MeshUpdate::RemoveCoarse(cube) => {
                     self.nodes.remove(&cube);
                     self.hidden.remove(&cube);
+                }
+                // (As the renderer does it: a mesh that is drawn is replaced where it is, one that is held hidden is, and a new one is held hidden.)
+                MeshUpdate::UploadHiddenCoarse { cube, mesh } if mesh.is_empty() => {
+                    self.nodes.remove(&cube);
+                    self.hidden.remove(&cube);
+                }
+                MeshUpdate::UploadHiddenCoarse { cube, mesh } => {
+                    if let Some(drawn) = self.nodes.get_mut(&cube) {
+                        *drawn = mesh;
+                    } else {
+                        self.hidden.insert(cube, mesh);
+                    }
                 }
                 MeshUpdate::HideCoarse(cube) => {
                     let mesh = self
@@ -304,10 +333,7 @@ fn walking_never_leaves_a_hole_where_something_was_and_is_wanted_and_never_draws
             if view.is_settled() {
                 break;
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(120),
-                "step {step} does not settle"
-            );
+            assert!(started.elapsed() < DEADLINE, "step {step} does not settle");
             std::thread::sleep(std::time::Duration::from_micros(300));
         }
         assert_eq!(view.shown(), view.wanted(), "step {step}");
@@ -386,10 +412,7 @@ fn settle_checked_in(
         if view.is_settled() {
             return;
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "{context}: does not settle"
-        );
+        assert!(started.elapsed() < DEADLINE, "{context}: does not settle");
         std::thread::sleep(std::time::Duration::from_micros(300));
     }
 }
@@ -499,10 +522,7 @@ fn a_view_that_jumps_from_far_away_to_the_ground_is_refined_a_level_at_a_time_an
         if view.is_settled() {
             break;
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(120),
-            "does not settle"
-        );
+        assert!(started.elapsed() < DEADLINE, "does not settle");
         std::thread::sleep(std::time::Duration::from_micros(50));
     }
     assert_converged(&view, "on the ground");
@@ -534,7 +554,7 @@ fn a_view_whose_threads_run_dry_hands_them_more_and_never_the_whole_queue() {
     // The threads have finished nothing yet: the least is handed out, 4 for each.
     assert_eq!(view.nodes_being_made(), workers * 4);
     // Given time to finish them (the condition is that they have, which the view says by handing out more), the threads are handed more, up to a most.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + DEADLINE;
     let mut most = 0;
     while most <= workers * 4 {
         assert!(
@@ -886,10 +906,7 @@ fn a_view_that_goes_up_and_comes_back_makes_no_node_again_and_draws_what_it_drew
         if view.is_settled() {
             break;
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "does not settle"
-        );
+        assert!(started.elapsed() < DEADLINE, "does not settle");
         std::thread::sleep(std::time::Duration::from_micros(300));
     }
     let made_coming_back = made.get() - made_before_coming_back;
@@ -1151,10 +1168,7 @@ fn without_a_budget_nothing_is_hidden_and_the_updates_are_what_they_were() {
             if view.is_settled() {
                 break;
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(60),
-                "does not settle"
-            );
+            assert!(started.elapsed() < DEADLINE, "does not settle");
             std::thread::sleep(std::time::Duration::from_micros(300));
         }
         assert!(screen.hidden.is_empty());
@@ -1289,10 +1303,7 @@ fn come_back(
         if view.is_settled() {
             return result;
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "does not settle"
-        );
+        assert!(started.elapsed() < DEADLINE, "does not settle");
         std::thread::sleep(std::time::Duration::from_micros(300));
     }
 }
@@ -1805,10 +1816,7 @@ fn without_a_budget_no_brick_is_hidden_or_shown_and_the_updates_are_what_they_we
             if view.is_settled() {
                 break;
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(60),
-                "does not settle"
-            );
+            assert!(started.elapsed() < DEADLINE, "does not settle");
             std::thread::sleep(std::time::Duration::from_micros(300));
         }
         assert!(screen.hidden_bricks.is_empty());
@@ -2534,4 +2542,697 @@ fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_takin
     for cube in screen.nodes.keys() {
         assert!(before.contains(cube), "{cube:?} is still drawn");
     }
+}
+
+// ---- A viewpoint kept warm (docs/specs/viewpoints-spec.md, phase 3b) ----
+
+/// How far the warm views reach: less than the trips, so that the tests are not so slow that they miss their deadlines when the binary runs as a whole.
+fn far() -> LodSettings {
+    LodSettings {
+        maximum_distance: 1.2e4,
+        ..settings()
+    }
+}
+
+/// A place above the ground that is far enough for a coarser picture, and near enough to be cheap.
+fn sky() -> WorldPosition {
+    viewer_in(brick(0, 100, 0))
+}
+
+fn warm(viewer: WorldPosition, settings: &LodSettings) -> Option<Viewpoint> {
+    Some(Viewpoint {
+        viewer,
+        settings: *settings,
+    })
+}
+
+/// Every node a fresh view at a place draws is, in a view that keeps the place warm, either drawn or held hidden, as the same picture.
+fn assert_nodes_are_drawn_or_held(screen: &Screen, fresh: &Screen, context: &str) {
+    let mut missing = Vec::new();
+    for (cube, mesh) in &fresh.nodes {
+        match (screen.nodes.get(cube), screen.hidden.get(cube)) {
+            (Some(held), None) | (None, Some(held)) if held == mesh => {}
+            _ => missing.push(*cube),
+        }
+    }
+    missing.sort_by_key(|cube| (cube.level(), cube.origin().x(), cube.origin().y()));
+    assert!(
+        missing.is_empty(),
+        "{context}: {} of the {} nodes a fresh view draws are neither drawn nor held as it draws them; first {:?}",
+        missing.len(),
+        fresh.nodes.len(),
+        &missing[..missing.len().min(5)]
+    );
+}
+
+#[test]
+fn a_viewpoint_that_is_kept_warm_is_made_and_held_hidden_while_another_is_drawn_and_what_is_drawn_is_what_it_was()
+ {
+    let trip = Trip::new();
+    let fresh_sky = what_a_fresh_view_draws(&trip.scene, brick(0, 100, 0), &far());
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    assert_eq!(
+        screen.nodes, fresh_sky.nodes,
+        "what is drawn is what a view that is only at the sky draws"
+    );
+    assert_nodes_are_drawn_or_held(&screen, &fresh_ground, "the ground, warm");
+    assert!(
+        screen.hidden.len() * 2 > fresh_ground.nodes.len(),
+        "most of the ground is held hidden: {} of {}",
+        screen.hidden.len(),
+        fresh_ground.nodes.len()
+    );
+    assert_eq!(screen.hidden.len(), view.held_pictures().with_mesh);
+    for cube in screen.hidden.keys() {
+        assert!(
+            !screen.nodes.contains_key(cube),
+            "{cube:?} is held and drawn"
+        );
+    }
+}
+
+#[test]
+fn a_view_at_a_place_that_is_warm_does_not_ask_the_terrain_and_makes_next_to_nothing_and_draws_what_a_fresh_view_does()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let asked = Cell::new(0);
+    let terrain = Counting {
+        level: trip.scene.world.main(),
+        asked: &asked,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+
+    // Switch: the ground is drawn and the sky is warm.
+    asked.set(0);
+    let selections = view.selections();
+    view.set_warm_viewpoint(warm(sky(), &far()));
+    let mut uploads = 0;
+    let mut shows = 0;
+    loop {
+        let updates = view.update(GridId::MAIN, &terrain, Trip::ground(), &far());
+        uploads += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::UploadCoarse { mesh, .. } if !mesh.is_empty()))
+            .count();
+        shows += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::ShowCoarse(_)))
+            .count();
+        screen.apply(updates);
+        screen.apply_occupancy(view.mesher_mut().take_occupancy_updates());
+        view.check_consistency().expect("the records agree");
+        if view.is_settled() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    assert_eq!(
+        asked.get(),
+        0,
+        "the cuts of both places were kept: nothing is asked of the terrain"
+    );
+    assert_eq!(
+        view.selections(),
+        selections,
+        "neither the place that is drawn now nor the one that was left was worked out again"
+    );
+    assert!(
+        shows * 2 > fresh_ground.nodes.len(),
+        "most of the ground is shown from hold: {shows} of {}",
+        fresh_ground.nodes.len()
+    );
+    assert!(
+        uploads * 20 < fresh_ground.nodes.len(),
+        "{uploads} nodes were put up for the ground, which has {}",
+        fresh_ground.nodes.len()
+    );
+    assert_eq!(
+        screen.nodes, fresh_ground.nodes,
+        "what is drawn is what a view that is only at the ground draws"
+    );
+}
+
+#[test]
+fn a_warm_viewpoint_that_is_the_one_that_is_drawn_changes_nothing_and_none_is_made_twice() {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &far(),
+        "the ground, warm too",
+    );
+    assert_eq!(screen.nodes, fresh_ground.nodes);
+    assert!(
+        screen.hidden.is_empty(),
+        "what is drawn is not held as well: {} held",
+        screen.hidden.len()
+    );
+}
+
+/// The terrain of a level that says, in order, of which cubes a node was asked for.
+struct Recording<'a> {
+    level: &'a LevelData,
+    made: &'a std::cell::RefCell<Vec<BrickCube>>,
+    /// The bricks it was asked for a generator of, in order (a brick is asked about when a job to generate it is started).
+    generated: &'a std::cell::RefCell<Vec<BrickCoordinate>>,
+}
+
+impl TerrainSource for Recording<'_> {
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
+        self.level.known(coordinate)
+    }
+
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        self.generated.borrow_mut().push(coordinate);
+        self.level.generator_for(coordinate)
+    }
+
+    fn layout(&self) -> &Arc<GridLayout> {
+        self.level.layout()
+    }
+}
+
+impl CoarseTerrainSource for Recording<'_> {
+    fn version(&self) -> u64 {
+        self.level.version()
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        self.level.may_show(cube)
+    }
+
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        self.made.borrow_mut().push(cube);
+        self.level.coarse_generator(cube)
+    }
+}
+
+#[test]
+fn what_the_drawn_viewpoint_needs_is_made_before_anything_for_the_warm_one() {
+    let trip = Trip::new();
+    let along = viewer_in(brick(60, 0, 0));
+    let up_there = viewer_in(brick(0, 80, 0));
+
+    // A view with nothing warm moves along the ground: every node it has to make for that.
+    let made = std::cell::RefCell::new(Vec::new());
+    let generated = std::cell::RefCell::new(Vec::new());
+    let terrain = Recording {
+        level: trip.scene.world.main(),
+        made: &made,
+        generated: &generated,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &far(),
+        "the ground",
+    );
+    made.borrow_mut().clear();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        along,
+        &far(),
+        "along the ground",
+    );
+    let needed: HashSet<BrickCube> = made.borrow().iter().copied().collect();
+    assert!(
+        needed.len() > 100,
+        "{} nodes to make for the move",
+        needed.len()
+    );
+
+    // The same with a warm viewpoint that has a good deal to make too (what the threads were handed before the move is theirs to finish): in the order the nodes are started
+    // after the move, none that the move needs comes after one that it does not.
+    let made = std::cell::RefCell::new(Vec::new());
+    let terrain = Recording {
+        level: trip.scene.world.main(),
+        made: &made,
+        generated: &generated,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &far(),
+        "the ground",
+    );
+    view.set_warm_viewpoint(warm(up_there, &far()));
+    screen.apply(view.update(GridId::MAIN, &terrain, Trip::ground(), &far()));
+    made.borrow_mut().clear();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        along,
+        &far(),
+        "along the ground, the sky warm",
+    );
+    let started = made.borrow().clone();
+    let first_for_the_warm_one = started
+        .iter()
+        .position(|cube| !needed.contains(cube))
+        .expect("the warm viewpoint has nodes to make too");
+    assert!(
+        first_for_the_warm_one >= 50,
+        "only {first_for_the_warm_one} nodes were started for the move before one for the warm viewpoint, of {} needed",
+        needed.len()
+    );
+    for cube in &started[first_for_the_warm_one..] {
+        assert!(
+            !needed.contains(cube),
+            "{cube:?}, which the move needs, was started after one for the warm viewpoint"
+        );
+    }
+}
+
+#[test]
+fn what_is_held_for_a_warm_viewpoint_is_not_let_go_of_by_the_budget_until_it_is_not_warm_any_more()
+{
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let budget = 64 << 10;
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(budget);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    assert!(
+        view.held_pictures().bytes > budget,
+        "the ground is more than the budget ({} bytes held)",
+        view.held_pictures().bytes
+    );
+    assert_nodes_are_drawn_or_held(&screen, &fresh_ground, "the ground, warm, over the budget");
+
+    view.set_warm_viewpoint(None);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, nothing warm",
+    );
+    assert_held_pictures_match(&screen, &view, budget, "nothing warm any more");
+}
+
+#[test]
+fn an_edit_in_the_warm_cut_makes_its_held_picture_again_and_it_is_not_drawn() {
+    let trip = Trip::new();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    let mut held: Vec<BrickCube> = screen.hidden.keys().copied().collect();
+    held.sort_by_key(|cube| {
+        (
+            cube.level(),
+            cube.origin().x(),
+            cube.origin().y(),
+            cube.origin().z(),
+        )
+    });
+    let cube = held[held.len() / 2];
+    let stone = trip.scene.game.raw_block("base_blocks:stone");
+    let of_stone = mesh_coarse_node(&node_of(stone), &[None; 6]).pack();
+    assert_ne!(screen.hidden[&cube], of_stone);
+    view.set_override(GridId::MAIN, cube, Some(node_of(stone)));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "an edit of a held node",
+    );
+    assert_eq!(screen.hidden[&cube], of_stone, "held, and made again");
+    assert!(!screen.nodes.contains_key(&cube), "and not drawn");
+}
+
+#[test]
+fn a_reset_takes_down_what_was_held_for_the_warm_viewpoint_too() {
+    let trip = Trip::new();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    assert!(!screen.hidden.is_empty());
+    screen.apply(view.reset());
+    assert!(screen.hidden.is_empty() && screen.nodes.is_empty() && screen.bricks.is_empty());
+    assert!(screen.hidden_bricks.is_empty());
+    // And it is made again from the start.
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "after the reset",
+    );
+    assert!(!screen.hidden.is_empty());
+}
+
+#[test]
+fn a_warm_viewpoint_that_moves_is_worked_out_again_after_a_while_and_what_it_wants_is_held() {
+    let trip = Trip::new();
+    let along = brick(48, 0, 0);
+    let fresh_along = what_a_fresh_view_draws(&trip.scene, along, &far());
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    view.set_warm_viewpoint(warm(viewer_in(along), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the warm viewpoint moved",
+    );
+    assert_nodes_are_drawn_or_held(&screen, &fresh_along, "the ground along, warm");
+}
+
+#[test]
+fn without_a_budget_a_warm_viewpoint_is_not_made_and_changes_nothing() {
+    let trip = Trip::new();
+    let fresh_sky = what_a_fresh_view_draws(&trip.scene, brick(0, 100, 0), &far());
+    let mut view = view_of(&trip.scene, 3);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    let mut hidden_uploads = 0;
+    let started = std::time::Instant::now();
+    loop {
+        let updates = view.update(GridId::MAIN, trip.scene.world.main(), sky(), &far());
+        hidden_uploads += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::UploadHiddenCoarse { .. }))
+            .count();
+        screen.apply(updates);
+        if view.is_settled() {
+            break;
+        }
+        assert!(started.elapsed() < DEADLINE, "does not settle");
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    assert_eq!(hidden_uploads, 0);
+    assert_eq!(screen.nodes, fresh_sky.nodes);
+    assert!(screen.hidden.is_empty());
+}
+
+// ---- The bricks of a viewpoint kept warm ----
+
+/// A view that draws `sky()` and keeps the ground warm, the sun told of the bricks it draws, settled.
+fn view_with_the_ground_warm(trip: &Trip, screen: &mut Screen) -> LodView {
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.mesher_mut().enable_occupancy();
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    view
+}
+
+#[test]
+fn the_bricks_of_a_warm_viewpoint_are_made_and_held_hidden_and_the_sun_is_told_nothing_of_them_until_they_are_drawn()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let mut screen = Screen::default();
+    let view = view_with_the_ground_warm(&trip, &mut screen);
+    assert!(
+        fresh_ground.bricks.len() > 20,
+        "{} bricks have something to see on the ground",
+        fresh_ground.bricks.len()
+    );
+    assert!(screen.bricks.is_empty(), "no brick is drawn at the sky");
+    for (coordinate, mesh) in &fresh_ground.bricks {
+        assert_eq!(
+            screen.hidden_bricks.get(coordinate),
+            Some(mesh),
+            "{coordinate:?} is held hidden as a fresh view draws it"
+        );
+    }
+    assert_eq!(
+        screen.hidden_bricks.len(),
+        view.held_brick_pictures().with_mesh
+    );
+    // A brick the camera is far from would take the place of one it is near in the renderer's tables of the sun: it is told when it is drawn.
+    for coordinate in fresh_ground.occupancy.keys() {
+        assert!(
+            !screen.occupancy.contains_key(coordinate),
+            "{coordinate:?} was told to the sun while only held"
+        );
+    }
+    view.check_consistency().expect("the records agree");
+}
+
+#[test]
+fn a_switch_to_the_warm_viewpoint_is_one_update_that_asks_nothing_makes_nothing_and_draws_what_a_fresh_view_does()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let asked = Cell::new(0);
+    let terrain = Counting {
+        level: trip.scene.world.main(),
+        asked: &asked,
+    };
+    let mut screen = Screen::default();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.mesher_mut().enable_occupancy();
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+
+    asked.set(0);
+    let selections = view.selections();
+    view.set_warm_viewpoint(warm(sky(), &far()));
+    let updates = view.update(GridId::MAIN, &terrain, Trip::ground(), &far());
+    assert_eq!(view.selections(), selections, "no cut was worked out again");
+    let made = updates
+        .iter()
+        .filter(|update| {
+            matches!(
+                update,
+                MeshUpdate::Upload { .. }
+                    | MeshUpdate::UploadCoarse { .. }
+                    | MeshUpdate::UploadHiddenCoarse { .. }
+                    | MeshUpdate::UploadHiddenBrick { .. }
+            )
+        })
+        .count();
+    screen.apply(updates);
+    screen.apply_occupancy(view.mesher_mut().take_occupancy_updates());
+    assert_eq!(asked.get(), 0, "nothing is asked of the terrain");
+    assert_eq!(made, 0, "no picture is made or put up: they are moved");
+    assert_eq!(
+        screen.nodes, fresh_ground.nodes,
+        "the nodes are what a fresh view draws, after the first update"
+    );
+    assert_bricks_are_what_a_fresh_view_draws(&screen, &fresh_ground, "the first update");
+    view.check_consistency().expect("the records agree");
+}
+
+#[test]
+fn an_edit_to_a_brick_of_the_warm_viewpoint_makes_its_held_picture_again_and_the_ground_is_what_a_fresh_view_draws()
+ {
+    let mut trip = Trip::new();
+    let mut screen = Screen::default();
+    let mut view = view_with_the_ground_warm(&trip, &mut screen);
+    let held_before = screen.hidden_bricks.len();
+    let edited = trip.scene.edit([0, 9, 5], "base_blocks:air");
+    assert_eq!(edited, brick(0, 0, 0));
+    view.mesher_mut().brick_changed(edited);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, told",
+    );
+    assert_eq!(
+        screen.hidden_bricks.len(),
+        held_before,
+        "the bricks that were held are held again"
+    );
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &far(),
+        "the ground",
+    );
+    let fresh = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    assert_bricks_are_what_a_fresh_view_draws(&screen, &fresh, "the ground, after the edit");
+}
+
+#[test]
+fn a_brick_that_is_wanted_by_the_drawn_viewpoint_is_shown_and_not_held_and_the_warm_one_does_not_take_its_picture()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let mut screen = Screen::default();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.mesher_mut().enable_occupancy();
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &far(),
+        "the ground, warm too",
+    );
+    assert_bricks_are_what_a_fresh_view_draws(&screen, &fresh_ground, "the ground, warm too");
+    assert!(screen.hidden_bricks.is_empty());
+    assert_eq!(view.held_brick_pictures().bricks, 0);
+}
+
+#[test]
+fn a_warm_viewpoint_that_moves_at_every_update_is_worked_out_again_once_in_a_while_and_not_at_every_update()
+ {
+    let trip = Trip::new();
+    let mut screen = Screen::default();
+    let mut view = view_with_the_ground_warm(&trip, &mut screen);
+    let selections = view.selections();
+    // The warm viewpoint is a brick further along at every update for 40 updates: the first is worked out at once, and the next not for a while.
+    for step in 1..=40 {
+        view.set_warm_viewpoint(warm(viewer_in(brick(step, 0, 0)), &far()));
+        screen.apply(view.update(GridId::MAIN, trip.scene.world.main(), sky(), &far()));
+    }
+    assert_eq!(
+        view.selections() - selections,
+        1,
+        "worked out once in 40 updates of a viewpoint that moves at every one"
+    );
+    for step in 41..=110 {
+        view.set_warm_viewpoint(warm(viewer_in(brick(step, 0, 0)), &far()));
+        screen.apply(view.update(GridId::MAIN, trip.scene.world.main(), sky(), &far()));
+    }
+    assert_eq!(
+        view.selections() - selections,
+        2,
+        "and once more in the 70 updates after"
+    );
+}
+
+#[test]
+fn the_bricks_round_the_drawn_viewpoint_are_started_before_those_round_the_warm_one() {
+    let trip = Trip::new();
+    let made = std::cell::RefCell::new(Vec::new());
+    let generated = std::cell::RefCell::new(Vec::new());
+    let terrain = Recording {
+        level: trip.scene.world.main(),
+        made: &made,
+        generated: &generated,
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(viewer_in(brick(30, 0, 0)), &far()));
+    screen_of_one_update(&mut view, &terrain);
+    let asked = generated.borrow().clone();
+    assert!(
+        asked.len() >= 4,
+        "{} bricks were started in the first update",
+        asked.len()
+    );
+    for coordinate in &asked {
+        assert!(
+            coordinate.x().abs() <= 8 && coordinate.y().abs() <= 8 && coordinate.z().abs() <= 8,
+            "{coordinate:?}, round the warm viewpoint, was started while the drawn viewpoint has bricks to make"
+        );
+    }
+}
+
+fn screen_of_one_update(view: &mut LodView, terrain: &impl CoarseTerrainSource) {
+    let mut screen = Screen::default();
+    screen.apply(view.update(GridId::MAIN, terrain, Trip::ground(), &far()));
 }

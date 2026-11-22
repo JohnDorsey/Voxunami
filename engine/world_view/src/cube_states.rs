@@ -124,7 +124,9 @@ pub(crate) struct CubeStates {
     shown: HashSet<BrickCube>,
     /// The cubes that stand between what is shown and what is wanted ([`coarse_cells::intermediate_cubes`]): made and shown on the way, though they are not wanted.
     steps: HashSet<BrickCube>,
-    /// The records of the nodes that are wanted, shown or steps on the way, and of those whose pictures are held, and of no others.
+    /// The cubes of a viewpoint that is kept warm ([`CubeStates::pin`]): made, and kept held, hidden, though nothing is drawn from them. Bricks and nodes.
+    pinned: HashSet<BrickCube>,
+    /// The records of the nodes that are wanted, shown, steps on the way or pinned, and of those whose pictures are held, and of no others.
     nodes: HashMap<BrickCube, Node>,
     /// How many bytes of pictures that are not shown are kept, at most (not counting the ones that are wanted: those are on their way to the screen). 0, the default, keeps none.
     budget: usize,
@@ -144,6 +146,11 @@ impl CubeStates {
     /// Sets how many bytes of pictures of nodes that are not shown are kept ([`CubeStates::evict_over_budget`] lets go of the ones over it).
     pub(crate) fn set_budget(&mut self, bytes: usize) {
         self.budget = bytes;
+    }
+
+    /// Whether pictures that leave the screen are kept at all (there is a budget).
+    pub(crate) fn holds_pictures(&self) -> bool {
+        self.budget > 0
     }
 
     /// What is held now.
@@ -199,18 +206,73 @@ impl CubeStates {
         for cube in cubes.iter().chain(steps).filter(|cube| cube.level() > 0) {
             self.nodes.entry(*cube).or_insert_with(Node::new);
         }
-        let (wanted, shown, steps) = (&self.wanted, &self.shown, &self.steps);
+        self.drop_records_nothing_needs();
+    }
+
+    /// The cubes of a viewpoint that is kept warm are these: they are made, and when a picture of one is ready it is held ([`CubeStates::park`]) whatever is drawn, and a held
+    /// picture of one is never let go of. The cubes pinned before and not now lose their pins.
+    pub(crate) fn pin(&mut self, cubes: &[BrickCube]) {
+        self.pinned = cubes.iter().copied().collect();
+        for cube in cubes.iter().filter(|cube| cube.level() > 0) {
+            self.nodes.entry(*cube).or_insert_with(Node::new);
+        }
+        self.drop_records_nothing_needs();
+    }
+
+    fn drop_records_nothing_needs(&mut self) {
+        let (wanted, shown, steps, pinned) = (&self.wanted, &self.shown, &self.steps, &self.pinned);
         self.nodes.retain(|cube, node| {
             wanted.contains(cube)
                 || shown.contains(cube)
                 || steps.contains(cube)
+                || pinned.contains(cube)
                 || matches!(node.picture, Picture::Held { .. })
         });
     }
 
-    /// Whether the cube is to be made: it is wanted, or a step on the way to what is.
+    /// Whether the cube is pinned.
+    #[cfg(test)]
+    pub(crate) fn is_pinned(&self, cube: BrickCube) -> bool {
+        self.pinned.contains(&cube)
+    }
+
+    /// Whether the cube is to be made: it is wanted, a step on the way to what is, or pinned.
     pub(crate) fn is_to_be_made(&self, cube: &BrickCube) -> bool {
+        self.wanted.contains(cube) || self.steps.contains(cube) || self.pinned.contains(cube)
+    }
+
+    /// Whether the cube is to be drawn, now or on the way to what is (wanted, or a step), which a pinned cube need not be.
+    fn is_to_be_drawn(&self, cube: &BrickCube) -> bool {
         self.wanted.contains(cube) || self.steps.contains(cube)
+    }
+
+    /// The picture of a pinned node that is waiting and is not to be drawn is held, as if it had been shown and taken down, though the renderer has never had it: returns the
+    /// mesh, which the renderer is to be given hidden unless it is empty. `None` if the node is not like that, or nothing is held (no budget).
+    pub(crate) fn park(&mut self, cube: BrickCube) -> Option<PackedBrickMesh> {
+        if self.budget == 0 || !self.pinned.contains(&cube) || self.is_to_be_drawn(&cube) {
+            return None;
+        }
+        let node = self.nodes.get_mut(&cube)?;
+        if !node.has_waiting_picture() {
+            return None;
+        }
+        let Picture::Waiting { version, mesh } =
+            std::mem::replace(&mut node.picture, Picture::Missing)
+        else {
+            unreachable!("it was checked");
+        };
+        let order = self.next_order;
+        self.next_order += 1;
+        let cost = cost_of(&mesh);
+        node.picture = Picture::Held {
+            version,
+            uploaded: !mesh.is_empty(),
+            cost,
+            order,
+        };
+        self.held_order.insert(order, cube);
+        self.held_bytes += cost;
+        Some(mesh)
     }
 
     /// Whether the picture of a node that is wanted or shown has to be made (again), from data of this version: it is not being made already, and the one it has
@@ -500,6 +562,7 @@ impl CubeStates {
 
     /// Forgets every cube.
     pub(crate) fn clear(&mut self) {
+        self.pinned.clear();
         self.wanted.clear();
         self.shown.clear();
         self.steps.clear();
@@ -562,6 +625,11 @@ impl CubeStates {
         for cube in self.wanted.iter().filter(|cube| cube.level() > 0) {
             if !self.nodes.contains_key(cube) {
                 return Err(format!("{cube:?} is wanted and has no record"));
+            }
+        }
+        for cube in self.pinned.iter().filter(|cube| cube.level() > 0) {
+            if !self.nodes.contains_key(cube) {
+                return Err(format!("{cube:?} is pinned and has no record"));
             }
         }
         Ok(())

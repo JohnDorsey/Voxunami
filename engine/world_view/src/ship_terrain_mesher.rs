@@ -14,7 +14,7 @@ use terrain::{SolidBall, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
 
-use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
+use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled, Viewpoint};
 use crate::mesher::{MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher};
 use crate::occupancy::{OccupancyChange, OccupancyStatistics};
 
@@ -241,6 +241,17 @@ impl ShipTerrainMesher {
         }
     }
 
+    /// Keeps the planet ready to be drawn from `viewer`, a place in the ship's coordinates, as well as from where it is updated (see [`LodView::set_warm_viewpoint`]), at the
+    /// detail the planet is drawn at. A mesher of the bricks alone has no nodes to keep ready.
+    pub fn keep_ready(&mut self, viewer: Option<WorldPosition>) {
+        if let Drawn::Detailed { view, settings } = &mut self.drawn {
+            view.set_warm_viewpoint(viewer.map(|viewer| Viewpoint {
+                viewer,
+                settings: *settings,
+            }));
+        }
+    }
+
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.
     pub fn set_detail(&mut self, detail: LodSettings) {
         if let Drawn::Detailed { settings, .. } = &mut self.drawn {
@@ -278,6 +289,16 @@ impl ShipTerrainMesher {
             MeshUpdate::RemoveCoarse(cube) => MeshUpdate::RemoveGridCoarse { grid, cube },
             MeshUpdate::HideCoarse(cube) => MeshUpdate::HideGridCoarse { grid, cube },
             MeshUpdate::ShowCoarse(cube) => MeshUpdate::ShowGridCoarse { grid, cube },
+            MeshUpdate::UploadHiddenCoarse { cube, mesh } => {
+                MeshUpdate::UploadHiddenGridCoarse { grid, cube, mesh }
+            }
+            MeshUpdate::UploadHiddenBrick { coordinate, mesh } => {
+                MeshUpdate::UploadHiddenGridBrick {
+                    grid,
+                    coordinate,
+                    mesh,
+                }
+            }
             MeshUpdate::HideBrick(coordinate) => MeshUpdate::HideGridBrick { grid, coordinate },
             MeshUpdate::ShowBrick(coordinate) => MeshUpdate::ShowGridBrick { grid, coordinate },
             other => unreachable!("a mesher of terrain makes nothing else: {other:?}"),
