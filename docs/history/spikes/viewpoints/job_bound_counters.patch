@@ -1,0 +1,75 @@
+diff --git a/engine/world_view/src/lib.rs b/engine/world_view/src/lib.rs
+index a239f2a..d8cb9c3 100644
+--- a/engine/world_view/src/lib.rs
++++ b/engine/world_view/src/lib.rs
+@@ -20,6 +20,7 @@ mod sun_boxes;
+ mod sun_ray;
+ 
+ pub use grid_mesher::GridMesher;
++pub use lod::{PROBE_EMPTY, PROBE_MADE, PROBE_GEN_NS, PROBE_MESH_NS, PROBE_NODES, PROBE_WAIT_NS};
+ pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
+ pub use mesher::{
+     BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
+diff --git a/engine/world_view/src/lod.rs b/engine/world_view/src/lod.rs
+index ef6116c..d30f9bc 100644
+--- a/engine/world_view/src/lod.rs
++++ b/engine/world_view/src/lod.rs
+@@ -12,6 +12,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+ use std::sync::{Arc, Mutex, mpsc};
+ use std::thread::JoinHandle;
+ 
++pub static PROBE_GEN_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static PROBE_MESH_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static PROBE_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static PROBE_MADE: [std::sync::atomic::AtomicU64; 10] = [const { std::sync::atomic::AtomicU64::new(0) }; 10];
++pub static PROBE_EMPTY: [std::sync::atomic::AtomicU64; 10] = [const { std::sync::atomic::AtomicU64::new(0) }; 10];
++pub static PROBE_NODES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ use coarse_cells::{
+     CoarseNode, DetailSettings, EditedCubes, ViewSelection, Zoom, intermediate_cubes,
+     plan_progressive_swaps, refinements, select_around_brick,
+@@ -242,18 +249,22 @@ impl LodView {
+         let (job_sender, job_receiver) = mpsc::channel::<Job>();
+         let (result_sender, results) = mpsc::channel::<Finished>();
+         let job_receiver = Arc::new(Mutex::new(job_receiver));
+-        let workers = (0..config.worker_count.max(1))
++        let worker_total = std::env::var("VOX_WORKERS").ok().and_then(|t| t.parse().ok()).unwrap_or(config.worker_count);
++        let workers = (0..worker_total.max(1))
+             .map(|_| {
+                 let job_receiver = Arc::clone(&job_receiver);
+                 let result_sender = result_sender.clone();
+                 std::thread::spawn(move || {
+                     loop {
+                         // Hold the lock only while waiting for the next job, not while running it.
++                        let waited = std::time::Instant::now();
+                         let job = job_receiver.lock().expect("job queue lock").recv();
++                        PROBE_WAIT_NS.fetch_add(waited.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                         let Ok(job) = job else { return };
+                         // A generator with a bug panics here, on a thread nobody is watching: it is caught, and said to the view, which panics with it. (A thread that dies with
+                         // its job leaves the job in flight for ever and the view waiting for it, with nothing to say why.)
+                         let finished = catch_unwind(AssertUnwindSafe(|| {
++                            let t0 = std::time::Instant::now();
+                             let node = match job.source {
+                                 Source::Override(node) => Some(node),
+                                 Source::Generator(generator) => {
+@@ -261,9 +272,20 @@ impl LodView {
+                                 }
+                                 Source::Nothing => None,
+                             };
++                            let t1 = std::time::Instant::now();
+                             let mesh = node
+                                 .map(|node| mesh_coarse_node(&node, &[None; 6]).pack())
+                                 .unwrap_or_default();
++                            PROBE_GEN_NS.fetch_add((t1 - t0).as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
++                            PROBE_MESH_NS.fetch_add(t1.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
++                            {
++                                let slot = usize::from(job.cube.level()).min(9);
++                                PROBE_MADE[slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                                if mesh.is_empty() {
++                                    PROBE_EMPTY[slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                                }
++                            }
++                            PROBE_NODES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                             Done {
+                                 epoch: job.epoch,
+                                 cube: job.cube,
