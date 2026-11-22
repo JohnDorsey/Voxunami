@@ -1,0 +1,103 @@
+diff --git a/engine/world_view/src/lod.rs b/engine/world_view/src/lod.rs
+index e8a8032..9bcc006 100644
+--- a/engine/world_view/src/lod.rs
++++ b/engine/world_view/src/lod.rs
+@@ -465,28 +465,52 @@ impl LodView {
+         settings: &LodSettings,
+     ) -> Vec<MeshUpdate> {
+         self.grid = grid;
++        let t_start = std::time::Instant::now();
+         let centre = viewer.brick();
+         let mut updates = self.mesher.update(source, centre);
++        let t_mesher = t_start.elapsed();
+         self.collect_nodes(&mut updates);
++        let t_collect = t_start.elapsed();
+         self.updates_since_selection = self.updates_since_selection.saturating_add(1);
+         let moved = self.wanted_for != Some((centre, *settings))
+             || self.selected_version != Some(source.version());
+         let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
+-        if moved || new_edits {
++        let reselected = moved || new_edits;
++        if reselected {
+             self.reselect(centre, viewer, settings, source);
+         }
++        let t_reselect = t_start.elapsed();
+         self.start_jobs(source, &mut updates);
++        let t_jobs = t_start.elapsed();
+         let serial = self.mesher.ready_serial();
+-        if self.plan_needed || serial != self.seen_ready_serial {
++        let swapped = self.plan_needed || serial != self.seen_ready_serial;
++        if swapped {
+             self.seen_ready_serial = serial;
+             self.swap(&mut updates);
+         }
++        let t_swap = t_start.elapsed();
+         updates.extend(
+             self.cubes
+                 .evict_over_budget()
+                 .into_iter()
+                 .map(MeshUpdate::RemoveCoarse),
+         );
++        if t_swap.as_millis() >= 3 || std::env::var_os("PROBE_ALL").is_some() {
++            eprintln!(
++                "LODTIME total {:6.1} ms: mesher {:5.1}, collect {:5.1}, reselect{} {:5.1}, jobs {:5.1}, swap{} {:5.1}, out {} updates, wanted {}, shown {}",
++                t_swap.as_secs_f64() * 1e3,
++                t_mesher.as_secs_f64() * 1e3,
++                (t_collect - t_mesher).as_secs_f64() * 1e3,
++                if reselected { "*" } else { " " },
++                (t_reselect - t_collect).as_secs_f64() * 1e3,
++                (t_jobs - t_reselect).as_secs_f64() * 1e3,
++                if swapped { "*" } else { " " },
++                (t_swap - t_jobs).as_secs_f64() * 1e3,
++                updates.len(),
++                self.cubes.wanted().len(),
++                self.cubes.shown().len()
++            );
++        }
+         // Looked at once, when the view comes to rest (not at every update: it compares the cubes that are drawn with the ones that are wanted, and they are many).
+         let settled = self.is_settled();
+         if !settled {
+@@ -748,8 +772,33 @@ impl LodView {
+                 std::cmp::Reverse(squared_distance_to_middle(*cube, centre)),
+             )
+         });
++        let jump_len = jump.len();
+         self.queue.extend(jump);
+         self.plan_needed = true;
++        if std::env::var_os("PROBE_WHY").is_some() {
++            let mut by_level: std::collections::BTreeMap<u8, [usize; 5]> = Default::default();
++            for cube in self.cubes.wanted().iter().filter(|cube| cube.level() > 0) {
++                let entry = by_level.entry(cube.level()).or_default();
++                entry[0] += 1;
++                if self.cubes.shown().contains(cube) {
++                    entry[1] += 1;
++                } else if self.cubes.is_held(*cube) {
++                    entry[2] += 1;
++                } else if self.is_ready(*cube) {
++                    entry[3] += 1;
++                } else {
++                    entry[4] += 1;
++                }
++            }
++            let bricks = self.cubes.wanted().iter().filter(|cube| cube.level() == 0).count();
++            eprintln!(
++                "WHY reselect: wanted {} (bricks {bricks}), steps {}, queue {}; by level [wanted, shown, held, waiting, NOT READY]: {:?}",
++                self.cubes.wanted().len(),
++                jump_len,
++                self.queue.len(),
++                by_level
++            );
++        }
+     }
+ 
+     fn start_jobs(&mut self, source: &impl CoarseTerrainSource, updates: &mut Vec<MeshUpdate>) {
+@@ -796,6 +845,9 @@ impl LodView {
+ 
+     fn is_ready(&self, cube: BrickCube) -> bool {
+         if cube.level() == 0 {
++            if std::env::var_os("PROBE_BRICKS_READY").is_some() {
++                return true;
++            }
+             return self.mesher.is_ready(cube.origin());
+         }
+         self.cubes.is_ready(cube, self.data_version(cube))
