@@ -54,10 +54,32 @@ impl Weight {
     }
 
     fn length(self) -> f64 {
-        match self {
-            Weight::Light => 10.0,
-            Weight::Heavy => 20.0,
-        }
+        self.length_of(3)
+    }
+
+    /// The stones in each car of a chain of `cars` cars (at least two): the first, the middle ones as the second of three, the last.
+    fn stones_of(self, cars: usize) -> Vec<i128> {
+        let [first, middle, last] = self.stones();
+        let mut stones = vec![first];
+        stones.extend(std::iter::repeat_n(middle, cars - 2));
+        stones.push(last);
+        stones
+    }
+
+    /// The length of a chain of `cars` cars along x: the first car's `stones + 1` (its east joint), each middle car's `stones + 2`, and the last's `stones + 2` (a west joint and the
+    /// east end, one more).
+    fn length_of(self, cars: usize) -> f64 {
+        let [first, middle, last] = self.stones();
+        (first + 1 + (cars as i128 - 2) * (middle + 2) + last + 2) as f64
+    }
+
+    /// The x of each car's east pivot in a chain of `cars` cars, except the last, which has the chain's (`east_pivot`): the car's length, which is also where the next car's west pivot
+    /// is, at its origin.
+    fn pivots_between(self, cars: usize) -> Vec<f64> {
+        let [first, middle, _] = self.stones();
+        (0..cars - 1)
+            .map(|index| if index == 0 { first + 1 } else { middle + 2 } as f64)
+            .collect()
     }
 
     /// The x of the chain's east pivot in the last car.
@@ -79,27 +101,7 @@ enum Chain {
 
 /// The chain (three cars, numbers 1 to 3, coupled by their joints, standing still against each other) in orbit at `DISTANCE` going along z at the speed of a circle, with a joint end
 /// on the east end of the last car (or a stone of the same size, if `with_joints` is false), and the car (number 4: a joint end and three stones, or four stones) made `GAP` voxels
-/// beyond the chain's end, going as it goes and `CLOSING` voxels a second toward it. The scene, what the bodies report, the cars and the car.
-fn a_chain_and_a_car(
-    chain: Chain,
-    with_joints: bool,
-) -> (
-    Scene,
-    impl Fn() -> grid_bodies::BodiesReport,
-    Vec<GridId>,
-    GridId,
-) {
-    a_weighted_chain_and_a_car(
-        chain,
-        Weight::Light,
-        CLOSING,
-        Lying::AlongX,
-        0.0,
-        with_joints,
-    )
-}
-
-/// `a_chain_and_a_car` for a chain of this weight, with the car closing at `closing` voxels a second, the chain and the car lying along x as they are made or turned a quarter so that
+/// beyond the chain's end, going as it goes and `CLOSING` voxels a second toward it. The scene, what the bodies report, the cars and the car. This one is for a chain of this weight, with the car closing at `closing` voxels a second, the chain and the car lying along x as they are made or turned a quarter so that
 /// they lie along z (the car then comes along z, from beyond the chain's end), and the car made `to_the_side` voxels off the line of the chain along y (the way up from the planet), so
 /// that the pull on the chain's end has a part across the chain, which turns it.
 fn a_weighted_chain_and_a_car(
@@ -115,27 +117,49 @@ fn a_weighted_chain_and_a_car(
     Vec<GridId>,
     GridId,
 ) {
+    a_long_chain_and_a_car(chain, weight, 3, closing, lying, to_the_side, with_joints)
+}
+
+/// `a_weighted_chain_and_a_car` for a chain of `cars` cars (numbers 1 to `cars`, the car is the next).
+fn a_long_chain_and_a_car(
+    chain: Chain,
+    weight: Weight,
+    cars: usize,
+    closing: f64,
+    lying: Lying,
+    to_the_side: f64,
+    with_joints: bool,
+) -> (
+    Scene,
+    impl Fn() -> grid_bodies::BodiesReport,
+    Vec<GridId>,
+    GridId,
+) {
     let (mut scene, report) = Scene::reporting_in_a_new_world();
     let speed = circular_speed(&scene, 0, DISTANCE);
     // Three light cars (3, 4 and 3 voxels long): the heavy ones of `a_chain` turn too slowly into line for a coupling before they touch (the free chain does not couple either).
-    let [first_stones, second_stones, last_stones] = weight.stones();
-    let mut cars = vec![
-        car(false, first_stones, true),
-        car(true, second_stones, true),
-        car(true, last_stones, false),
-    ];
+    let in_each = weight.stones_of(cars);
+    let mut made = vec![car(false, in_each[0], true)];
+    made.extend(
+        in_each[1..cars - 1]
+            .iter()
+            .map(|count| car(true, *count, true)),
+    );
+    made.push(car(true, in_each[cars - 1], false));
     if with_joints {
-        cars[2].0.push((
+        made[cars - 1].0.push((
             [weight.east_end(), 0, 0],
             joint_block(),
             ball_end_toward(FaceDirection::PositiveX),
         ));
     } else {
-        cars[2].0.push(([weight.east_end(), 0, 0], stone(), PLAIN));
+        made[cars - 1]
+            .0
+            .push(([weight.east_end(), 0, 0], stone(), PLAIN));
     }
-    cars[2].1 += 1.0;
-    let ships = a_chain_in_orbit_lying(&mut scene, cars, DISTANCE, speed, lying);
-    let still = vec![([0.0; 3], [0.0; 3]); 3];
+    made[cars - 1].1 += 1.0;
+    let ships = a_chain_in_orbit_lying(&mut scene, made, DISTANCE, speed, lying);
+    let still = vec![([0.0; 3], [0.0; 3]); cars];
     match chain {
         Chain::OnARail | Chain::AndTheCarOnOne => {
             put_on_its_rail(&mut scene, &ships, speed, still);
@@ -149,13 +173,13 @@ fn a_weighted_chain_and_a_car(
         stones(0, 4)
     };
     let mut origin = origins_of(&scene, &ships[..1])[0];
-    origin[lying.axis()] += weight.length() + GAP;
+    origin[lying.axis()] += weight.length_of(cars) + GAP;
     origin[1] += to_the_side;
     let mut velocity = [0.0, 0.0, speed];
     velocity[lying.axis()] -= closing;
     make_going(&mut scene, lying.pose_at(origin), second, velocity);
     // (The same number of ticks for every case: the car is given its rail in this one, or nothing is done.)
-    let ship = ship_id(4);
+    let ship = ship_id(cars as u64 + 1);
     scene.run(move |world| {
         if chain == Chain::AndTheCarOnOne {
             put_on_a_rail_near_another_ship(world, ship);
@@ -184,13 +208,35 @@ fn read(scene: &Scene, ships: &[GridId], car: GridId, weight: Weight) -> Reading
             grids.get(ships[0]).expect("the anchor").rail.is_some(),
             grids.get(car).expect("the car").rail.is_some(),
         ],
-        gap: pivot_gap(scene, (ships[2], weight.east_pivot()), car),
+        gap: pivot_gap(
+            scene,
+            (*ships.last().expect("a chain"), weight.east_pivot()),
+            car,
+        ),
     }
 }
 
 /// What is read after each of `ticks` ticks that the cars are followed for.
 fn followed_for(chain: Chain, with_joints: bool, ticks: usize) -> Vec<Reading> {
-    let (mut scene, _, ships, car) = a_chain_and_a_car(chain, with_joints);
+    followed_for_a_chain_of(chain, 3, with_joints, ticks)
+}
+
+/// `followed_for` for a chain of `cars` light cars.
+fn followed_for_a_chain_of(
+    chain: Chain,
+    cars: usize,
+    with_joints: bool,
+    ticks: usize,
+) -> Vec<Reading> {
+    let (mut scene, _, ships, car) = a_long_chain_and_a_car(
+        chain,
+        Weight::Light,
+        cars,
+        CLOSING,
+        Lying::AlongX,
+        0.0,
+        with_joints,
+    );
     (0..ticks)
         .map(|_| {
             scene.ticks(1);
@@ -202,12 +248,25 @@ fn followed_for(chain: Chain, with_joints: bool, ticks: usize) -> Vec<Reading> {
 /// The impulse (mass times the change of speed) that the pull had given the chain and the car by the end of each tick, from the first in which either has a newton second: what the pull
 /// did to the speed of the chain's centre of mass and to the car's (less the same in the run of plain stone), times the mass.
 fn impulses_given_by_the_pull(chain: Chain, ticks: usize) -> Vec<[Vec3; 2]> {
-    let (scene, _, ships, car) = a_chain_and_a_car(chain, true);
+    impulses_given_to_a_chain_of(chain, 3, ticks)
+}
+
+/// `impulses_given_by_the_pull` for a chain of `cars` light cars.
+fn impulses_given_to_a_chain_of(chain: Chain, cars: usize, ticks: usize) -> Vec<[Vec3; 2]> {
+    let (scene, _, ships, car) = a_long_chain_and_a_car(
+        chain,
+        Weight::Light,
+        cars,
+        CLOSING,
+        Lying::AlongX,
+        0.0,
+        true,
+    );
     let masses = [mass_of(&scene, &ships), mass_of(&scene, &[car])];
     drop(scene);
     let (with, without) = (
-        followed_for(chain, true, ticks),
-        followed_for(chain, false, ticks),
+        followed_for_a_chain_of(chain, cars, true, ticks),
+        followed_for_a_chain_of(chain, cars, false, ticks),
     );
     let mut impulses = Vec::new();
     for (with, without) in with.iter().zip(&without) {
@@ -260,6 +319,8 @@ struct Run {
     near_at: Option<usize>,
     gap_at_the_touch: f64,
     car_rode_until_the_touch: bool,
+    /// The widest that any two pivots of the chain's own cars were apart in any tick of the run, in voxels.
+    worst_gap_inside: f64,
     scene: Scene,
     report: Box<dyn Fn() -> grid_bodies::BodiesReport>,
     ships: Vec<GridId>,
@@ -278,13 +339,31 @@ fn until_a_car_is_coupled(
     lying: Lying,
     to_the_side: f64,
 ) -> Run {
+    until_a_car_is_coupled_by_a_chain_of(chain, weight, 3, closing, lying, to_the_side)
+}
+
+/// `until_a_car_is_coupled` for a chain of `cars` cars (the car is coupled when the bodies report one coupling more than the chain's `cars - 1`).
+fn until_a_car_is_coupled_by_a_chain_of(
+    chain: Chain,
+    weight: Weight,
+    cars: usize,
+    closing: f64,
+    lying: Lying,
+    to_the_side: f64,
+) -> Run {
     let (mut scene, report, ships, car) =
-        a_weighted_chain_and_a_car(chain, weight, closing, lying, to_the_side, true);
+        a_long_chain_and_a_car(chain, weight, cars, closing, lying, to_the_side, true);
     let (mut left_at, mut coupled_at, mut near_at) = (None, None, None);
     let mut gap_at_the_touch = f64::NAN;
     let mut car_rode_until_the_touch = true;
+    let mut worst_gap_inside = 0.0f64;
+    let pivots = weight.pivots_between(cars);
     for tick in 0..400 {
         scene.ticks(1);
+        for (index, pivot) in pivots.iter().enumerate() {
+            worst_gap_inside =
+                worst_gap_inside.max(pivot_gap(&scene, (ships[index], *pivot), ships[index + 1]));
+        }
         let reading = read(&scene, &ships, car, weight);
         if near_at.is_none() && reading.gap < 0.3 {
             near_at = Some(tick);
@@ -298,7 +377,7 @@ fn until_a_car_is_coupled(
                 gap_at_the_touch = reading.gap;
             }
         }
-        if report().couplings > 2 {
+        if report().couplings > cars as u64 - 1 {
             coupled_at = Some(tick);
             break;
         }
@@ -309,6 +388,7 @@ fn until_a_car_is_coupled(
         near_at,
         gap_at_the_touch,
         car_rode_until_the_touch,
+        worst_gap_inside,
         scene,
         report: Box::new(report),
         ships,
@@ -486,6 +566,85 @@ fn a_chain_and_a_car_turned_a_quarter_go_as_they_do_not_turned_in_line_or_to_one
                     along_z.1
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn a_chain_of_more_cars_is_coupled_to_a_car_in_the_tick_a_chain_of_three_is_free_or_on_a_rail_light_or_heavy_and_its_joints_are_not_strained()
+ {
+    // Nothing in the pull is about how many cars there are: the force is the end's own response, the rail's is the mass of the whole group over the force, and the chain's own joints
+    // hold it together. Measured 2026-11-22: 3 to 6 cars, light and heavy, free, on a rail and with the car on one, are coupled in ticks 50 to 52 (the ends within 0.3 voxels in 46
+    // to 48), and no two pivots of the chain's own cars were more than 6.2e-5 voxels apart in 120 ticks.
+    for weight in [Weight::Light, Weight::Heavy] {
+        for chain in [Chain::Free, Chain::OnARail, Chain::AndTheCarOnOne] {
+            let of_three =
+                until_a_car_is_coupled_by_a_chain_of(chain, weight, 3, CLOSING, Lying::AlongX, 0.0);
+            let three = of_three.coupled_at.expect("three cars: coupled");
+            for cars in [4, 6] {
+                let run = until_a_car_is_coupled_by_a_chain_of(
+                    chain,
+                    weight,
+                    cars,
+                    CLOSING,
+                    Lying::AlongX,
+                    0.0,
+                );
+                let coupled = run.coupled_at.unwrap_or_else(|| {
+                    panic!("{weight:?}, {chain:?}, {cars} cars: never coupled to the car")
+                });
+                assert!(
+                    coupled.abs_diff(three) <= 2,
+                    "{weight:?}, {chain:?}: {cars} cars were coupled in tick {coupled}, three in {three}"
+                );
+                assert_eq!(
+                    (run.report)().couplings,
+                    cars as u64,
+                    "{weight:?}, {chain:?}, {cars} cars: one coupling for each pair"
+                );
+                assert!(
+                    run.worst_gap_inside < 1.0e-3,
+                    "{weight:?}, {chain:?}, {cars} cars: two pivots of the chain's own cars were {} voxels apart",
+                    run.worst_gap_inside
+                );
+                if chain != Chain::Free {
+                    assert!(
+                        run.left_at.is_some_and(|left| left + 3 >= coupled),
+                        "{weight:?}, {chain:?}, {cars} cars: the chain left its rail at {:?}, and the car was coupled at {coupled}",
+                        run.left_at
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn each_tick_the_pull_on_a_chain_of_six_cars_gives_the_chain_and_the_car_the_same_impulse_the_opposite_way()
+ {
+    // (The rail is pushed by the force over the mass of all the ships of the group: with a chain of three that is every ship there is, and a count of ships that was wrong would not
+    // show: one that counted the first three of six would push the rail twice as hard, an asymmetry of a half.)
+    //
+    // **The tolerance is 4e-4 for each car, not the 1e-3 of three cars, and that is the oracle's and not the pull's** (measured 2026-11-22: the asymmetry of the first tick is 4.3e-4,
+    // 7.0e-4, 9.7e-4, 1.24e-3 and 1.77e-3 for 3, 4, 5, 6 and 8 cars, a straight line in the cars, and in no later tick more): the run of plain stone that is taken away has the joint
+    // block at the chain's end made a stone, which weighs 812.5 more (a chain of three 5,937.5 against 6,750), so its centre of mass is 0.6 voxels east (4.38 against 5.00) and its rail
+    // is another orbit, and what the two runs differ by is not only the pull; the lever of that grows with the length of the chain.
+    for chain in [Chain::OnARail, Chain::AndTheCarOnOne] {
+        let cars = 6;
+        let given = impulses_given_to_a_chain_of(chain, cars, 30);
+        assert!(given.len() >= 15, "{chain:?}: pulled for a while");
+        let skew = usize::from(chain == Chain::OnARail);
+        for tick in 0..given.len() - skew {
+            let (chain_has, car_has) = (given[tick][0], given[tick + skew][1]);
+            assert!(
+                length(chain_has) > 1.0,
+                "{chain:?}, tick {tick}: the chain was pulled: {chain_has:?}"
+            );
+            let sum = [0, 1, 2].map(|axis| chain_has[axis] + car_has[axis]);
+            assert!(
+                length(sum) <= 4.0e-4 * cars as f64 * length(chain_has),
+                "{chain:?}, tick {tick}: the impulses {chain_has:?} and {car_has:?} are not opposite"
+            );
         }
     }
 }
