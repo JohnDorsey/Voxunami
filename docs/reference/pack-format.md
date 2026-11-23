@@ -291,6 +291,12 @@ A server that finds any problem does not start. Blocks are numbered after the ga
 world saved with a pack's blocks loads without the pack (those blocks show as magenta cubes and are kept exactly as they were) and
 the blocks come back when the pack is loaded again.
 
+**Editing while it runs.** `/reload` in the game's chat makes a running server read the folder again. With `--watch` (on `serve`, or on a game that starts its own
+server) the server does it by itself: it looks at the folder a few times a second, waits until the files have been still for a moment (an editor's save is never
+read half done), and reads the packs again only if some file's content really changed. **Every file counts**, a `readme.md` and the files in `server/` too, since each
+is part of the pack's identity; the players are told of the new pack list, and of the new package if it changed. Packs that are no good change nothing, the reason is
+printed on the server, and they are not tried again until a file changes. It happens between two ticks of the server and does not touch a recording's replay.
+
 ## Limits
 
 - At most 1,048,576 colours in all: every block takes one, and so does each state colour and each distinct colour that a block gives a face.

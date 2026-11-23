@@ -421,3 +421,91 @@ fn after_a_reload_that_changes_the_packs_the_client_loads_them_again_and_still_a
     );
     assert_eq!(player.take_pack_check_report(), None, "nothing to report");
 }
+
+#[test]
+fn a_server_that_watches_its_packs_folder_reads_it_again_by_itself_when_files_change_and_tells_players_the_new_pack()
+ {
+    use std::time::{Duration, Instant};
+
+    use game_shell::host::{HostSettings, ServerThread};
+
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_watch_packs_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    write_pack(&directory, "[0.9, 0.9, 0.95]");
+    // The server starts with the folder as it is, and is told to watch it: nothing is typed to make it read again.
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    let world = content.new_overworld_world(common::SEED);
+    let mut settings = HostSettings::local(common::VIEW_RADIUS);
+    settings.packs = Some(directory.clone());
+    settings.watch_packs = true;
+    let host = ServerThread::<Cave>::start(content, world, settings).unwrap();
+    let connection = host.connect().unwrap();
+    let mut player = Session::<_, Cave>::connect(
+        Box::new(connection) as Box<dyn Connection>,
+        &Identity::from_secret([62; 32]),
+        Mode::Playing,
+        common::VIEW_RADIUS,
+        camera_at([16.5, 110.0, 16.5], 0.0, 0.0),
+        || std::thread::sleep(Duration::from_millis(1)),
+    )
+    .unwrap();
+    let marble_colour = |player: &common::Player| {
+        let table = player.block_table();
+        player.content().registries()[0]
+            .1
+            .raw_id_of(&"my_pack:marble".parse().unwrap())
+            .map(|number| table.color(number))
+    };
+    let wait_until =
+        |player: &mut common::Player, what: &str, done: &dyn Fn(&common::Player) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !done(player) {
+                player.advance().unwrap();
+                assert!(Instant::now() < deadline, "gave up waiting for {what}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+    wait_until(&mut player, "the pack the server started with", &|player| {
+        marble_colour(player) == Some(MARBLE) && player.client().packs().listed().len() == 1
+    });
+    let first_root = player.client().packs().listed()[0].root();
+
+    // A person repaints the block: the new package and the new pack arrive with no command.
+    write_pack(&directory, "[0.1, 0.2, 0.3]");
+    wait_until(&mut player, "the repainted block", &|player| {
+        marble_colour(player) == Some([0.1, 0.2, 0.3])
+    });
+    wait_until(&mut player, "the new pack", &|player| {
+        player
+            .client()
+            .packs()
+            .listed()
+            .first()
+            .map(|pack| pack.root())
+            .is_some_and(|root| root != first_root)
+            && player.client().packs().is_complete()
+    });
+    let second_root = player.client().packs().listed()[0].root();
+
+    // A file nothing reads (a note, and code in the server folder) is still a change of the pack: another identity, though the package is the same.
+    std::fs::write(directory.join("my_pack/readme.md"), "a note").unwrap();
+    std::fs::create_dir_all(directory.join("my_pack/server")).unwrap();
+    std::fs::write(directory.join("my_pack/server/rules.py"), "1").unwrap();
+    wait_until(&mut player, "a pack with its note", &|player| {
+        player
+            .client()
+            .packs()
+            .listed()
+            .first()
+            .map(|pack| pack.root())
+            .is_some_and(|root| root != second_root)
+            && player.client().packs().is_complete()
+    });
+    assert_eq!(marble_colour(&player), Some([0.1, 0.2, 0.3]));
+
+    player.say_goodbye();
+    drop(player);
+    host.stop().unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}

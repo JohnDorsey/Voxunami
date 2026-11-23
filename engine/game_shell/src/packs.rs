@@ -119,6 +119,55 @@ pub(crate) fn reload_from_directory(
     ))
 }
 
+/// Watches a folder of packs for a server that reads it again by itself (`--watch`): the files are looked at a few times a second, a change counts when the files have
+/// been still for a moment (an editor's two-step save never loads half a file) and their content differs, and then the folder is read again as `/reload` does (a pack
+/// that is no good changes nothing, and is not tried again until the files change). Every file counts, a note and the files of the `server` folder too, because each is
+/// in the pack's identity.
+pub(crate) struct PackWatch {
+    directory: PathBuf,
+    watcher: crate::reload::Watcher<crate::reload::DiskSource>,
+    started: std::time::Instant,
+}
+
+impl PackWatch {
+    /// Takes the files of `directory` as they are now as seen.
+    pub(crate) fn new(directory: &Path) -> Result<Self, String> {
+        let watcher = crate::reload::Watcher::new(
+            crate::reload::DiskSource::new(directory),
+            crate::reload::Watcher::<crate::reload::DiskSource>::DEFAULT_SETTLE,
+            crate::reload::Watcher::<crate::reload::DiskSource>::DEFAULT_INTERVAL,
+        )
+        .map_err(|reason| format!("cannot watch {}: {reason}", directory.display()))?;
+        Ok(Self {
+            directory: directory.to_owned(),
+            watcher,
+            started: std::time::Instant::now(),
+        })
+    }
+
+    /// Looks at the folder, and if its files changed and are whole reads the packs again and replaces the server's package and list. `None` when nothing changed; else
+    /// what was done, or why nothing was. Call between two ticks of the server (`reload_from_directory` says why).
+    pub(crate) fn poll(
+        &mut self,
+        content: &mut impl GameContent,
+        package: &crate::SharedPackage,
+        server: &mut server::Server,
+    ) -> Option<Result<String, String>> {
+        match self.watcher.poll(self.started.elapsed()) {
+            crate::reload::Poll::Quiet | crate::reload::Poll::Waiting => None,
+            crate::reload::Poll::Unreadable(reason) => Some(Err(format!(
+                "the packs folder cannot be looked at: {reason}"
+            ))),
+            crate::reload::Poll::Changed(_) => Some(reload_from_directory(
+                content,
+                &self.directory,
+                package,
+                server,
+            )),
+        }
+    }
+}
+
 fn problems(text: &str, packs: Option<usize>) -> String {
     let count = text.lines().count();
     let in_packs = packs.map_or(String::new(), |packs| {

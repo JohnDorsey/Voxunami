@@ -128,7 +128,7 @@ Some things have no source on the client (the clock, entities the client did not
 4. **BUILT (2026-11-22; see "What step 4 built"): the wire and the cache**: protocol 13, the messages above, the cache folder, the recorder. The first piece that touches replay, so tests first for replay equals live. Three to four days.
 5. **BUILT (2026-11-23; see "What step 5 built"): the client's own load and the cross-check** (item 4 above); then, if the owner wants, the resolved package becomes derived on the client and leaves the wire. A design decision of its own.
 6. **PART BUILT (2026-11-23; see "What step 6 built"): withheld files** (the root hash over the index was built in step 1); **wasm entries NOT built**, once there is a runtime and a sandbox decision for the client (`architecture-review.md` says server only today).
-7. **Watch `--packs`** (step 6 of `folder-structures-review.md`): a change of a folder is a new archive, a new hash, a `PackageReplaced`. It falls out of 1 and 4.
+7. **BUILT (2026-11-23; see "What step 7 built"): watch `--packs`** (step 6 of `folder-structures-review.md`): a change of a folder is a new archive, a new hash, a `PackageReplaced`.
 
 ## Risks I see
 
@@ -213,3 +213,15 @@ Some things have no source on the client (the clock, entities the client did not
 **A trap to know [believed from the code, not run]:** the root of a pack a client holds cannot be re-made by the client from what it holds, because the withheld files are not there. `check-pack` on a client's cache folder prints a root that is **not** the server's for a pack that has withheld files (it is the root of an index where everything present is sent). The cache is named and checked by the root the server told, so nothing in the game is affected; a person who copies a client's cache to host it would be hosting another pack (a different identity), which is right, as it lacks the code.
 
 **Not built:** wasm entries (no runtime, no sandbox decision for a client, and the generator-identity questions are open), and what happens when a pack with code that a client must run says `"replicate": false` (the loader's refusal of that combination is for when there is wasm).
+
+## What step 7 built (2026-11-23): `--watch` for a server's packs folder
+
+**Built:** `HostSettings::watch_packs` (set by `--watch` on `serve`, and by the existing `--watch` of a game that starts its own server with `--packs`). The server thread holds a `packs::PackWatch` (the `reload.rs` `Watcher` over a `DiskSource` of the folder) and, **between two ticks**, looks at it; a settled change of content calls `reload_from_directory`, the very code `/reload` runs, so there is one way to replace packs and the watcher only decides when. The packs are read and checked beside the state in use and swapped only if all are good (`ContentPackage`/`reload_packs`); a failure prints the reason and is not tried again until a file changes (the watcher takes the changed files as seen).
+
+**What it covers that the spec asked for:** a change to *any* file of a pack, one nothing reads (a note, a `server/` file) too, is another root hash, so clients are told the new list (`Packs`, first in the next tick) and ask for what they lack; a change that alters the package is sent as `PackageReplaced` as before. A zip in the folder is one file to the watcher, so replacing a zip works as editing a folder does.
+
+**Verified:** `--watch` parsed for `serve` (default off); in real Cave on a real server thread with `watch_packs` and nothing typed: a repainted block reaches a connected player, with a new pack root and the pack held completely; then a note and a `server/` file, which change no package, still give another root. With watching turned off in the test it fails at the repainted block (it waited 30 s), so the test bites. The `Watcher` itself (settle, digest, no-op saves) is the existing `reload.rs` with its own tests.
+
+**Believed, not run:** a half-written pack on a running server is what the settle is for; I did not write a test that interrupts a write. The watcher polls from the server's loop with `Instant`, as the loop already paces itself (it is the server's housekeeping, never simulation). The folder being deleted while running gives `Unreadable`, printed once. A client that is mid-download of a pack when the list changes drops it and asks for the new one (step 4's behaviour, tested for a list replaced mid-session).
+
+**Not built:** watching a client's own folders for hosting; a setting for the settle and interval (the defaults, 150 and 250 ms, are those of the shader packs).

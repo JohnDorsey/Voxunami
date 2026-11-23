@@ -204,6 +204,8 @@ pub struct HostSettings {
     pub ships: ShipSettings,
     /// The folder of data packs the content was made with, if there is one: what `/reload` reads again. Without it a server has nothing to reload.
     pub packs: Option<PathBuf>,
+    /// Read `packs` again by itself, between two ticks, when its files change (`--watch`), as `/reload` does by hand.
+    pub watch_packs: bool,
 }
 
 impl HostSettings {
@@ -217,6 +219,7 @@ impl HostSettings {
             announce_players: false,
             ships: ShipSettings::default(),
             packs: None,
+            watch_packs: false,
         }
     }
 }
@@ -296,6 +299,23 @@ impl<G: GameDefinition> ServerThread<G> {
             None => (G::plugins(&content), None),
         };
         let packs = settings.packs.clone();
+        let mut pack_watch = match (&packs, &reloading, settings.watch_packs) {
+            (Some(directory), Some(_), true) => match crate::packs::PackWatch::new(directory) {
+                Ok(watch) => Some(watch),
+                Err(problem) => {
+                    eprintln!("watch: {problem}");
+                    None
+                }
+            },
+            (_, None, true) => {
+                eprintln!(
+                    "watch: {} cannot replace its package while it runs, so its packs are not watched",
+                    G::title()
+                );
+                None
+            }
+            _ => None,
+        };
         let ship_files: Box<dyn ShipFiles> = match &settings.world_file {
             Some(path) => Box::new(DirectoryShipFiles::beside(path)),
             None => Box::new(MemoryShipFiles::new()),
@@ -357,6 +377,14 @@ impl<G: GameDefinition> ServerThread<G> {
                                     Err(problem) => eprintln!("reload: {problem}"),
                                 }
                             }
+                        }
+                    }
+                    if let (Some(watch), Some(package)) = (&mut pack_watch, &reloading)
+                        && let Some(result) = watch.poll(&mut content, package, &mut server)
+                    {
+                        match result {
+                            Ok(done) => println!("reload: {done}"),
+                            Err(problem) => eprintln!("reload: {problem}"),
                         }
                     }
                     if let (Some(autosave), Some(path)) = (&autosave, &world_file)

@@ -37,7 +37,8 @@ Usage: voxunami {command} [options]
   --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
                                   game data folder
   --watch                         read shader packs and their settings (and the engine's shaders, with
-                                  --engine-shaders) again when their files change; .reload does it at once
+                                  --engine-shaders) again when their files change; .reload does it at once.
+                                  A server this starts with --packs reads those again too
   --texture-pack DIRECTORY        draw blocks with the pictures in this folder where it has them
                                   (NAMESPACE/textures/NAME.png, as `stone_top.png`, with `_s` and `_n`
                                   companions); .reload pictures and --watch read it again. Without it,
@@ -80,6 +81,7 @@ Usage: voxunami serve {command} [options]
   --seed NUMBER                   terrain seed of a new world (default {seed})
   --world FILE                    load this world if it exists, and save to it
   --packs DIRECTORY               load the data packs in this folder
+  --watch                         read the packs again, and tell the players, when their files change
   --autosave SECONDS              save the world this often (default 60 with --world)
   --view-radius BRICKS            the view radius players are expected to use (default 12)
   --ship-simulation-distance N    ships move while a player is within N voxels of them (default 1024)
@@ -411,6 +413,8 @@ pub struct ServeOptions {
     pub world_file: Option<PathBuf>,
     /// A directory of data packs.
     pub packs: Option<PathBuf>,
+    /// Read `packs` again by itself when its files change (`--watch`).
+    pub watch: bool,
     pub autosave_seconds: f32,
     pub view_radius: i128,
     /// How ships are kept.
@@ -425,6 +429,7 @@ pub fn parse_serve<G: GameDefinition>(
         seed: G::default_seed(),
         world_file: None,
         packs: None,
+        watch: false,
         autosave_seconds: 60.0,
         view_radius: ViewOptions::default().view_radius,
         ships: server::ShipSettings::default(),
@@ -442,6 +447,7 @@ pub fn parse_serve<G: GameDefinition>(
             "--seed" => options.seed = parse_number(&flag, &value(&flag)?)?,
             "--world" => options.world_file = Some(PathBuf::from(value(&flag)?)),
             "--packs" => options.packs = Some(PathBuf::from(value(&flag)?)),
+            "--watch" => options.watch = true,
             "--autosave" => {
                 options.autosave_seconds = parse_number(&flag, &value(&flag)?)?;
                 if options.autosave_seconds <= 0.0 {
@@ -824,11 +830,17 @@ mod tests {
                 seed: 5,
                 world_file: Some(PathBuf::from("w.voxunami")),
                 packs: Some(PathBuf::from("mods")),
+                watch: false,
                 autosave_seconds: 10.0,
                 view_radius: 6,
                 ships: server::ShipSettings::default(),
             }
         );
+        let Parsed::Run(watching) = parse("--packs mods --watch").unwrap() else {
+            panic!("expected options")
+        };
+        assert!(watching.watch);
+        assert!(!defaults.watch, "off unless asked for");
         assert_eq!(parse("--help").unwrap(), Parsed::ShowHelp);
         assert!(parse("--bogus").unwrap_err().contains("--bogus"));
         assert!(parse("--autosave -1").unwrap_err().contains("positive"));

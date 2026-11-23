@@ -68,6 +68,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
             }
             settings.world_file = options.world_file.clone();
             settings.packs = options.packs.clone();
+            settings.watch_packs = view.watch;
             if let (Some(seconds), Some(_)) = (options.autosave_seconds, &options.world_file) {
                 settings.autosave = Some(Autosave {
                     interval: Duration::from_secs_f32(seconds),
