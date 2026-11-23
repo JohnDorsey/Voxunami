@@ -395,8 +395,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The placeholder specular pictures (2026-11-13): the stream is exactly 2,048 bytes longer (the package's, 7,220,093 to 7,222,141; no length number crossed a byte boundary), its hash moved to 15_826_922_587_325_389_508, and the saved world's did not.
 /// A ship may be told of as far away (2026-11-17; protocol 12): the stream's hash moved to 139_190_248_021_624_789 and nothing else did (the length and the saved world are the same: the version in the welcome is the only byte that
 /// changed). With the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
+/// The command `/joint` (2026-11-23, `decouple`): the script sends `/nonsense`, whose answer lists every command, and the list has ", /joint ACTION" more: 15 bytes, 7,222,141 to 7,222,156, predicted from
+/// the cause before the new numbers were taken. The saved world's hash did not move. **Control:** with the command's registration taken out, the old hash, length and saved world come back. Windows only.
 const PINNED: (u64, usize, u64) = (
-    139_190_248_021_624_789,
-    7_222_141,
+    5_982_540_807_899_295_497,
+    7_222_156,
     15_594_210_036_057_493_535,
 );

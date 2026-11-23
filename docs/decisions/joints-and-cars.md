@@ -74,6 +74,20 @@ This file records the talk that came before any code; the measurements behind th
     0.2 rad/s or less, so a swinging group that is saved and loaded would not be coupled again until it turned slowly. The joint only cares about the speed of the pivots (a ball turns however it is), so **the spin limit is waived for ends that are
     already within a centimetre (owner, 2026-11-09: yes, a centimetre; `spin_waived_within`)**; the speed limit is not.
 
+## The command `/joint` (decouple built 2026-11-23; mobilize, immobilize, lock and unlock not built)
+- **`/joint decouple` parts the coupling whose pivot is nearest the player's eyes** (within 48 voxels, in the player's level; `NEAR`). *Not the nearest ship's:* a ship is as near as its bricks are, 32 voxels at a time, and the two couplings of a chain
+  of cars are often in the bricks of one car, so "the nearest ship, then its nearest coupling" parted the first coupling whichever the player stood beside (found by the test of a chain, which asked for the second). The reply says which: `decoupled ships 0 and 1`;
+  `nothing is coupled within 48 voxels of you` otherwise; `usage: /joint decouple` for any other word.
+- **What the plugin and the command share is `grid_bodies::JointDesk`** (as `Docking` is shared for docking): the pivots of the couplings (told by the plugin in every tick, with their level), the requests, and the pairs held apart.
+- **The pair is parted after the bodies' step**, when the world has every ship at the place of the end of the tick (the order of 4c-5-4d): the cars are stepped as they are coupled, so the tick of the command is a tick like any other. *The first version parted at the
+  start of the tick, with the group on its rail taken off it there, and the group lost a whole tick of motion* (38 voxels at 761 voxels a second: the ships that waited for the step had no rail to be put by); a group on a rail is taken off it where it is, as after a hit,
+  because the rail is the group's, on its anchor, and would put the anchor alone at the group's centre of mass. Measured against a control that was not parted: 0.00007 voxels and 0.002 metres a second after two ticks. The two parts go on rails again by the quiet rule.
+- **A parted pair is held apart:** the ends of two cars that were just parted are together and in line, so they would be coupled again in the next tick (as docking's ships just undocked would be docked); until the ends no longer pull on each other (the cars have been
+  farther apart than the range) the pair is neither pulled nor coupled, and then it is let go of, and couples again if brought back. **Not saved:** a world loaded with parted cars whose ends are still together couples them again. *Open for the owner:* whether a parted pair
+  should be set apart at a speed, as undocked ships are (0.5 metres a second): today nothing is done to the cars but let go of.
+- **Not done:** `mobilize` / `immobilize` need how an immobilized joint is built (a fixed joint? the question under "Physics" is open); `lock` / `unlock` reuse docking's merge and split and are not written. A joint block has no picture of its ball yet (the ball is drawn in the gap only
+  once the protocol can say a coupling).
+
 ## Physics (decided for the prototype; the reasoning is in `joint-probe.md`)
 - **Rapier works in f64** (done 2026-11-01, before any joint was built): the joint error floor was f32 rounding of the distance from the frame's origin (about 1 mm at the frame's edge), and it is now rounding of an `f64`.
   The measurements above were taken in `f32` and are to be repeated in `f64` when the joint is built.

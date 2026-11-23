@@ -2670,3 +2670,11 @@ planet's change of speed over a tick: the world now gives it with the displaceme
 (6.28 voxels behind): who is carried is asked when the planet is put; and the planet's own body was D off in its own frame (found only by the five cost tests, which count the bricks of ground that get colliders). 4,109 passed, 0 failed. Mutants: 6 of 7 killed.
 The one test that pinned the old order (`bodies.rs`) is rewritten for the new rule. With the three phases the world is at one instant in each stretch of a tick: that is the owner's question of 2026-11-22 closed. What is left of the lag code is for the exotic rails
 that are still placed at the start; it can go when they do.
+
+## The dev ball joint's command: `/joint decouple` (2026-11-23)
+
+Tests first (`engine/grid_bodies/tests/joint_desk.rs`, 7; `games/voxunami_cave/tests/joint_command.rs`, 8), then `JointDesk`, the plugin's half (`part_the_pairs_asked_to_be_parted`, after the step) and the command. Four things the tests found: the nearest ship is not the nearest
+coupling (brick-sized extents); parting at the start of the tick cost a group on a rail a whole tick (placed by no rail); two runs of one test differed by whole ticks because a join takes a varying number of ticks to settle and the chain is frozen when the player is 110 voxels behind
+(the player now joins first; 8 runs of 8 pass: a flaw in the test, never committed, so not in `test-flakes.md`); and the rail path for a held pair (`rail_joints.rs`) was dead code, since a ship with another ship in its way does not go on a rail, so it was taken out. Mutants: 9, all killed
+(one, the saved pair still counting when held apart, was equivalent and the line was removed; the level of a coupling had no test and got one). The golden session moved by the command list in `/nonsense`'s answer (+15 bytes), predicted, with the old pins returning when the
+registration was left out; `play.rs` pins the same list. Windows only.

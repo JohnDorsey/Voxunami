@@ -14,7 +14,9 @@ mod ships;
 use coarse_streaming::{Brightness, CoarseConfig, CoarseServerPlugin};
 use game_shell::{GameContent, GameDefinition};
 use grid_bodies::collision::BlockCollisions;
-use grid_bodies::{BodiesReport, Docking, DockingSettings, GridBodiesConfig, GridBodiesPlugin};
+use grid_bodies::{
+    BodiesReport, Docking, DockingSettings, GridBodiesConfig, GridBodiesPlugin, JointDesk,
+};
 use grid_lifecycle::{ArrivalConfig, GridLifecyclePlugin};
 use physics::BodySettings;
 use player_presence::PlayersPlugin;
@@ -56,12 +58,15 @@ pub fn cave_plugins_reporting(
     let movement = MovementPlugin::new(content, presence.clone());
     // Ships with docking ports are drawn together and joined by the one that moves them, and undocked by the command; they share what docking is.
     let docking = docking(content);
+    // Cars with joint ends are coupled by the one that moves them, and parted by the command; they share a desk.
+    let joint_desk = JointDesk::default();
     // The one that flies ships by their pilots' keys shares the players' bodies with the one that moves them.
     let commands = ShipCommandsPlugin::new(
         content,
         presence.clone(),
         movement.movement(),
         docking.clone(),
+        joint_desk.clone(),
     );
     // Ships move while a player is near, wait farther off, and are put in files farther still. A player whose ship is lost can go to where
     // players start, and one whose ship went away with them and finds something in its place is asked what to do.
@@ -79,7 +84,7 @@ pub fn cave_plugins_reporting(
         orientation_channel: Some(content.orientation_channel()),
         air: content.blocks.air,
     });
-    let bodies = ships(content, docking);
+    let bodies = ships(content, docking, joint_desk);
     let report = bodies.report_handle();
     let coarse = coarse_nodes(content, presence.clone());
     let plugins: Vec<Box<dyn Plugin>> = vec![
@@ -146,7 +151,7 @@ pub fn docking(content: &CaveContent) -> Docking {
 
 /// The plugin that moves ships: they fall under the gravity players do, rest on the terrain, are as heavy as the density of their blocks, and
 /// dock.
-fn ships(content: &CaveContent, docking: Docking) -> GridBodiesPlugin {
+fn ships(content: &CaveContent, docking: Docking, joint_desk: JointDesk) -> GridBodiesPlugin {
     let table = content.block_table();
     GridBodiesPlugin::new(GridBodiesConfig {
         block_channel: content.block_channel(),
@@ -159,6 +164,7 @@ fn ships(content: &CaveContent, docking: Docking) -> GridBodiesPlugin {
             .expect("the engine declares engine:density in every game"),
         docking: Some(docking),
         joints: Some(grid_bodies::JointSettings::default()),
+        joint_desk,
         settings: BodySettings::default(),
         table,
     })

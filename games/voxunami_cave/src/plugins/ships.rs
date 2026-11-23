@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use block_models::BlockTable;
 use game_shell::GameContent;
 use grid_bodies::collision::BlockCollisions;
-use grid_bodies::{Docking, UndockError};
+use grid_bodies::{Docking, JointDesk, UndockError};
 use namespaced_id::NamespacedId;
 use physics::Collision;
 use player_presence::{Presence, SharedPresence, lock};
@@ -32,6 +32,7 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
+const JOINT_USAGE: &str = "usage: /joint decouple";
 const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | buckle | unbuckle | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
 
 /// A distance in a command: a number of voxels that is not below zero, or `everywhere` (or `nowhere`) for none.
@@ -112,6 +113,8 @@ struct Ships {
     table: BlockTable,
     /// How ships dock, shared with the plugin that moves them.
     docking: Docking,
+    /// Which cars are coupled where, and the cars to be parted, shared with the plugin that moves them.
+    joint_desk: JointDesk,
 }
 
 impl ShipCommandsPlugin {
@@ -120,12 +123,14 @@ impl ShipCommandsPlugin {
         players: SharedPresence,
         movement: SharedMovement,
         docking: Docking,
+        joint_desk: JointDesk,
     ) -> Self {
         Self {
             ships: Arc::new(Ships {
                 presence: players,
                 movement,
                 docking,
+                joint_desk,
                 pilots: Mutex::new(BTreeMap::new()),
                 seats: Mutex::new(BTreeMap::new()),
                 seat_block: content.registries()[0]
@@ -231,6 +236,16 @@ impl Plugin for ShipCommandsPlugin {
             .argument(Argument::rest("details").optional()),
             move |context, client, arguments| {
                 let reply = ships.command(context.world(), client, arguments);
+                context.reply(client, &reply);
+            },
+        );
+
+        let ships = Arc::clone(&self.ships);
+        registrar.command(
+            CommandSpec::new("joint", "parts cars that are coupled by their joints")
+                .argument(Argument::word("action")),
+            move |context, client, arguments| {
+                let reply = ships.joint_command(context.world(), client, arguments);
                 context.reply(client, &reply);
             },
         );
@@ -473,6 +488,38 @@ impl Ships {
             Ok(()) => format!("ship {} is let go", number(ship)),
             Err(_) => "that ship is gone".to_owned(),
         }
+    }
+
+    /// `/joint decouple`: the coupling whose pivot is nearest to the player's eyes (within [`NEAR`], in their level) is let go of: the two cars are parted, and are not drawn together or
+    /// coupled again until they have been farther apart than their ends pull (and then are, if they are brought back). Nothing else is done to them.
+    fn joint_command(
+        &self,
+        world: &mut ServerWorld,
+        client: ClientId,
+        arguments: &Arguments<'_>,
+    ) -> String {
+        if arguments.word(0) != "decouple" {
+            return JOINT_USAGE.to_owned();
+        }
+        let (level, eyes) = {
+            let presence = lock(&self.presence);
+            let Some((eyes, _)) = presence.view_in_the_world(world.data(), client) else {
+                return "you have not joined yet".to_owned();
+            };
+            (presence.level_of(world.data(), client), eyes)
+        };
+        // (Not the nearest ship's: a ship is as near as its bricks are, thirty-two voxels at a time, and two couplings of a chain of cars are often in the bricks of one.)
+        let nearest = self
+            .joint_desk
+            .couplings_within(level, eyes, NEAR)
+            .into_iter()
+            .map(|(_, pair)| pair)
+            .next();
+        let Some((first, second)) = nearest else {
+            return format!("nothing is coupled within {NEAR} voxels of you");
+        };
+        self.joint_desk.decouple((first, second));
+        format!("decoupled ships {} and {}", number(first), number(second))
     }
 
     /// `/ship undock`: the docked pair of ports nearest to the player, on the ship they are aboard or the one nearest, is cut apart: the ship becomes

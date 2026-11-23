@@ -20,6 +20,7 @@ use world_storage::{HullBox, MovingGrid};
 use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{BlockFace, BlockFaceView, Docking, approach, docked_pose, torque_of_force};
+use crate::joint_desk::JointDesk;
 use crate::joints::{Inertia, JointSettings, inertia_in_the_world, mass_at_an_end};
 
 mod alone;
@@ -105,6 +106,8 @@ pub struct GridBodiesConfig {
     pub docking: Option<Docking>,
     /// How ships with joint ends are drawn together and coupled, if the game has any (see [`JointSettings`]).
     pub joints: Option<JointSettings>,
+    /// What a command for joints and this plugin tell each other (see [`JointDesk`]); a game with no such command leaves the default.
+    pub joint_desk: JointDesk,
     /// How a tick is cut into steps. The gravity of these settings is not used: gravity is the world's field, which the plugin applies as a
     /// force on each ship (see [`ServerWorld::gravity_at`]).
     pub settings: BodySettings,
@@ -140,6 +143,8 @@ pub struct BodiesReport {
     pub couplings_made: u64,
     /// Couplings that were made again in another frame, because the group they are in was moved there whole (a coupling that is made again is not one made).
     pub couplings_moved: u64,
+    /// Couplings that were let go of because a command parted them (`/joint decouple`).
+    pub couplings_parted: u64,
     /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
     pub frames: u64,
     /// How many of them go with a group that is alone and off a rail (`Followed::Group`: a frame of its own, in free fall).
@@ -1812,6 +1817,8 @@ impl Bodies {
         self.couple_or_pull_joints_of_ships_on_rails(world);
         // (And a group taken off its rail before it would be stepped a second time in this tick.)
         self.take_railed_groups_off_for_ends_that_pull(world);
+        // (And the pairs that a player parted in this tick, from where they are.)
+        self.part_the_pairs_asked_to_be_parted(world);
     }
 
     /// What the report says of the bricks made so far, as a copy.

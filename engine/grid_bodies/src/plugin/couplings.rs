@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use physics::{BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, PivotPair, SolverDials};
 use server::ServerWorld;
-use voxel_space::GridId;
+use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 use world_storage::MovingGrid;
 
 use super::rail_ports::is_a_rail_pair;
@@ -165,8 +165,53 @@ impl Bodies {
             self.couple_and_pull_in(world, &settings, frame_key);
         }
         self.record_couplings(world);
+        self.tell_the_desk_the_pivots(world);
         let now = self.couplings.len() as u64;
         self.count(|report| report.couplings = now);
+    }
+
+    /// Parts the pairs that `/joint decouple` asked to be parted in this tick (the joint desk has them), **after the step**, when the world has every ship at the place of the end of the tick
+    /// (`Bodies::step`): the cars are stepped as they are coupled, so the tick of the command is one as any other, and a group on a rail is taken off it where it is, as after a hit, and
+    /// not before the rail has put it. The coupling is let go of, and the pair is **held apart**, neither
+    /// drawn together nor coupled again while its ends pull on each other (the ends of two cars that were just parted are together, and are in line: they would be coupled again in
+    /// the next tick otherwise; docking's `released` does as much for ships that were just undocked). A pair that has gone, or is in two frames, is not held any more.
+    pub(super) fn part_the_pairs_asked_to_be_parted(&mut self, world: &mut ServerWorld) {
+        let desk = self.config.joint_desk.clone();
+        for pair in desk.take_requests() {
+            if self.couplings.contains_key(&pair) {
+                // (A group on a rail comes off it where it is, as for a hit: the rail is for the group as a whole, on its anchor, and would put the anchor alone at the group's
+                // centre of mass. The two parts are on rails again when they have been quiet for a while.)
+                world.take_group_off_its_rail(pair.0);
+                self.let_go(pair);
+                desk.hold_apart(pair);
+                self.count(|report| report.couplings_parted += 1);
+            }
+        }
+        if desk.holds_any_apart() {
+            desk.keep_held_apart_only(|(first, second)| {
+                world.data().grids().get(first).is_some()
+                    && world.data().grids().get(second).is_some()
+                    && self.frame_of(first).is_some()
+                    && self.frame_of(first) == self.frame_of(second)
+            });
+        }
+    }
+
+    /// Tells the joint desk where each coupling is, for the command that parts one (the middle of the first car's end, where the ball is to within a quarter of a metre).
+    fn tell_the_desk_the_pivots(&self, world: &ServerWorld) {
+        let pivots = self
+            .couplings
+            .iter()
+            .filter_map(|(key, coupled)| {
+                let ship = world.data().grids().get(key.0)?;
+                let place = ship.pose.local_to_world(WorldPosition::new(
+                    BrickCoordinate::ORIGIN,
+                    coupled.first_end.local_centre(),
+                ))?;
+                Some((*key, (ship.level, place)))
+            })
+            .collect();
+        self.config.joint_desk.set_pivots(pivots);
     }
 
     /// Tells the world which ships are coupled, for whoever keeps ships by how near the players are (`ServerWorld::coupled_ships`): every coupling there is. One that is gone
@@ -455,6 +500,7 @@ impl Bodies {
                 {
                     continue;
                 }
+                let held_apart = self.config.joint_desk.is_held_apart((first_id, second_id));
                 let saved = world.coupled_ships().contains(&(first_id, second_id));
                 let from = first_ship.pose.position;
                 let mut best: Option<(
@@ -479,8 +525,15 @@ impl Bodies {
                     }
                 }
                 let Some((first_end, second_end, first_view, second_view, how)) = best else {
+                    // (A pair that was parted and whose ends no longer pull on each other is let go of: it is drawn together and coupled again if the ends come back.)
+                    if held_apart {
+                        self.config.joint_desk.let_go_of((first_id, second_id));
+                    }
                     continue;
                 };
+                if held_apart {
+                    continue;
+                }
                 let (Some(first_state), Some(second_state)) = (
                     frame.bodies.state(BodyId(first_id.get())),
                     frame.bodies.state(BodyId(second_id.get())),
