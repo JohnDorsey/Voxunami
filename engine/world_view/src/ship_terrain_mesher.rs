@@ -14,7 +14,9 @@ use terrain::{SolidBall, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
 
-use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled, Viewpoint};
+use crate::lod::{
+    CoarseTerrainSource, LodConfig, LodSettings, LodView, MayShowOracle, Stalled, Viewpoint,
+};
 use crate::mesher::{MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher};
 use crate::occupancy::{OccupancyChange, OccupancyStatistics};
 
@@ -98,6 +100,18 @@ impl CoarseTerrainSource for ShipTerrainSource<'_> {
             return version_of_box(self.extent);
         }
         0
+    }
+
+    fn detached_may_show(&self) -> Option<MayShowOracle> {
+        let (generator, extent, far) = (self.generator.clone(), self.extent, self.far);
+        Some(Arc::new(move |cube| {
+            if far {
+                return cube.meets(extent);
+            }
+            generator
+                .as_ref()
+                .is_some_and(|generator| cube.meets(extent) && generator.may_show(cube))
+        }))
     }
 
     /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (a node the server corrected is kept by the view whatever the

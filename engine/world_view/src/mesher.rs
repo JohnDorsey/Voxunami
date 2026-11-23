@@ -864,10 +864,13 @@ impl WorldMesher {
                         if let Some(occupancy) = to_keep {
                             self.states.keep_occupancy(coordinate, occupancy);
                         }
+                        // (A brick that only the warm viewpoint wants is no part of what the planner of the swaps looks at: it is looked at once the brick is wanted by
+                        // the viewer, and the viewer moving says so.)
                         if for_the_warm_ball_alone {
                             self.warm_waiting.insert(coordinate);
+                        } else {
+                            self.ready_serial += 1;
                         }
-                        self.ready_serial += 1;
                         continue;
                     }
                     self.states.deliver(coordinate, mesh.byte_size());
