@@ -2655,3 +2655,10 @@ Built: `games/voxunami_cave/tests/one_instant_in_a_tick.rs`, two tests `#[ignore
 ## Removing the skew, phase 1: single ships on rails placed after the step (2026-11-22)
 
 Built as the decision file says (`decisions/joints-and-cars.md`, 4c-5-4d phase 1). The first version was wrong in one way the whole suite found (`renumbering.rs`: a ship renumbered in the tick was treated as placed by a rail, so the lag code put it back a tick and a walker aboard fell off), and the set is now of the ships that were placed at the start, not of those that wait. The old trap that a rail fitted in an action 'for the clock's time' is a tick off is now the rule for every ship on a rail before the step (`orbit.rs` fits for clock - 1). Tests: `one_instant_in_a_tick.rs` (5; the two of phase 0 no longer ignored); 4,103 passed, 0 failed. Mutants: 4 of 6 killed; the two that survive are believed equivalent (see the decision file). Phase 2 (ships with a frame, groups, the kick) is next.
+
+## Removing the skew, phase 2: ships with a frame, groups and the kick (2026-11-22)
+
+Built as the decision file says (`decisions/joints-and-cars.md`, 4c-5-4d phase 2). It was less than feared: the groups' own rule (`place_group` moves a group to its next point and speed whatever the bodies did inside it) already
+fitted placing after the step, and the oracle tests of hits (momentum, pivot gaps to 1e-3, the kick once) passed unmodified. The one piece that needed thought was the kick, which the rail's placing would erase: it is now `Kick { moved, sped }`
+given after the rail has put the group. A mutant that left the displacement out survived the old tests (a hit moves the chain 0.07 to 0.5 voxels in the tick, under every tolerance), and a test was added for it. 4,108 passed, 0 failed.
+Phase 3 (planets, what they carry, the players' speed against their carrier) is next and is the risky one: the first experiment (deleting the first placing alone) broke the carrying hand-over by exactly a tick of the planet's speed.

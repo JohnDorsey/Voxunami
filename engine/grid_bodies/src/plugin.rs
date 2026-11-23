@@ -697,7 +697,17 @@ impl Follow {
     /// from its place at the start of the tick: to put the two in one place (the contact ghost does) the first is put back by one tick of its speed. A frame that moves itself has the
     /// shift of the start of the tick, and is as it is, **except while a planet carries its group**: the world has moved the group by the planet's displacement at the start of the
     /// tick, as it has what is in the planet's own frame, so it is put back by the planet's speed (`group_hit_beside_a_planet_on_a_rail.rs`).
-    fn at_the_start_of_the_tick(self, time_step: f64) -> Follow {
+    fn at_the_start_of_the_tick(
+        self,
+        time_step: f64,
+        left_for_the_step: &BTreeSet<GridId>,
+    ) -> Follow {
+        // (A frame of a ship or a group on a rail that the world left for the step is at the start of the tick already.)
+        if let Followed::RailPoint(anchor) | Followed::RailGroup(anchor) = self.followed
+            && left_for_the_step.contains(&anchor)
+        {
+            return self;
+        }
         // (A frame that moves itself is as it is, **but for the planet that carries it**: the world has moved what a planet carries by the planet's displacement of this tick, at
         // the start of it, and the frame's shift has it. A group that a planet carries and a ship in the planet's own frame are at the planet's place of the end of the tick, both,
         // and are put back by the planet's speed, both; one that went back and one that did not would be a tick of the planet's speed apart, 63 voxels at 1,257 a second.)
@@ -1028,6 +1038,8 @@ struct Bodies {
     ghosts: BTreeMap<GridId, MechanismGhost>,
     /// The frames that a ghost corrected a body of in the last step: a hit on a group that is on a rail, where it is a kick (`hold_groups_at_their_points`).
     corrected_frames: BTreeSet<FrameKey>,
+    /// The anchors of the frames of ships and groups on rails that the world did not place at the start of this tick (it places them after the step), as of `follow_points`.
+    rail_frames_left_for_the_step: BTreeSet<GridId>,
     report: Arc<Mutex<BodiesReport>>,
 }
 
@@ -1092,6 +1104,7 @@ impl Bodies {
             grounded: BTreeSet::new(),
             ghosts: BTreeMap::new(),
             corrected_frames: BTreeSet::new(),
+            rail_frames_left_for_the_step: BTreeSet::new(),
             report,
         }
     }
@@ -1701,9 +1714,6 @@ impl Bodies {
         self.ghosts_after_the_step();
         self.note_the_groups_on_the_ground();
         let kicked = self.hold_groups_at_their_points(world);
-        for anchor in &kicked {
-            world.take_group_off_its_rail(*anchor);
-        }
         if !kicked.is_empty() {
             self.count(|report| report.rail_kicks += kicked.len() as u64);
         }
@@ -1740,8 +1750,19 @@ impl Bodies {
                 .max(report.ship_bricks_made_last_tick);
         });
         self.write_back(world);
-        // (The ships whose rails waited for the step are put now, so that every ship is at the place of the end of the tick.)
+        // (The ships whose rails waited for the step are put now, so that every ship is at the place of the end of the tick. A ship or a group that was hit is put by its rail
+        // as the others are, **and then given what the hit did to it**, and is taken off its rail: a ship that the world had placed already has it in its places.)
+        let waited: Vec<bool> = kicked
+            .iter()
+            .map(|kick| !world.is_placed_by_a_rail(kick.anchor))
+            .collect();
         world.place_the_rails_that_waited();
+        for (kick, waited) in kicked.iter().zip(waited) {
+            if waited {
+                world.give_a_group_what_a_hit_did(kick.anchor, kick.moved, kick.sped);
+            }
+            world.take_group_off_its_rail(kick.anchor);
+        }
         // (After the step, where the world has every ship at the place of the end of the tick: a ship on a rail is no tick ahead of the others, and a ship that docks with it does not
         // have to be put back a tick to be measured against it.)
         self.dock_ships_on_rails(world);
@@ -1987,6 +2008,18 @@ impl Bodies {
 
     /// Where each frame that goes with a point is, and how fast it goes: the point's displacement since the frame was made, and its velocity.
     fn follow_points(&mut self, world: &ServerWorld) {
+        self.rail_frames_left_for_the_step = self
+            .frames
+            .values()
+            .filter_map(|frame| match frame.follow?.followed {
+                Followed::RailPoint(anchor) | Followed::RailGroup(anchor)
+                    if !world.is_placed_by_a_rail(anchor) =>
+                {
+                    Some(anchor)
+                }
+                _ => None,
+            })
+            .collect();
         for follow in self
             .frames
             .values_mut()
@@ -2685,18 +2718,25 @@ impl Bodies {
     /// does. **For a group that is off a rail and alone nothing is the authority but the bodies and the pull of the world**: what the group did as a whole in the step (the move
     /// of its centre of mass and the speed it gained) goes into the follow of the frame, with the pull at the point (see [`Follow::advance`]), and the group is put back at the
     /// point and at rest in it, which changes nothing of where its ships are in the world; an edit that moves the centre of mass does not step the group.
-    fn hold_groups_at_their_points(&mut self, world: &ServerWorld) -> Vec<GridId> {
+    fn hold_groups_at_their_points(&mut self, world: &ServerWorld) -> Vec<Kick> {
         let time_step = self.config.settings.time_step;
         let mut kicked = Vec::new();
         for (key, frame) in &mut self.frames {
             // A ship alone on a rail that a stranger hit: **the kick**, as for a group (below). Nothing else is held for it: it has no joint, and the rail holds its point.
             if let Some(Follow {
                 followed: Followed::RailPoint(ship),
+                anchor,
                 ..
             }) = frame.follow
             {
                 if self.corrected_frames.contains(key) {
-                    kicked.push(ship);
+                    let (moved, sped) =
+                        what_the_bodies_did_to(frame, anchor).unwrap_or(([0.0; 3], [0.0; 3]));
+                    kicked.push(Kick {
+                        anchor: ship,
+                        moved,
+                        sped,
+                    });
                 }
                 continue;
             }
@@ -2714,39 +2754,22 @@ impl Bodies {
             if let Followed::RailGroup(group) = followed
                 && self.corrected_frames.contains(key)
             {
-                kicked.push(group);
+                let (moved, sped) =
+                    what_the_bodies_did_to(frame, anchor).unwrap_or(([0.0; 3], [0.0; 3]));
+                kicked.push(Kick {
+                    anchor: group,
+                    moved,
+                    sped,
+                });
                 continue;
             }
             // (A group with a ship in it that is being made is not whole: it is held where it is until the ship is made, and then put at its point.)
             if frame.ships.values().any(|record| record.making.is_some()) {
                 continue;
             }
-            let (mut mass, mut apart, mut speed) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
-            for (id, record) in &frame.ships {
-                if record.mass <= 0.0 || record.kind == BodyKind::Fixed {
-                    continue;
-                }
-                let Some(state) = frame.bodies.state(BodyId(id.get())) else {
-                    continue;
-                };
-                let Some(middle) = pose_of(&state).local_to_world(WorldPosition::new(
-                    BrickCoordinate::ORIGIN,
-                    record.centre_of_mass,
-                )) else {
-                    continue;
-                };
-                let from_the_point = middle.relative_to(anchor);
-                for axis in 0..3 {
-                    apart[axis] += record.mass * from_the_point[axis];
-                    speed[axis] += record.mass * state.linear_velocity[axis];
-                }
-                mass += record.mass;
-            }
-            if mass <= 0.0 {
+            let Some((moved, sped)) = what_the_bodies_did_to(frame, anchor) else {
                 continue;
-            }
-            let moved = apart.map(|part| part / mass);
-            let sped = speed.map(|part| part / mass);
+            };
             frame
                 .bodies
                 .shift_bodies(moved.map(|part| -part), sped.map(|part| -part));
@@ -2862,6 +2885,42 @@ impl Bodies {
             }
         }
     }
+}
+
+/// A ship or a group on a rail that a stranger hit in this step: what the bodies did to it as a whole besides going along its rail (its centre of mass is `moved` voxels from the
+/// frame's point and goes `sped` against the frame), which the rail's place does not have.
+#[derive(Clone, Copy, Debug)]
+struct Kick {
+    anchor: GridId,
+    moved: [f64; 3],
+    sped: [f64; 3],
+}
+
+/// How far the centre of mass of the ships in a frame that weigh something is from `anchor`, the frame's point, and how fast it goes against the frame: the mass-weighted mean of
+/// the bodies'. `None` if nothing in the frame weighs anything.
+fn what_the_bodies_did_to(frame: &Frame, anchor: WorldPosition) -> Option<([f64; 3], [f64; 3])> {
+    let (mut mass, mut apart, mut speed) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
+    for (id, record) in &frame.ships {
+        if record.mass <= 0.0 || record.kind == BodyKind::Fixed {
+            continue;
+        }
+        let Some(state) = frame.bodies.state(BodyId(id.get())) else {
+            continue;
+        };
+        let Some(middle) = pose_of(&state).local_to_world(WorldPosition::new(
+            BrickCoordinate::ORIGIN,
+            record.centre_of_mass,
+        )) else {
+            continue;
+        };
+        let from_the_point = middle.relative_to(anchor);
+        for axis in 0..3 {
+            apart[axis] += record.mass * from_the_point[axis];
+            speed[axis] += record.mass * state.linear_velocity[axis];
+        }
+        mass += record.mass;
+    }
+    (mass > 0.0).then(|| (apart.map(|part| part / mass), speed.map(|part| part / mass)))
 }
 
 /// The docking ports of a ship by the brick they are in (a ship's record keeps them so).

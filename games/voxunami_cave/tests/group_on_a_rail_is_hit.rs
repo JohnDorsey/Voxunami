@@ -219,6 +219,39 @@ fn a_wall_that_hits_a_chain_on_its_rail_takes_it_off_the_rail_at_the_touch_with_
     }
 }
 
+/// The tick of the touch moves the chain's centre along x by what the bodies moved it in that tick (the rail has it going along z only, and the chain had no speed along x): the
+/// way the chain goes after, and no farther than that speed takes it in a tick, and not nothing: the rail puts the chain at its point and what the hit did is given after it
+/// (2026-11-22, 4c-5-4d phase 2; a mutant that left the displacement out survived the momentum tests).
+#[test]
+fn the_tick_of_the_touch_moves_the_chain_by_what_the_bodies_moved_it_and_not_by_nothing() {
+    for closing in [50.0, 150.0] {
+        let (mut scene, _, ships, speed, rail) = a_chain_on_its_rail();
+        send_a_wall(&mut scene, &ships, speed, closing, 0.0);
+        scene.ticks(2);
+        let mut before = centre_of(&scene, &ships).0[0];
+        let mut moved = None;
+        for tick in 0..100 {
+            scene.ticks(1);
+            let (centre, velocity) = centre_of(&scene, &ships);
+            if rail_of(&scene, ships[0]) != Some(rail.clone()) {
+                moved = Some((centre[0] - before, velocity[0], tick));
+                break;
+            }
+            before = centre[0];
+        }
+        let (moved, speed_after, _) = moved.expect("the rail came off");
+        let in_a_tick = speed_after / 20.0;
+        assert!(
+            moved * speed_after > 0.0 && moved.abs() > 0.05 * in_a_tick.abs(),
+            "closing {closing}: the tick of the touch moved the chain {moved} along x and left it going {speed_after}"
+        );
+        assert!(
+            moved.abs() <= 1.05 * in_a_tick.abs(),
+            "closing {closing}: the tick of the touch moved the chain {moved} along x, more than its speed {speed_after} takes it in a tick"
+        );
+    }
+}
+
 #[test]
 fn a_chain_that_was_hit_is_put_on_a_new_rail_when_the_wall_has_gone_and_the_rail_is_the_chains() {
     let (mut scene, report, ships, speed, rail) = a_chain_on_its_rail();

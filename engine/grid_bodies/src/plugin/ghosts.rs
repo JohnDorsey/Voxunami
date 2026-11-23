@@ -18,8 +18,10 @@
 //! the speed the rail has and the hit gives them: the exact change that the contact made, in the group's momentum (the ghost's correction is a difference of two worlds, so the
 //! kick is the sum of the pairs' impulses) and the turn of each car, which stays in the frame. The world is told (`ServerWorld::take_group_off_its_rail`) and the group goes on from
 //! where it is, off its rail, as a group that is alone; a second after it is quiet it is fitted a rail again. **A frame that the world moves has its shift at the end of the tick**
-//! (a rail puts a group at its place of the end of the tick at the start of it) **and a free body is at its place of the start**: the ghost puts the first back by a tick of its speed
-//! (`Follow::at_the_start_of_the_tick`), and so does the search for what is near (`ServerWorld::ships_near_group_lagging`).
+//! (a rail put a group at its place of the end of the tick at the start of it) **and a free body is at its place of the start**: the ghost put the first back by a tick of its speed
+//! (`Follow::at_the_start_of_the_tick`), and so did the search for what is near (`ServerWorld::ships_near_group_lagging`). **Since 4c-5-4d (2026-11-22) the world leaves the ships and
+//! groups on coasting rails round a planet where the last tick left them until the bodies have stepped, and places them after it**, so those frames are at the start of the tick
+//! like the rest (`Bodies::rail_frames_left_for_the_step`: nothing is put back for them); a frame of a planet is still put back.
 //!
 //! **A ship alone on a rail** (2026-11-18, step 4c-5-4c) is a mechanism too, while another ship is near it: the world says which (`ServerWorld::has_a_stranger_near_on_its_rail`, by
 //! the room that used to take a ship off its rail), and `Followed::of` gives such a ship a `Followed::RailPoint` frame, a free body at the rail's point, **made when a stranger comes
@@ -171,12 +173,15 @@ impl Bodies {
         let place = match frame.follow {
             None => state.position,
             Some(follow) => follow
-                .at_the_start_of_the_tick(time_step)
+                .at_the_start_of_the_tick(time_step, &self.rail_frames_left_for_the_step)
                 .world(state.position)?,
         };
         Some(BodyState {
             position: local_in(
-                reference.map(|reference| reference.at_the_start_of_the_tick(time_step)),
+                reference.map(|reference| {
+                    reference
+                        .at_the_start_of_the_tick(time_step, &self.rail_frames_left_for_the_step)
+                }),
                 place,
             )?,
             linear_velocity: velocity_in(

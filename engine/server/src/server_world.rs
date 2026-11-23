@@ -1553,8 +1553,8 @@ impl ServerWorld {
         self.place_rails(ticks_per_second);
     }
 
-    /// Whether a ship's rail is left to be placed after the bodies' step: it is alone, rides a coasting rail that goes round a planet or a point, is not turning, has no stranger
-    /// near it and no torque waiting (so that it has no frame of its own in the step).
+    /// Whether a ship's rail is left to be placed after the bodies' step: it rides a coasting rail that goes round a planet or a point, **alone or as the anchor of a group** (a
+    /// ship with a frame of its own in the bodies, or a group's frame, is at the place of the last tick's end in it, as the free ships are).
     fn waits_for_the_step(&self, id: GridId) -> bool {
         let grids = self.data.grids();
         let Some(ship) = grids.get(id) else {
@@ -1569,13 +1569,28 @@ impl ServerWorld {
                 None => false,
             };
         ship.terrain.is_none()
-            && !grids.has_partners(id)
-            && ship.angular_velocity == [0.0; 3]
             && ship.rail.as_ref().is_some_and(|rail| {
                 coasting::is_a_coasting_rail(rail) && goes_round_what_is_placed_first(rail)
             })
-            && !self.has_a_stranger_near_on_its_rail(id)
-            && !self.has_a_torque_waiting(id)
+            && (!grids.has_partners(id)
+                || self
+                    .rail_group_of(id)
+                    .is_some_and(|group| group.anchor == id))
+    }
+
+    /// Gives a group (a ship alone is one) what the bodies did to it as a whole in this tick besides going along its rail, **after the rail has put it** (see
+    /// [`ServerWorld::place_the_rails_that_waited`]): every ship of it is moved by `moved` voxels and goes `sped` faster. It is the kick of a hit on a ship or a group that rides a
+    /// rail, which the rail's own place and speed do not have.
+    pub fn give_a_group_what_a_hit_did(&mut self, anchor: GridId, moved: [f64; 3], sped: [f64; 3]) {
+        for member in self.data.grids().group_of(anchor) {
+            let Some(ship) = self.data.grids_mut().get_mut(member) else {
+                continue;
+            };
+            if let Some(position) = ship.pose.position.translated_by_voxels(moved) {
+                ship.pose.position = position;
+            }
+            ship.linear_velocity = [0, 1, 2].map(|axis| ship.linear_velocity[axis] + sped[axis]);
+        }
     }
 
     /// Puts the ships on rails that the start of the tick left for the step where their rails say, now that the bodies have stepped: after it every ship is at the place of the end of

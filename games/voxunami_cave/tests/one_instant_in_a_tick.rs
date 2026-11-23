@@ -16,6 +16,7 @@
 
 mod common;
 
+use common::chains::{a_chain, a_chain_in_orbit, put_on_its_rail};
 use common::docking::{make_going, stones};
 use common::rails::put_on_a_rail_near_another_ship;
 use common::{Scene, circular_speed, length, minus, pose_at, ship_id};
@@ -301,4 +302,154 @@ fn put_on_a_rail_near_another_ship_of(
     ship: GridId,
 ) -> impl FnOnce(&mut ServerWorld) + Send + 'static {
     move |world| put_on_a_rail_near_another_ship(world, ship)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Phase 2 (2026-11-22): a ship with a frame of its own (it turns, or has a stranger near, or a torque waits) and a group of ships on a rail.
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+type Reader = std::sync::Arc<dyn Fn(&world_storage::WorldData) -> [f64; 3] + Send + Sync>;
+
+/// What a reader says of the world at the four instants of a tick.
+struct Reads {
+    /// At the end of the tick before.
+    before: [f64; 3],
+    /// Where a system that runs before the bodies' step reads it.
+    in_the_tick: [f64; 3],
+    /// At the end of the tick.
+    end: [f64; 3],
+}
+
+fn reading_tick(
+    scene: &mut Scene,
+    read: &Reader,
+    action: impl FnOnce(&mut ServerWorld) + Send + 'static,
+) -> Reads {
+    let before = read(scene.rig.server.world());
+    let first: std::sync::Arc<std::sync::Mutex<[f64; 3]>> = Default::default();
+    let (sink, reader) = (std::sync::Arc::clone(&first), std::sync::Arc::clone(read));
+    scene.run(move |world| {
+        *sink.lock().unwrap() = reader(world.data());
+        action(world);
+    });
+    Reads {
+        before,
+        in_the_tick: *first.lock().unwrap(),
+        end: read(scene.rig.server.world()),
+    }
+}
+
+/// A chain of three cars on a rail round the home planet, riding it.
+fn a_chain_on_a_rail() -> (Scene, Vec<GridId>) {
+    let (mut scene, _) = Scene::reporting_in_a_new_world();
+    let speed = circular_speed(&scene, 0, DISTANCE);
+    let ships = a_chain_in_orbit(&mut scene, a_chain(), DISTANCE, speed);
+    put_on_its_rail(&mut scene, &ships, speed, vec![([0.0; 3], [0.0; 3]); 3]);
+    scene.ticks(10);
+    assert!(rides(&scene, ships[0]), "the chain rides its rail");
+    (scene, ships)
+}
+
+/// A ship alone on a rail that has been given a turn, so that it has a frame of its own in the bodies (it turns on its rail).
+fn a_turning_ship_on_a_rail() -> (Scene, GridId) {
+    let (mut scene, ship, _) = a_ship_on_a_rail();
+    scene.run(move |world| world.apply_grid_torque(ship, [0.0, 0.0, 1.0e5]).unwrap());
+    scene.ticks(3);
+    let grids = scene.rig.server.world().grids();
+    assert!(
+        grids.get(ship).unwrap().angular_velocity != [0.0; 3],
+        "the ship turns"
+    );
+    assert!(rides(&scene, ship), "and rides its rail");
+    (scene, ship)
+}
+
+fn reader_of_the_chain(ships: Vec<GridId>) -> Reader {
+    std::sync::Arc::new(move |world| {
+        world
+            .grids()
+            .group_centre(&ships)
+            .expect("the cars are in memory")
+            .position
+            .in_voxels()
+    })
+}
+
+fn reader_of_the_ship(ship: GridId) -> Reader {
+    std::sync::Arc::new(move |world| world.grids().get(ship).unwrap().pose.position.in_voxels())
+}
+
+/// Four ticks of a thing that rides a rail, each read as a system before the bodies' step reads it and as one after them does.
+fn the_places_in_each_tick(scene: &mut Scene, read: &Reader) {
+    let after: std::sync::Arc<std::sync::Mutex<[f64; 3]>> = Default::default();
+    let (sink, reader) = (std::sync::Arc::clone(&after), std::sync::Arc::clone(read));
+    scene.watch(move |world| *sink.lock().unwrap() = reader(world.data()));
+    for tick in 0..4 {
+        let reads = reading_tick(scene, read, |_| {});
+        assert_eq!(
+            reads.in_the_tick,
+            reads.before,
+            "tick {tick}: a system before the step read it {} voxels from where the last tick left it",
+            apart(reads.in_the_tick, reads.before)
+        );
+        assert_eq!(
+            *after.lock().unwrap(),
+            reads.end,
+            "tick {tick}: a system after the bodies read it {} voxels from where the tick ended",
+            apart(*after.lock().unwrap(), reads.end)
+        );
+        assert!(
+            apart(reads.before, reads.end) > 30.0,
+            "tick {tick}: it went {} voxels",
+            apart(reads.before, reads.end)
+        );
+    }
+}
+
+#[test]
+fn a_group_on_a_rail_is_read_where_the_last_tick_left_it_before_the_step_and_where_the_tick_ends_after_it()
+ {
+    let (mut scene, ships) = a_chain_on_a_rail();
+    the_places_in_each_tick(&mut scene, &reader_of_the_chain(ships));
+}
+
+#[test]
+fn a_ship_with_a_frame_of_its_own_on_a_rail_is_read_where_the_last_tick_left_it_before_the_step_and_where_the_tick_ends_after_it()
+ {
+    let (mut scene, ship) = a_turning_ship_on_a_rail();
+    the_places_in_each_tick(&mut scene, &reader_of_the_ship(ship));
+}
+
+#[test]
+fn disturbing_a_car_of_a_group_on_a_rail_before_the_step_does_not_make_the_group_go_a_tick_too_far()
+{
+    let (mut undisturbed, ships) = a_chain_on_a_rail();
+    let (mut disturbed, same_ships) = a_chain_on_a_rail();
+    let (read, same_read) = (
+        reader_of_the_chain(ships.clone()),
+        reader_of_the_chain(same_ships.clone()),
+    );
+    assert_eq!(
+        read(undisturbed.rig.server.world()),
+        same_read(disturbed.rig.server.world())
+    );
+    let twin = reading_tick(&mut undisturbed, &read, |_| {});
+    let car = same_ships[1];
+    let hit = reading_tick(&mut disturbed, &same_read, move |world| {
+        let (velocity, spin) = {
+            let grid = world.data().grids().get(car).unwrap();
+            (grid.linear_velocity, grid.angular_velocity)
+        };
+        world.set_grid_velocity(car, velocity, spin).unwrap();
+    });
+    let (step_of_the_twin, step) = (apart(twin.before, twin.end), apart(hit.before, hit.end));
+    // (Measured before the change: about twice the twin's.)
+    assert!(
+        (step - step_of_the_twin).abs() < 0.5,
+        "the chain went {step} voxels in the tick, its twin {step_of_the_twin}"
+    );
+    assert!(
+        !rides(&disturbed, same_ships[0]),
+        "the chain was taken off its rail"
+    );
 }
