@@ -395,8 +395,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The placeholder specular pictures (2026-11-13): the stream is exactly 2,048 bytes longer (the package's, 7,220,093 to 7,222,141; no length number crossed a byte boundary), its hash moved to 15_826_922_587_325_389_508, and the saved world's did not.
 /// A ship may be told of as far away (2026-11-17; protocol 12): the stream's hash moved to 139_190_248_021_624_789 and nothing else did (the length and the saved world are the same: the version in the welcome is the only byte that
 /// changed). With the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
+/// Free regions in an interest (2026-11-23; protocol 13): the stream is 5 bytes longer (7,222,141 to 7,222,146: the count of free regions in each of its 5 `InterestChanged`), its hash moved to 15_858_216_659_142_805_030 for that and for the
+/// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 139_190_248_021_624_789, and the old length came back.
 const PINNED: (u64, usize, u64) = (
-    139_190_248_021_624_789,
-    7_222_141,
+    15_858_216_659_142_805_030,
+    7_222_146,
     15_594_210_036_057_493_535,
 );

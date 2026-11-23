@@ -34,6 +34,7 @@ impl Client {
         self.send(&ClientMessage::SetInterest {
             level,
             region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+            free: Vec::new(),
         });
     }
 

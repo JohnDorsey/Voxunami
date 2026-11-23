@@ -200,7 +200,7 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// The level the player is in, and so the one they ask to watch.
     level: LevelIndex,
     /// Where and in which level the server was last asked to send what the player sees.
-    watched_center: Option<(LevelIndex, BrickCoordinate)>,
+    watched_center: Option<(LevelIndex, BrickCoordinate, Option<BrickCoordinate>)>,
     /// The level the meshes are of: the one the server last confirmed watching.
     meshed_level: Option<LevelIndex>,
     command_replies: Vec<String>,
@@ -471,8 +471,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// Keeps the terrain of a grid (the root grid of a level, or a planet) ready to be drawn from `place`, in that grid's own coordinates, besides the camera's place: what is
     /// drawn from there is made, after what the camera needs, and held hidden on the graphics card (`docs/specs/viewpoints-spec.md`, phase 3), so that the camera going there is
-    /// a move of pictures. It reads the same detail settings as the camera, and the server is not told of it (it sends the edits of the camera's region only, so an edit near
-    /// `place` and far from the camera is not seen until the camera is there). Needs [`Session::hold_hidden_pictures`]. `None`, the default, keeps nothing ready.
+    /// a move of pictures. It reads the same detail settings as the camera. The server is told of a place in the level's own terrain, and sends the edited bricks round it as
+    /// it does round the camera (`docs/specs/viewpoints-spec.md`, 6.3; a planet's bricks are known whole whenever the planet is), but **not yet the coarse nodes** that an edit
+    /// changes far from the camera (phase 4b). Needs [`Session::hold_hidden_pictures`]. `None`, the default, keeps nothing ready.
     pub fn keep_ready(&mut self, grid: GridId, place: Option<WorldPosition>) {
         match place {
             Some(place) => {
@@ -918,14 +919,26 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// the renderer must change.
     pub fn update_view(&mut self) -> Vec<MeshUpdate> {
         let center = self.camera.position.brick();
-        if self.mode == Mode::Playing && self.watched_center != Some((self.level, center)) {
-            let region = BrickBox::around(
-                center,
-                (self.view_radius_bricks + self.watch_margin_bricks()) as u32,
-            );
+        // The place kept ready in the level's own terrain is watched as well, as a free region (a planet's bricks are all known of whenever it is: see
+        // `docs/specs/viewpoints-spec.md`, 6.3).
+        let kept_ready = self
+            .warm_places
+            .get(&GridId::root(self.level))
+            .map(|place| place.brick());
+        if self.mode == Mode::Playing
+            && self.watched_center != Some((self.level, center, kept_ready))
+        {
+            let radius = (self.view_radius_bricks + self.watch_margin_bricks()) as u32;
             // A closed connection shows up in the next `advance`, which reports it.
-            let _ = self.client.watch(self.level, region);
-            self.watched_center = Some((self.level, center));
+            let _ = self.client.watch_with_free(
+                self.level,
+                BrickBox::around(center, radius),
+                kept_ready
+                    .map(|place| BrickBox::around(place, radius))
+                    .into_iter()
+                    .collect(),
+            );
+            self.watched_center = Some((self.level, center, kept_ready));
         }
         let mut updates = Vec::new();
         if self.follows_level_detail

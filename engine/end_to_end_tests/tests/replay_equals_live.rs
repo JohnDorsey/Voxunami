@@ -297,7 +297,7 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_923;
+const PINNED_RECORDING_LENGTH: usize = 84_925;
 // Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
 // setting the version back to 2 gave the old checksum.
 // Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
@@ -314,7 +314,10 @@ const PINNED_RECORDING_LENGTH: usize = 84_923;
 // and with the version put back to 10 (and the wire to the `f32` form, which changes nothing here) the old checksum, 3_004_670_074, came back.
 // A ship may be told of as far away (2026-11-17; protocol 12): the checksum changed once, for the protocol version in the welcome (12, was 11); the length did not (no ship is told of in
 // this recording), and with the version put back to 11 the old checksum, 4_054_084_584, came back.
-const PINNED_RECORDING_CHECKSUM: u32 = 3_889_045_335;
+// Free regions in an interest (2026-11-23; protocol 13): the length moved by two bytes (84,923 to 84,925), the count of free regions that each of the two `InterestChanged` of this recording
+// has, and the checksum for that and for the version in the welcome (13, was 12). Checked by taking the recording apart: with the count taken out of those two frames and the version put back to 12,
+// the old length and the old checksum, 3_889_045_335, came back.
+const PINNED_RECORDING_CHECKSUM: u32 = 74_998_034;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

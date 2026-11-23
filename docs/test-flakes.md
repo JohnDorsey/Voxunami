@@ -12,6 +12,15 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 
 ## Open
 
+### `renderer/tests/gpu_rendering/facing_cull.rs`: `the_pictures_of_coarse_nodes_are_the_same_to_the_pixel_whether_or_not_the_faces_that_look_away_are_drawn`
+
+- **The test.** Draws a scene of coarse nodes from seeded random cameras (the same cameras every run) with all six faces of each brick and again with only the faces that can look at the camera, and asserts that the two pictures are the same pixel for pixel (`differing == 0`, `facing_cull.rs:79`).
+- **Occurrence 1: 2026-11-23**, working tree of phase 4a (the protocol, the server, the client and the session; nothing of the renderer, which does not depend on them), the full gate `cargo test --workspace --no-fail-fast`, dev profile, Windows. The whole `gpu_rendering` binary took **1,086 s** in that run (818 s when it was rerun, where the binary alone takes minutes), and **another session of the owner's was running the same binary from another worktree at the same time** (`.claude/worktrees/physics`, seen in the process list during the run). The assertion at line 79 failed; **the message with the number of pixels was not kept** (only the line of the panic was).
+- **Reruns.** The test file (4 tests) alone, once: passed. The whole `gpu_rendering` binary (208 tests, the way the gate runs it), once: **0 failures in 2** (whether the other session was running the same binary during either rerun was not looked at). The earlier whole-workspace run of the same working tree, an hour before, passed it.
+- **What it depends on [read].** The adapters the test runs on (it compares two pictures on each), and a `settled` render of each picture before the comparison. A pixel that differs between the two draws is a rounding on the edge of a quad, which the test aims at by putting cameras exactly on the planes of a brick's edges.
+- **Beliefs about the cause.** **Believed, not tested**: the same kind as the one-pixel differences of `games/voxunami_cave/tests/screen.rs` below (a rounding on one adapter, here under the load of two GPU test runs at once); **not checked**: that this test depends on the load at all, or on which adapter failed.
+- **What would settle it.** Print the adapter and the number and place of the differing pixels in the assertion's message (the first is in it already; the adapter's name is not), and run the file in a loop with another copy of the binary running at the same time.
+
 ### `world_view/tests/lod.rs`: `a_view_that_jumps_from_far_away_to_the_ground_is_refined_a_level_at_a_time_and_never_has_a_hole`
 
 - **The test.** A view settled at 100,000 voxels up jumps to the ground; the test watches the updates and asserts that at least 2 of the shown states had a step on the way (`between_seen >= 2`, `lod.rs` about line 502).

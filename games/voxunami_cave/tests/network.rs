@@ -372,6 +372,7 @@ fn a_player_who_asks_to_watch_more_than_the_server_allows_is_refused_with_a_reas
             ClientMessage::SetInterest {
                 level: LevelIndex::MAIN,
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 40),
+                free: Vec::new(),
             }
             .encode(),
         )

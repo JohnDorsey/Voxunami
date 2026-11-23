@@ -129,6 +129,7 @@ impl Client {
         self.send(&ClientMessage::SetInterest {
             level: LevelIndex::MAIN,
             region: BrickBox::around(BrickCoordinate::new(brick[0], brick[1], brick[2]), radius),
+            free: Vec::new(),
         });
     }
 

@@ -60,9 +60,23 @@ impl TestClient {
     }
 
     fn watch(&mut self, center: BrickCoordinate, radius: u32) {
+        self.watch_with_free(center, radius, &[]);
+    }
+
+    /// Watches a region round `center` and, as well, free regions (of a viewpoint with no body), each a centre and a radius.
+    fn watch_with_free(
+        &mut self,
+        center: BrickCoordinate,
+        radius: u32,
+        free: &[(BrickCoordinate, u32)],
+    ) {
         self.send(&ClientMessage::SetInterest {
             level: LevelIndex::MAIN,
             region: BrickBox::around(center, radius),
+            free: free
+                .iter()
+                .map(|&(center, radius)| BrickBox::around(center, radius))
+                .collect(),
         });
     }
 
@@ -370,6 +384,7 @@ fn refusal_cases() -> Vec<(&'static str, Vec<Vec<u8>>, &'static str)> {
                 ClientMessage::SetInterest {
                     level: LevelIndex::MAIN,
                     region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                    free: Vec::new(),
                 }
                 .encode(),
             ],
@@ -518,6 +533,7 @@ fn watching_a_region_tells_the_client_which_generator_made_each_part() {
         ServerMessage::InterestChanged {
             level: LevelIndex::MAIN,
             region,
+            free: _,
             assignments,
         },
         ServerMessage::TickCompleted { tick },
@@ -614,6 +630,7 @@ fn unedited_terrain_is_never_sent_and_edited_bricks_are_sent_when_they_come_into
     let ServerMessage::InterestChanged {
         level: LevelIndex::MAIN,
         region,
+        free: _,
         assignments,
     } = &messages[0]
     else {
@@ -936,6 +953,7 @@ fn watching_more_than_the_limit_is_refused_without_the_server_doing_the_work() {
     greedy.send(&ClientMessage::SetInterest {
         level: LevelIndex::MAIN,
         region: BrickBox::around(BrickCoordinate::ORIGIN, u32::MAX),
+        free: Vec::new(),
     });
     let report = harness.server.step();
     assert!(matches!(&report.left[..], [(_, LeaveReason::Refused(_))]));
@@ -1144,6 +1162,7 @@ fn a_region_that_moves_partly_sends_only_the_bricks_it_gains_and_shrinking_sends
         ServerMessage::InterestChanged {
             level: LevelIndex::MAIN,
             region,
+            free: _,
             assignments,
         },
         ServerMessage::TickCompleted { .. },
@@ -1237,6 +1256,7 @@ impl TestClient {
         self.send(&ClientMessage::SetInterest {
             level,
             region: BrickBox::around(center, radius),
+            free: Vec::new(),
         });
     }
 
@@ -2055,6 +2075,7 @@ fn every_client_is_told_what_it_watches_and_a_late_one_is_told_everything() {
             BrickCoordinate::new(7, 1, 1),
         )
         .unwrap(),
+        free: Vec::new(),
     });
     harness.server.step();
     assert_eq!(ids(late.received()), [1, 2, 3]);
@@ -2813,6 +2834,7 @@ fn a_client_that_watches_nothing_or_another_level_is_sent_no_ships() {
     client.send(&ClientMessage::SetInterest {
         level: second,
         region: BrickBox::around(BrickCoordinate::ORIGIN, 2),
+        free: Vec::new(),
     });
     harness.server.step();
     let messages = client.received();
@@ -3401,4 +3423,308 @@ fn the_ship_a_clients_body_is_aboard_takes_the_budget_of_bricks_before_a_ship_wi
         .flatten()
         .collect();
     assert_eq!(spawned, [a_ship_id(1)]);
+}
+
+// ---- Free regions: what a viewpoint with no body is sent (docs/specs/viewpoints-spec.md, 6.3) ----
+
+/// The bricks of the level's own terrain that `messages` hold the whole contents of, in order.
+fn bricks_given(messages: &[ServerMessage]) -> Vec<BrickCoordinate> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::BrickContents {
+                grid: GridId::MAIN,
+                brick,
+                ..
+            } => Some(*brick),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A harness whose world has an edited brick in each of these places (voxel coordinates).
+fn a_world_with_edits_at(places: &[[i128; 3]]) -> (Game, Harness) {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    for &place in places {
+        game.set_block(&mut world, place, "base_blocks:stone");
+    }
+    let harness = Harness::new(&game, world, ServerConfig::new(game_id()));
+    (game, harness)
+}
+
+#[test]
+fn a_free_region_is_sent_its_edited_bricks_and_the_edits_made_in_it_afterwards_and_no_one_else_is()
+{
+    let (game, mut harness) = a_world_with_edits_at(&[[1, 2, 3], [3000, 0, 0]]);
+    let marble = block_of(&game, "fancy_blocks:marble");
+    let dirt = block_of(&game, "base_blocks:dirt");
+    let mut watcher = harness.connect();
+    let mut elsewhere = harness.connect();
+    let mut builder = harness.connect();
+    harness.log_in(&mut [&mut watcher, &mut elsewhere, &mut builder]);
+    for client in [&mut watcher, &mut elsewhere, &mut builder] {
+        client.received();
+    }
+    // The body is far from the places that are edited; the free region is round bricks 0 to 3 along x.
+    let free = (brick(1, 0, 0), 2);
+    watcher.watch_with_free(brick(60, 0, 0), 1, &[free]);
+    elsewhere.watch(brick(60, 0, 0), 1);
+    harness.server.step();
+    let messages = watcher.received();
+    let ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
+        region,
+        free: told_free,
+        assignments,
+    } = &messages[0]
+    else {
+        panic!("{messages:?}");
+    };
+    assert_eq!(*region, BrickBox::around(brick(60, 0, 0), 1));
+    assert_eq!(*told_free, [BrickBox::around(free.0, free.1)]);
+    // Only the edited brick in the free region, not the one at 3000 voxels.
+    assert_eq!(bricks_given(&messages), [brick(0, 0, 0)]);
+    for watched in told_free[0].bricks() {
+        assert!(
+            assignments.iter().any(|a| a.cube.contains(watched)),
+            "{watched} has no assignment"
+        );
+    }
+    assert!(bricks_given(&elsewhere.received()).is_empty());
+    builder.received();
+
+    // A first edit in the free region sends the whole brick, a later one the change, as it does in the region of the body.
+    builder.place([100, 0, 0], marble);
+    harness.server.step();
+    let messages = watcher.received();
+    assert!(
+        matches!(
+            &messages[..],
+            [
+                ServerMessage::BrickContents {
+                    grid: GridId::MAIN,
+                    brick: edited,
+                    ..
+                },
+                ServerMessage::TickCompleted { .. },
+            ] if *edited == brick(3, 0, 0)
+        ),
+        "{messages:?}"
+    );
+    builder.place([101, 0, 0], dirt);
+    harness.server.step();
+    let messages = watcher.received();
+    assert!(
+        matches!(
+            &messages[..],
+            [
+                ServerMessage::VoxelEdits {
+                    grid: GridId::MAIN,
+                    brick: edited,
+                    ..
+                },
+                ServerMessage::TickCompleted { .. },
+            ] if *edited == brick(3, 0, 0)
+        ),
+        "{messages:?}"
+    );
+    // Whoever watches elsewhere is told nothing of either.
+    assert!(
+        elsewhere
+            .received()
+            .iter()
+            .all(|message| matches!(message, ServerMessage::TickCompleted { .. }))
+    );
+}
+
+#[test]
+fn a_brick_that_is_in_more_than_one_region_is_sent_once_and_its_edits_once() {
+    let (game, mut harness) = a_world_with_edits_at(&[[1, 2, 3]]);
+    let marble = block_of(&game, "fancy_blocks:marble");
+    let mut watcher = harness.connect();
+    let mut builder = harness.connect();
+    harness.log_in(&mut [&mut watcher, &mut builder]);
+    // The body's region and the free one share bricks 0 and 1 along x, and the edited brick (0, 0, 0) is one of them.
+    watcher.watch_with_free(BrickCoordinate::ORIGIN, 1, &[(brick(1, 0, 0), 1)]);
+    harness.server.step();
+    assert_eq!(bricks_given(&watcher.received()), [brick(0, 0, 0)]);
+    builder.received();
+    builder.place([5, 5, 5], marble);
+    harness.server.step();
+    let edits = watcher
+        .received()
+        .into_iter()
+        .filter(|message| {
+            matches!(
+                message,
+                ServerMessage::VoxelEdits {
+                    grid: GridId::MAIN,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(edits, 1);
+}
+
+#[test]
+fn moving_a_free_region_sends_what_is_new_to_the_client_and_nothing_it_already_has() {
+    let (_, mut harness) = a_world_with_edits_at(&[[1, 2, 3], [100, 0, 0], [200, 0, 0]]);
+    let mut watcher = harness.connect();
+    harness.log_in(&mut [&mut watcher]);
+    watcher.watch_with_free(brick(60, 0, 0), 1, &[(brick(1, 0, 0), 1)]);
+    harness.server.step();
+    assert_eq!(bricks_given(&watcher.received()), [brick(0, 0, 0)]);
+
+    // The free region moves along: it keeps brick 2 and gains bricks 3 to 6, which hold two edited bricks. Brick 0 is left behind and is not mentioned.
+    watcher.watch_with_free(brick(60, 0, 0), 1, &[(brick(4, 0, 0), 2)]);
+    harness.server.step();
+    let messages = watcher.received();
+    assert_eq!(
+        bricks_given(&messages),
+        [brick(3, 0, 0), brick(6, 0, 0)],
+        "{messages:?}"
+    );
+
+    // And back to where it was: brick 0 is new again.
+    watcher.watch_with_free(brick(60, 0, 0), 1, &[(brick(1, 0, 0), 1)]);
+    harness.server.step();
+    assert_eq!(bricks_given(&watcher.received()), [brick(0, 0, 0)]);
+
+    // The same request again changes nothing.
+    watcher.watch_with_free(brick(60, 0, 0), 1, &[(brick(1, 0, 0), 1)]);
+    harness.server.step();
+    assert!(matches!(
+        &watcher.received()[..],
+        [ServerMessage::TickCompleted { .. }]
+    ));
+}
+
+#[test]
+fn a_free_region_changes_nothing_in_the_world_and_still_says_which_generator_would_make_it() {
+    let (_, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    let flat = harness
+        .server
+        .world()
+        .main()
+        .terrain
+        .generators()
+        .runtime_id(&id("base_terrain:flat_v1"))
+        .unwrap();
+    let assigned = |harness: &Harness, at: BrickCoordinate| {
+        harness.server.world().main().terrain.assigned_generator(at)
+    };
+    assert_eq!(assigned(&harness, brick(0, 0, 0)), None);
+
+    // The body is far from the origin; the free region is round it.
+    client.watch_with_free(brick(60, 0, 0), 0, &[(BrickCoordinate::ORIGIN, 1)]);
+    harness.server.step();
+    let messages = client.received();
+    let ServerMessage::InterestChanged {
+        free, assignments, ..
+    } = &messages[0]
+    else {
+        panic!("{messages:?}");
+    };
+    assert_eq!(free.len(), 1);
+    // The body's region is assigned, as it always was; the free region is not.
+    assert!(assigned(&harness, brick(60, 0, 0)).is_some());
+    assert_eq!(assigned(&harness, brick(0, 0, 0)), None);
+    assert_eq!(assigned(&harness, brick(-1, -1, -1)), None);
+    // The client is told the generator that the origin would be given, for every brick of the free region, once the body goes there.
+    for watched in free[0].bricks() {
+        let told = assignments
+            .iter()
+            .find(|assignment| assignment.cube.contains(watched))
+            .unwrap_or_else(|| panic!("{watched} has no assignment"));
+        assert_eq!(told.generator, Some(flat.raw()));
+    }
+
+    // When the body comes to the place it is given the generator, the one it was told it would have.
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    assert_eq!(assigned(&harness, brick(0, 0, 0)), Some(flat));
+}
+
+#[test]
+fn the_free_regions_of_a_client_are_limited_in_number_and_in_bricks() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut config = ServerConfig::new(game_id());
+    config.maximum_free_regions = 2;
+    config.maximum_free_bricks = 27 + 8;
+    let mut harness = Harness::new(&game, game.new_world(), config);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    // Two regions of 27 and 8 bricks, exactly the most of both.
+    client.watch_with_free(
+        BrickCoordinate::ORIGIN,
+        0,
+        &[(brick(10, 0, 0), 1), (brick(30, 0, 0), 0)],
+    );
+    assert!(harness.server.step().left.is_empty());
+    // One region more than it may.
+    client.watch_with_free(
+        BrickCoordinate::ORIGIN,
+        0,
+        &[
+            (brick(10, 0, 0), 0),
+            (brick(30, 0, 0), 0),
+            (brick(50, 0, 0), 0),
+        ],
+    );
+    let report = harness.server.step();
+    assert!(
+        matches!(&report.left[..], [(_, LeaveReason::Refused(reason))] if reason.contains("free regions")),
+        "{:?}",
+        report.left
+    );
+
+    // More bricks than it may, in one region.
+    let mut greedy = harness.connect();
+    harness.log_in(&mut [&mut greedy]);
+    greedy.watch_with_free(BrickCoordinate::ORIGIN, 0, &[(brick(10, 0, 0), 2)]); // 125 bricks
+    let report = harness.server.step();
+    assert!(
+        matches!(&report.left[..], [(_, LeaveReason::Refused(reason))] if reason.contains("bricks")),
+        "{:?}",
+        report.left
+    );
+}
+
+#[test]
+fn what_reaches_a_place_reaches_the_body_of_a_client_and_not_its_free_regions() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_tick(|tick, world| {
+        if tick == Tick::new(5) {
+            world.send(
+                Audience::Watching(LevelIndex::MAIN, BrickCoordinate::ORIGIN),
+                id("test_game:near_origin"),
+                vec![3],
+            );
+        }
+    });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut body_there = harness.connect();
+    let mut free_there = harness.connect();
+    harness.log_in(&mut [&mut body_there, &mut free_there]);
+    body_there.watch(BrickCoordinate::ORIGIN, 0);
+    free_there.watch_with_free(brick(9, 9, 9), 0, &[(BrickCoordinate::ORIGIN, 1)]);
+    harness.server.step();
+    harness.server.step();
+    body_there.received();
+    free_there.received();
+
+    harness.server.step();
+    let heard = |messages: Vec<ServerMessage>| {
+        messages
+            .iter()
+            .any(|message| matches!(message, ServerMessage::GameMessage { .. }))
+    };
+    assert!(heard(body_there.received()));
+    assert!(!heard(free_there.received()));
 }

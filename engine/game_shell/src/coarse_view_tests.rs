@@ -15,7 +15,7 @@ use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_grid::ChannelIndex;
 use voxel_meshing::PackedBrickMesh;
-use voxel_space::{BrickCoordinate, GridId, VoxelCoordinate};
+use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 use world_view::MeshUpdate;
 
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
@@ -373,6 +373,55 @@ fn a_place_that_is_kept_ready_is_held_hidden_and_a_player_who_stands_there_draws
     assert_eq!(
         watcher.camera_place_in(GridId::MAIN),
         Some(watcher.camera.position)
+    );
+}
+
+/// Whether the player holds the edited brick at the origin, 350 voxels from where it is, after the crater was dug there, with a place beside the origin kept ready in
+/// the grid given (if one is), and whether it holds it after the place is not kept ready any more.
+fn holds_the_edited_brick_at_the_origin(kept_ready_in: Option<GridId>) -> (bool, bool) {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, WATCHER);
+    watcher.hold_hidden_pictures(64 << 20);
+    if let Some(grid) = kept_ready_in {
+        let there = camera_at([8.5, 60.0, 8.5], 0.0, 0.0).position;
+        watcher.keep_ready(grid, Some(there));
+    }
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    rig.dig_a_crater();
+    rig.settle(&mut watcher, &mut screen);
+    let holds = |player: &Player| {
+        player
+            .client()
+            .world()
+            .world()
+            .main()
+            .overrides
+            .brick(BrickCoordinate::ORIGIN)
+            .is_some()
+    };
+    let while_kept = holds(&watcher);
+    if let Some(grid) = kept_ready_in {
+        watcher.keep_ready(grid, None);
+    }
+    rig.settle(&mut watcher, &mut screen);
+    (while_kept, holds(&watcher))
+}
+
+#[test]
+fn the_edited_bricks_of_a_place_that_is_kept_ready_are_held_while_it_is_and_forgotten_when_it_is_not_any_more()
+ {
+    // The player is 350 voxels from the crater, farther than its bricks are watched: it holds them only for the place that is kept ready.
+    assert_eq!(holds_the_edited_brick_at_the_origin(None), (false, false));
+    assert_eq!(
+        holds_the_edited_brick_at_the_origin(Some(GridId::MAIN)),
+        (true, false)
+    );
+    // A place kept ready in another level is not a place of this level's terrain: nothing is watched for it.
+    assert_eq!(
+        holds_the_edited_brick_at_the_origin(Some(GridId::root(LevelIndex::new(1)))),
+        (false, false)
     );
 }
 

@@ -12,9 +12,9 @@ use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
 use crate::types::{ClientId, EntityId, Tick};
 use crate::wire::{
-    read_brick_box, read_brick_coordinate, read_entity_pose, read_grid, read_grid_pose, read_level,
-    write_brick_box, write_brick_coordinate, write_entity_pose, write_grid, write_grid_pose,
-    write_level,
+    read_brick_box, read_brick_coordinate, read_entity_pose, read_free_regions, read_grid,
+    read_grid_pose, read_level, write_brick_box, write_brick_coordinate, write_entity_pose,
+    write_free_regions, write_grid, write_grid_pose, write_level,
 };
 
 const KIND_WELCOME: u8 = 1;
@@ -144,13 +144,14 @@ pub struct GridChange {
 pub enum ServerMessage {
     /// The first message on a connection.
     Welcome(Welcome),
-    /// The client now watches exactly `region` of `level`: it should forget edited bricks outside it
-    /// (all of them, if it was watching another level). For every part of `region` it was not already
-    /// watching, `assignments` tells it which generator made the terrain, and `BrickContents` for
-    /// edited bricks follow.
+    /// The client now watches exactly `region` of `level` and the `free` regions (see [`ClientMessage::SetInterest`](crate::ClientMessage::SetInterest)): it should forget
+    /// edited bricks outside all of them (all of them, if it was watching another level). For every part of them it was not already
+    /// watching, `assignments` tells it which generator made the terrain (for a part of a free region that has no generator yet, the one it would have), and
+    /// `BrickContents` for edited bricks follow.
     InterestChanged {
         level: LevelIndex,
         region: BrickBox,
+        free: Vec<BrickBox>,
         assignments: Vec<GeneratorAssignment>,
     },
     /// The whole contents of an edited brick of a grid (the root grid of a level has the level's number), replacing whatever
@@ -224,11 +225,13 @@ impl ServerMessage {
             Self::InterestChanged {
                 level,
                 region,
+                free,
                 assignments,
             } => {
                 writer.write_u8(KIND_INTEREST_CHANGED);
                 write_level(&mut writer, *level);
                 write_brick_box(&mut writer, *region);
+                write_free_regions(&mut writer, free);
                 writer.write_varint(assignments.len() as u64);
                 for assignment in assignments {
                     write_brick_coordinate(&mut writer, assignment.cube.origin());
@@ -374,6 +377,7 @@ impl ServerMessage {
             KIND_INTEREST_CHANGED => {
                 let level = read_level(&mut reader)?;
                 let region = read_brick_box(&mut reader)?;
+                let free = read_free_regions(&mut reader)?;
                 let count = reader.read_count(5)?;
                 let mut assignments = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -394,6 +398,7 @@ impl ServerMessage {
                 Self::InterestChanged {
                     level,
                     region,
+                    free,
                     assignments,
                 }
             }
@@ -644,6 +649,10 @@ mod tests {
             ServerMessage::InterestChanged {
                 level: LevelIndex::new(1),
                 region: BrickBox::around(BrickCoordinate::new(0, -2, 9), 3),
+                free: vec![
+                    BrickBox::around(BrickCoordinate::new(500, 0, -40), 2),
+                    BrickBox::around(BrickCoordinate::new(-7, 9, 9), 0),
+                ],
                 assignments: vec![
                     GeneratorAssignment {
                         cube: BrickCube::new(BrickCoordinate::new(-8, 0, 8), 3).unwrap(),
@@ -658,6 +667,7 @@ mod tests {
             ServerMessage::InterestChanged {
                 level: LevelIndex::MAIN,
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 0),
+                free: Vec::new(),
                 assignments: Vec::new(),
             },
             ServerMessage::BrickContents {
@@ -930,13 +940,29 @@ mod tests {
             ServerMessage::InterestChanged {
                 level: LevelIndex::new(2),
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                free: Vec::new(),
                 assignments: vec![GeneratorAssignment {
                     cube: BrickCube::new(BrickCoordinate::new(0, 0, 0), 0).unwrap(),
                     generator: Some(2)
                 }],
             }
             .encode(),
-            [2, 2, 1, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1, 2, 1, 0, 0, 0, 0, 3]
+            [
+                2, 2, 1, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1, 2, 0, 1, 0, 0, 0, 0, 3
+            ]
+        );
+        // The free regions come after the region, as a count and then boxes.
+        assert_eq!(
+            ServerMessage::InterestChanged {
+                level: LevelIndex::new(2),
+                region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                free: vec![BrickBox::around(BrickCoordinate::ORIGIN, 0)],
+                assignments: Vec::new(),
+            }
+            .encode(),
+            [
+                2, 2, 1, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0
+            ]
         );
     }
 

@@ -5,7 +5,9 @@ use voxel_space::{BrickBox, LevelIndex};
 use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
 use crate::types::PlayerKey;
-use crate::wire::{read_brick_box, read_level, write_brick_box, write_level};
+use crate::wire::{
+    read_brick_box, read_free_regions, read_level, write_brick_box, write_free_regions, write_level,
+};
 
 const KIND_HELLO: u8 = 1;
 const KIND_SET_INTEREST: u8 = 2;
@@ -30,9 +32,17 @@ pub enum ClientMessage {
     /// The answer to a challenge: the signature, by the key in the `Hello`, of the login the challenge
     /// names (see the `identity` crate for what is signed).
     Prove { signature: [u8; 64] },
-    /// The region of bricks of one level the client wants to watch. The server sends what is in it,
-    /// and keeps the client up to date on it, until the next `SetInterest`.
-    SetInterest { level: LevelIndex, region: BrickBox },
+    /// What the client wants to watch of one level, until the next `SetInterest`: `region`, round its body, and the `free` regions of viewpoints that have no body (a map
+    /// kept ready at another place, `docs/specs/viewpoints-spec.md`, 6.3), at most [`crate::MAXIMUM_FREE_REGIONS`] of them. The server sends what is in all of them, the edited bricks
+    /// of the level's own terrain and which generator made each part, and keeps the client up to date on it. What is in `region` is all it is sent besides: the
+    /// entities, the ships (nearly) and the messages of the game that reach a place go to the client's body only. A free region **changes nothing in the world** (the
+    /// server does not give a part of it the generator it has none of, as it does for `region`: the server says which generator it would have), and the server may
+    /// refuse a list that watches more than it allows.
+    SetInterest {
+        level: LevelIndex,
+        region: BrickBox,
+        free: Vec<BrickBox>,
+    },
     /// A message for the game or one of its plugins.
     GameMessage {
         kind: NamespacedId,
@@ -64,10 +74,15 @@ impl ClientMessage {
                 writer.write_u8(KIND_PROVE);
                 writer.write_raw(signature);
             }
-            Self::SetInterest { level, region } => {
+            Self::SetInterest {
+                level,
+                region,
+                free,
+            } => {
                 writer.write_u8(KIND_SET_INTEREST);
                 write_level(&mut writer, *level);
                 write_brick_box(&mut writer, *region);
+                write_free_regions(&mut writer, free);
             }
             Self::GameMessage { kind, payload } => {
                 writer.write_u8(KIND_GAME_MESSAGE);
@@ -99,6 +114,7 @@ impl ClientMessage {
             KIND_SET_INTEREST => Self::SetInterest {
                 level: read_level(&mut reader)?,
                 region: read_brick_box(&mut reader)?,
+                free: read_free_regions(&mut reader)?,
             },
             KIND_GAME_MESSAGE => Self::GameMessage {
                 kind: reader.read_identifier()?,
@@ -145,6 +161,15 @@ mod tests {
             ClientMessage::SetInterest {
                 level: LevelIndex::new(2),
                 region: BrickBox::around(BrickCoordinate::new(-3, 0, 12), 4),
+                free: Vec::new(),
+            },
+            ClientMessage::SetInterest {
+                level: LevelIndex::new(2),
+                region: BrickBox::around(BrickCoordinate::new(-3, 0, 12), 4),
+                free: vec![
+                    BrickBox::around(BrickCoordinate::new(5_000, -20, 0), 16),
+                    BrickBox::around(BrickCoordinate::new(-90_000, 4, 4), 1),
+                ],
             },
             ClientMessage::GameMessage {
                 kind: id("voxunami_cave:place_block"),
@@ -196,10 +221,21 @@ mod tests {
                     BrickCoordinate::new(-1, 0, 2),
                     BrickCoordinate::new(3, 4, 5)
                 )
-                .unwrap()
+                .unwrap(),
+                free: Vec::new(),
             }
             .encode(),
-            [2, 3, 1, 1, 0, 1, 4, 1, 6, 1, 8, 1, 10]
+            [2, 3, 1, 1, 0, 1, 4, 1, 6, 1, 8, 1, 10, 0]
+        );
+        // The free regions come after the region, as a count and then boxes.
+        assert_eq!(
+            ClientMessage::SetInterest {
+                level: LevelIndex::new(3),
+                region: BrickBox::around(BrickCoordinate::ORIGIN, 0),
+                free: vec![BrickBox::around(BrickCoordinate::ORIGIN, 0)],
+            }
+            .encode(),
+            [2, 3, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
         );
         assert_eq!(
             ClientMessage::Command {
@@ -232,7 +268,28 @@ mod tests {
             Err(ProtocolError::Malformed(DecodeError::TrailingBytes(1)))
         );
         // A box whose corners are the wrong way round.
-        assert!(ClientMessage::decode(&[2, 0, 6, 0, 0, 0, 0, 0]).is_err());
+        assert!(ClientMessage::decode(&[2, 0, 6, 0, 0, 0, 0, 0, 0]).is_err());
+        // A free region whose corners are the wrong way round (its first corner is above its second in x), and more regions than a message may hold.
+        assert_eq!(
+            ClientMessage::decode(&[2, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 0, 0, 0, 0, 0]),
+            Err(ProtocolError::Malformed(DecodeError::Invalid(
+                "a brick box has its minimum corner above its maximum"
+            )))
+        );
+        let around = |at: i128| BrickBox::around(BrickCoordinate::new(at, 0, 0), 1);
+        let holding = |count: usize| ClientMessage::SetInterest {
+            level: LevelIndex::MAIN,
+            region: around(0),
+            free: (0..count as i128).map(around).collect(),
+        };
+        let most = holding(crate::MAXIMUM_FREE_REGIONS);
+        assert_eq!(ClientMessage::decode(&most.encode()), Ok(most));
+        assert_eq!(
+            ClientMessage::decode(&holding(crate::MAXIMUM_FREE_REGIONS + 1).encode()),
+            Err(ProtocolError::Malformed(DecodeError::Invalid(
+                "too many free regions"
+            )))
+        );
         // A level number too large for a level, and a command that is too long or not text.
         assert!(
             ClientMessage::decode(&[2, 0xFF, 0xFF, 0xFF, 0xFF, 0x1F, 0, 0, 0, 0, 0, 0]).is_err()

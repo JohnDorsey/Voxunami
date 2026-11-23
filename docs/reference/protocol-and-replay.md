@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 11)
+# The message stream and replays (protocol version 13)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -52,11 +52,15 @@ since a recording is just the frames a client received.
    registry tables, channel layout and, for each level, its name and generator setup, but no assignments, bricks or
    plugin sections. Levels are numbered by their order in it. The client loads
    it like a save (placeholders for content it lacks) and keeps the translator for everything that follows.
-4. The client sends `SetInterest` with a level and a box of bricks. The server answers, at the end of its next tick, with
-   `InterestChanged` then `BrickContents` for each *edited* brick in the newly watched part. A client watches one box of
-   one level at a time; asking for the same box of another level makes all of it new, and the client forgets what it held
-   of the first. Unedited terrain is never
-   sent: the client generates it from the seed, using the generator the assignments name.
+4. The client sends `SetInterest` with a level, a box of bricks (round its body) and, since version 13, up to eight **free regions**: more boxes of the same
+   level, the places of viewpoints that have no body (a map kept ready, `docs/specs/viewpoints-spec.md`). The server answers, at the end of its next tick, with
+   `InterestChanged` then `BrickContents` for each *edited* brick in the newly watched part (of any of the boxes). A client watches one level at a time; asking
+   for the same boxes of another level makes all of it new, and the client forgets what it held of the first. Unedited terrain is never
+   sent: the client generates it from the seed, using the generator the assignments name. **A free region is read-only and terrain only:** the server does not
+   write the generator of a cube of it that has none (it says the one the cube would have, and the client uses that to generate bricks there), and what is told
+   of a free region is the edited bricks of the level's own terrain and the edits made to them: the entities, the ships (apart from the planets, which a client is
+   told of whole wherever it is in their level) and the game's messages that reach a place go to the region round the body only. A server limits the free regions
+   of a client in number and in bricks (`ServerConfig::maximum_free_regions`, `maximum_free_bricks`) and sends away a client that asks for more.
 5. Every tick, each joined client is sent, in this order: the interest change and bricks gained (if it asked), the edits
    inside what it already watched, the game messages meant for it, and `TickCompleted`. The client applies a tick's
    messages together, when its `TickCompleted` arrives, so its view is never half a tick.
@@ -70,7 +74,7 @@ Client to server (first byte is the kind):
 | Kind | Message | Body |
 |---|---|---|
 | 1 | `Hello` | protocol version (`u32`), game (identifier), public key (32 bytes) |
-| 2 | `SetInterest` | level (varint), box: min x, y, z then max x, y, z (zigzag) |
+| 2 | `SetInterest` | level (varint), box: min x, y, z then max x, y, z (zigzag), then the free regions: a count (at most 8) and a box each |
 | 3 | `GameMessage` | kind (identifier), payload (bytes) |
 | 4 | `Goodbye` | none |
 | 5 | `Command` | text (string, at most 1024 bytes): a line the player typed, such as `/level go cellar` |
@@ -81,7 +85,7 @@ Server to client:
 | Kind | Message | Body |
 |---|---|---|
 | 1 | `Welcome` | protocol version (`u32`), game (identifier), client id (`u32`), ticks per second (`u32`), tick (`u64`), world clock (`u64`), world description (bytes), package (bytes) |
-| 2 | `InterestChanged` | level (varint), box, then count and per assignment: cube origin x, y, z (zigzag), cube size level (`u8`), generator file id plus one (varint, 0 = none) |
+| 2 | `InterestChanged` | level (varint), box, the free regions (a count and a box each), then count and per assignment: cube origin x, y, z (zigzag), cube size level (`u8`), generator file id plus one (varint, 0 = none) |
 | 3 | `BrickContents` | grid (varint: a level's number for its terrain, from 2^32 up for a ship), brick x, y, z (zigzag), the brick in its stored form (bytes; see the world file format) |
 | 4 | `VoxelEdits` | grid (varint), brick x, y, z, digest of the result (`u64`), count and per change: voxel index, channel number, value (varints) |
 | 5 | `GameMessage` | kind (identifier), payload (bytes) |
@@ -132,7 +136,8 @@ registers it.
 
 - **Newly watched part of a region** (the box minus the previously watched box, found without visiting the bricks both
   share): which generator made each assignment cube touching it, and the contents of every brick there that has ever
-  been edited.
+  been edited. With free regions, what is new is what none of the boxes held before (each brick of it is in one piece, however many boxes it is in), and the
+  edits of a tick are sent for the bricks that the client held before and holds now, once each.
 - **A brick the client already holds** and that changes this tick: `VoxelEdits` if the brick was already edited before
   this tick; the whole `BrickContents` if this tick is its first edit (the client's copy is what it generated itself,
   and a change list can only be applied to what the server has). Bricks sent in full this tick are not sent edits too.

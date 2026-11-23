@@ -223,8 +223,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// as predicted: nothing is saved that was not.
 /// A ship may be told of as far away (2026-11-17; protocol 12): the stream's hash moved to 14_850_974_223_715_851_973 and nothing else did (the length and the saved world are the same: the version in the welcome is the only byte that
 /// changed). With the version put back to 11 the old hash, 3_053_214_642_131_070_801, came back.
+/// Free regions in an interest (2026-11-23; protocol 13): the stream is 6 bytes longer (89,148 to 89,154: the count of free regions in each of its 6 `InterestChanged`), its hash moved to 13_366_224_951_903_892_245 for that and for the
+/// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 14_850_974_223_715_851_973, and the old length came back.
 const PINNED: (u64, usize, u64) = (
-    14_850_974_223_715_851_973,
-    89_148,
+    13_366_224_951_903_892_245,
+    89_154,
     9_505_268_344_403_703_823,
 );
