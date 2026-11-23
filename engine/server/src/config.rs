@@ -29,6 +29,9 @@ pub struct ServerConfig {
     pub package: Vec<u8>,
     /// The packs clients keep as files, in load order: every client is told of them right after its welcome, and sent the archive of each it asks for.
     pub packs: Vec<ServedPack>,
+    /// Whether `packs` is every pack the server runs besides the game's own: `false` if some pack says it is not replicated, or was given to the server in some other
+    /// way. Clients are told, because only when the list is whole can a client load the packs and check that they make the package the server sent.
+    pub packs_whole: bool,
     /// The most bytes of pack archives one client is sent in a tick (a whole piece is sent at a time, so at least one if a client waits for any): a pack is sent
     /// over several ticks and never makes one long.
     pub pack_bytes_per_tick: usize,
@@ -56,6 +59,7 @@ impl ServerConfig {
             challenge_seed: None,
             package: Vec::new(),
             packs: Vec::new(),
+            packs_whole: true,
             pack_bytes_per_tick: 256 * 1024,
             gravity: GravitySettings::default(),
             level_gravity: Vec::new(),
@@ -73,6 +77,12 @@ impl ServerConfig {
     /// The same, telling clients of these packs and sending them on request.
     pub fn with_packs(mut self, packs: Vec<ServedPack>) -> Self {
         self.packs = packs;
+        self
+    }
+
+    /// The same, saying that the list of packs is not the whole of what the server runs (see [`ServerConfig::packs_whole`]).
+    pub fn with_packs_whole(mut self, whole: bool) -> Self {
+        self.packs_whole = whole;
         self
     }
 

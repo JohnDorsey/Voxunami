@@ -243,7 +243,7 @@ impl Fixture {
     /// A server for an empty world of the pretend game that replicates these packs (the list is the server's from the start: no client is told twice).
     pub fn with_packs(packs: Vec<server::ServedPack>) -> Self {
         let mut fixture = Self::new();
-        fixture.server.replace_packs(packs);
+        fixture.server.replace_packs(packs, true);
         fixture
     }
 

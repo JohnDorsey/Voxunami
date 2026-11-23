@@ -39,10 +39,12 @@ fn server_config<G: GameDefinition>(
     counted_challenges: bool,
     ships: ShipSettings,
     packs: Vec<ServedPack>,
+    packs_whole: bool,
 ) -> ServerConfig {
     let mut config = ServerConfig::new(G::id())
         .with_package(package)
-        .with_packs(packs);
+        .with_packs(packs)
+        .with_packs_whole(packs_whole);
     config.ships = ships;
     if counted_challenges {
         config = config.with_counted_challenges(1);
@@ -85,6 +87,7 @@ fn new_server<G: GameDefinition>(
             counted_challenges,
             ships.settings,
             content.replicated_packs().to_vec(),
+            content.packs_whole(),
         ),
         world,
         &content.registries(),
@@ -440,8 +443,14 @@ mod tests {
 
     #[test]
     fn the_server_is_configured_with_the_gravity_of_the_game() {
-        let plain =
-            server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default(), Vec::new());
+        let plain = server_config::<ExampleGame>(
+            Vec::new(),
+            3,
+            true,
+            ShipSettings::default(),
+            Vec::new(),
+            true,
+        );
         assert_eq!(plain.gravity, voxel_space::GravitySettings::default());
         assert!(plain.level_gravity.is_empty());
 
@@ -451,6 +460,7 @@ mod tests {
             true,
             ShipSettings::default(),
             Vec::new(),
+            true,
         );
         assert_eq!(space.gravity.base, [0.0, -9.0, 0.0]);
         assert_eq!(space.gravity.pull_mass_threshold, Some(1.0e20));

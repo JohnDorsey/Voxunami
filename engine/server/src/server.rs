@@ -123,17 +123,20 @@ pub struct Server {
     told_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
     /// Whether the package was replaced since the last tick: the clients that were playing are told at the start of the next one.
     package_replaced: bool,
-    /// The list of packs as the clients that are playing were last told it: it is told again, whole, when it is not this.
-    told_packs: Vec<protocol::PackListing>,
+    /// The list of packs, and whether it is the whole of what the server runs, as the clients that are playing were last told: told again when it is not this.
+    told_packs: (Vec<protocol::PackListing>, bool),
 }
 
-/// The list of packs the config has, as clients are told it.
-fn told_packs_of(config: &ServerConfig) -> Vec<protocol::PackListing> {
-    config
-        .packs
-        .iter()
-        .map(|pack| pack.listing().clone())
-        .collect()
+/// The list of packs the config has and whether it is the whole of what the server runs, as clients are told them.
+fn told_packs_of(config: &ServerConfig) -> (Vec<protocol::PackListing>, bool) {
+    (
+        config
+            .packs
+            .iter()
+            .map(|pack| pack.listing().clone())
+            .collect(),
+        config.packs_whole,
+    )
 }
 
 /// Why a package was not replaced (see [`Server::replace_package`]).
@@ -269,8 +272,11 @@ impl Server {
     /// Replaces the list of packs clients keep as files: from the next tick on, a client that joins is told of these, and one that was playing is told if the list
     /// is not the one it was last told (after the replaced package, in the same tick). A pack a client was being sent goes on as it was asked for. Call it
     /// between ticks, with [`Server::replace_package`] when the packs changed the package.
-    pub fn replace_packs(&mut self, packs: Vec<ServedPack>) {
+    ///
+    /// `whole` says whether `packs` is every pack the server runs besides the game's own ([`ServerConfig::packs_whole`]).
+    pub fn replace_packs(&mut self, packs: Vec<ServedPack>, whole: bool) {
         self.config.packs = packs;
+        self.config.packs_whole = whole;
     }
 
     pub fn world(&self) -> &WorldData {
@@ -634,15 +640,10 @@ impl Server {
         if session.connection.send(welcome.encode()).is_err() {
             return Some(LeaveReason::ConnectionClosed);
         }
-        // (A server with no packs says nothing of them.)
-        if !self.config.packs.is_empty() {
-            let list = ServerMessage::Packs(
-                self.config
-                    .packs
-                    .iter()
-                    .map(|pack| pack.listing().clone())
-                    .collect(),
-            );
+        // (A server that runs only the game's own content says nothing of packs: an empty list that is whole.)
+        let (listings, whole) = told_packs_of(&self.config);
+        if !listings.is_empty() || !whole {
+            let list = ServerMessage::Packs { listings, whole };
             if session.connection.send(list.encode()).is_err() {
                 return Some(LeaveReason::ConnectionClosed);
             }
@@ -748,10 +749,11 @@ impl Server {
                 .encode(),
             );
         }
-        let packs = told_packs_of(&self.config);
-        if packs != self.told_packs {
-            frames.push(ServerMessage::Packs(packs.clone()).encode());
-            self.told_packs = packs;
+        let told = told_packs_of(&self.config);
+        if told != self.told_packs {
+            let (listings, whole) = told.clone();
+            frames.push(ServerMessage::Packs { listings, whole }.encode());
+            self.told_packs = told;
         }
         frames
     }

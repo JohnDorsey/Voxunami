@@ -136,7 +136,7 @@ fn a_replaced_list_in_the_middle_of_a_session_replays_to_the_packs_the_client_en
             // "first" goes, "third" comes, "second" stays
             fixture
                 .server
-                .replace_packs(vec![second.clone(), third.clone()]);
+                .replace_packs(vec![second.clone(), third.clone()], true);
         }
         fixture.step();
         alice.catch_up().unwrap();

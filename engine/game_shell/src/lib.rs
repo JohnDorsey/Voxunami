@@ -20,6 +20,7 @@ pub mod following;
 mod headless;
 pub mod host;
 pub mod options;
+mod pack_check;
 pub mod package;
 mod package_data;
 mod package_reload;
@@ -61,6 +62,7 @@ pub use shared_package::{ReplaceError, SharedPackage};
 pub use sun::{Sky, Sun, SunView};
 pub use winit::keyboard::KeyCode;
 
+pub use pack_check::PackCheck;
 pub use packs::{content_with_packs, run_check_packs, run_pack_schemas};
 pub use shader_packs::run_check_shader_packs;
 

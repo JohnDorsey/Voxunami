@@ -190,8 +190,8 @@ impl<C: Connection> Client<C> {
             let message = ServerMessage::decode(&frame)?;
             // Packs are not part of a tick's picture of the world: they are taken in as they arrive.
             match message {
-                ServerMessage::Packs(listings) => {
-                    self.take_in_list(listings)?;
+                ServerMessage::Packs { listings, whole } => {
+                    self.take_in_list(listings, whole)?;
                     continue;
                 }
                 ServerMessage::PackChunk {
@@ -214,8 +214,12 @@ impl<C: Connection> Client<C> {
     }
 
     /// The server's list of packs: asks for the ones this client lacks, and tells the connection (a recording) of the ones it took from its store.
-    fn take_in_list(&mut self, listings: Vec<protocol::PackListing>) -> Result<(), ClientError> {
-        let outcome = self.packs.list(listings);
+    fn take_in_list(
+        &mut self,
+        listings: Vec<protocol::PackListing>,
+        whole: bool,
+    ) -> Result<(), ClientError> {
+        let outcome = self.packs.list(listings, whole);
         for frame in &outcome.from_store {
             self.connection.note_frame(frame);
         }

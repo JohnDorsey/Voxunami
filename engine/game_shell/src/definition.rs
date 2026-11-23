@@ -74,6 +74,12 @@ pub trait GameContent: Debug + Send {
         &[]
     }
 
+    /// Whether [`GameContent::replicated_packs`] is every pack this content was made with, which a client is told: only then can it load the packs it is sent and check
+    /// that they make the package the server sends. True for content made of the game's own alone.
+    fn packs_whole(&self) -> bool {
+        true
+    }
+
     /// Records which packs this content was made with that clients keep as files, after they were applied (and again after a reload). A game that takes no packs
     /// has nothing to keep them in.
     fn set_replicated_packs(&mut self, _packs: Vec<ServedPack>) {}

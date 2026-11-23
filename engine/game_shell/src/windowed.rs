@@ -802,6 +802,9 @@ impl<G: GameDefinition> Viewer<G> {
         if self.session.take_package_replaced() {
             self.package_was_replaced(now);
         }
+        if let Some(report) = self.session.take_pack_check_report() {
+            eprintln!("warning: {report}");
+        }
         for text in self.session.take_command_replies() {
             println!("{text}");
             self.reply = Some((text, now));

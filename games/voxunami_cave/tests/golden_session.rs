@@ -403,8 +403,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 // and the saved world's did not.
 // Packs a client keeps as files (2026-11-22; protocol 13): the stream hash changed once, for the protocol version in the welcome (13, was 12); the length and the saved world did not,
 // and with the version put back to 12 the old hash, 2_646_309_225_932_220_837, came back (no pack is replicated here, so no list is sent).
+// Whether the packs are the whole (2026-11-23; protocol 14): the stream hash changed once, for the protocol version in the welcome (14, was 13); the length and the saved world did not,
+// and with the version put back to 13 the old hash, 8_352_820_050_690_785_866, came back.
 const PINNED: (u64, usize, u64) = (
-    8_352_820_050_690_785_866,
+    13_343_156_623_870_405_502,
     7_227_270,
     15_594_210_036_057_493_535,
 );

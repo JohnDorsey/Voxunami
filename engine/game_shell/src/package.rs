@@ -110,6 +110,8 @@ pub struct ContentPackage {
     base: Base,
     /// The packs the content was made with that clients keep as files: what a server made from it tells its clients of.
     replicated: Vec<ServedPack>,
+    /// The ids of the packs that were applied, whether or not they are replicated.
+    applied: Vec<String>,
 }
 
 /// The game's own blocks (with their pictures settled) and bodies, before any pack.
@@ -192,6 +194,7 @@ impl ContentPackage {
             textures,
             base,
             replicated: Vec::new(),
+            applied: Vec::new(),
         }
     }
 
@@ -562,6 +565,7 @@ impl ContentPackage {
             textures: loaded.textures,
             base: self.base.clone(),
             replicated: self.replicated.clone(),
+            applied: packs.iter().map(|pack| pack.folder.clone()).collect(),
         };
         // The renderer cannot draw more colours than it has: say so now, not when a window opens.
         let table = candidate
@@ -706,6 +710,14 @@ impl GameContent for ContentPackage {
 
     fn set_replicated_packs(&mut self, packs: Vec<ServedPack>) {
         self.replicated = packs;
+    }
+
+    fn packs_whole(&self) -> bool {
+        self.applied.iter().all(|applied| {
+            self.replicated
+                .iter()
+                .any(|pack| pack.listing().id == *applied)
+        })
     }
 
     fn body_names(&self) -> Vec<NamespacedId> {
@@ -2039,6 +2051,44 @@ mod tests {
             ]
         );
         assert_eq!(content.package_data().blocks[2].1, None);
+    }
+
+    // ---- whether the packs that are replicated are all the packs ----
+
+    /// A pack as a server would serve it: the archive of these files.
+    fn served(pack_id: &str) -> ServedPack {
+        let archive = pack_archive::Archive::from_files([(
+            "pack.json".to_owned(),
+            format!("{{\"id\":\"{pack_id}\"}}").into_bytes(),
+        )])
+        .unwrap();
+        ServedPack::new(pack_id, &archive, |_| true).unwrap()
+    }
+
+    #[test]
+    fn the_replicated_packs_are_the_whole_of_what_the_content_runs_when_every_pack_applied_is_among_them()
+     {
+        let mut content = package();
+        // no pack applied: the game's own alone, which is a whole
+        assert!(content.packs_whole());
+        assert!(content.replicated_packs().is_empty());
+        // a pack applied that nobody said is replicated (given in memory, say): not whole
+        content
+            .apply_packs(&[marble_and_more(r#"{ "color": [0.9, 0.9, 1.0] }"#, &[])])
+            .unwrap();
+        assert!(!content.packs_whole());
+        // once it is among the replicated, whole
+        content.set_replicated_packs(vec![served("my_pack")]);
+        assert!(content.packs_whole());
+        // replicated packs that were not applied make no difference
+        content.set_replicated_packs(vec![served("my_pack"), served("other")]);
+        assert!(content.packs_whole());
+        content.set_replicated_packs(vec![served("other")]);
+        assert!(!content.packs_whole(), "the pack applied is not among them");
+        // a reload changes what was applied
+        content.set_replicated_packs(Vec::new());
+        content.reload_packs(&[]).unwrap();
+        assert!(content.packs_whole(), "no pack applied any more");
     }
 
     // ---- reloading the packs while a server runs ----

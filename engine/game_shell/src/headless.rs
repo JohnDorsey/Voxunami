@@ -110,6 +110,9 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
     apply_occupancy(&mut renderer, &mut session);
+    if let Some(report) = session.take_pack_check_report() {
+        eprintln!("warning: {report}");
+    }
     println!(
         "loaded radius {} in {:.2} s: {} bricks held, {} meshes with {} quads",
         view.view_radius,
@@ -209,6 +212,9 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     session.set_viewport_height(view.height);
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
+    if let Some(report) = session.take_pack_check_report() {
+        eprintln!("warning: {report}");
+    }
     apply_occupancy(&mut renderer, &mut session);
     render_outputs(&mut renderer, &mut session, view, false)
 }

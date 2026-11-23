@@ -188,7 +188,7 @@ fn a_client_with_no_store_asks_for_every_pack_in_the_list_and_holds_them_when_th
         rig.requests().is_empty(),
         "nothing is asked before it is told"
     );
-    rig.send(ServerMessage::Packs(vec![
+    rig.send(packs_message(vec![
         big.listing.clone(),
         small.listing.clone(),
     ]));
@@ -229,7 +229,7 @@ fn a_pack_in_the_store_is_not_asked_for_and_its_pieces_are_noted_to_the_connecti
     let fresh = sample_pack("fresh", 20);
     let store = store_with(&kept);
     let mut rig = Rig::new(Some(Box::new(store.clone())));
-    rig.send(ServerMessage::Packs(vec![
+    rig.send(packs_message(vec![
         kept.listing.clone(),
         fresh.listing.clone(),
     ]));
@@ -286,7 +286,7 @@ fn a_file_in_the_store_that_does_not_match_its_pack_is_not_trusted_and_the_pack_
     damaged[middle] ^= 0xff;
     store.put("kept", pack.listing.root(), damaged);
     let mut rig = Rig::new(Some(Box::new(store.clone())));
-    rig.send(ServerMessage::Packs(vec![pack.listing.clone()]));
+    rig.send(packs_message(vec![pack.listing.clone()]));
     rig.end_tick(5).unwrap();
     assert_eq!(
         rig.requests(),
@@ -306,7 +306,7 @@ fn a_file_in_the_store_that_does_not_match_its_pack_is_not_trusted_and_the_pack_
 fn a_store_that_cannot_save_does_not_stop_the_client_holding_the_pack() {
     let pack = sample_pack("kept", 100);
     let mut rig = Rig::new(Some(Box::new(FullStore)));
-    rig.send(ServerMessage::Packs(vec![pack.listing.clone()]));
+    rig.send(packs_message(vec![pack.listing.clone()]));
     rig.send_pack(&pack);
     rig.end_tick(5).unwrap();
     assert!(rig.client.packs().is_complete());
@@ -320,11 +320,19 @@ fn error_of_a_bad_pack(
     pieces: impl FnOnce(&SamplePack) -> Vec<ServerMessage>,
 ) -> ClientError {
     let mut rig = Rig::new(None);
-    rig.send(ServerMessage::Packs(vec![pack.listing.clone()]));
+    rig.send(packs_message(vec![pack.listing.clone()]));
     for piece in pieces(pack) {
         rig.send(piece);
     }
     rig.end_tick(5).expect_err("the pack is refused")
+}
+
+/// The server's list, which is the whole of what it runs.
+fn packs_message(listings: Vec<PackListing>) -> ServerMessage {
+    ServerMessage::Packs {
+        listings,
+        whole: true,
+    }
 }
 
 fn pieces_of(pack: &SamplePack) -> Vec<ServerMessage> {
@@ -398,7 +406,7 @@ fn a_piece_of_a_pack_that_is_not_listed_is_ignored_since_a_replaced_list_may_hav
     let listed = sample_pack("listed", 10);
     let stranger = sample_pack("stranger", 10);
     let mut rig = Rig::new(None);
-    rig.send(ServerMessage::Packs(vec![listed.listing.clone()]));
+    rig.send(packs_message(vec![listed.listing.clone()]));
     rig.send_pack(&stranger);
     rig.end_tick(5).unwrap();
     assert!(!rig.client.packs().is_complete());
@@ -411,7 +419,7 @@ fn a_new_list_keeps_what_the_client_holds_asks_for_what_is_new_and_forgets_what_
     let going = sample_pack("going", 20);
     let coming = sample_pack("coming", 30);
     let mut rig = Rig::new(None);
-    rig.send(ServerMessage::Packs(vec![
+    rig.send(packs_message(vec![
         kept.listing.clone(),
         going.listing.clone(),
     ]));
@@ -421,7 +429,7 @@ fn a_new_list_keeps_what_the_client_holds_asks_for_what_is_new_and_forgets_what_
     rig.requests();
     assert!(rig.client.packs().is_complete());
 
-    rig.send(ServerMessage::Packs(vec![
+    rig.send(packs_message(vec![
         coming.listing.clone(),
         kept.listing.clone(),
     ]));
@@ -441,7 +449,7 @@ fn a_new_list_keeps_what_the_client_holds_asks_for_what_is_new_and_forgets_what_
     assert!(rig.client.packs().is_complete());
 
     // an empty list forgets them all and asks for nothing
-    rig.send(ServerMessage::Packs(Vec::new()));
+    rig.send(packs_message(Vec::new()));
     rig.end_tick(8).unwrap();
     assert!(rig.requests().is_empty());
     assert!(rig.client.packs().listed().is_empty());
@@ -453,7 +461,7 @@ fn a_new_list_keeps_what_the_client_holds_asks_for_what_is_new_and_forgets_what_
 fn a_pack_is_taken_in_between_the_messages_of_a_tick_and_the_view_of_the_tick_is_unchanged() {
     let pack = sample_pack("mid", 100_000);
     let mut rig = Rig::new(None);
-    rig.send(ServerMessage::Packs(vec![pack.listing.clone()]));
+    rig.send(packs_message(vec![pack.listing.clone()]));
     rig.end_tick(5).unwrap();
     let before = rig.client.world().tick();
     // the pieces arrive, with a tick's messages between them
@@ -471,4 +479,41 @@ fn a_pack_is_taken_in_between_the_messages_of_a_tick_and_the_view_of_the_tick_is
     assert_eq!(rig.client.world().tick(), Tick::new(6));
     assert!(before < rig.client.world().tick());
     assert!(rig.client.packs().is_complete());
+}
+
+#[test]
+fn a_client_knows_whether_the_list_is_the_whole_of_what_the_server_runs_and_a_server_that_says_nothing_has_only_the_games_own()
+ {
+    let pack = sample_pack("only", 10);
+    let mut rig = Rig::new(None);
+    // nothing said: the server runs only the game's own, which is a whole list of none
+    assert!(rig.client.packs().whole());
+    rig.send(ServerMessage::Packs {
+        listings: vec![pack.listing.clone()],
+        whole: false,
+    });
+    rig.end_tick(5).unwrap();
+    assert!(!rig.client.packs().whole());
+    // the pack is asked for and held all the same: it is the server's, and not all of it
+    assert_eq!(rig.requests().len(), 1);
+    rig.send_pack(&pack);
+    rig.end_tick(6).unwrap();
+    assert!(rig.client.packs().is_complete());
+    assert!(!rig.client.packs().whole());
+    // a list that says it is the whole, with the same packs, changes only that
+    rig.send(packs_message(vec![pack.listing.clone()]));
+    rig.end_tick(7).unwrap();
+    assert!(rig.client.packs().whole());
+    assert!(rig.client.packs().is_complete());
+    assert!(
+        rig.requests().is_empty(),
+        "what it holds is not asked for again"
+    );
+    // a list of none that is not the whole is told too
+    rig.send(ServerMessage::Packs {
+        listings: Vec::new(),
+        whole: false,
+    });
+    rig.end_tick(8).unwrap();
+    assert!(!rig.client.packs().whole() && rig.client.packs().listed().is_empty());
 }

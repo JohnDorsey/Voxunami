@@ -3703,7 +3703,7 @@ fn a_server_without_packs_never_sends_a_list_and_asks_for_none_are_answered_with
     assert!(
         told.iter().all(|message| !matches!(
             message,
-            ServerMessage::Packs(_) | ServerMessage::PackChunk { .. }
+            ServerMessage::Packs { .. } | ServerMessage::PackChunk { .. }
         )),
         "{told:?}"
     );
@@ -3728,7 +3728,7 @@ fn a_server_with_packs_lists_them_in_load_order_right_after_the_welcome_to_every
         assert!(
             matches!(&told[..], [
                 ServerMessage::Welcome(_),
-                ServerMessage::Packs(list),
+                ServerMessage::Packs { listings: list, whole: true },
                 ServerMessage::TickCompleted { .. },
             ] if *list == listings),
             "{told:?}"
@@ -3877,7 +3877,9 @@ fn a_replaced_list_is_told_after_the_replaced_package_only_when_it_changed_and_a
         .server
         .replace_package(vec![5], &game.registries())
         .unwrap();
-    harness.server.replace_packs(vec![kept.clone(), added]);
+    harness
+        .server
+        .replace_packs(vec![kept.clone(), added], true);
     harness.server.step();
     let told = client.received();
     assert!(
@@ -3885,7 +3887,7 @@ fn a_replaced_list_is_told_after_the_replaced_package_only_when_it_changed_and_a
         "{told:?}"
     );
     assert!(
-        matches!(&told[1], ServerMessage::Packs(list) if list.len() == 2 && list[1] == added_listing),
+        matches!(&told[1], ServerMessage::Packs { listings: list, .. } if list.len() == 2 && list[1] == added_listing),
         "{told:?}"
     );
     assert_eq!(
@@ -3897,23 +3899,23 @@ fn a_replaced_list_is_told_after_the_replaced_package_only_when_it_changed_and_a
     // The same list again is not told again, and the rest of the pack arrives.
     harness
         .server
-        .replace_packs(vec![kept.clone(), a_served_pack("added", 50)]);
+        .replace_packs(vec![kept.clone(), a_served_pack("added", 50)], true);
     harness.server.step();
     let told = client.received();
     assert!(
         told.iter()
-            .all(|message| !matches!(message, ServerMessage::Packs(_))),
+            .all(|message| !matches!(message, ServerMessage::Packs { .. })),
         "{told:?}"
     );
     assert!(!pack_chunks_in(&told).is_empty(), "the next piece");
 
     // A list that ends empty is told, so that a client forgets what it was told of.
-    harness.server.replace_packs(Vec::new());
+    harness.server.replace_packs(Vec::new(), true);
     harness.server.step();
     let told = client.received();
     assert!(
         told.iter()
-            .any(|message| matches!(message, ServerMessage::Packs(list) if list.is_empty())),
+            .any(|message| matches!(message, ServerMessage::Packs { listings: list, .. } if list.is_empty())),
         "{told:?}"
     );
 }
@@ -3944,4 +3946,58 @@ fn a_client_that_leaves_while_a_pack_is_sent_stops_it_and_the_server_goes_on() {
         pieces.len()
     );
     assert!(archive > MAXIMUM_PACK_CHUNK * 4);
+}
+
+#[test]
+fn a_server_that_runs_packs_it_does_not_replicate_says_its_list_is_not_the_whole_even_when_the_list_is_empty()
+ {
+    // Nothing to replicate and a pack that is not: the client is told that there is more behind the package than it can be sent.
+    let game = Game::new(&ALL_PLUGINS);
+    let config = ServerConfig::new(game_id()).with_packs_whole(false);
+    let mut harness = Harness::new(&game, game.new_world(), config);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    let told = client.received();
+    assert!(
+        matches!(&told[..], [
+            ServerMessage::Welcome(_),
+            ServerMessage::Packs { listings, whole: false },
+            ServerMessage::TickCompleted { .. },
+        ] if listings.is_empty()),
+        "{told:?}"
+    );
+}
+
+#[test]
+fn a_list_that_becomes_the_whole_or_stops_being_it_is_told_though_the_packs_in_it_are_the_same() {
+    let pack = a_served_pack("one", 10);
+    let (_, mut harness) = pack_harness(vec![pack.clone()], 1 << 20);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    // the same packs, and now something besides them is running
+    harness.server.replace_packs(vec![pack.clone()], false);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter().any(|message| matches!(message, ServerMessage::Packs { whole: false, listings } if listings.len() == 1)),
+        "{told:?}"
+    );
+    // and the same again says nothing
+    harness.server.replace_packs(vec![pack.clone()], false);
+    harness.server.step();
+    assert!(
+        client
+            .received()
+            .iter()
+            .all(|message| !matches!(message, ServerMessage::Packs { .. }))
+    );
+    harness.server.replace_packs(vec![pack], true);
+    harness.server.step();
+    assert!(
+        client
+            .received()
+            .iter()
+            .any(|message| matches!(message, ServerMessage::Packs { whole: true, .. }))
+    );
 }

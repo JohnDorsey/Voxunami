@@ -38,8 +38,10 @@ use crate::client_plugin::{
 };
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
+use crate::pack_check::{PackCheck, differences};
 use crate::package_data::{PackageData, PackageError, check_materials};
 use crate::sun::{SunView, position_of_voxels, sun_view};
+use protocol::PackListing;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -146,6 +148,14 @@ pub struct Session<C: Connection, G: GameDefinition> {
     world_seed: u64,
     /// Whether the package was replaced since the program last asked ([`Session::take_package_replaced`]).
     package_replaced: bool,
+    /// How many times the package has been replaced, which says whether a check of the packs against it is still the check of this package.
+    package_version: u64,
+    /// What loading the packs this client holds made of the package the server sent (`pack_check.rs`), and what it was made for, so that it is made again only when that
+    /// changes.
+    pack_check: PackCheck,
+    pack_check_for: Option<(Vec<pack_archive::Hash>, bool, u64)>,
+    /// Whether a disagreement of the check has been handed to the program ([`Session::take_pack_check_report`]).
+    pack_check_reported: bool,
     /// What the renderer must change that no update of the view has said yet: the meshes taken down when the package was replaced.
     pending_updates: Vec<MeshUpdate>,
     /// The channels the view reads, before the client plugins have their say.
@@ -294,6 +304,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             block_table,
             world_seed: seed,
             package_replaced: false,
+            package_version: 0,
+            pack_check: PackCheck::Waiting,
+            pack_check_for: None,
+            pack_check_reported: false,
             pending_updates: Vec::new(),
             view_channels,
             terrain,
@@ -725,7 +739,89 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         } else if G::server_moves_players() {
             self.follow_own_pose();
         }
+        self.refresh_pack_check();
         Ok(true)
+    }
+
+    /// What loading the packs this client holds made of the package the server sent: see [`PackCheck`]. It is made once the client holds every pack the server listed,
+    /// at the end of a tick, and again when the list or the package changes. The client draws with the server's package whatever it says.
+    pub fn pack_check(&self) -> &PackCheck {
+        &self.pack_check
+    }
+
+    /// The words to tell the player if the check of the packs found that they do not make the package the server sent, once for each time it found that, else `None`.
+    /// A program prints it where the player will see it: a mismatch is a loader, a schema or an order that differs between this program and the server's, or a server
+    /// whose package is not what its packs make, and it is **not hidden**.
+    pub fn take_pack_check_report(&mut self) -> Option<String> {
+        if self.pack_check_reported {
+            return None;
+        }
+        let PackCheck::Disagrees(lines) = &self.pack_check else {
+            return None;
+        };
+        self.pack_check_reported = true;
+        Some(format!(
+            "the packs of this server do not make the package it sent, which is drawn as it sent it: {}",
+            lines.join("; ")
+        ))
+    }
+
+    fn refresh_pack_check(&mut self) {
+        let packs = self.client.packs();
+        if !packs.is_complete() {
+            self.pack_check = PackCheck::Waiting;
+            self.pack_check_for = None;
+            return;
+        }
+        let key = (
+            packs
+                .listed()
+                .iter()
+                .map(PackListing::root)
+                .collect::<Vec<_>>(),
+            packs.whole(),
+            self.package_version,
+        );
+        if self.pack_check_for.as_ref() == Some(&key) {
+            return;
+        }
+        self.pack_check = if packs.whole() {
+            self.load_the_packs_held()
+        } else {
+            PackCheck::NotApplicable
+        };
+        self.pack_check_reported = false;
+        self.pack_check_for = Some(key);
+    }
+
+    /// Loads the packs this client holds, over its own copy of the game, and compares what that makes with the package the server sent.
+    fn load_the_packs_held(&self) -> PackCheck {
+        let mut raw = Vec::new();
+        for held in self.client.packs().held() {
+            match data_packs::read_archive(&held.id, &held.archive) {
+                Ok(pack) => raw.push(pack),
+                Err(errors) => {
+                    return PackCheck::Disagrees(vec![format!(
+                        "the pack {} cannot be read here: {errors}",
+                        held.id
+                    )]);
+                }
+            }
+        }
+        let mut local = G::new_content();
+        if !raw.is_empty()
+            && let Err(errors) = local.apply_packs(&raw)
+        {
+            return PackCheck::Disagrees(vec![format!(
+                "the packs cannot be loaded here: {errors}"
+            )]);
+        }
+        let lines = differences(&self.package, &local.package_data());
+        if lines.is_empty() {
+            PackCheck::Agrees
+        } else {
+            PackCheck::Disagrees(lines)
+        }
     }
 
     /// What the program must do after the package was replaced: draw with the new palette and pictures (`view::configure_renderer`). True once for each replacement.
@@ -795,6 +891,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
         self.settings.default_ambient_light = package.ambient_light;
         self.package = package;
+        self.package_version += 1;
         self.block_table = Arc::new(table);
         self.view_channels = view_channels;
         // The meshes were made with the old table: the terrain's are taken down and made again around the camera, the ships and planets are told to the renderer again.

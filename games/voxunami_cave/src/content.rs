@@ -396,6 +396,10 @@ impl GameContent for CaveContent {
         self.package.set_replicated_packs(packs);
     }
 
+    fn packs_whole(&self) -> bool {
+        self.package.packs_whole()
+    }
+
     fn body_names(&self) -> Vec<NamespacedId> {
         self.package.body_names()
     }

@@ -121,6 +121,8 @@ pub struct ClientPacks {
     /// The roots asked for and not yet complete.
     requested: BTreeSet<Hash>,
     store_problems: Vec<String>,
+    /// Whether the list is every pack the server runs besides the game's own (a server that has said nothing runs only the game's own: a list of none that is whole).
+    whole: bool,
 }
 
 impl ClientPacks {
@@ -132,12 +134,19 @@ impl ClientPacks {
             incoming: BTreeMap::new(),
             requested: BTreeSet::new(),
             store_problems: Vec::new(),
+            whole: true,
         }
     }
 
     /// The server's list of packs, in load order, as it was last told.
     pub fn listed(&self) -> &[PackListing] {
         &self.listed
+    }
+
+    /// Whether the list is every pack the server runs besides the game's own. Only then do the packs this client holds say all that is behind the package the server
+    /// sent, so only then can it load them and check that they make it.
+    pub fn whole(&self) -> bool {
+        self.whole
     }
 
     /// The packs held, in the order of the list.
@@ -166,7 +175,8 @@ impl ClientPacks {
 
     /// The server's list replaces the client's. Packs still listed are kept; the others are let go, with what was arriving of them. A pack the client lacks is
     /// taken from its store if the store has the very archive (checked against the index, never trusted), and otherwise asked for.
-    pub(crate) fn list(&mut self, listings: Vec<PackListing>) -> ListOutcome {
+    pub(crate) fn list(&mut self, listings: Vec<PackListing>, whole: bool) -> ListOutcome {
+        self.whole = whole;
         let roots: BTreeSet<Hash> = listings.iter().map(PackListing::root).collect();
         self.held.retain(|root, _| roots.contains(root));
         self.incoming.retain(|root, _| roots.contains(root));

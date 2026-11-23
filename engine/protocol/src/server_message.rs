@@ -207,7 +207,15 @@ pub enum ServerMessage {
     /// The packs this server has that a client keeps as files (the ones whose manifest does not say `"replicate": false`), in load order: **the whole list, which
     /// replaces the client's earlier one**. Sent right after the welcome if there are any, and at the start of the tick in which a replaced package changed the
     /// list. A client that lacks a pack asks for it with `RequestPacks` and is sent `PackChunk`s. (Protocol version 13.)
-    Packs(Vec<PackListing>),
+    ///
+    /// `whole` says whether the list is **every pack the server runs**: when it is, the client can load the packs with its own copy of the loader and check that it
+    /// makes the package the server sent; when it is not (a pack that says `"replicate": false`, or one the server was given in memory), the packs the client has are
+    /// not all there is behind the server's package and there is nothing to check. A server that has no packs and runs only the game's own does not send the message
+    /// at all, which a client reads as an empty list that is whole. (`whole` since protocol version 14.)
+    Packs {
+        listings: Vec<PackListing>,
+        whole: bool,
+    },
     /// A piece of the canonical archive of the pack whose root hash is `root`, that a client asked for: the bytes from `offset` on, at most
     /// [`MAXIMUM_PACK_CHUNK`] of them, in order. When the pieces add up to the size the list says, the client checks the archive against the pack's index and its
     /// root. (Protocol version 13.)
@@ -380,8 +388,9 @@ impl ServerMessage {
                 }
                 writer.write_bytes(package);
             }
-            Self::Packs(listings) => {
+            Self::Packs { listings, whole } => {
                 writer.write_u8(KIND_PACKS);
+                writer.write_u8(u8::from(*whole));
                 write_listings(&mut writer, listings);
             }
             Self::PackChunk {
@@ -638,7 +647,22 @@ impl ServerMessage {
                     package: reader.read_bytes()?.to_vec(),
                 }
             }
-            KIND_PACKS => Self::Packs(read_listings(&mut reader)?),
+            KIND_PACKS => {
+                let whole = match reader.read_u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        return Err(DecodeError::Invalid(
+                            "a list of packs is whole or not, 0 or 1",
+                        )
+                        .into());
+                    }
+                };
+                Self::Packs {
+                    listings: read_listings(&mut reader)?,
+                    whole,
+                }
+            }
             KIND_PACK_CHUNK => {
                 let root_bytes: [u8; 32] =
                     reader.read_raw(32)?.try_into().expect("32 bytes were read");
@@ -867,18 +891,35 @@ mod tests {
                 },
             ]),
             ServerMessage::GridsSpawned(Vec::new()),
-            ServerMessage::Packs(vec![
-                crate::packs::sample_listing(
-                    "my_pack",
-                    &[
-                        ("pack.json", b"{}"),
-                        ("blocks/a.json", b"A"),
-                        ("code/rules.py", b"withheld"),
-                    ],
-                ),
-                crate::packs::sample_listing("other", &[("pack.json", b"{\"id\":\"other\"}")]),
-            ]),
-            ServerMessage::Packs(Vec::new()),
+            ServerMessage::Packs {
+                listings: vec![
+                    crate::packs::sample_listing(
+                        "my_pack",
+                        &[
+                            ("pack.json", b"{}"),
+                            ("blocks/a.json", b"A"),
+                            ("code/rules.py", b"withheld"),
+                        ],
+                    ),
+                    crate::packs::sample_listing("other", &[("pack.json", b"{\"id\":\"other\"}")]),
+                ],
+                whole: true,
+            },
+            ServerMessage::Packs {
+                listings: vec![crate::packs::sample_listing(
+                    "private_beside",
+                    &[("pack.json", b"{}")],
+                )],
+                whole: false,
+            },
+            ServerMessage::Packs {
+                listings: Vec::new(),
+                whole: false,
+            },
+            ServerMessage::Packs {
+                listings: Vec::new(),
+                whole: true,
+            },
             ServerMessage::PackChunk {
                 root: Hash::of(b"a pack"),
                 offset: 0,
@@ -1064,7 +1105,17 @@ mod tests {
             .encode(),
             chunk
         );
-        assert_eq!(ServerMessage::Packs(Vec::new()).encode(), [17, 0]);
+        // The list: kind, whether it is the whole of what the server runs, then the count.
+        let list = |whole: bool| ServerMessage::Packs {
+            listings: Vec::new(),
+            whole,
+        };
+        assert_eq!(list(true).encode(), [17, 1, 0]);
+        assert_eq!(list(false).encode(), [17, 0, 0]);
+        assert!(matches!(
+            ServerMessage::decode(&[17, 2, 0]),
+            Err(ProtocolError::Malformed(DecodeError::Invalid(_)))
+        ));
         let piece = |offset: u64, bytes: &[u8]| {
             ServerMessage::PackChunk {
                 root: Hash::from_bytes([1; 32]),

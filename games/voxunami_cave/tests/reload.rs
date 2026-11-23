@@ -370,3 +370,54 @@ fn a_reload_that_changes_the_list_of_packs_tells_the_players_that_were_there_and
     assert_eq!(player.client().packs().listed().len(), 1);
     assert!(player.client().packs().is_complete());
 }
+
+#[test]
+fn after_a_reload_that_changes_the_packs_the_client_loads_them_again_and_still_agrees() {
+    let mut scene = Scene::new();
+    let (mut player, _) = above_the_ground(&mut scene.rig, None);
+    scene.rig.settle(&mut [&mut player]);
+    assert_eq!(
+        player.pack_check(),
+        &game_shell::PackCheck::Agrees,
+        "the game's own, before any pack"
+    );
+
+    let archive = pack_archive::Archive::from_files([
+        (
+            "pack.json".to_owned(),
+            br#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_vec(),
+        ),
+        (
+            "blocks/marble.json".to_owned(),
+            br#"{ "color": [0.9, 0.9, 0.95] }"#.to_vec(),
+        ),
+        (
+            "patches/lamps.json".to_owned(),
+            br#"{ "target": "base_blocks:lamp", "operations": [
+                { "op": "set", "property": "base_blocks:emission", "value": 90 } ] }"#
+                .to_vec(),
+        ),
+    ])
+    .unwrap();
+    let served = server::ServedPack::new("my_pack", &archive, |_| true).unwrap();
+    let packs = data_packs::read_archive("my_pack", &archive).unwrap();
+    let Scene { rig, package, .. } = &mut scene;
+    game_shell::reload_packs(
+        &mut rig.content,
+        &[packs],
+        vec![served],
+        package,
+        &mut rig.server,
+    )
+    .unwrap();
+    for _ in 0..4 {
+        scene.rig.settle(&mut [&mut player]);
+    }
+    assert!(player.client().packs().is_complete());
+    assert_eq!(
+        player.pack_check(),
+        &game_shell::PackCheck::Agrees,
+        "the packs it holds make the package it was sent, a block and a patch of the lamps"
+    );
+    assert_eq!(player.take_pack_check_report(), None, "nothing to report");
+}

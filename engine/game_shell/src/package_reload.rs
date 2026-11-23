@@ -62,7 +62,7 @@ pub fn reload_packs<C: GameContent>(
         .replace_package(encoded, &content.registries())
         .map_err(|error| ReloadError::NotTaken(error.to_string()))?;
     // (The list of packs follows the package it was made with: clients are told of it in the same tick, if it changed.)
-    server.replace_packs(content.replicated_packs().to_vec());
+    server.replace_packs(content.replicated_packs().to_vec(), content.packs_whole());
     Ok(Reloaded {
         warnings,
         blocks_added,
