@@ -8,7 +8,7 @@ use block_models::BlockTable;
 use coarse_cells::{CoarseCell, CoarseNode};
 use coarse_streaming::{
     Brightness, CoarseConfig, CoarseHandle, CoarseNodeUpdate, CoarseNodes, CoarseServerPlugin,
-    SetDetail, ZoomRequest,
+    DetailPlace, SetDetail, ZoomRequest,
 };
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, PlayersPlugin, PoseReport};
@@ -186,6 +186,14 @@ fn detail(bytes_per_second: u32) -> SetDetail {
         bytes_per_second,
         fine_radius: 2,
         zoom: None,
+        places: Vec::new(),
+    }
+}
+
+fn place_at(grid: GridId, brick: [i128; 3]) -> DetailPlace {
+    DetailPlace {
+        grid,
+        brick: BrickCoordinate::new(brick[0], brick[1], brick[2]),
     }
 }
 
@@ -824,6 +832,273 @@ fn a_client_who_zooms_is_sent_finer_leaves_in_the_cone() {
         again.is_empty(),
         "the plain leaf was sent already: {again:?}"
     );
+}
+
+// ---- places besides the player's (the viewpoints that have no body) ----
+
+/// What a viewer in `brick` of the main level, asking with `asked`, is to be sent of its terrain: what the selection both ends use says, among the cubes that have an
+/// override, in the order it says it.
+fn expected_leaves(rig: &Rig, brick: [i128; 3], asked: &SetDetail) -> Vec<BrickCube> {
+    let view = coarse_cells::ViewSelection {
+        detail: asked.settings(),
+        zoom: asked.zoom(),
+        fine_radius: u32::from(asked.fine_radius),
+        maximum_distance: 20_000.0,
+    };
+    let held = rig.handle.overrides_of(GridId::MAIN);
+    let may_hold = |cube: BrickCube| {
+        held.iter().any(|(held, _)| {
+            held.level() <= cube.level()
+                && BrickCube::containing(held.origin(), cube.level()) == cube
+        })
+    };
+    coarse_cells::select_around_brick(
+        BrickCoordinate::new(brick[0], brick[1], brick[2]),
+        &view,
+        &may_hold,
+    )
+    .into_iter()
+    .filter(|cube| cube.level() >= 1 && rig.handle.override_of(GridId::MAIN, *cube).is_some())
+    .collect()
+}
+
+/// The cubes of the main level's terrain that the nodes sent give, in the order they came.
+fn terrain_cubes_of(updates: &[CoarseNodeUpdate]) -> Vec<BrickCube> {
+    cubes_of(updates, GridId::MAIN)
+}
+
+/// The cubes, coarsest first (the order within a level as given) and each once where it is first named.
+fn coarsest_first_and_once(cubes: impl IntoIterator<Item = BrickCube>) -> Vec<BrickCube> {
+    let mut named = std::collections::HashSet::new();
+    let mut once: Vec<BrickCube> = cubes
+        .into_iter()
+        .filter(|cube| named.insert(*cube))
+        .collect();
+    once.sort_by_key(|cube| std::cmp::Reverse(cube.level()));
+    once
+}
+
+#[test]
+fn a_place_the_client_names_is_sent_the_nodes_round_it_as_the_player_is_each_once_coarsest_first_and_not_again()
+ {
+    let mut rig = rig();
+    rig.dig_and_settle([0, 0, 0], [16, 8, 16]);
+    rig.client.stand_at([96, 0, 0]);
+    let mut asked = detail(1_000_000);
+    asked.places = vec![place_at(GridId::MAIN, [24, 0, 0])];
+    rig.client.set_detail(&asked);
+    rig.step(5);
+    let (_, updates) = rig.client.coarse_nodes();
+
+    // The cut of each viewpoint is the shared selection from its brick (the same function the client runs for its own), and what is sent is both, once.
+    let of_the_player = expected_leaves(&rig, [96, 0, 0], &asked);
+    let of_the_place = expected_leaves(&rig, [24, 0, 0], &asked);
+    let [far] = &of_the_player[..] else {
+        panic!("{of_the_player:?}");
+    };
+    let [near] = &of_the_place[..] else {
+        panic!("{of_the_place:?}");
+    };
+    assert!(
+        near.level() < far.level(),
+        "the place does not test anything: {near:?} {far:?}"
+    );
+    assert_eq!(
+        terrain_cubes_of(&updates),
+        coarsest_first_and_once(of_the_player.iter().chain(&of_the_place).copied())
+    );
+    assert_eq!(terrain_cubes_of(&updates), [*far, *near]);
+    for update in &updates {
+        let (held, _) = rig.handle.override_of(GridId::MAIN, update.cube).unwrap();
+        assert_eq!(update.node, Some(held.without_exposure()));
+    }
+
+    // Nothing has changed: nothing is sent again.
+    rig.step(20);
+    assert!(rig.client.coarse_nodes().1.is_empty());
+}
+
+#[test]
+fn within_a_level_the_nodes_of_the_player_come_before_those_of_a_place() {
+    let mut rig = rig();
+    // Two edits 256 bricks apart: the player is near the first and a place is near the second, so that each sees both, one near and one far.
+    rig.dig([0, 0, 0], [16, 8, 16]);
+    rig.dig([8192, 0, 0], [8208, 8, 16]);
+    rig.settle();
+    rig.client.stand_at([40, 0, 0]);
+    let mut asked = detail(10_000_000);
+    asked.places = vec![place_at(GridId::MAIN, [216, 0, 0])];
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    let (_, updates) = rig.client.coarse_nodes();
+
+    let of_the_player = expected_leaves(&rig, [40, 0, 0], &asked);
+    let of_the_place = expected_leaves(&rig, [216, 0, 0], &asked);
+    let expected = coarsest_first_and_once(of_the_player.iter().chain(&of_the_place).copied());
+    let levels: Vec<u8> = expected.iter().map(|cube| cube.level()).collect();
+    assert!(
+        levels.windows(2).any(|pair| pair[0] == pair[1]),
+        "no level has a cube of each viewpoint, so the order within a level is not tested: {levels:?}"
+    );
+    assert_eq!(terrain_cubes_of(&updates), expected);
+}
+
+#[test]
+fn the_place_of_a_client_that_moves_sends_what_is_new_there_and_a_place_that_is_dropped_sends_nothing()
+ {
+    let mut rig = rig();
+    rig.dig_and_settle([0, 0, 0], [16, 8, 16]);
+    rig.client.stand_at([200, 0, 0]);
+    let mut asked = detail(1_000_000);
+    rig.client.set_detail(&asked);
+    rig.step(5);
+    let (_, first) = rig.client.coarse_nodes();
+    let mut told: Vec<BrickCube> = terrain_cubes_of(&first);
+    assert_eq!(told.len(), 1, "{first:?}");
+
+    for place in [[60, 0, 0], [24, 0, 0], [8, 0, 0]] {
+        asked.places = vec![place_at(GridId::MAIN, place)];
+        rig.client.set_detail(&asked);
+        rig.step(5);
+        let (_, updates) = rig.client.coarse_nodes();
+        let fresh: Vec<BrickCube> = expected_leaves(&rig, place, &asked)
+            .into_iter()
+            .filter(|cube| !told.contains(cube))
+            .collect();
+        assert!(
+            !fresh.is_empty(),
+            "the place {place:?} does not test anything"
+        );
+        assert_eq!(terrain_cubes_of(&updates), fresh, "the place {place:?}");
+        told.extend(fresh);
+    }
+
+    // The place goes: nothing is taken back and nothing is sent.
+    asked.places.clear();
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    assert!(rig.client.coarse_nodes().1.is_empty());
+    // It comes back: what it had was sent, and is not sent again.
+    asked.places = vec![place_at(GridId::MAIN, [24, 0, 0])];
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    assert!(rig.client.coarse_nodes().1.is_empty());
+}
+
+#[test]
+fn a_cube_that_the_player_and_a_place_both_want_is_sent_once() {
+    let mut rig = rig();
+    rig.dig_and_settle([0, 0, 0], [16, 8, 16]);
+    rig.client.stand_at([96, 0, 0]);
+    let mut asked = detail(1_000_000);
+    // The same brick as the player's, and the same twice.
+    asked.places = vec![
+        place_at(GridId::MAIN, [96, 0, 0]),
+        place_at(GridId::MAIN, [96, 0, 0]),
+    ];
+    rig.client.set_detail(&asked);
+    rig.step(5);
+    let (_, updates) = rig.client.coarse_nodes();
+    let [update] = &updates[..] else {
+        panic!("{updates:?}");
+    };
+    assert_eq!(update.cube, cube_at_origin(update.cube.level()));
+}
+
+#[test]
+fn a_place_in_a_grid_that_has_no_nodes_is_asked_of_nothing_and_harms_nothing() {
+    let mut rig = rig();
+    rig.dig_and_settle([0, 0, 0], [16, 8, 16]);
+    rig.client.stand_at([96, 0, 0]);
+    let mut asked = detail(1_000_000);
+    // The root grid of a level the world does not have, and a ship it does not have.
+    asked.places = vec![
+        place_at(GridId::root(LevelIndex::new(9)), [0, 0, 0]),
+        place_at(GridId::new(GridId::FIRST_ALLOCATED + 50), [0, 0, 0]),
+    ];
+    rig.client.set_detail(&asked);
+    rig.step(5);
+    let (_, updates) = rig.client.coarse_nodes();
+    assert_eq!(
+        terrain_cubes_of(&updates),
+        expected_leaves(&rig, [96, 0, 0], &asked)
+    );
+    assert_eq!(updates.len(), 1, "{updates:?}");
+}
+
+#[test]
+fn a_client_that_wants_no_nodes_is_sent_none_for_its_places_either() {
+    let mut rig = rig();
+    rig.dig_and_settle([0, 0, 0], [16, 8, 16]);
+    rig.client.stand_at([96, 0, 0]);
+    let mut asked = detail(0);
+    asked.places = vec![place_at(GridId::MAIN, [24, 0, 0])];
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    assert!(rig.client.coarse_nodes().1.is_empty());
+}
+
+#[test]
+fn a_place_in_a_ship_told_of_as_far_away_is_selected_as_the_player_is_in_it() {
+    let (mut rig, ship) = rig_with_a_far_ship_with_a_gap();
+    rig.client.stand_at([400, 0, 0]);
+    rig.client.watch([400, 0, 0], 2);
+    let mut asked = detail(10_000_000);
+    // A place inside the ship's own box, which the player is far from (so the nodes of the player's cut are coarse and the place's are fine).
+    let (_, bounds) = place_of(&rig, ship);
+    let inside = bounds.min();
+    asked.places = vec![DetailPlace {
+        grid: ship,
+        brick: inside,
+    }];
+    rig.client.set_detail(&asked);
+    rig.step(10);
+    let (_, updates) = rig.client.coarse_nodes();
+
+    let view = coarse_cells::ViewSelection {
+        detail: asked.settings(),
+        zoom: asked.zoom(),
+        fine_radius: u32::from(asked.fine_radius),
+        maximum_distance: 20_000.0,
+    };
+    let holds = |cube: BrickCube| {
+        rig.handle.overrides_of(ship).iter().any(|(held, _)| {
+            held.level() <= cube.level()
+                && BrickCube::containing(held.origin(), cube.level()) == cube
+        })
+    };
+    let nodes_of_the_place: Vec<BrickCube> =
+        coarse_cells::far_ship_nodes_to_send(inside, &view, &holds, 12)
+            .into_iter()
+            .filter(|cube| rig.handle.override_of(ship, *cube).is_some())
+            .collect();
+    let empties_of_the_place =
+        coarse_cells::far_ship_empty_cubes(inside, &view, bounds, &holds, 12);
+    let nodes_of_the_player = expected_far_nodes(&rig, ship, [400, 0, 0], &asked);
+    let empties_of_the_player = expected_empty_cubes(&rig, ship, [400, 0, 0], &asked);
+    assert!(
+        nodes_of_the_place
+            .iter()
+            .any(|cube| !nodes_of_the_player.contains(cube)),
+        "the place does not test anything: {nodes_of_the_place:?} {nodes_of_the_player:?}"
+    );
+    assert_eq!(
+        sorted(nodes_of(&updates, ship)),
+        sorted(coarsest_first_and_once(
+            nodes_of_the_player.into_iter().chain(nodes_of_the_place)
+        ))
+    );
+    assert_eq!(
+        sorted(empties_of(&updates, ship)),
+        sorted(coarsest_first_and_once(
+            empties_of_the_player
+                .into_iter()
+                .chain(empties_of_the_place)
+        ))
+    );
+    // Nothing more comes while nothing changes.
+    rig.step(10);
+    assert!(rig.client.coarse_nodes().1.is_empty());
 }
 
 #[test]

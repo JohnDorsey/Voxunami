@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use coarse_streaming::{CoarseConfig, CoarseServerPlugin};
+use coarse_streaming::{CoarseConfig, CoarseServerPlugin, DetailPlace};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
@@ -423,6 +423,98 @@ fn the_edited_bricks_of_a_place_that_is_kept_ready_are_held_while_it_is_and_forg
         holds_the_edited_brick_at_the_origin(Some(GridId::root(LevelIndex::new(1)))),
         (false, false)
     );
+}
+
+/// Where the watcher is when it is far from the crater and a place is kept ready near it: 1,000 voxels from it, beyond the 700 that terrain is drawn to.
+const FAR_FROM_THE_CRATER: [f64; 3] = [1_008.5, 60.0, 8.5];
+
+#[test]
+fn the_nodes_an_edit_changes_round_a_place_kept_ready_are_held_as_a_player_there_draws_them() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, FAR_FROM_THE_CRATER);
+    watcher.hold_hidden_pictures(64 << 20);
+    // The place is where the player of the second connection stands, 350 voxels from the crater: the crater is in its cut, as a node, and not in the watcher's own.
+    watcher.keep_ready(GridId::MAIN, Some(camera_at(WATCHER, 0.0, 0.0).position));
+    let mut screen = Screen::default();
+    let connection = rig.connection();
+    let mut near = rig.join(connection, 2, WATCHER);
+    let mut near_screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    rig.settle(&mut near, &mut near_screen);
+    let before: HashMap<BrickCube, PackedBrickMesh> = near_screen.nodes.clone();
+    assert!(
+        screen.hidden_nodes.len() > 20,
+        "the place is held: {} nodes",
+        screen.hidden_nodes.len()
+    );
+
+    rig.dig_a_crater();
+    rig.settle(&mut watcher, &mut screen);
+    rig.settle(&mut near, &mut near_screen);
+    rig.settle(&mut watcher, &mut screen);
+
+    let changed: Vec<BrickCube> = near_screen
+        .nodes
+        .iter()
+        .filter(|(cube, mesh)| before.get(cube) != Some(mesh))
+        .map(|(cube, _)| *cube)
+        .collect();
+    assert!(
+        !changed.is_empty(),
+        "the crater is not in the picture of the player who stands at the place"
+    );
+    for cube in &changed {
+        assert_eq!(
+            screen
+                .nodes
+                .get(cube)
+                .or_else(|| screen.hidden_nodes.get(cube)),
+            near_screen.nodes.get(cube),
+            "{cube:?} is drawn with the crater in it where the place is, and not held so for it"
+        );
+    }
+}
+
+#[test]
+fn the_places_the_server_is_asked_the_nodes_of_are_those_kept_ready_in_terrain_the_player_draws_in_nodes()
+ {
+    let mut rig = Rig::new();
+    let there = camera_at(WATCHER, 0.0, 0.0).position;
+
+    // A level drawn in nodes: the place kept ready in its terrain is asked for, with the brick it is in, and one in another level's terrain or in a grid there is not is not.
+    let connection = rig.connection();
+    let mut coarse = rig.join(connection, 1, FAR_FROM_THE_CRATER);
+    assert_eq!(coarse.detail_places(), []);
+    coarse.keep_ready(GridId::MAIN, Some(there));
+    coarse.keep_ready(GridId::root(LevelIndex::new(1)), Some(there));
+    coarse.keep_ready(GridId::new(GridId::FIRST_ALLOCATED + 40), Some(there));
+    assert_eq!(
+        coarse.detail_places(),
+        [DetailPlace {
+            grid: GridId::MAIN,
+            brick: there.brick()
+        }]
+    );
+    coarse.keep_ready(GridId::MAIN, None);
+    assert_eq!(coarse.detail_places(), []);
+
+    // A level drawn in bricks only has no nodes to ask for.
+    let (server, nodes) = (&mut rig.server, &rig.nodes);
+    let mut bricks = Session::<_, ExampleGame>::connect(
+        Box::new(rig.connector.connect().unwrap()) as Box<dyn Connection>,
+        &Identity::from_secret([2; 32]),
+        Mode::Playing,
+        3,
+        camera_at(FAR_FROM_THE_CRATER, 0.0, 0.0),
+        || {
+            nodes.step(server);
+        },
+    )
+    .unwrap();
+    bricks.keep_ready(GridId::MAIN, Some(there));
+    assert!(!bricks.draws_coarse_terrain());
+    assert_eq!(bricks.detail_places(), []);
 }
 
 /// How many nodes a player holds hidden with a place kept ready, and how many after it is not kept ready any more, with the setting as given.
