@@ -157,6 +157,10 @@ impl<'a> ByteReader<'a> {
             }
             value |= payload << (7 * position);
             if byte & 0x80 == 0 {
+                // A last byte of zero after another byte adds nothing: the writer would not have written it, and a value has one encoding.
+                if position > 0 && payload == 0 {
+                    return Err(DecodeError::InvalidVarint);
+                }
                 return Ok(value);
             }
         }
@@ -257,6 +261,32 @@ mod tests {
             ByteReader::new(&[0x80]).read_varint(),
             Err(DecodeError::UnexpectedEnd)
         );
+    }
+
+    #[test]
+    fn a_varint_with_a_needless_last_byte_of_zero_is_rejected_so_a_number_has_one_encoding() {
+        // Regression (found 2026-11-22 by the proptest `a_number_has_one_encoding` of wide_float, minimal input a flip that made the exponent `0x81 0x00`): the
+        // reader took `0x81 0x00` for 1, which is written as `0x01`, so a second spelling of one number was accepted and a save was not byte for byte.
+        for bytes in [
+            &[0x80, 0x00][..],
+            &[0x81, 0x00],
+            &[0xFF, 0x80, 0x00],
+            &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00],
+        ] {
+            assert_eq!(
+                ByteReader::new(bytes).read_varint(),
+                Err(DecodeError::InvalidVarint),
+                "{bytes:?}"
+            );
+        }
+        // Every value the writer writes is still read, and a zero is the one byte.
+        for value in [0, 1, 127, 128, 300, 16_384, u64::from(u32::MAX), u64::MAX] {
+            assert_eq!(
+                ByteReader::new(&varint_bytes(value)).read_varint(),
+                Ok(value)
+            );
+        }
+        assert_eq!(ByteReader::new(&[0x00]).read_varint(), Ok(0));
     }
 
     fn wide_bytes(value: i128) -> Vec<u8> {
