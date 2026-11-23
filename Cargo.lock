@@ -149,6 +149,7 @@ dependencies = [
  "content_registry",
  "data_packs",
  "namespaced_id",
+ "pack_archive",
  "voxel_grid",
  "voxel_space",
 ]
@@ -3467,6 +3468,7 @@ dependencies = [
  "lattice",
  "libm",
  "namespaced_id",
+ "pack_archive",
  "physics",
  "player_presence",
  "plugin_host",

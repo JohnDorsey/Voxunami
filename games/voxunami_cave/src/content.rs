@@ -1,6 +1,6 @@
 //! What the game is made of: its plugins' content, and how worlds are made and loaded from it.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
@@ -68,16 +68,40 @@ pub fn dev_docking_port_id() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// A block of Cave that is a data file (in `data/blocks/`), read against the properties of the base blocks and of Cave. `path` is the file's, to name it in an error; `name` is the
-/// block's, after `voxunami_cave:`.
-fn block_from_data(path: &str, name: &str, text: &str) -> (NamespacedId, BlockDefinition) {
+/// Cave's own pack, as the canonical archive `build.rs` makes of the `data` folder (`pack.json`, `blocks/*.json`, `bodies/*.json`; `docs/specs/pack-archive-spec.md`,
+/// step 3).
+const PACK_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/voxunami_cave.pack.zip"));
+
+/// The id of Cave's pack, which is its namespace.
+const PACK_ID: &str = "voxunami_cave";
+
+/// The bytes of Cave's pack, the canonical archive of its files: the same on every machine, so its root hash (`pack_archive::FileIndex`) names Cave's content.
+pub fn pack_archive_bytes() -> &'static [u8] {
+    PACK_ARCHIVE
+}
+
+/// Cave's pack, read once from [`PACK_ARCHIVE`].
+fn pack() -> &'static RawPack {
+    static PACK: OnceLock<RawPack> = OnceLock::new();
+    PACK.get_or_init(|| data_packs::read_builtin(PACK_ID, PACK_ARCHIVE))
+}
+
+/// A block of Cave that is a data file (in `data/blocks/`), read against the properties of the base blocks and of Cave. `name` is the block's, after `voxunami_cave:`,
+/// and the name of its file in the pack.
+fn block_from_data(name: &str) -> (NamespacedId, BlockDefinition) {
+    let file = pack()
+        .blocks
+        .iter()
+        .find(|file| file.name == name)
+        .unwrap_or_else(|| panic!("the pack of Cave has no file for the block {name}"));
     let mut properties = base_blocks::property_schema();
     for declaration in [PLACEABLE.declaration(), CREATIVE_ONLY.declaration()] {
         properties
             .declare(declaration)
             .expect("the properties of Cave are distinct from those of the base blocks");
     }
-    data_packs::read_block(path, "voxunami_cave", name, text, &properties)
+    let path = format!("games/voxunami_cave/data/blocks/{name}.json");
+    data_packs::read_block(&path, PACK_ID, name, &file.text, &properties)
         .unwrap_or_else(|errors| panic!("the file of {name} is wrong: {errors}"))
 }
 
@@ -86,11 +110,7 @@ fn block_from_data(path: &str, name: &str, text: &str) -> (NamespacedId, BlockDe
 /// its front turned to the player's side as far as that allows (see `placement.rs`); the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`, and its
 /// colour is the average of its pictures, which are in the pictures of `base_blocks`.
 pub fn dev_docking_port() -> BlockDefinition {
-    let (identifier, definition) = block_from_data(
-        "games/voxunami_cave/data/blocks/dev_docking_port.json",
-        "dev_docking_port",
-        include_str!("../data/blocks/dev_docking_port.json"),
-    );
+    let (identifier, definition) = block_from_data("dev_docking_port");
     assert_eq!(identifier, dev_docking_port_id());
     let mut port = [(identifier, definition)];
     data_packs::settle_game_pictures(&mut port, &base_blocks::textures()).unwrap_or_else(
@@ -113,11 +133,7 @@ pub fn dev_ball_joint_id() -> NamespacedId {
 /// short of the top, centred across. It is placed like a log, with the blue end away from the face that was clicked (the bar is the same all round, so it has no front). It is data:
 /// `data/blocks/dev_ball_joint.json`, in flat colours: it has no pictures yet.
 pub fn dev_ball_joint() -> BlockDefinition {
-    let (identifier, definition) = block_from_data(
-        "games/voxunami_cave/data/blocks/dev_ball_joint.json",
-        "dev_ball_joint",
-        include_str!("../data/blocks/dev_ball_joint.json"),
-    );
+    let (identifier, definition) = block_from_data("dev_ball_joint");
     assert_eq!(identifier, dev_ball_joint_id());
     definition
 }
@@ -294,7 +310,13 @@ impl CaveContent {
                 "voxunami_cave:planet"
                     .parse()
                     .expect("a constant identifier is valid"),
-                include_str!("../data/bodies/planet.json"),
+                pack()
+                    .bodies
+                    .iter()
+                    .find(|file| file.name == "planet")
+                    .expect("the pack of Cave has the planet")
+                    .text
+                    .as_str(),
             )],
             pull_strength: crate::game::Cave::gravity().pull_strength,
             default_generator: rolling_hills_generator_identifier(),
@@ -406,6 +428,32 @@ mod tests {
     use world_storage::{LevelData, ParsedWorld};
 
     use super::*;
+
+    #[test]
+    fn the_pack_of_cave_holds_the_files_of_the_data_folder_and_the_code_reads_every_one() {
+        use pack_archive::{Archive, Limits};
+        // A block file put in `data/blocks` and not registered in `CaveContent::new` would be a block nobody gets, and a body one nobody makes: the files the pack has
+        // are the files the code names, no more and no fewer.
+        let pack = pack();
+        let blocks: Vec<&str> = pack.blocks.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(blocks, ["dev_ball_joint", "dev_docking_port"]);
+        let bodies: Vec<&str> = pack.bodies.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(bodies, ["planet"]);
+        assert!(pack.patches.is_empty() && pack.textures.is_empty());
+        // The archive is the canonical one of exactly those files and the manifest.
+        let archive = Archive::from_bytes(pack_archive_bytes(), &Limits::default())
+            .expect("Cave's pack is a canonical archive");
+        let paths: Vec<&str> = archive.files().map(|(path, _)| path).collect();
+        assert_eq!(
+            paths,
+            [
+                "blocks/dev_ball_joint.json",
+                "blocks/dev_docking_port.json",
+                "bodies/planet.json",
+                "pack.json"
+            ]
+        );
+    }
 
     #[test]
     fn a_new_overworld_world_saves_and_loads_back_as_the_same_world() {

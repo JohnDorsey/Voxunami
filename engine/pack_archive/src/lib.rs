@@ -7,12 +7,14 @@
 
 mod archive;
 mod error;
+mod folder;
 #[cfg(feature = "import")]
 mod import;
 mod index;
 
 pub use archive::{Archive, Limits, check_path};
 pub use error::ArchiveError;
+pub use folder::files_of_folder;
 #[cfg(feature = "import")]
 pub use import::import_zip;
 pub use index::{FileIndex, Hash, IndexEntry, cache_file_name};

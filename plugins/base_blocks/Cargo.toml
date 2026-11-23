@@ -14,7 +14,11 @@ namespaced_id.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 
+[build-dependencies]
+pack_archive.workspace = true
+
 [dev-dependencies]
+pack_archive.workspace = true
 voxel_grid = { workspace = true, features = ["test-support"] }
 
 [lints]

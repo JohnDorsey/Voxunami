@@ -26,7 +26,7 @@ pub use body::{
     read_family_parameters,
 };
 pub use directory::{
-    PackIdentity, pack_identities, pack_name_of_zip, read_archive, read_directory,
+    PackIdentity, pack_identities, pack_name_of_zip, read_archive, read_builtin, read_directory,
 };
 pub use error::{PackError, PackErrors};
 pub use family::{FamilyData, FamilyParameters, FamilyProblem};

@@ -165,6 +165,28 @@ pub fn read_archive(pack: &str, archive: &Archive) -> Result<RawPack, PackErrors
     }
 }
 
+/// Reads the pack a program carries in itself: `bytes` are the canonical archive its build script made of the pack's folder, and `pack` is the pack's id. The
+/// bytes are in the program, so a fault in them (not the canonical archive, a folder nothing reads, no `pack.json`, a manifest that names another pack) is the
+/// program's own and **stops it**, naming the pack and the file.
+///
+/// # Panics
+/// On every fault above.
+pub fn read_builtin(pack: &str, bytes: &[u8]) -> RawPack {
+    let archive = Archive::from_bytes(bytes, &Limits::default()).unwrap_or_else(|error| {
+        panic!("the built-in pack {pack} is not a canonical archive: {error}")
+    });
+    let raw = read_archive(pack, &archive)
+        .unwrap_or_else(|errors| panic!("the built-in pack {pack} is wrong: {errors}"));
+    let manifest = crate::manifest::read_manifest(&format!("{pack}/pack.json"), &raw.manifest)
+        .unwrap_or_else(|errors| panic!("the built-in pack {pack} is wrong: {errors}"));
+    assert!(
+        manifest.id == pack,
+        "the built-in pack {pack} says its id is {:?} in its pack.json",
+        manifest.id
+    );
+    raw
+}
+
 /// Reads a `.zip` file: the canonical archive, or an author's own zip, which is taken into the canonical form (`pack_archive::import_zip`).
 fn read_zip(path: &Path, errors: &mut Vec<PackError>) -> Option<Files> {
     let label = path

@@ -36,7 +36,11 @@ world_storage.workspace = true
 entities.workspace = true
 world_view.workspace = true
 
+[build-dependencies]
+pack_archive.workspace = true
+
 [dev-dependencies]
+pack_archive.workspace = true
 block_models = { workspace = true, features = ["test-support"] }
 server = { workspace = true, features = ["test-support"] }
 jsonschema.workspace = true

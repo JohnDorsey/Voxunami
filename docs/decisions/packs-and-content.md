@@ -46,7 +46,7 @@ How a game's content reaches a server (data packs) and a client (the package in 
   patches) replaced the three mark properties, and face-valued properties take a word. The block table's answers are unchanged, to the orientation, for every block of Cave, 2048 and Eels (checked by dumping
   them from the old and the new code); the package got shorter by the three declarations.
 
-- **Built 2026-11-07 (step 2 of `block-textures-spec.md`):** the game's own blocks (the eight of `base_blocks`, and Cave's dev docking port) are JSON files in the pack format, embedded in the program and read by the pack reader. They are registered in
+- **Built 2026-11-07 (step 2 of `block-textures-spec.md`):** the game's own blocks (the eight of `base_blocks`, and Cave's dev docking port) are JSON files in the pack format, embedded in the program and read by the pack reader (since 2026-11-22 as one canonical archive each, made by the crate's `build.rs` of its `data` folder and, for `base_blocks`, every `.png` of `textures`: a file put in the folder is in the pack with no list to forget it in; only the order of the blocks, which fixes their numbers, is a list in the code). They are registered in
   a list in Rust, not numbered by the loader, because the loader orders a pack's files by name and these numbers are fixed. The package, the numbering, the block table and the golden sessions are unchanged to the byte, with no pin touched.
 
 - **Built 2026-11-07 (step 3 of `block-textures-spec.md`):** a block names its pictures with `texture`, and the picture of each face is the first file that exists (`_top`; `_side` then the plain name; `_bottom` then the top's), so a file added
