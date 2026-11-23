@@ -30,7 +30,8 @@ struct Summary {
 }
 
 /// The packs among `packs` that clients keep as files (every one whose manifest does not say `"replicate": false`), as a server serves them: the whole archive of
-/// each, every file sent (nothing is withheld yet: that is for code that is not wasm, which packs do not have), in the order of `packs`.
+/// each, every file sent except those in the pack's `server` folder (`data_packs::is_sent_to_clients`: the files a server keeps to itself, which are in the
+/// index and so in the pack's identity, and which no client is sent), in the order of `packs`.
 pub(crate) fn served_packs(packs: &[ReadPack]) -> Result<Vec<ServedPack>, String> {
     let mut served = Vec::new();
     for pack in packs {
@@ -40,11 +41,31 @@ pub(crate) fn served_packs(packs: &[ReadPack]) -> Result<Vec<ServedPack>, String
         if !manifest.replicate {
             continue;
         }
-        let one = ServedPack::new(&manifest.id, &pack.archive, |_| true)
+        let one = ServedPack::new(&manifest.id, &pack.archive, data_packs::is_sent_to_clients)
             .map_err(|error| format!("{file}: {error}"))?;
         served.push(one);
     }
     Ok(served)
+}
+
+/// How many files of each pack in `directory` clients are not sent (those in its `server` folder), for the packs that have any. Empty if the directory cannot be
+/// read, which the check says elsewhere.
+fn files_kept_back(directory: &Path) -> std::collections::BTreeMap<String, usize> {
+    read_pack_directory(directory)
+        .map(|packs| {
+            packs
+                .into_iter()
+                .filter_map(|pack| {
+                    let count = pack
+                        .archive
+                        .files()
+                        .filter(|(path, _)| !data_packs::is_sent_to_clients(path))
+                        .count();
+                    (count > 0).then_some((pack.raw.folder, count))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn load_into(content: &mut impl GameContent, directory: &Path) -> Result<Summary, String> {
@@ -159,10 +180,17 @@ pub fn run_check_packs<G: GameDefinition>(
         }
     );
     // what a pack is, whatever its form (the root hash of its file index): two servers run the same pack when these are equal
+    let kept_back = files_kept_back(&directory);
     if let Ok(identities) = pack_identities(&directory) {
         for (name, identity) in identities {
             match identity {
-                Ok(root) => println!("  {name}: root {root}"),
+                Ok(root) => match kept_back.get(&name).copied().unwrap_or(0) {
+                    0 => println!("  {name}: root {root}"),
+                    count => println!(
+                        "  {name}: root {root} ({count} file{} in `server` kept back: in the root, not sent to clients)",
+                        plural(count)
+                    ),
+                },
                 Err(why) => {
                     println!("  {name}: no root hash yet, it cannot be made into an archive: {why}")
                 }
@@ -280,6 +308,74 @@ mod tests {
                 .get("readme.md")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn what_is_in_the_server_folder_is_in_the_index_and_in_the_identity_and_is_not_sent() {
+        let extra = |code: &'static [u8]| {
+            read_pack(
+                "mine",
+                r#"{ "id": "mine" }"#,
+                &[("server/rules.py", code), ("readme.md", b"a note")],
+            )
+        };
+        let pack = extra(b"print(1)");
+        let served = served_packs(std::slice::from_ref(&pack)).unwrap();
+        let listing = served[0].listing();
+        let not_sent: Vec<&str> = listing
+            .index
+            .entries()
+            .iter()
+            .filter(|entry| !entry.sent)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(not_sent, ["server/rules.py"]);
+        // a client is sent the archive without it, and its size says so
+        let sent = Archive::from_bytes(served[0].archive_bytes(), &Default::default()).unwrap();
+        assert!(sent.get("server/rules.py").is_none());
+        assert!(sent.get("readme.md").is_some());
+        assert_eq!(
+            listing.archive_size as usize,
+            served[0].archive_bytes().len()
+        );
+        assert!(served[0].archive_bytes().len() < pack.archive.to_bytes().len());
+        // what the client holds, checked as a client checks what it was sent
+        assert!(listing.index.verify_received(&sent).is_ok());
+        // the identity is the one tools print: the same rule, so they cannot differ
+        assert_eq!(
+            listing.root(),
+            FileIndex::of(&pack.archive, data_packs::is_sent_to_clients).root_hash()
+        );
+        // one byte of code is another pack, and the same files are the same pack
+        assert_ne!(
+            served_packs(&[extra(b"print(2)")]).unwrap()[0].root(),
+            served[0].root()
+        );
+        assert_eq!(
+            served_packs(&[extra(b"print(1)")]).unwrap()[0].root(),
+            served[0].root()
+        );
+    }
+
+    #[test]
+    fn check_pack_counts_the_files_kept_back_of_each_pack_that_has_some() {
+        let directory =
+            std::env::temp_dir().join(format!("files_kept_back_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        for (path, text) in [
+            ("a/pack.json", r#"{ "id": "a" }"#),
+            ("a/server/one.py", "1"),
+            ("a/server/deeper/two.py", "2"),
+            ("b/pack.json", r#"{ "id": "b" }"#),
+            ("b/readme.md", "a note"),
+        ] {
+            let file = directory.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let kept = super::files_kept_back(&directory);
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(kept.into_iter().collect::<Vec<_>>(), [("a".to_owned(), 2)]);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, Identity, KeyCode, RawFile, RawPack, RawTexture};
 use namespaced_id::NamespacedId;
+use pack_archive::{Archive, FileIndex};
 use player_presence::player_kind;
 use transport::Connection;
 use voxunami_cave::content::CaveContent;
@@ -752,4 +753,101 @@ fn packs_that_do_not_make_the_package_the_server_sent_are_told_block_by_block_an
     std::fs::remove_dir_all(&recordings).unwrap();
     std::fs::remove_dir_all(&made_from).unwrap();
     std::fs::remove_dir_all(&says).unwrap();
+}
+
+// ---- Files a server keeps to itself: the `server` folder of a pack (step 6), in the real game ----
+
+#[test]
+fn a_client_is_never_sent_the_server_folder_of_a_pack_yet_holds_the_pack_the_server_has_the_identity_of_and_agrees_with_it()
+ {
+    let directory = a_folder_of_packs_that_all_replicate("withheld");
+    let secret = directory.join("my_pack/server/rules.py");
+    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    std::fs::write(&secret, "SECRET_RULES = 1").unwrap();
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    let served = &content.replicated_packs()[0];
+    let root = served.root();
+    // the identity is the one `check-pack` prints, and it has the code in it
+    let (_, identity) = data_packs::pack_identities(&directory)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(identity.unwrap(), root);
+    let whole = Archive::from_files(
+        [
+            (
+                "pack.json",
+                &br#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#[..],
+            ),
+            ("blocks/marble.json", br#"{ "color": [0.9, 0.9, 0.95] }"#),
+            ("readme.md", b"carried to clients too"),
+            ("server/rules.py", b"SECRET_RULES = 1"),
+        ]
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec())),
+    )
+    .unwrap();
+    assert_eq!(
+        served.root(),
+        FileIndex::of(&whole, |path| path != "server/rules.py").root_hash()
+    );
+    assert_ne!(
+        served.root(),
+        FileIndex::of(&whole, |_| true).root_hash(),
+        "the code is in the identity"
+    );
+    let sent_bytes = served.archive_bytes().to_vec();
+    assert!(
+        !sent_bytes
+            .windows(16)
+            .any(|window| window == b"SECRET_RULES = 1"),
+        "the bytes that go over the wire do not hold the code"
+    );
+
+    let recordings = std::env::temp_dir().join(format!(
+        "voxunami_cave_withheld_recordings_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&recordings).unwrap();
+    let path = recordings.join("withheld.voxreplay");
+    let store = client::MemoryPackStore::new();
+    let (mut rig, mut player) = server_and_player(content, &store, &path);
+    settle_a_few(&mut rig, &mut player);
+    let held = player
+        .client()
+        .packs()
+        .get(&root)
+        .expect("the pack is held");
+    assert_eq!(held.archive.to_bytes(), sent_bytes);
+    assert!(held.archive.get("server/rules.py").is_none());
+    assert!(held.archive.get("readme.md").is_some());
+    assert_eq!(
+        held.index
+            .entries()
+            .iter()
+            .find(|entry| !entry.sent)
+            .map(|entry| entry.path.as_str()),
+        Some("server/rules.py"),
+        "the client can see that a file is not sent, and not what it says"
+    );
+    // the pack without its code makes what the server sent
+    assert_eq!(player.pack_check(), &PackCheck::Agrees);
+    // kept for the next join under the same name, checked against the index when it is read again
+    assert_eq!(store.get("my_pack", &root), Some(sent_bytes.clone()));
+    drop(player);
+    // a replay holds the pack as it was sent, and agrees
+    let replay = replayed(&path);
+    assert_eq!(
+        replay
+            .client()
+            .packs()
+            .get(&root)
+            .unwrap()
+            .archive
+            .to_bytes(),
+        sent_bytes
+    );
+    assert_eq!(replay.pack_check(), &PackCheck::Agrees);
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
 }

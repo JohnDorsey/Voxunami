@@ -320,10 +320,22 @@ pub fn read_pack_directory(root: &Path) -> Result<Vec<ReadPack>, PackErrors> {
     }
 }
 
+/// The folder of a pack whose files a server keeps to itself: its code that is not WebAssembly, and anything else that is not for clients. The loader reads
+/// nothing in it (it is none of the folders of a pack), a client is never sent a file in it, and the file index still lists each one with its size and hash, so
+/// that a change to one is another pack (`docs/specs/pack-archive-spec.md`, step 6).
+pub const SERVER_FOLDER: &str = "server";
+
+/// Whether a server sends clients the file at `path` (from the pack's folder) when it replicates the pack: every file except those in [`SERVER_FOLDER`]. The
+/// one rule for the identity a tool prints and the pack a server serves, so that they cannot differ.
+pub fn is_sent_to_clients(path: &str) -> bool {
+    path.strip_prefix(SERVER_FOLDER)
+        .is_none_or(|rest| !rest.starts_with('/'))
+}
+
 /// A pack's name and its identity: the root hash of its file index, or why it cannot be archived.
 pub type PackIdentity = (String, Result<Hash, String>);
 
-/// The identity of each pack in `root`: its name and the root hash of its file index (all files sent), or why it cannot be archived (a file name that is not
+/// The identity of each pack in `root`: its name and the root hash of its file index (the files in [`SERVER_FOLDER`] listed as not sent), or why it cannot be archived (a file name that is not
 /// lower case, for one). A zip is canonical already; a folder's files are written into the canonical form to be hashed. Read with the same rules as
 /// [`read_directory`], which says what is wrong with the content; this says only what the identity is.
 pub fn pack_identities(root: &Path) -> Result<Vec<PackIdentity>, PackErrors> {
@@ -336,7 +348,7 @@ pub fn pack_identities(root: &Path) -> Result<Vec<PackIdentity>, PackErrors> {
         .into_iter()
         .map(|(name, files)| {
             let identity = Archive::from_files(files)
-                .map(|archive| FileIndex::of(&archive, |_| true).root_hash())
+                .map(|archive| FileIndex::of(&archive, is_sent_to_clients).root_hash())
                 .map_err(|error| error.to_string());
             (name, identity)
         })

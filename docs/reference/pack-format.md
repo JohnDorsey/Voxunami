@@ -15,12 +15,19 @@ packs/                      the folder you give the server: --packs packs
     patches/dim_lamps.json  a change to blocks that already exist
     bodies/moon.json        a planet in the world: my_pack:moon
     textures/marble_top.png the pictures of blocks (see "Pictures")
+    server/rules.py         anything the server keeps to itself (see below); nothing reads it
 ```
 
 Names are lowercase letters, digits and `_`, starting with a letter, at most 64 characters. A file's name without `.json` is
 the block's, patch's or body's name. Names that start with `.` and files that are not `.json` are left alone. A folder
 inside a pack that is not `blocks`, `patches`, `bodies` or `textures` is an error (`check-pack` names it and suggests the nearest), so a
-folder that nothing reads is never reported as fine.
+folder that nothing reads is never reported as fine. The one exception is `server`.
+
+**`server/` is the folder a server keeps to itself.** A server that replicates the pack sends clients every file of it except those in `server/`; they are
+in the pack's file index all the same, with their size and hash, so a client can see that a file exists and **cannot read it**, and a change of one byte of one
+is another pack (another root hash: `check-pack` prints it, and says how many files are kept back). Nothing reads the folder today: it is for code that is not
+WebAssembly, which does not exist yet, and for anything else you do not want in a client's copy. **Not a hiding place for data a client draws with**: what a
+block looks like and a picture's pixels are in the package every client is sent. A file in `server/` that a client needs is a file it will not have.
 
 ## `pack.json`
 

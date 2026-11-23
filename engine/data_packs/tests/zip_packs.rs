@@ -350,3 +350,87 @@ fn a_directory_with_a_bad_pack_gives_the_errors_of_read_directory() {
         read_directory(scratch.path()).unwrap_err().to_string()
     );
 }
+
+// ---- Files a client is not sent: the `server/` folder of a pack (`specs/pack-archive-spec.md`, step 6) ----
+
+fn files_with_server_code(code: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut files = sample_files();
+    files.push(("server/rules.py".to_owned(), code.to_vec()));
+    files.push((
+        "server/data/blocks/not_a_block.json".to_owned(),
+        b"X".to_vec(),
+    ));
+    files
+}
+
+#[test]
+fn only_the_server_folder_of_a_pack_is_withheld_from_clients() {
+    for sent in [
+        "pack.json",
+        "readme.md",
+        "blocks/a.json",
+        "textures/oak.png",
+        "worldgen/hills.wasm",
+        // a name that only starts like the folder's is a file like any other
+        "server.json",
+        "servers/list.txt",
+        "blocks/server/a.json",
+    ] {
+        assert!(data_packs::is_sent_to_clients(sent), "{sent}");
+    }
+    for withheld in ["server/rules.py", "server/a/b/c.txt", "server/x"] {
+        assert!(!data_packs::is_sent_to_clients(withheld), "{withheld}");
+    }
+}
+
+#[test]
+fn the_loader_does_not_read_what_is_in_the_server_folder_so_a_client_without_it_loads_the_same_pack()
+ {
+    let all = Archive::from_files(files_with_server_code(b"print(1)")).unwrap();
+    let sent = all.only(data_packs::is_sent_to_clients);
+    assert!(sent.get("server/rules.py").is_none());
+    assert!(sent.get("blocks/a.json").is_some());
+    assert_eq!(
+        read_archive("mine", &all).unwrap(),
+        read_archive("mine", &sent).unwrap(),
+        "what a pack makes of the game does not depend on its server code"
+    );
+}
+
+#[test]
+fn the_identity_of_a_pack_with_server_code_is_the_root_of_an_index_that_lists_it_as_not_sent() {
+    let folder = Scratch::new("withheld_folder");
+    write_folder(&folder, "mine", &files_with_server_code(b"print(1)"));
+    let zip = Scratch::new("withheld_zip");
+    write_zip(&zip, "mine.zip", &files_with_server_code(b"print(1)"));
+    let from_folder = pack_identities(folder.path()).unwrap();
+    assert_eq!(from_folder, pack_identities(zip.path()).unwrap());
+
+    let archive = Archive::from_files(files_with_server_code(b"print(1)")).unwrap();
+    let index = FileIndex::of(&archive, data_packs::is_sent_to_clients);
+    assert_eq!(from_folder, [("mine".to_owned(), Ok(index.root_hash()))]);
+    // it is not the root of the index that sends everything, which is another pack
+    assert_ne!(
+        index.root_hash(),
+        FileIndex::of(&archive, |_| true).root_hash()
+    );
+    let not_sent: Vec<&str> = index
+        .entries()
+        .iter()
+        .filter(|entry| !entry.sent)
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(
+        not_sent,
+        ["server/data/blocks/not_a_block.json", "server/rules.py"]
+    );
+
+    // one byte of code is another pack, though no client can read it
+    let changed = Scratch::new("withheld_changed");
+    write_folder(&changed, "mine", &files_with_server_code(b"print(2)"));
+    assert_ne!(
+        pack_identities(changed.path()).unwrap(),
+        from_folder,
+        "a changed server file is a changed pack"
+    );
+}

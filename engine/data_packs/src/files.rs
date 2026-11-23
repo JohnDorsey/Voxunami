@@ -109,7 +109,10 @@ fn unread_folders(files: &Files, pack: &str, errors: &mut Vec<PackError>) {
     let names: BTreeSet<&str> = files
         .keys()
         .filter_map(|path| path.split_once('/').map(|(folder, _)| folder))
-        .filter(|folder| !READ_FOLDERS.contains(folder))
+        // (the folder a server keeps to itself is not read by design, and is not a mistake)
+        .filter(|folder| {
+            !READ_FOLDERS.contains(folder) && *folder != crate::directory::SERVER_FOLDER
+        })
         .collect();
     for name in names {
         let hint = nearest(name, &READ_FOLDERS)
