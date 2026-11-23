@@ -3,16 +3,16 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
 use block_models::Shape;
-use common::docking::{Look, PLAIN, Placed, a_pair, facing, make, port_block, stone};
+use common::docking::{
+    Look, PLAIN, Placed, a_pair, blocks_of, facing, make, port_block, ships, stone,
+};
 use common::{Scene, ship_id};
 use game_shell::GameContent;
 use server::GridView;
 use voxel_space::{
-    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LevelIndex, LocalVoxelIndex,
-    Orientation, VoxelCoordinate, WorldPosition,
+    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LevelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::{
     CaveContent, dev_ball_joint_id, dev_command_seat_id, dev_docking_port_id, dev_rocket_engine_id,
@@ -33,17 +33,6 @@ fn weightless(scene: &mut Scene) {
             ..GravitySettings::default()
         });
     });
-}
-
-fn ships(scene: &Scene) -> Vec<GridId> {
-    scene
-        .rig
-        .server
-        .world()
-        .grids()
-        .iter()
-        .map(|(id, _)| id)
-        .collect()
 }
 
 fn mass_of(scene: &Scene, id: GridId) -> f64 {
@@ -216,30 +205,6 @@ fn ships_that_are_far_or_face_away_or_face_the_same_way_do_not_move_toward_each_
         assert_eq!(velocity_of(&scene, id), [0.0; 3], "{id:?}");
     }
     assert_eq!(ships(&scene).len(), 6);
-}
-
-/// Every block of a ship: where, which block, its state and its orientation.
-fn blocks_of(scene: &Scene, id: GridId) -> BTreeMap<VoxelCoordinate, (u32, u32, u32)> {
-    let content = CaveContent::new();
-    let ship = scene.rig.server.world().grids().get(id).unwrap();
-    let mut blocks = BTreeMap::new();
-    for brick in ship.voxels.sorted_brick_coordinates() {
-        let contents = ship.voxels.brick(brick).unwrap();
-        for local in LocalVoxelIndex::all() {
-            let block = contents.get(content.block_channel(), local);
-            if block != content.blocks.air {
-                blocks.insert(
-                    brick.voxel_at(local),
-                    (
-                        block,
-                        contents.get(content.state_channel(), local),
-                        contents.get(content.orientation_channel(), local),
-                    ),
-                );
-            }
-        }
-    }
-    blocks
 }
 
 /// Ticks until there is one ship, or `limit` ticks have gone.

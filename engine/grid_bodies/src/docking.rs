@@ -306,13 +306,37 @@ pub struct DockedPair {
     pub second: BlockFace,
 }
 
-/// Why two docked ships could not be undocked.
+/// The pairs among block faces (ports, or the ends of joints) in which a face looks at the block of another that looks back at it, the lower voxel first.
+fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
+    let mut pairs = Vec::new();
+    for first in faces {
+        let step = first.face.offset();
+        let Some(next) = first.voxel.checked_offset(step[0], step[1], step[2]) else {
+            continue;
+        };
+        let second = BlockFace {
+            voxel: next,
+            face: first.face.opposite(),
+        };
+        if first.voxel < second.voxel && faces.contains(&second) {
+            pairs.push(DockedPair {
+                first: *first,
+                second,
+            });
+        }
+    }
+    pairs
+}
+
+/// Why two docked ships could not be undocked, or two locked cars unlocked.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum UndockError {
     #[error(transparent)]
     Access(#[from] AccessError),
     #[error("those ports are not docked to each other")]
     NotDocked,
+    #[error("those joint ends are not locked to each other")]
+    NotLocked,
     #[error(
         "the ships are joined by blocks besides the ports (a weld); breaking them lets the ships come apart"
     )]
@@ -474,25 +498,120 @@ impl Docking {
 
     /// The pairs of ports of a ship that are docked: a port whose face looks at the block of another port whose face looks back at it.
     pub fn docked_pairs(&self, ship: &MovingGrid) -> Vec<DockedPair> {
-        let ports = self.ports_of(ship);
-        let mut pairs = Vec::new();
-        for first in &ports {
-            let step = first.face.offset();
-            let Some(next) = first.voxel.checked_offset(step[0], step[1], step[2]) else {
-                continue;
-            };
-            let second = BlockFace {
-                voxel: next,
-                face: first.face.opposite(),
-            };
-            if first.voxel < second.voxel && ports.contains(&second) {
-                pairs.push(DockedPair {
-                    first: *first,
-                    second,
-                });
+        facing_pairs(&self.ports_of(ship))
+    }
+
+    /// The pairs of joint ends of a ship that are locked: an end whose face looks at the block of another end whose face looks back at it (the cars of a ship that was made of cars by a
+    /// lock, or built so).
+    pub fn locked_pairs(&self, ship: &MovingGrid) -> Vec<DockedPair> {
+        facing_pairs(&self.joint_ends_of(ship))
+    }
+
+    /// The voxels of blocks that are joined to `start` without crossing between a pair of voxels of `cuts` (each pair is in `cuts` both ways).
+    fn joined_to(
+        &self,
+        ship: &MovingGrid,
+        start: VoxelCoordinate,
+        cuts: &BTreeSet<(VoxelCoordinate, VoxelCoordinate)>,
+    ) -> BTreeSet<VoxelCoordinate> {
+        let is_part =
+            |voxel: VoxelCoordinate| ship.voxels.get(self.block_channel, voxel) != self.air;
+        let mut side: BTreeSet<VoxelCoordinate> = BTreeSet::from([start]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(voxel) = queue.pop_front() {
+            for face in FaceDirection::ALL {
+                let step = face.offset();
+                let Some(next) = voxel.checked_offset(step[0], step[1], step[2]) else {
+                    continue;
+                };
+                if cuts.contains(&(voxel, next)) || side.contains(&next) || !is_part(next) {
+                    continue;
+                }
+                side.insert(next);
+                queue.push_back(next);
             }
         }
-        pairs
+        side
+    }
+
+    /// Cuts a ship in two between `first` and `second`, two voxels that are joined by nothing but the crossings in `cuts`: the first side is what is joined to `first` without crossing a
+    /// cut, and the second is the rest. Each side is a ship that goes on as the ship did (its centre of mass at the speed the ship had there). Returns the identifiers of the two and what
+    /// each weighs; the ship is not cut, and nothing changes, if a weld joins the sides.
+    fn cut_in_two(
+        &self,
+        world: &mut ServerWorld,
+        ship: GridId,
+        (first, second): (VoxelCoordinate, VoxelCoordinate),
+        cuts: &BTreeSet<(VoxelCoordinate, VoxelCoordinate)>,
+    ) -> Result<([GridId; 2], [f64; 2]), UndockError> {
+        let moving = world
+            .data()
+            .grids()
+            .get(ship)
+            .ok_or(AccessError::NoSuchGrid(ship))?;
+        let side = self.joined_to(moving, first, cuts);
+        if side.contains(&second) {
+            return Err(UndockError::Welded);
+        }
+        let parts = self.weigher().parts_of(moving, vec![side]);
+        let masses: Vec<f64> = parts.iter().map(|(_, mass)| *mass).collect();
+        let split = world.split_grid(ship, parts.into_iter().map(|(part, _)| part).collect())?;
+        Ok((
+            [split[0], split[1]],
+            [
+                masses.first().copied().unwrap_or(0.0),
+                masses.get(1).copied().unwrap_or(0.0),
+            ],
+        ))
+    }
+
+    /// Cuts a ship that was made of cars by a lock into them again, at a locked pair of joint ends and at every other pair between the same two cars (a car is what is joined without
+    /// crossing a locked pair of ends): each car is a ship that goes as the ship did there. **They are not set apart:** the ends of the two are where they were, in line and going together,
+    /// and the cars are coupled again by the rule that couples them, in a tick or two (a joint is a coupling, not a docking port). The ship comes apart if nothing else joins the two cars
+    /// (a weld does: a solid block beside both, say). Returns the side of the first end and the side of the second.
+    pub fn unlock(
+        &self,
+        world: &mut ServerWorld,
+        ship: GridId,
+        pair: DockedPair,
+    ) -> Result<[GridId; 2], UndockError> {
+        let moving = world
+            .data()
+            .grids()
+            .get(ship)
+            .ok_or(AccessError::NoSuchGrid(ship))?;
+        let locked = self.locked_pairs(moving);
+        if !locked.contains(&pair) {
+            return Err(UndockError::NotLocked);
+        }
+        if moving.terrain.is_some() {
+            return Err(SplitError::HasTerrain.into());
+        }
+        let crossing = |pair: &DockedPair| {
+            [
+                (pair.first.voxel, pair.second.voxel),
+                (pair.second.voxel, pair.first.voxel),
+            ]
+        };
+        let every_lock: BTreeSet<_> = locked.iter().flat_map(crossing).collect();
+        let first_car = self.joined_to(moving, pair.first.voxel, &every_lock);
+        let second_car = self.joined_to(moving, pair.second.voxel, &every_lock);
+        let between_the_cars: BTreeSet<_> = locked
+            .iter()
+            .filter(|other| {
+                (first_car.contains(&other.first.voxel) && second_car.contains(&other.second.voxel))
+                    || (second_car.contains(&other.first.voxel)
+                        && first_car.contains(&other.second.voxel))
+            })
+            .flat_map(crossing)
+            .collect();
+        let (sides, _) = self.cut_in_two(
+            world,
+            ship,
+            (pair.first.voxel, pair.second.voxel),
+            &between_the_cars,
+        )?;
+        Ok(sides)
     }
 
     /// Cuts a ship in two at a docked pair of ports: the ports are not joined, and the ship comes apart if nothing else joins its two sides
@@ -516,37 +635,19 @@ impl Docking {
         if moving.terrain.is_some() {
             return self.undock_from_planet(world, ship, pair);
         }
-        let is_part =
-            |voxel: VoxelCoordinate| moving.voxels.get(self.block_channel, voxel) != self.air;
-        // The first side: everything joined to the first port without crossing between the two ports.
-        let mut side: BTreeSet<VoxelCoordinate> = BTreeSet::new();
-        let mut queue = VecDeque::from([pair.first.voxel]);
-        side.insert(pair.first.voxel);
-        while let Some(voxel) = queue.pop_front() {
-            for face in FaceDirection::ALL {
-                let step = face.offset();
-                let Some(next) = voxel.checked_offset(step[0], step[1], step[2]) else {
-                    continue;
-                };
-                let between_the_ports = (voxel == pair.first.voxel && next == pair.second.voxel)
-                    || (voxel == pair.second.voxel && next == pair.first.voxel);
-                if between_the_ports || side.contains(&next) || !is_part(next) {
-                    continue;
-                }
-                side.insert(next);
-                queue.push_back(next);
-            }
-        }
-        if side.contains(&pair.second.voxel) {
-            return Err(UndockError::Welded);
-        }
-        let parts = self.weigher().parts_of(moving, vec![side]);
-        let masses: Vec<f64> = parts.iter().map(|(_, mass)| *mass).collect();
         let direction = moving
             .pose
             .direction_to_world(pair.first.face.offset().map(|component| component as f64));
-        let split = world.split_grid(ship, parts.into_iter().map(|(part, _)| part).collect())?;
-        let (first_side, second_side) = (split[0], split[1]);
+        let between_the_ports = BTreeSet::from([
+            (pair.first.voxel, pair.second.voxel),
+            (pair.second.voxel, pair.first.voxel),
+        ]);
+        let ([first_side, second_side], masses) = self.cut_in_two(
+            world,
+            ship,
+            (pair.first.voxel, pair.second.voxel),
+            &between_the_ports,
+        )?;
         // Apart: the side of the first port goes back, the side of the second forward, sharing the speed out so that momentum stays.
         if let [first_mass, second_mass] = masses[..]
             && first_mass + second_mass > 0.0

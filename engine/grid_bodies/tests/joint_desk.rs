@@ -133,3 +133,61 @@ fn the_desk_that_a_clone_has_is_the_same_desk() {
     other.let_go_of((ship(1), ship(2)));
     assert!(!desk.is_held_apart((ship(1), ship(2))));
 }
+
+#[test]
+fn a_lock_that_is_wanted_is_wanted_until_it_is_cancelled_and_is_not_taken_as_a_request_is() {
+    let desk = a_chain();
+    desk.lock((ship(2), ship(3)));
+    desk.lock((ship(0), ship(1)));
+    desk.lock((ship(0), ship(1)));
+    assert!(desk.is_lock_wanted((ship(0), ship(1))));
+    assert!(!desk.is_lock_wanted((ship(1), ship(2))));
+    // In order of pair, and asking does not take them.
+    let wanted = vec![(ship(0), ship(1)), (ship(2), ship(3))];
+    assert_eq!(desk.locks_wanted().into_iter().collect::<Vec<_>>(), wanted);
+    assert_eq!(desk.locks_wanted().into_iter().collect::<Vec<_>>(), wanted);
+    // (And a lock is no request to part a pair.)
+    assert!(desk.take_requests().is_empty());
+    desk.cancel_lock((ship(0), ship(1)));
+    assert!(!desk.is_lock_wanted((ship(0), ship(1))));
+    assert_eq!(
+        desk.locks_wanted().into_iter().collect::<Vec<_>>(),
+        vec![(ship(2), ship(3))]
+    );
+    // A pair that is not wanted locked is cancelled without a word.
+    desk.cancel_lock((ship(5), ship(6)));
+    assert_eq!(desk.locks_wanted().len(), 1);
+}
+
+#[test]
+fn asking_to_part_a_pair_takes_the_lock_that_was_wanted_of_it_and_of_no_other() {
+    let desk = a_chain();
+    desk.lock((ship(0), ship(1)));
+    desk.lock((ship(2), ship(3)));
+    desk.decouple((ship(0), ship(1)));
+    assert!(!desk.is_lock_wanted((ship(0), ship(1))));
+    assert!(desk.is_lock_wanted((ship(2), ship(3))));
+    // (A lock asked for a pair that is asked to be parted is not wanted at once, whichever came first.)
+    desk.lock((ship(0), ship(1)));
+    assert!(desk.is_lock_wanted((ship(0), ship(1))));
+}
+
+#[test]
+fn the_locks_that_are_wanted_of_pairs_that_are_gone_are_let_go_and_the_rest_are_kept() {
+    let desk = a_chain();
+    desk.lock((ship(0), ship(1)));
+    desk.lock((ship(2), ship(3)));
+    desk.keep_locks_only(|pair| pair == (ship(2), ship(3)));
+    assert_eq!(
+        desk.locks_wanted().into_iter().collect::<Vec<_>>(),
+        vec![(ship(2), ship(3))]
+    );
+}
+
+#[test]
+fn a_clone_shares_the_locks_wanted_too() {
+    let desk = a_chain();
+    let other = desk.clone();
+    other.lock((ship(1), ship(2)));
+    assert!(desk.is_lock_wanted((ship(1), ship(2))));
+}

@@ -29,7 +29,8 @@ use voxel_space::{GridId, GridPose, WorldPosition};
 
 use super::alone::pose_at_the_start;
 use super::{
-    Bodies, Ports, Ship, closest_pulling_ports, joined_motion, motion_of_a_ship, pull_and_turn,
+    Bodies, Joining, Ports, Ship, closest_pulling_ports, joined_motion, motion_of_a_ship,
+    pull_and_turn,
 };
 use crate::docking::{Approach, BlockFace, Docking};
 
@@ -235,12 +236,39 @@ impl Bodies {
         {
             return false;
         }
-        let (Some(first), Some(second)) = (
-            self.record_in_any_frame(pair.first),
-            self.record_in_any_frame(pair.second),
+        let Some(join) = self.who_stays_when_joined(
+            world,
+            (pair.first, pair.first_port),
+            (pair.second, pair.second_port),
         ) else {
             return false;
         };
+        let joining = self.make_one_ship_of_two(
+            world,
+            join.still,
+            join.moving,
+            (pair.first, pair.second),
+            join.motion,
+        );
+        self.count_docking(joining);
+        joining == Joining::Made
+    }
+
+    /// Two ships that are to be made one, each with the face that it joins at (the first of the two is the one with the lower identifier): which stays where it is, which is put where
+    /// they join, and how the whole goes. The one that stays is the one that is held, else the one that rides a rail, else the heavier (the first, of two as heavy); the motion is
+    /// the two's together as the world has it (the bodies have written it: a ship on a rail is going as its rail goes), before one is moved, and none if either is held. `None` if
+    /// either is not a ship the bodies know.
+    pub(super) fn who_stays_when_joined(
+        &self,
+        world: &ServerWorld,
+        first: (GridId, BlockFace),
+        second: (GridId, BlockFace),
+    ) -> Option<ToJoin> {
+        let grids = world.data().grids();
+        let (first_record, second_record) = (
+            self.record_in_any_frame(first.0)?,
+            self.record_in_any_frame(second.0)?,
+        );
         let rank = |id: GridId, record: &Ship| {
             if rides_a_rail(world, id) {
                 1
@@ -250,17 +278,17 @@ impl Bodies {
                 0
             }
         };
-        let (first_rank, second_rank) = (rank(pair.first, first), rank(pair.second, second));
+        let (first_rank, second_rank) =
+            (rank(first.0, first_record), rank(second.0, second_record));
         let held = first_rank == 2 || second_rank == 2;
-        let first_stays = (first_rank, first.mass) >= (second_rank, second.mass);
-        let (still, still_port, moving, moving_port) = if first_stays {
-            (pair.first, pair.first_port, pair.second, pair.second_port)
+        let first_stays = (first_rank, first_record.mass) >= (second_rank, second_record.mass);
+        let (still, moving) = if first_stays {
+            (first, second)
         } else {
-            (pair.second, pair.second_port, pair.first, pair.first_port)
+            (second, first)
         };
-        let from: WorldPosition = grids.get(still).expect("checked above").pose.position;
-        // The motion of both as the world has it (the bodies have written it: a ship on a rail is going as its rail goes), before one is moved.
-        let motions = [still, moving].map(|id| {
+        let from: WorldPosition = grids.get(still.0)?.pose.position;
+        let motions = [still.0, moving.0].map(|id| {
             let record = self.record_in_any_frame(id)?;
             let ship = grids.get(id)?;
             motion_of_a_ship(
@@ -271,13 +299,17 @@ impl Bodies {
                 ship.angular_velocity,
             )
         });
-        let motion = joined_motion(held, motions);
-        self.make_one_ship_of_two(
-            world,
-            (still, still_port),
-            (moving, moving_port),
-            (pair.first, pair.second),
-            motion,
-        )
+        Some(ToJoin {
+            still,
+            moving,
+            motion: joined_motion(held, motions),
+        })
     }
+}
+
+/// Two ships that are to be made one (`Bodies::who_stays_when_joined`): each with the face it joins at, and the velocity and the spin of the whole.
+pub(super) struct ToJoin {
+    pub still: (GridId, BlockFace),
+    pub moving: (GridId, BlockFace),
+    pub motion: ([f64; 3], [f64; 3]),
 }

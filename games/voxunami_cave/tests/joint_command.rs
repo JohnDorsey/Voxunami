@@ -4,144 +4,11 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-
-use common::chains;
-use common::docking::{Placed, make, stones};
-use common::joints::{ball_end_toward, joint_block};
-use common::{
-    FLOOR, Player, Scene, circular_speed, flat_floor, length, say, ship_id, tick_and_follow,
+use common::joints::{
+    LEVEL, a_chain_on_a_rail, a_player_and_cars, a_player_at_and_cars, east_car, keep_up_with,
+    middle_car, minus, pairs_the_world_has_as_coupled, two_cars, until_coupled, west_car, world_of,
 };
-use server::ShipSettings;
-use voxel_space::{
-    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, Orientation, WorldPosition,
-};
-
-fn pose(x: f64, y: f64, z: f64) -> GridPose {
-    GridPose::new(
-        WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
-        Orientation::IDENTITY,
-    )
-}
-
-/// No gravity: cars hang in the air where they are put, and the only forces are the joint ends'.
-fn weightless(scene: &mut Scene) {
-    scene.run(|world| {
-        world.set_gravity_settings(GravitySettings {
-            base: [0.0; 3],
-            ..GravitySettings::default()
-        });
-    });
-}
-
-/// The height of the cars above the floor.
-const LEVEL: f64 = FLOOR + 10.0;
-
-/// A car of `count` stones in a row along x with a joint end after them looking east (its pivot is at x = `count` + 1 in the car).
-fn east_car(count: i128) -> Vec<Placed> {
-    let mut blocks = stones(0, count);
-    blocks.push((
-        [count, 0, 0],
-        joint_block(),
-        ball_end_toward(FaceDirection::PositiveX),
-    ));
-    blocks
-}
-
-/// A car with a joint end looking west before `count` stones (its pivot is at x = 0 in the car).
-fn west_car(count: i128) -> Vec<Placed> {
-    let mut blocks = vec![(
-        [0, 0, 0],
-        joint_block(),
-        ball_end_toward(FaceDirection::NegativeX),
-    )];
-    blocks.extend(stones(1, count + 1));
-    blocks
-}
-
-/// A car with a joint end at each end, looking away from the middle (three stones between them).
-fn middle_car() -> Vec<Placed> {
-    let mut blocks = west_car(3);
-    blocks.push((
-        [4, 0, 0],
-        joint_block(),
-        ball_end_toward(FaceDirection::PositiveX),
-    ));
-    blocks
-}
-
-type Report = Box<dyn Fn() -> grid_bodies::BodiesReport>;
-
-/// A player on the floor and cars in the air above it, with the player's eyes at `eyes_x` along the cars.
-fn a_player_and_cars(eyes_x: f64, cars: Vec<(f64, Vec<Placed>)>) -> (Scene, Report, Player) {
-    a_player_at_and_cars([eyes_x, FLOOR + 5.0, 30.0], cars)
-}
-
-/// A player at a place, flying, and cars in the air over the floor.
-fn a_player_at_and_cars(place: [f64; 3], cars: Vec<(f64, Vec<Placed>)>) -> (Scene, Report, Player) {
-    let (mut scene, report) = Scene::reporting();
-    flat_floor(&mut scene);
-    let mut player = scene.rig.join(place, 0.0, 0.0);
-    scene.rig.settle(&mut [&mut player]);
-    weightless(&mut scene);
-    for (x, blocks) in cars {
-        make(&mut scene, pose(x, LEVEL, 20.0), false, blocks);
-    }
-    (scene, Box::new(report), player)
-}
-
-/// Two cars with their joint ends three metres apart, and a player beside them: the east car is made first (ship 0).
-fn two_cars() -> (Scene, Report, Player) {
-    a_player_and_cars(22.0, vec![(20.0, east_car(3)), (27.0, west_car(3))])
-}
-
-/// Ticks (with the player following) until `count` couplings are made or `limit` ticks have gone.
-fn until_coupled(
-    scene: &mut Scene,
-    player: &mut Player,
-    report: &Report,
-    count: u64,
-    limit: usize,
-) {
-    let mut ticks = 0;
-    while report().couplings < count && ticks < limit {
-        tick_and_follow(scene, player, 1);
-        ticks += 1;
-    }
-    assert_eq!(report().couplings, count, "after {ticks} ticks");
-}
-
-fn minus(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-/// Where the middle of a car's voxel is in the world, in voxels.
-fn world_of(scene: &Scene, id: GridId, local: [f64; 3]) -> [f64; 3] {
-    let ship = scene.rig.server.world().grids().get(id).unwrap();
-    let rotation = ship.pose.rotation_matrix();
-    let origin = ship
-        .pose
-        .position
-        .relative_to(WorldPosition::from_voxels([0.0; 3]));
-    [0, 1, 2].map(|axis| {
-        origin[axis]
-            + (0..3)
-                .map(|column| rotation[axis][column] * local[column])
-                .sum::<f64>()
-    })
-}
-
-fn pairs_the_world_has_as_coupled(scene: &mut Scene) -> BTreeSet<(GridId, GridId)> {
-    let found = std::sync::Arc::new(std::sync::Mutex::new(BTreeSet::new()));
-    let sink = std::sync::Arc::clone(&found);
-    scene.run(move |world| {
-        sink.lock()
-            .unwrap()
-            .extend(world.coupled_ships().iter().copied())
-    });
-    let found = found.lock().unwrap();
-    found.clone()
-}
+use common::{FLOOR, Scene, flat_floor, length, say, ship_id, tick_and_follow};
 
 #[test]
 fn a_coupled_pair_is_parted_by_the_command_and_the_ends_that_are_still_together_do_not_couple_again()
@@ -268,20 +135,10 @@ fn only_the_coupling_nearest_the_player_is_parted_when_the_car_has_two() {
 fn a_usage_is_given_for_a_word_the_command_does_not_have() {
     let (mut scene, _report, mut player) = two_cars();
     let reply = say(&mut scene, &mut player, "/joint frobnicate");
-    assert!(reply.contains("usage: /joint decouple"), "{reply}");
-}
-
-/// A player 10 voxels above a group that goes 38 voxels a tick, sent to where it will be a tick on (the command is heard a tick after, and the reach is 48 voxels).
-fn keep_up_with(scene: &mut Scene, player: &mut Player, ships: &[GridId]) {
-    let (place, going) = chains::centre_of(scene, ships);
-    let ahead = 1.0 / f64::from(chains::TICKS_PER_SECOND);
-    player.send_command(&format!(
-        "/tp {} {} {}",
-        place[0] + going[0] * ahead,
-        place[1] + going[1] * ahead + 10.0,
-        place[2] + going[2] * ahead
-    ));
-    tick_and_follow(scene, player, 1);
+    assert!(
+        reply.contains("usage: /joint lock|unlock|decouple"),
+        "{reply}"
+    );
 }
 
 /// Where each car of a chain is and how it goes, how many couplings there are, and which cars have a rail.
@@ -290,41 +147,23 @@ type ChainAfter = (Vec<([f64; 3], [f64; 3])>, u64, Vec<bool>);
 /// A chain of three cars on a rail round a planet, with a player keeping up with it, which is parted at the first joint if `part` (the command is said, and two ticks go by) and is not
 /// otherwise; where each car is and how it goes, as the world has it, two ticks after the point where the command would be said, and the report's couplings and rails.
 fn a_chain_on_a_rail_two_ticks_on(part: bool) -> ChainAfter {
-    let (mut scene, report) = Scene::reporting_in_a_new_world();
-    let distance = 70_016.0;
-    let speed = circular_speed(&scene, 0, distance);
-    // (The player is there, and has settled, before the chain is made: how many ticks a join takes to settle is not the same from one run to the next, and a chain that goes 38 voxels a
-    // tick is frozen when the player is 110 behind, which made the two runs of this differ by a whole number of ticks.)
-    let mut player = scene.rig.join([0.0, distance + 10.0, 0.0], 0.0, 0.0);
-    scene.rig.settle(&mut [&mut player]);
-    scene
-        .rig
-        .server
-        .set_ship_settings(ShipSettings::new(100.0, 300.0).unwrap());
-    let ships = chains::a_chain_in_orbit(&mut scene, chains::a_chain(), distance, speed);
-    assert_eq!(report().couplings, 2);
-    let rail = chains::put_on_its_rail(&mut scene, &ships, speed, chains::a_swing());
-    for _ in 0..20 {
-        keep_up_with(&mut scene, &mut player, &ships);
-    }
-    assert_eq!(
-        scene.rig.server.world().grids().get(ships[0]).unwrap().rail,
-        Some(rail)
-    );
+    let mut chain = a_chain_on_a_rail();
     if part {
-        player.send_command("/joint decouple");
+        chain.player.send_command("/joint decouple");
     }
     for _ in 0..2 {
-        keep_up_with(&mut scene, &mut player, &ships);
+        keep_up_with(&mut chain.scene, &mut chain.player, &chain.ships);
     }
-    let reply = player.take_command_replies().join(" | ");
+    let reply = chain.player.take_command_replies().join(" | ");
     if part {
         assert!(reply.contains("decoupled"), "{reply}");
     }
-    let railed = ships
+    let railed = chain
+        .ships
         .iter()
         .map(|id| {
-            scene
+            chain
+                .scene
                 .rig
                 .server
                 .world()
@@ -335,14 +174,15 @@ fn a_chain_on_a_rail_two_ticks_on(part: bool) -> ChainAfter {
                 .is_some()
         })
         .collect();
-    let cars = ships
+    let cars = chain
+        .ships
         .iter()
         .map(|id| {
-            let ship = scene.rig.server.world().grids().get(*id).unwrap();
+            let ship = chain.scene.rig.server.world().grids().get(*id).unwrap();
             (ship.pose.position.in_voxels(), ship.linear_velocity)
         })
         .collect();
-    (cars, report().couplings, railed)
+    (cars, (chain.report)().couplings, railed)
 }
 
 #[test]

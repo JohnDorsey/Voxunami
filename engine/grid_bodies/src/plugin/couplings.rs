@@ -38,8 +38,8 @@ pub(super) struct Coupled {
     pub(super) id: CouplingId,
     /// The frame whose body world has the joint.
     pub(super) frame: FrameKey,
-    first_end: BlockFace,
-    second_end: BlockFace,
+    pub(super) first_end: BlockFace,
+    pub(super) second_end: BlockFace,
 }
 
 /// What became of a coupling since the last tick.

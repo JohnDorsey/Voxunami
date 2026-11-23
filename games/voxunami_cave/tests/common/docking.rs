@@ -1,12 +1,12 @@
 //! Ships with docking ports, for the tests of docking and of what docks where the world moves.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use game_shell::GameContent;
 use grid_bodies::SHIP_BRICKS_PER_TICK;
 use server::GridView;
-use voxel_space::{FaceDirection, GridId, GridPose, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, GridPose, LevelIndex, LocalVoxelIndex, VoxelCoordinate};
 use voxunami_cave::content::{CaveContent, dev_docking_port_id};
 use voxunami_cave::placement::turn_carrying;
 
@@ -46,6 +46,42 @@ pub fn stone() -> u32 {
 
 /// A block of a ship: where it is in the ship, which block, and how it is made.
 pub type Placed = ([i128; 3], u32, Look);
+
+/// Every ship there is.
+pub fn ships(scene: &Scene) -> Vec<GridId> {
+    scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Every block of a ship: where, which block, its state and its orientation.
+pub fn blocks_of(scene: &Scene, id: GridId) -> BTreeMap<VoxelCoordinate, (u32, u32, u32)> {
+    let content = CaveContent::new();
+    let ship = scene.rig.server.world().grids().get(id).unwrap();
+    let mut blocks = BTreeMap::new();
+    for brick in ship.voxels.sorted_brick_coordinates() {
+        let contents = ship.voxels.brick(brick).unwrap();
+        for local in LocalVoxelIndex::all() {
+            let block = contents.get(content.block_channel(), local);
+            if block != content.blocks.air {
+                blocks.insert(
+                    brick.voxel_at(local),
+                    (
+                        block,
+                        contents.get(content.state_channel(), local),
+                        contents.get(content.orientation_channel(), local),
+                    ),
+                );
+            }
+        }
+    }
+    blocks
+}
 
 pub fn stones(from: i128, to: i128) -> Vec<Placed> {
     (from..to).map(|x| ([x, 0, 0], stone(), PLAIN)).collect()

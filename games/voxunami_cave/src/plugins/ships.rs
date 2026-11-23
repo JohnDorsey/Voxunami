@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use block_models::BlockTable;
 use game_shell::GameContent;
 use grid_bodies::collision::BlockCollisions;
-use grid_bodies::{Docking, JointDesk, UndockError};
+use grid_bodies::{DockedPair, Docking, JointDesk, UndockError};
 use namespaced_id::NamespacedId;
 use physics::Collision;
 use player_presence::{Presence, SharedPresence, lock};
@@ -18,7 +18,9 @@ use plugin_host::{
 use protocol::ClientId;
 use server::{GridView, LogoutPolicy, ServerWorld, ShipSettings};
 use voxel_grid::ChannelIndex;
-use voxel_space::{BrickCoordinate, GridId, GridPose, Orientation, VoxelCoordinate, WorldPosition};
+use voxel_space::{
+    BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
+};
 use world_storage::PilotLogout;
 use world_view::cast_ray;
 
@@ -32,7 +34,7 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const JOINT_USAGE: &str = "usage: /joint decouple";
+const JOINT_USAGE: &str = "usage: /joint lock|unlock|decouple";
 const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | buckle | unbuckle | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
 
 /// A distance in a command: a number of voxels that is not below zero, or `everywhere` (or `nowhere`) for none.
@@ -490,15 +492,16 @@ impl Ships {
         }
     }
 
-    /// `/joint decouple`: the coupling whose pivot is nearest to the player's eyes (within [`NEAR`], in their level) is let go of: the two cars are parted, and are not drawn together or
-    /// coupled again until they have been farther apart than their ends pull (and then are, if they are brought back). Nothing else is done to them.
+    /// `/joint lock|unlock|decouple`, each about the coupling or the lock nearest to the player's eyes (within [`NEAR`], in their level; the nearest of the *pivots*, not of the ships: a
+    /// ship is as near as its bricks are, thirty-two voxels at a time, and two couplings of a chain of cars are often in the bricks of one).
     fn joint_command(
         &self,
         world: &mut ServerWorld,
         client: ClientId,
         arguments: &Arguments<'_>,
     ) -> String {
-        if arguments.word(0) != "decouple" {
+        let action = arguments.word(0);
+        if !["lock", "unlock", "decouple"].contains(&action) {
             return JOINT_USAGE.to_owned();
         }
         let (level, eyes) = {
@@ -508,18 +511,132 @@ impl Ships {
             };
             (presence.level_of(world.data(), client), eyes)
         };
-        // (Not the nearest ship's: a ship is as near as its bricks are, thirty-two voxels at a time, and two couplings of a chain of cars are often in the bricks of one.)
-        let nearest = self
-            .joint_desk
+        match action {
+            "decouple" => self.decouple_nearest(level, eyes),
+            "lock" => self.lock_nearest(level, eyes),
+            _ => self.unlock_nearest(world, level, eyes),
+        }
+    }
+
+    /// The coupling whose pivot is nearest to a place, within [`NEAR`], and how far it is.
+    fn nearest_coupling(
+        &self,
+        level: LevelIndex,
+        eyes: WorldPosition,
+    ) -> Option<(f64, (GridId, GridId))> {
+        self.joint_desk
             .couplings_within(level, eyes, NEAR)
             .into_iter()
-            .map(|(_, pair)| pair)
-            .next();
-        let Some((first, second)) = nearest else {
+            .next()
+    }
+
+    /// `/joint decouple`: the coupling nearest the player is let go of: the two cars are parted, and are not drawn together or coupled again until they have been farther apart than
+    /// their ends pull (and then are, if they are brought back). Nothing else is done to them. (A lock that was wanted of the pair is not wanted any more.)
+    fn decouple_nearest(&self, level: LevelIndex, eyes: WorldPosition) -> String {
+        let Some((_, (first, second))) = self.nearest_coupling(level, eyes) else {
             return format!("nothing is coupled within {NEAR} voxels of you");
         };
         self.joint_desk.decouple((first, second));
         format!("decoupled ships {} and {}", number(first), number(second))
+    }
+
+    /// `/joint lock`: the coupling nearest the player is to be locked: its two cars are turned into line, if they are not, and made one ship. It is asked of the plugin that couples, which
+    /// does it as soon as it can and tries again until it has, or the pair is parted or the lock is taken back (`/joint unlock`).
+    fn lock_nearest(&self, level: LevelIndex, eyes: WorldPosition) -> String {
+        let Some((_, (first, second))) = self.nearest_coupling(level, eyes) else {
+            return format!("nothing is coupled within {NEAR} voxels of you");
+        };
+        if self.joint_desk.is_lock_wanted((first, second)) {
+            return format!(
+                "ships {} and {} are already being locked",
+                number(first),
+                number(second)
+            );
+        }
+        self.joint_desk.lock((first, second));
+        format!("locking ships {} and {}", number(first), number(second))
+    }
+
+    /// `/joint unlock`: the lock nearest the player is undone: a locked pair of joint ends of a ship, which is cut into the two cars at them (and at every other pair between the same
+    /// two), or a lock that is wanted of two coupled cars and has not been made, which is taken back. Cars that are unlocked are not set apart: their ends are together, and they are coupled.
+    fn unlock_nearest(
+        &self,
+        world: &mut ServerWorld,
+        level: LevelIndex,
+        eyes: WorldPosition,
+    ) -> String {
+        let wanted = self
+            .joint_desk
+            .couplings_within(level, eyes, NEAR)
+            .into_iter()
+            .find(|(_, pair)| self.joint_desk.is_lock_wanted(*pair));
+        let locked = self.nearest_locked_pair(world, level, eyes);
+        match (wanted, locked) {
+            (Some((wanted, (first, second))), locked)
+                if locked.as_ref().is_none_or(|(locked, ..)| wanted <= *locked) =>
+            {
+                self.joint_desk.cancel_lock((first, second));
+                format!(
+                    "ships {} and {} are not to be locked any more",
+                    number(first),
+                    number(second)
+                )
+            }
+            (_, Some((_, ship, pair))) => match self.docking.unlock(world, ship, pair) {
+                Ok([first, second]) => format!(
+                    "unlocked ship {} into ships {} and {}",
+                    number(ship),
+                    number(first),
+                    number(second)
+                ),
+                Err(UndockError::Welded) => format!(
+                    "ship {} is welded there: solid blocks join the two cars besides their joint ends, and breaking them lets the cars come apart",
+                    number(ship)
+                ),
+                Err(error) => format!("could not unlock ship {}: {error}", number(ship)),
+            },
+            _ => format!("nothing is locked within {NEAR} voxels of you"),
+        }
+    }
+
+    /// The locked pair of joint ends, of any ship in a level, whose middle is nearest to a place, within [`NEAR`]: how far, the ship and the pair.
+    fn nearest_locked_pair(
+        &self,
+        world: &ServerWorld,
+        level: LevelIndex,
+        eyes: WorldPosition,
+    ) -> Option<(f64, GridId, DockedPair)> {
+        let mut nearest: Option<(f64, GridId, DockedPair)> = None;
+        for (id, ship) in world.data().grids().iter() {
+            if ship.level != level || ship.terrain.is_some() {
+                continue;
+            }
+            let (Some(extent), Some(here)) = (Extent::of(ship), ship.pose.world_to_local(eyes))
+            else {
+                continue;
+            };
+            if extent.distance_to(in_voxels(here)) > NEAR {
+                continue;
+            }
+            for pair in self.docking.locked_pairs(ship) {
+                let Some(place) = ship.pose.local_to_world(WorldPosition::new(
+                    BrickCoordinate::ORIGIN,
+                    pair.first.local_centre(),
+                )) else {
+                    continue;
+                };
+                let distance = place
+                    .relative_to(eyes)
+                    .iter()
+                    .map(|component| component * component)
+                    .sum::<f64>()
+                    .sqrt();
+                if distance <= NEAR && nearest.is_none_or(|(best, ..)| distance < best) {
+                    nearest = Some((distance, id, pair));
+                }
+            }
+        }
+        nearest
     }
 
     /// `/ship undock`: the docked pair of ports nearest to the player, on the ship they are aboard or the one nearest, is cut apart: the ship becomes

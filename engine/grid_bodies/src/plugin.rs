@@ -27,6 +27,7 @@ mod alone;
 mod clusters;
 mod couplings;
 mod ghosts;
+mod locks;
 mod rail_joints;
 mod rail_ports;
 
@@ -145,6 +146,9 @@ pub struct BodiesReport {
     pub couplings_moved: u64,
     /// Couplings that were let go of because a command parted them (`/joint decouple`).
     pub couplings_parted: u64,
+    /// Pairs of coupled cars that were made one ship because a command locked them (`/joint lock`), and tries that were refused (blocks of the two would be in one place).
+    pub locks_made: u64,
+    pub locks_refused: u64,
     /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
     pub frames: u64,
     /// How many of them go with a group that is alone and off a rail (`Followed::Group`: a frame of its own, in free fall).
@@ -1726,6 +1730,8 @@ impl Bodies {
         self.apply_gravity(world);
         self.couple_joints(world);
         self.attract(world);
+        // (And the cars that a player asked to have locked are turned toward being in line.)
+        self.turn_the_cars_wanted_locked(world);
         for force in world.take_grid_forces() {
             let Some(frame) = self
                 .frame_of(force.grid)
@@ -1819,6 +1825,8 @@ impl Bodies {
         self.take_railed_groups_off_for_ends_that_pull(world);
         // (And the pairs that a player parted in this tick, from where they are.)
         self.part_the_pairs_asked_to_be_parted(world);
+        // (And the cars that a player asked to have locked, and that are in line: made one ship, from where they are.)
+        self.lock_the_cars_that_are_in_line(world);
     }
 
     /// What the report says of the bricks made so far, as a copy.
@@ -2996,6 +3004,17 @@ fn what_the_bodies_did_to(frame: &Frame, anchor: WorldPosition) -> Option<([f64;
     (mass > 0.0).then(|| (apart.map(|part| part / mass), speed.map(|part| part / mass)))
 }
 
+/// What came of making one ship of two (`Bodies::make_one_ship_of_two`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Joining {
+    /// The two are one ship.
+    Made,
+    /// The two were put where they would join and could not be made one (blocks of the two would be in one place): they are as they were, and not tried again for a while.
+    Refused,
+    /// Nothing was tried: a ship was gone, or its place could not be worked out.
+    NotTried,
+}
+
 /// The docking ports of a ship by the brick they are in (a ship's record keeps them so).
 type Ports = BTreeMap<BrickCoordinate, Vec<BlockFace>>;
 
@@ -3302,18 +3321,29 @@ impl Bodies {
         // The motion of both, before one is moved.
         let motions = [still, moving].map(|id| self.motion_of(world, pair.frame, id, from));
         let (linear, angular) = joined_motion(held, motions);
-        self.make_one_ship_of_two(
+        let joining = self.make_one_ship_of_two(
             world,
             (still, still_port),
             (moving, moving_port),
             (pair.first, pair.second),
             (linear, angular),
-        )
+        );
+        self.count_docking(joining);
+        joining == Joining::Made
+    }
+
+    /// Counts a try at docking that was made (one that was not tried is not counted).
+    fn count_docking(&mut self, joining: Joining) {
+        match joining {
+            Joining::Made => self.count(|report| report.dockings_made += 1),
+            Joining::Refused => self.count(|report| report.dockings_refused += 1),
+            Joining::NotTried => {}
+        }
     }
 
     /// Puts the ship `moving` where it docks with `still` (exactly, port against port) and makes one ship of the two that goes as `motion` says (the velocity and the spin of it, in the world's
-    /// axes). Whether it was done: it is not when blocks of the two would be in one place; the ship is put back where it was, and the pair, which is `pair` (the lower identifier first), is
-    /// not tried again for a while.
+    /// axes). It is refused when blocks of the two would be in one place; the ship is put back where it was, and the pair, which is `pair` (the lower identifier first), is
+    /// not tried again for a while. (A face is a docking port's or the end of a joint's: it is the same geometry. What counts the try is the caller's.)
     fn make_one_ship_of_two(
         &mut self,
         world: &mut ServerWorld,
@@ -3321,12 +3351,12 @@ impl Bodies {
         (moving, moving_port): (GridId, BlockFace),
         pair: (GridId, GridId),
         (linear, angular): ([f64; 3], [f64; 3]),
-    ) -> bool {
+    ) -> Joining {
         let (Some(still_ship), Some(moving_ship)) = (
             world.data().grids().get(still),
             world.data().grids().get(moving),
         ) else {
-            return false;
+            return Joining::NotTried;
         };
         let (still_pose, moving_pose) = (still_ship.pose, moving_ship.pose);
         let from = still_pose.position;
@@ -3335,10 +3365,10 @@ impl Bodies {
         let moving_view = BlockFaceView::of(moving_port, &moving_pose, from);
         let turn = approach(&still_view, &moving_view).turn;
         let Some((docked, _)) = docked_pose(&still_pose, still_port, moving_port, turn) else {
-            return false;
+            return Joining::NotTried;
         };
         if world.set_grid_pose(moving, docked).is_err() {
-            return false;
+            return Joining::NotTried;
         }
         // (The orientations of the blocks are turned by the merge itself; nothing else here needs turning.)
         let turn_values = |_: &mut Vec<(ChannelIndex, u32)>, _: voxel_space::LatticeRotation| {};
@@ -3353,14 +3383,12 @@ impl Bodies {
         match world.merge_grids(still, moving, &plan) {
             Ok(_) => {
                 self.refused.remove(&pair);
-                self.count(|report| report.dockings_made += 1);
-                true
+                Joining::Made
             }
             Err(_) => {
                 let _ = world.set_grid_pose(moving, moving_pose);
                 self.refused.insert(pair, self.tick + REFUSED_RETRY_TICKS);
-                self.count(|report| report.dockings_refused += 1);
-                false
+                Joining::Refused
             }
         }
     }
