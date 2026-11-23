@@ -8,6 +8,7 @@ description = "Ships as rigid bodies: the plugin that moves the grids of a world
 
 [dependencies]
 block_models.workspace = true
+entities.workspace = true
 libm = "0.2"
 namespaced_id.workspace = true
 thiserror.workspace = true

@@ -24,6 +24,7 @@ use crate::joint_desk::JointDesk;
 use crate::joints::{Inertia, JointSettings, inertia_in_the_world, mass_at_an_end};
 
 mod alone;
+mod balls;
 mod clusters;
 mod couplings;
 mod ghosts;
@@ -31,6 +32,7 @@ mod locks;
 mod rail_joints;
 mod rail_ports;
 
+pub use balls::joint_ball_kind;
 use rail_ports::is_a_rail_pair;
 
 use couplings::{Coupled, CouplingKey};
@@ -229,6 +231,8 @@ impl Plugin for GridBodiesPlugin {
             .chain(config.orientation_channel)
             .collect();
         let bodies = Arc::new(Mutex::new(Bodies::new(config, Arc::clone(&self.report))));
+        // The ball that is drawn where two joint ends meet is an entity of the server's (see `balls.rs`).
+        registrar.entity_kind(balls::joint_ball_kind_spec());
 
         // Where blocks changed, the colliders and the mass are made again.
         let hearing = Arc::clone(&bodies);
@@ -1827,6 +1831,8 @@ impl Bodies {
         self.part_the_pairs_asked_to_be_parted(world);
         // (And the cars that a player asked to have locked, and that are in line: made one ship, from where they are.)
         self.lock_the_cars_that_are_in_line(world);
+        // (And the balls of the joints that are coupled or locked now, which clients are told of as of entities.)
+        self.keep_the_balls(world);
     }
 
     /// What the report says of the bricks made so far, as a copy.

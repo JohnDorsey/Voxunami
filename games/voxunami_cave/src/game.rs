@@ -12,8 +12,8 @@ use transport::Connection;
 use voxel_space::{GravitySettings, WorldPosition};
 
 use crate::client::{
-    ClientBlockEditing, ClientFlight, ClientItems, ClientLight, ClientMovement, FlightReadout,
-    place_block_request, set_block_request,
+    ClientBlockEditing, ClientFlight, ClientItems, ClientJointBalls, ClientLight, ClientMovement,
+    FlightReadout, place_block_request, set_block_request,
 };
 use crate::content::{CaveContent, game_id, mini_cosmos_id, overworld_id};
 use crate::logic::REACH;
@@ -265,6 +265,7 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
             Box::new(ClientBlockEditing::with_flight(readout.clone())),
             Box::new(ClientFlight::new(readout)),
             Box::new(ClientItems::new(content)),
+            Box::new(ClientJointBalls::new(content)),
             Box::new(ClientLight::new(content)),
             Box::new(ClientMovement),
         ]

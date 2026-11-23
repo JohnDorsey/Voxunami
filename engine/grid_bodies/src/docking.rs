@@ -307,7 +307,7 @@ pub struct DockedPair {
 }
 
 /// The pairs among block faces (ports, or the ends of joints) in which a face looks at the block of another that looks back at it, the lower voxel first.
-fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
+pub(crate) fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
     let mut pairs = Vec::new();
     for first in faces {
         let step = first.face.offset();

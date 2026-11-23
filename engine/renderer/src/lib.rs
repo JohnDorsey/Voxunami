@@ -57,5 +57,6 @@ pub use sun::{
 };
 pub use voxel_renderer::{
     AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_CORNER_SHADE,
-    DEFAULT_PICTURE_DISTANCE, EntityBox, MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
+    DEFAULT_PICTURE_DISTANCE, EntityBox, EntityShape, MAXIMUM_GAME_MATERIALS, RenderStatistics,
+    VoxelRenderer,
 };

@@ -10,14 +10,16 @@ use game_shell::client_plugin::{
     ActionSpec, Appearance, ClientContext, ClientPlugin, ClientRegistrar, MouseButton,
 };
 use game_shell::{GameContent, KeyCode};
+use grid_bodies::joint_ball_kind;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
+use renderer::EntityShape;
 use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_view::{BulkLight, RayHit};
 
-use crate::content::CaveContent;
+use crate::content::{CaveContent, dev_ball_joint_id};
 use crate::items::{GameMode, PLACEABLE, dropped_item_kind, state_for, state_name};
 use crate::messages::{FlightReadoutIs, GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
@@ -560,6 +562,43 @@ impl ClientPlugin for ClientItems {
                 size: [4, 4, 4],
                 material: *numbers.get(&stack.item)?,
                 centre_offset: [0.0, -0.25, 0.0],
+                shape: EntityShape::Box,
+            })
+        });
+    }
+}
+
+/// The client half of the ball of a joint, and of the plugin that moves ships, which makes it (`engine:grid_bodies`; the ball is `engine:joint_ball`, an entity of the server's: `engine/grid_bodies/src/plugin/balls.rs`): a ball of half a voxel across, of the colour of the
+/// dev ball joint's block, drawn where the entity is (the middle of the face where two joint ends meet, which the ship the entity is aboard carries with it).
+#[derive(Clone, Copy, Debug)]
+pub struct ClientJointBalls {
+    /// The number of the joint's block in this game's registry (the palette value it is drawn in).
+    material: u32,
+}
+
+impl ClientJointBalls {
+    pub fn new(content: &CaveContent) -> Self {
+        let material = content.registries()[0]
+            .1
+            .raw_id_of(&dev_ball_joint_id())
+            .expect("Cave has the dev ball joint");
+        Self { material }
+    }
+}
+
+impl ClientPlugin for ClientJointBalls {
+    fn id(&self) -> NamespacedId {
+        identifier("engine:grid_bodies")
+    }
+
+    fn register(&self, registrar: &mut ClientRegistrar<'_>) {
+        let material = self.material;
+        registrar.entity_appearance(joint_ball_kind(), move |_| {
+            Some(Appearance {
+                size: [4, 4, 4],
+                material,
+                centre_offset: [0.0; 3],
+                shape: EntityShape::Ball,
             })
         });
     }

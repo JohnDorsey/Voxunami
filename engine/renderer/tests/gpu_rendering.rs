@@ -10,8 +10,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox, Transparency};
 use glam::Vec3;
 use renderer::{
-    Atmosphere, Avatar, Camera, ContactDebug, EntityBox, GraphicsContext, OverlayRect, PictureSize,
-    RenderStatistics, SunOccluder, VoxelRenderer,
+    Atmosphere, Avatar, Camera, ContactDebug, EntityBox, EntityShape, GraphicsContext, OverlayRect,
+    PictureSize, RenderStatistics, SunOccluder, VoxelRenderer,
 };
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{
@@ -1349,6 +1349,7 @@ fn box_at(offset: [f64; 3], size: [u8; 3], material: u32) -> EntityBox {
         position: WorldPosition::new(ORIGIN_BRICK, offset),
         size,
         material,
+        shape: EntityShape::Box,
     }
 }
 
@@ -1417,6 +1418,47 @@ fn a_box_is_drawn_where_the_entity_is_in_its_own_size_and_material_and_only_whil
 }
 
 #[test]
+fn a_ball_is_drawn_round_in_the_box_it_is_of_and_in_its_own_material_and_has_no_corners() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let ball = |material| EntityBox {
+            shape: EntityShape::Ball,
+            ..box_at([16.5, 16.5, 16.5], [4, 4, 4], material)
+        };
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], RED)]);
+        let in_a_box = red_pixels(&render(&mut renderer, &camera));
+        renderer.set_entity_boxes(&[ball(RED)]);
+        let round = render(&mut renderer, &camera);
+        save_image("entity_ball", &name, &round);
+        assert!(is_red(pixel(&round, SIZE / 2, SIZE / 2)), "{name}");
+        // Seen square on, the box of half a voxel is four eighths by four, and the ball is a cross of that: twelve cells of sixteen.
+        let in_a_ball = red_pixels(&round);
+        assert!(
+            in_a_ball * 10 < in_a_box * 9 && in_a_ball * 10 > in_a_box * 6,
+            "{name}: {in_a_ball} red pixels of the ball, {in_a_box} of its box"
+        );
+        // Its size is its own: asking for another changes nothing.
+        renderer.set_entity_boxes(&[EntityBox {
+            size: [8, 8, 8],
+            ..ball(RED)
+        }]);
+        assert_eq!(
+            red_pixels(&render(&mut renderer, &camera)),
+            in_a_ball,
+            "{name}"
+        );
+        // And its material is the one it is given.
+        renderer.set_entity_boxes(&[ball(GREEN)]);
+        assert!(
+            is_green(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
     for context in contexts() {
         let name = adapter_name(&context);
@@ -1427,6 +1469,7 @@ fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
             position: WorldPosition::new(BrickCoordinate::new(0, 0, -1), [16.5, 16.5, 28.0]),
             size: [4, 4, 4],
             material: RED,
+            shape: EntityShape::Box,
         }]);
         assert!(
             is_red(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),

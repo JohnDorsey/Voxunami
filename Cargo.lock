@@ -1160,6 +1160,7 @@ name = "grid_bodies"
 version = "0.0.0"
 dependencies = [
  "block_models",
+ "entities",
  "libm",
  "namespaced_id",
  "physics",

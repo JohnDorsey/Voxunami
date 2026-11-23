@@ -787,6 +787,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     position: position.translated(appearance.centre_offset),
                     size: appearance.size,
                     material: appearance.material,
+                    shape: appearance.shape,
                 })
             })
             .collect()
