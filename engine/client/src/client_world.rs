@@ -305,6 +305,8 @@ impl ClientWorld {
                 self.verifies_edit_digests = self.translator.is_identity();
                 Ok(Some(ClientEvent::PackageReplaced { appended, package }))
             }
+            // (The packs are no part of the picture of the world: `Client` takes them in as they arrive, and a view that is handed them has nothing to show of them.)
+            ServerMessage::Packs(_) | ServerMessage::PackChunk { .. } => Ok(None),
             ServerMessage::Welcome(_) => Err(ClientError::UnexpectedMessage("a second welcome")),
             ServerMessage::Challenge { .. } => Err(ClientError::UnexpectedMessage(
                 "a challenge after the welcome",

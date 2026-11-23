@@ -96,6 +96,13 @@ impl<C: Connection, W: Write + Send> Connection for RecordingConnection<C, W> {
         }
         Ok(received)
     }
+
+    /// A frame the client took from its own cache instead of being sent it (a pack): it goes into the recording as if the server had sent it, so a replay holds
+    /// it, and goes no further.
+    fn note_frame(&mut self, frame: &[u8]) {
+        self.record(frame);
+        self.inner.note_frame(frame);
+    }
 }
 
 impl<W: Write> Drop for Recording<W> {

@@ -233,6 +233,16 @@ fn corpus() -> Vec<Case> {
             "an empty version",
             r#"{ "id": "p", "version": "" }"#,
         ),
+        ok(
+            Manifest,
+            "a pack that is not replicated",
+            r#"{ "id": "p", "replicate": false }"#,
+        ),
+        bad(
+            Manifest,
+            "replicate as text",
+            r#"{ "id": "p", "replicate": "yes" }"#,
+        ),
         bad(Manifest, "an unknown key", r#"{ "id": "p", "colour": 1 }"#),
         bad(Manifest, "a number for a name", r#"{ "id": 5 }"#),
         beyond(

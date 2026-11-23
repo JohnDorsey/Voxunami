@@ -243,6 +243,9 @@ fn the_scenario_exercises_every_kind_of_message() {
             | ServerMessage::GridsChanged(_)
             | ServerMessage::GridsDespawned(_) => panic!("this scenario has no ships"),
             ServerMessage::PackageReplaced { .. } => panic!("this scenario replaces no package"),
+            ServerMessage::Packs(_) | ServerMessage::PackChunk { .. } => {
+                panic!("this scenario has no packs")
+            }
         }
     }
     assert_eq!(challenges, 1, "the server challenged the recorded player");
@@ -315,7 +318,9 @@ const PINNED_RECORDING_LENGTH: usize = 84_923;
 // and with the version put back to 10 (and the wire to the `f32` form, which changes nothing here) the old checksum, 3_004_670_074, came back.
 // A replaced package (2026-11-16; protocol 12): the checksum changed once, for the protocol version in the welcome (12, was 11); the length did not, and with the version put
 // back to 11 the old checksum, 4_054_084_584, came back (this scenario replaces no package).
-const PINNED_RECORDING_CHECKSUM: u32 = 3_889_045_335;
+// Packs a client keeps as files (2026-11-22; protocol 13): the checksum changed once, for the protocol version in the welcome (13, was 12); the length did not, and with the
+// version put back to 12 the old checksum, 3_889_045_335, came back (this server has no packs, so it sends no list: a server without packs says nothing of them).
+const PINNED_RECORDING_CHECKSUM: u32 = 2_776_487_109;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

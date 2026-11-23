@@ -16,6 +16,7 @@ mod generated_cache;
 mod grid_replication;
 mod grid_view;
 mod merge;
+mod packs;
 mod prefetch;
 mod rail_settings;
 mod replication;
@@ -31,6 +32,7 @@ pub use config::ServerConfig;
 pub use game_logic::GameLogic;
 pub use grid_view::{GridView, ServerGrid};
 pub use merge::{MergeError, MergePlan, TurnValues};
+pub use packs::ServedPack;
 pub use rail_settings::{RailSettings, RailSettingsError};
 pub use server::{LeaveReason, PackageReplacementError, Server, ServerError, StepReport};
 pub use server_world::{

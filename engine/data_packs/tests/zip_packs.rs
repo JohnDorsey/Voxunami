@@ -306,3 +306,47 @@ fn a_folder_that_cannot_be_archived_says_which_file_and_why() {
     assert_eq!(errors.0.len(), 1);
     assert_eq!(errors.0[0].file, "mine/Credits.md");
 }
+
+#[test]
+fn reading_a_directory_gives_each_pack_with_the_canonical_archive_of_all_its_files() {
+    // (A folder, a zip, and a file the loader does not read, which is in the archive all the same: a pack is replicated whole.)
+    let scratch = Scratch::new("with_archives");
+    write_folder(&scratch, "folder_pack", &sample_files());
+    write_zip(&scratch, "zip_pack.zip", &sample_files());
+    let packs = data_packs::read_pack_directory(scratch.path()).unwrap();
+    let names: Vec<&str> = packs.iter().map(|pack| pack.raw.folder.as_str()).collect();
+    assert_eq!(names, ["folder_pack", "zip_pack"]);
+    // the pack is the pack `read_directory` gives
+    assert_eq!(
+        packs
+            .iter()
+            .map(|pack| pack.raw.clone())
+            .collect::<Vec<_>>(),
+        read_directory(scratch.path()).unwrap()
+    );
+    // and the archive is the canonical one of the files, the same for a folder and for its zip, with the identity `pack_identities` says
+    let expected = Archive::from_files(sample_files()).unwrap();
+    assert_eq!(packs[0].archive, expected);
+    assert_eq!(packs[1].archive, expected);
+    let identities = pack_identities(scratch.path()).unwrap();
+    for (pack, (name, identity)) in packs.iter().zip(identities) {
+        assert_eq!(name, pack.raw.folder);
+        assert_eq!(
+            Ok(FileIndex::of(&pack.archive, |_| true).root_hash()),
+            identity
+        );
+    }
+    assert!(packs[0].archive.get("readme.md").is_some());
+}
+
+#[test]
+fn a_directory_with_a_bad_pack_gives_the_errors_of_read_directory() {
+    let scratch = Scratch::new("with_archives_bad");
+    write_folder(&scratch, "mine", &sample_files());
+    scratch.write("mine/blocks/Broken.json", b"{}");
+    let errors = data_packs::read_pack_directory(scratch.path()).unwrap_err();
+    assert_eq!(
+        errors.to_string(),
+        read_directory(scratch.path()).unwrap_err().to_string()
+    );
+}

@@ -401,8 +401,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 // 4_187_105_416_434_774_926, and the stream's length and the saved world's hash did not.
 // The owner's five companions in the package (2026-11-18; see `block_golden.rs`): the stream is exactly 5,120 bytes longer (7,222,150 to 7,227,270), its hash moved to 2_646_309_225_932_220_837,
 // and the saved world's did not.
+// Packs a client keeps as files (2026-11-22; protocol 13): the stream hash changed once, for the protocol version in the welcome (13, was 12); the length and the saved world did not,
+// and with the version put back to 12 the old hash, 2_646_309_225_932_220_837, came back (no pack is replicated here, so no list is sent).
 const PINNED: (u64, usize, u64) = (
-    2_646_309_225_932_220_837,
+    8_352_820_050_690_785_866,
     7_227_270,
     15_594_210_036_057_493_535,
 );

@@ -459,3 +459,138 @@ fn the_hotbar_of_a_player_who_has_never_heard_of_a_pack_has_a_swatch_for_its_pla
         "ruby is [0.8, 0.1, 0.2]"
     );
 }
+
+// ---- Packs a client keeps as files (`specs/pack-archive-spec.md`, step 4), in the real game ----
+
+/// A folder of packs on disk: `my_pack`, which clients keep (with a note beside its files), and `quiet`, which says they do not.
+fn a_folder_of_packs(name: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    for (path, text) in [
+        (
+            "my_pack/pack.json",
+            r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#,
+        ),
+        (
+            "my_pack/blocks/marble.json",
+            r#"{ "color": [0.9, 0.9, 0.95] }"#,
+        ),
+        ("my_pack/readme.md", "carried to clients too"),
+        (
+            "quiet/pack.json",
+            r#"{ "id": "quiet", "replicate": false }"#,
+        ),
+        ("quiet/blocks/ember.json", r#"{ "color": [0.9, 0.3, 0.1] }"#),
+    ] {
+        let file = directory.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    directory
+}
+
+/// A player who joins `rig` over `connection`, keeping the packs it is sent in `store`.
+fn join_keeping_packs(
+    rig: &mut Rig,
+    connection: Box<dyn Connection>,
+    store: &client::MemoryPackStore,
+) -> common::Player {
+    let server = &mut rig.server;
+    Session::<_, Cave>::connect_with_packs(
+        connection,
+        &Identity::from_secret([9; 32]),
+        game_shell::session::Mode::Playing,
+        VIEW_RADIUS,
+        camera_at([0.0, 40.0, 0.0], 0.0, 0.0),
+        || {
+            server.step();
+        },
+        Box::new(store.clone()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_server_made_from_a_folder_of_packs_sends_the_ones_that_clients_keep_and_a_recording_and_a_cache_both_hold_them()
+ {
+    let directory = a_folder_of_packs("replicated");
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    // only the pack that does not say no is replicated, in the identity every tool prints
+    let listed: Vec<String> = content
+        .replicated_packs()
+        .iter()
+        .map(|pack| pack.listing().id.clone())
+        .collect();
+    assert_eq!(listed, ["my_pack"]);
+    let (_, identity) = data_packs::pack_identities(&directory)
+        .unwrap()
+        .into_iter()
+        .find(|(name, _)| name == "my_pack")
+        .unwrap();
+    let root = identity.unwrap();
+    assert_eq!(content.replicated_packs()[0].root(), root);
+    let archive_bytes = content.replicated_packs()[0].archive_bytes().to_vec();
+
+    let world = content.new_overworld_world(SEED);
+    let mut rig = Rig::with_world(content, world);
+    let recordings =
+        std::env::temp_dir().join(format!("voxunami_cave_recordings_{}", std::process::id()));
+    std::fs::create_dir_all(&recordings).unwrap();
+
+    // A first player, with nothing in its store, is sent the pack and keeps it.
+    let store = client::MemoryPackStore::new();
+    let first_path = recordings.join("first.voxreplay");
+    let recorded = record_connection(rig.connector.connect().unwrap(), &first_path).unwrap();
+    let mut first = join_keeping_packs(&mut rig, recorded, &store);
+    for _ in 0..4 {
+        rig.settle(&mut [&mut first]);
+    }
+    assert!(first.client().packs().is_complete());
+    let held = first.client().packs().get(&root).expect("the pack is held");
+    assert_eq!(held.archive.to_bytes(), archive_bytes);
+    assert!(
+        held.archive.get("readme.md").is_some(),
+        "the note is carried too"
+    );
+    assert_eq!(
+        store.get("my_pack", &root),
+        Some(archive_bytes.clone()),
+        "kept for the next time"
+    );
+    drop(first);
+
+    // A second player whose store has it is not sent it, and its recording has it all the same.
+    let second_path = recordings.join("second.voxreplay");
+    let recorded = record_connection(rig.connector.connect().unwrap(), &second_path).unwrap();
+    let mut second = join_keeping_packs(&mut rig, recorded, &store);
+    for _ in 0..2 {
+        rig.settle(&mut [&mut second]);
+    }
+    assert!(second.client().packs().is_complete());
+    drop(second);
+
+    // Both recordings replay with the pack, and nothing installed.
+    for path in [&first_path, &second_path] {
+        let connection: Box<dyn Connection> = Box::new(open_recording(path).unwrap());
+        let mut replay = Session::<_, Cave>::connect(
+            connection,
+            &Identity::generate(),
+            game_shell::session::Mode::Replaying,
+            VIEW_RADIUS,
+            camera_at([0.0; 3], 0.0, 0.0),
+            || {},
+        )
+        .unwrap();
+        while replay.advance_one_tick().is_ok() {}
+        replay.settle(|| {}).unwrap();
+        let held = replay
+            .client()
+            .packs()
+            .get(&root)
+            .unwrap_or_else(|| panic!("{path:?} replays with the pack"));
+        assert_eq!(held.archive.to_bytes(), archive_bytes, "{path:?}");
+    }
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}

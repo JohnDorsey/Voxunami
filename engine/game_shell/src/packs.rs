@@ -4,7 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use data_packs::{pack_identities, pack_schemas, read_directory};
+use data_packs::{ReadPack, pack_identities, pack_schemas, read_manifest, read_pack_directory};
+use server::ServedPack;
 
 use crate::definition::{GameContent, GameDefinition};
 
@@ -28,8 +29,29 @@ struct Summary {
     warnings: Vec<String>,
 }
 
+/// The packs among `packs` that clients keep as files (every one whose manifest does not say `"replicate": false`), as a server serves them: the whole archive of
+/// each, every file sent (nothing is withheld yet: that is for code that is not wasm, which packs do not have), in the order of `packs`.
+pub(crate) fn served_packs(packs: &[ReadPack]) -> Result<Vec<ServedPack>, String> {
+    let mut served = Vec::new();
+    for pack in packs {
+        let file = format!("{}/pack.json", pack.raw.folder);
+        let manifest =
+            read_manifest(&file, &pack.raw.manifest).map_err(|errors| errors.to_string())?;
+        if !manifest.replicate {
+            continue;
+        }
+        let one = ServedPack::new(&manifest.id, &pack.archive, |_| true)
+            .map_err(|error| format!("{file}: {error}"))?;
+        served.push(one);
+    }
+    Ok(served)
+}
+
 fn load_into(content: &mut impl GameContent, directory: &Path) -> Result<Summary, String> {
-    let raw = read_directory(directory).map_err(|errors| problems(&errors.to_string(), None))?;
+    let read =
+        read_pack_directory(directory).map_err(|errors| problems(&errors.to_string(), None))?;
+    let raw: Vec<data_packs::RawPack> = read.iter().map(|pack| pack.raw.clone()).collect();
+    let served = served_packs(&read).map_err(|text| problems(&text, None))?;
     let blocks_before = content.package_data().blocks.len();
     let bodies_before = content.body_names().len();
     let warnings = content
@@ -38,6 +60,7 @@ fn load_into(content: &mut impl GameContent, directory: &Path) -> Result<Summary
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
+    content.set_replicated_packs(served);
     Ok(Summary {
         packs: raw.len(),
         blocks_added: content.package_data().blocks.len() - blocks_before,
@@ -55,8 +78,11 @@ pub(crate) fn reload_from_directory(
     package: &crate::SharedPackage,
     server: &mut server::Server,
 ) -> Result<String, String> {
-    let raw = read_directory(directory).map_err(|errors| problems(&errors.to_string(), None))?;
-    let reloaded = crate::package_reload::reload_packs(content, &raw, package, server)
+    let read =
+        read_pack_directory(directory).map_err(|errors| problems(&errors.to_string(), None))?;
+    let raw: Vec<data_packs::RawPack> = read.iter().map(|pack| pack.raw.clone()).collect();
+    let served = served_packs(&read).map_err(|text| problems(&text, None))?;
+    let reloaded = crate::package_reload::reload_packs(content, &raw, served, package, server)
         .map_err(|error| problems(&error.to_string(), Some(raw.len())))?;
     for warning in &reloaded.warnings {
         eprintln!("warning: {warning}");
@@ -189,5 +215,84 @@ fn one_directory(
     match arguments.as_slice() {
         [directory] if !directory.starts_with('-') => Ok(Some(PathBuf::from(directory))),
         _ => Err(format!("give one directory\n\n{usage}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use data_packs::{ReadPack, read_archive};
+    use pack_archive::{Archive, FileIndex};
+
+    use super::served_packs;
+
+    fn read_pack(pack_id: &str, manifest: &str, extra: &[(&str, &[u8])]) -> ReadPack {
+        let mut files = vec![
+            ("pack.json".to_owned(), manifest.as_bytes().to_vec()),
+            (
+                "blocks/a.json".to_owned(),
+                br#"{ "color": [1, 0, 0] }"#.to_vec(),
+            ),
+        ];
+        files.extend(
+            extra
+                .iter()
+                .map(|(path, bytes)| ((*path).to_owned(), bytes.to_vec())),
+        );
+        let archive = Archive::from_files(files).unwrap();
+        let raw = read_archive(pack_id, &archive).unwrap();
+        ReadPack { raw, archive }
+    }
+
+    #[test]
+    fn a_pack_is_replicated_with_all_its_files_unless_its_manifest_says_it_is_not() {
+        let kept = read_pack(
+            "kept",
+            r#"{ "id": "kept" }"#,
+            &[("readme.md", b"a note"), ("textures/p.png", b"x")],
+        );
+        let private = read_pack("private", r#"{ "id": "private", "replicate": false }"#, &[]);
+        let explicit = read_pack(
+            "explicit",
+            r#"{ "id": "explicit", "replicate": true }"#,
+            &[],
+        );
+        let served = served_packs(&[kept.clone(), private, explicit]).unwrap();
+        let ids: Vec<&str> = served
+            .iter()
+            .map(|pack| pack.listing().id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["kept", "explicit"],
+            "in the order of the directory, those that say no left out"
+        );
+        // all the files are sent, a note too, and the identity is that of the index of the whole archive
+        let listing = served[0].listing();
+        assert!(listing.index.entries().iter().all(|entry| entry.sent));
+        assert_eq!(
+            listing.root(),
+            FileIndex::of(&kept.archive, |_| true).root_hash()
+        );
+        assert_eq!(served[0].archive_bytes(), kept.archive.to_bytes());
+        assert!(
+            Archive::from_bytes(served[0].archive_bytes(), &Default::default())
+                .unwrap()
+                .get("readme.md")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_pack_is_named_by_its_manifest_and_a_manifest_that_cannot_be_read_is_an_error() {
+        // (The folder's name must be the pack's id, which the loader checks; the manifest is what names the pack.)
+        let pack = read_pack("whatever", r#"{ "id": "named_by_manifest" }"#, &[]);
+        assert_eq!(
+            served_packs(&[pack]).unwrap()[0].listing().id,
+            "named_by_manifest"
+        );
+        let mut broken = read_pack("broken", r#"{ "id": "broken" }"#, &[]);
+        broken.raw.manifest = r#"{ "id": 5 }"#.to_owned();
+        let error = served_packs(&[broken]).unwrap_err();
+        assert!(error.contains("pack.json"), "{error}");
     }
 }

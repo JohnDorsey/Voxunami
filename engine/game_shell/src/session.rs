@@ -210,7 +210,28 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         mode: Mode,
         view_radius_bricks: i128,
         start: Camera,
+        wait: impl FnMut(),
+    ) -> Result<Self, SessionError> {
+        Self::connect_with_packs(
+            connection,
+            identity,
+            mode,
+            view_radius_bricks,
+            start,
+            wait,
+            Box::new(client::NoPackStore),
+        )
+    }
+
+    /// As [`Session::connect`], keeping the packs the server replicates in `packs`: what it has of them it does not ask for again, and what it is sent it keeps there.
+    pub fn connect_with_packs(
+        connection: C,
+        identity: &Identity,
+        mode: Mode,
+        view_radius_bricks: i128,
+        start: Camera,
         mut wait: impl FnMut(),
+        packs: Box<dyn client::PackStore>,
     ) -> Result<Self, SessionError> {
         let mut handshake = Handshake::start(connection, G::id(), identity)?;
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -228,7 +249,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let seed = welcomed.world_seed()?;
         let package =
             PackageData::decode(&welcomed.welcome().package).map_err(PackageError::from)?;
-        let (client, _report) = welcomed.finish(content.load_context(seed))?;
+        let (client, _report) = welcomed.finish_with_packs(content.load_context(seed), packs)?;
 
         let join = G::join_message(start.position);
         let client_plugins = G::client_plugins(&content);

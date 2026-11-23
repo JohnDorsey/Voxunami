@@ -278,12 +278,39 @@ fn collect_packs(
 /// be there, and quietly skipping it would hide a misplaced pack). A `root` that does not exist is an error. Packs come back sorted by name; a folder and a
 /// zip of one name are an error.
 pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
+    Ok(read_pack_directory(root)?
+        .into_iter()
+        .map(|pack| pack.raw)
+        .collect())
+}
+
+/// A pack as read from a directory: what the loader reads of it, and the canonical archive of **all** its files (a `readme.md` too, and anything the loader
+/// does not read), which is what a server replicates to clients and what gives the pack its identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadPack {
+    pub raw: RawPack,
+    pub archive: Archive,
+}
+
+/// As [`read_directory`], with the canonical archive of each pack as well.
+pub fn read_pack_directory(root: &Path) -> Result<Vec<ReadPack>, PackErrors> {
     let mut errors = Vec::new();
     let collected = collect_packs(root, &mut errors).map_err(|error| PackErrors(vec![error]))?;
+    // (Names a folder cannot have were told already, naming the file, while it was read: a directory with such a pack has no archives to make, and the rest of
+    // what is wrong is told as `read_directory` always has.)
+    let archives_possible = errors.is_empty();
     let mut packs = Vec::new();
     for (name, files) in collected {
-        if let Some(pack) = raw_pack(&name, &files, &mut errors) {
-            packs.push(pack);
+        let Some(raw) = raw_pack(&name, &files, &mut errors) else {
+            continue;
+        };
+        if !archives_possible {
+            continue;
+        }
+        match Archive::from_files(files) {
+            Ok(archive) => packs.push(ReadPack { raw, archive }),
+            // (What is left that an archive refuses, such as too many files.)
+            Err(error) => errors.push(problem(name, error.to_string())),
         }
     }
     if errors.is_empty() {

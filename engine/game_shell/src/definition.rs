@@ -8,6 +8,7 @@ use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
 use plugin_host::Plugin;
 use renderer::Camera;
+use server::ServedPack;
 use voxel_space::WorldPosition;
 use winit::keyboard::KeyCode;
 use world_storage::{LoadContext, WorldData};
@@ -66,6 +67,16 @@ pub trait GameContent: Debug + Send {
             message: "this game cannot replace its package while it runs".to_owned(),
         }]))
     }
+
+    /// The packs this content was made with that clients keep as files (`docs/specs/pack-archive-spec.md`): a server made from this content tells its clients of
+    /// them and sends the archive of each one that asks. None for a game that takes no packs, or when none was loaded.
+    fn replicated_packs(&self) -> &[ServedPack] {
+        &[]
+    }
+
+    /// Records which packs this content was made with that clients keep as files, after they were applied (and again after a reload). A game that takes no packs
+    /// has nothing to keep them in.
+    fn set_replicated_packs(&mut self, _packs: Vec<ServedPack>) {}
 
     /// What packs may put in the bodies of this game's worlds: the families of terrain generators they may name, and the levels they may put bodies in. A
     /// game with no bodies says nothing.

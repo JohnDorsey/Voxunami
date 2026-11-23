@@ -101,6 +101,38 @@ fn a_manifest_may_say_which_format_it_is_written_in_and_which_version_of_the_pac
     );
 }
 
+#[test]
+fn a_pack_is_replicated_to_clients_unless_its_manifest_says_it_is_not() {
+    let file = "my_pack/pack.json";
+    assert!(
+        read_manifest(file, r#"{ "id": "my_pack" }"#)
+            .unwrap()
+            .replicate
+    );
+    assert!(
+        read_manifest(file, r#"{ "id": "my_pack", "replicate": true }"#)
+            .unwrap()
+            .replicate
+    );
+    assert!(
+        !read_manifest(file, r#"{ "id": "my_pack", "replicate": false }"#)
+            .unwrap()
+            .replicate
+    );
+    assert_eq!(
+        manifest_errors(r#"{ "id": "my_pack", "replicate": "yes" }"#),
+        [format!(
+            "{file}: /replicate: expected true or false, found text"
+        )]
+    );
+    assert_eq!(
+        manifest_errors(r#"{ "id": "my_pack", "replicate": 1 }"#),
+        [format!(
+            "{file}: /replicate: expected true or false, found a number"
+        )]
+    );
+}
+
 fn manifest_errors(text: &str) -> Vec<String> {
     messages(read_manifest("my_pack/pack.json", text).expect_err("refused"))
 }
@@ -143,7 +175,7 @@ fn a_manifest_that_is_wrong_says_what_and_where() {
         manifest_errors(r#"{ "idd": "my_pack" }"#),
         [
             format!(
-                "{file}: /idd: unknown key \"idd\" (did you mean \"id\"?); the keys here are \"id\", \"depends_on\", \"format\", \"version\""
+                "{file}: /idd: unknown key \"idd\" (did you mean \"id\"?); the keys here are \"id\", \"depends_on\", \"format\", \"version\", \"replicate\""
             ),
             format!("{file}: missing \"id\""),
         ]

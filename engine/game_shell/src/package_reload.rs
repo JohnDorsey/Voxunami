@@ -6,6 +6,7 @@
 //! and the server is told, so that it welcomes the next player with it and tells the players it has ([`Server::replace_package`]).
 
 use data_packs::{PackErrors, RawPack};
+use server::ServedPack;
 use server::Server;
 
 use crate::definition::GameContent;
@@ -44,11 +45,13 @@ pub enum ReloadError {
 pub fn reload_packs<C: GameContent>(
     content: &mut C,
     packs: &[RawPack],
+    replicated: Vec<ServedPack>,
     package: &SharedPackage,
     server: &mut Server,
 ) -> Result<Reloaded, ReloadError> {
     let blocks_before = content.package_data().blocks.len();
     let warnings = content.reload_packs(packs).map_err(ReloadError::Packs)?;
+    content.set_replicated_packs(replicated);
     let data = content.package_data();
     let blocks_added = data.blocks.len() - blocks_before;
     let encoded = data.encode();
@@ -58,6 +61,8 @@ pub fn reload_packs<C: GameContent>(
     server
         .replace_package(encoded, &content.registries())
         .map_err(|error| ReloadError::NotTaken(error.to_string()))?;
+    // (The list of packs follows the package it was made with: clients are told of it in the same tick, if it changed.)
+    server.replace_packs(content.replicated_packs().to_vec());
     Ok(Reloaded {
         warnings,
         blocks_added,

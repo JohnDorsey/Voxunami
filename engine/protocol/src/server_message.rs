@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
+use pack_archive::Hash;
 use region_octree::BrickCube;
 use voxel_grid::Brick;
 use voxel_space::{
@@ -10,6 +11,9 @@ use voxel_space::{
 
 use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
+use crate::packs::{
+    MAXIMUM_PACK_CHUNK, PackListing, maximum_pack_bytes, read_listings, write_listings,
+};
 use crate::types::{ClientId, EntityId, Tick};
 use crate::wire::{
     read_brick_box, read_brick_coordinate, read_entity_pose, read_grid, read_grid_pose, read_level,
@@ -33,6 +37,8 @@ const KIND_GRIDS_SPAWNED: u8 = 13;
 const KIND_GRIDS_CHANGED: u8 = 14;
 const KIND_GRIDS_DESPAWNED: u8 = 15;
 const KIND_PACKAGE_REPLACED: u8 = 16;
+const KIND_PACKS: u8 = 17;
+const KIND_PACK_CHUNK: u8 = 18;
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +204,18 @@ pub enum ServerMessage {
         /// The package data as `Welcome::package` has it.
         package: Vec<u8>,
     },
+    /// The packs this server has that a client keeps as files (the ones whose manifest does not say `"replicate": false`), in load order: **the whole list, which
+    /// replaces the client's earlier one**. Sent right after the welcome if there are any, and at the start of the tick in which a replaced package changed the
+    /// list. A client that lacks a pack asks for it with `RequestPacks` and is sent `PackChunk`s. (Protocol version 13.)
+    Packs(Vec<PackListing>),
+    /// A piece of the canonical archive of the pack whose root hash is `root`, that a client asked for: the bytes from `offset` on, at most
+    /// [`MAXIMUM_PACK_CHUNK`] of them, in order. When the pieces add up to the size the list says, the client checks the archive against the pack's index and its
+    /// root. (Protocol version 13.)
+    PackChunk {
+        root: Hash,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
 }
 
 /// Whether `frame` is a `TickCompleted` message. Recorders use it to know when a tick ends without
@@ -361,6 +379,20 @@ impl ServerMessage {
                     }
                 }
                 writer.write_bytes(package);
+            }
+            Self::Packs(listings) => {
+                writer.write_u8(KIND_PACKS);
+                write_listings(&mut writer, listings);
+            }
+            Self::PackChunk {
+                root,
+                offset,
+                bytes,
+            } => {
+                writer.write_u8(KIND_PACK_CHUNK);
+                writer.write_raw(root.as_bytes());
+                writer.write_varint(*offset);
+                writer.write_bytes(bytes);
             }
         }
         writer.into_bytes()
@@ -606,6 +638,33 @@ impl ServerMessage {
                     package: reader.read_bytes()?.to_vec(),
                 }
             }
+            KIND_PACKS => Self::Packs(read_listings(&mut reader)?),
+            KIND_PACK_CHUNK => {
+                let root_bytes: [u8; 32] =
+                    reader.read_raw(32)?.try_into().expect("32 bytes were read");
+                let offset = reader.read_varint()?;
+                let bytes = reader.read_bytes()?;
+                if bytes.is_empty() || bytes.len() > MAXIMUM_PACK_CHUNK {
+                    return Err(DecodeError::Invalid(
+                        "a piece of a pack has no bytes or more than a piece may",
+                    )
+                    .into());
+                }
+                if offset
+                    .checked_add(bytes.len() as u64)
+                    .is_none_or(|end| end > maximum_pack_bytes())
+                {
+                    return Err(DecodeError::Invalid(
+                        "a piece of a pack ends beyond the largest archive a client holds",
+                    )
+                    .into());
+                }
+                Self::PackChunk {
+                    root: Hash::from_bytes(root_bytes),
+                    offset,
+                    bytes: bytes.to_vec(),
+                }
+            }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
         reader.finish()?;
@@ -808,6 +867,28 @@ mod tests {
                 },
             ]),
             ServerMessage::GridsSpawned(Vec::new()),
+            ServerMessage::Packs(vec![
+                crate::packs::sample_listing(
+                    "my_pack",
+                    &[
+                        ("pack.json", b"{}"),
+                        ("blocks/a.json", b"A"),
+                        ("code/rules.py", b"withheld"),
+                    ],
+                ),
+                crate::packs::sample_listing("other", &[("pack.json", b"{\"id\":\"other\"}")]),
+            ]),
+            ServerMessage::Packs(Vec::new()),
+            ServerMessage::PackChunk {
+                root: Hash::of(b"a pack"),
+                offset: 0,
+                bytes: vec![80, 75, 3, 4],
+            },
+            ServerMessage::PackChunk {
+                root: Hash::from_bytes([255; 32]),
+                offset: 65_536 * 3,
+                bytes: vec![9; MAXIMUM_PACK_CHUNK],
+            },
             ServerMessage::GridsChanged(vec![GridChange {
                 id: ship(),
                 pose: sample_grid_pose(0),
@@ -965,6 +1046,59 @@ mod tests {
                 "{what} is refused as invalid"
             );
         }
+    }
+
+    #[test]
+    fn the_messages_about_packs_have_the_layout_pinned_and_refuse_what_the_encoder_would_not_write()
+    {
+        // A piece: kind, the root, the offset, the bytes with their length.
+        let mut chunk = vec![18];
+        chunk.extend([7; 32]);
+        chunk.extend([0xAC, 0x02, 3, 1, 2, 3]);
+        assert_eq!(
+            ServerMessage::PackChunk {
+                root: Hash::from_bytes([7; 32]),
+                offset: 300,
+                bytes: vec![1, 2, 3],
+            }
+            .encode(),
+            chunk
+        );
+        assert_eq!(ServerMessage::Packs(Vec::new()).encode(), [17, 0]);
+        let piece = |offset: u64, bytes: &[u8]| {
+            ServerMessage::PackChunk {
+                root: Hash::from_bytes([1; 32]),
+                offset,
+                bytes: bytes.to_vec(),
+            }
+            .encode()
+        };
+        // no bytes, too many bytes, and an end beyond the largest archive
+        for (what, frame) in [
+            ("a piece with nothing in it", piece(0, &[])),
+            (
+                "a piece larger than a piece may be",
+                piece(0, &vec![0; MAXIMUM_PACK_CHUNK + 1]),
+            ),
+            (
+                "a piece that ends too far on",
+                piece(maximum_pack_bytes(), &[1]),
+            ),
+            ("an offset that overflows", piece(u64::MAX, &[1])),
+        ] {
+            assert!(
+                matches!(
+                    ServerMessage::decode(&frame),
+                    Err(ProtocolError::Malformed(DecodeError::Invalid(_)))
+                ),
+                "{what} is refused as invalid"
+            );
+        }
+        assert!(ServerMessage::decode(&piece(maximum_pack_bytes() - 1, &[1])).is_ok());
+        // a short root
+        let mut short = vec![18];
+        short.extend([7; 31]);
+        assert!(ServerMessage::decode(&short).is_err());
     }
 
     #[test]

@@ -9,6 +9,7 @@ description = "The messages a Voxunami server and its clients exchange, and thei
 [dependencies]
 binary_codec.workspace = true
 namespaced_id.workspace = true
+pack_archive.workspace = true
 region_octree.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true

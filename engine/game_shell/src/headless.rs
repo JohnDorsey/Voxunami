@@ -62,13 +62,19 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         None => connection,
     };
     let start = camera_at(options.camera, options.yaw_degrees, options.pitch_degrees);
-    let mut session = Session::<_, G>::connect(
+    // The packs of a server joined over the network are kept in the folder for that server; a server of this process sends its own and nothing is kept.
+    let packs: Box<dyn client::PackStore> = match &options.join {
+        Some(address) => crate::remote_world::pack_store_for_joining(&G::id(), address),
+        None => Box::new(client::NoPackStore),
+    };
+    let mut session = Session::<_, G>::connect_with_packs(
         connection,
         &identity,
         Mode::Playing,
         view.view_radius,
         start,
         &mut step_server,
+        packs,
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();

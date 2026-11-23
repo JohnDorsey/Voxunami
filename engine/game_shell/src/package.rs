@@ -32,6 +32,7 @@ use data_packs::{
     Around, Body, BodyRail, BodySupport, GameTexture, OrbitData, PackErrors, RawPack, Textures,
     Weight, load_packs, read_body, read_family_parameters, settle_game_pictures,
 };
+use server::ServedPack;
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
 /// channels a generator writes.
@@ -107,6 +108,8 @@ pub struct ContentPackage {
     textures: Textures,
     /// What the game itself made, before any pack: what a reload patches again, so that a patch is never made twice and one that is gone is undone.
     base: Base,
+    /// The packs the content was made with that clients keep as files: what a server made from it tells its clients of.
+    replicated: Vec<ServedPack>,
 }
 
 /// The game's own blocks (with their pictures settled) and bodies, before any pack.
@@ -188,6 +191,7 @@ impl ContentPackage {
             bodies,
             textures,
             base,
+            replicated: Vec::new(),
         }
     }
 
@@ -557,6 +561,7 @@ impl ContentPackage {
                 .collect(),
             textures: loaded.textures,
             base: self.base.clone(),
+            replicated: self.replicated.clone(),
         };
         // The renderer cannot draw more colours than it has: say so now, not when a window opens.
         let table = candidate
@@ -693,6 +698,14 @@ impl GameContent for ContentPackage {
 
     fn body_support(&self) -> BodySupport {
         self.spec.body_support.clone()
+    }
+
+    fn replicated_packs(&self) -> &[ServedPack] {
+        &self.replicated
+    }
+
+    fn set_replicated_packs(&mut self, packs: Vec<ServedPack>) {
+        self.replicated = packs;
     }
 
     fn body_names(&self) -> Vec<NamespacedId> {

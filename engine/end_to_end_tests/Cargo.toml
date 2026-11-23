@@ -13,6 +13,7 @@ binary_codec.workspace = true
 client.workspace = true
 content_registry.workspace = true
 namespaced_id.workspace = true
+pack_archive.workspace = true
 protocol.workspace = true
 replay.workspace = true
 server = { workspace = true, features = ["test-support"] }

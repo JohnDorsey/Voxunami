@@ -28,8 +28,8 @@ folder that nothing reads is never reported as fine.
 { "id": "my_pack", "depends_on": ["base_blocks", "other_pack"] }
 ```
 
-`id` must be the folder's name (and not `engine`). Two optional keys: `"format": 1` says which pack format the file is written
-for (1 is the only one so far; a later engine that reads others can tell), and `"version": "0.3.1"` is your own version of the pack, as text.
+`id` must be the folder's name (and not `engine`). Three optional keys: `"format": 1` says which pack format the file is written
+for (1 is the only one so far; a later engine that reads others can tell), and `"version": "0.3.1"` is your own version of the pack, as text. `"replicate": false` says that a client that joins a server running this pack is **not** sent it as a file to keep (it has what the pack made of the game's blocks and pictures, as every client has); without it, or with `true`, the server tells its clients of the pack and sends its whole archive (every file in the folder, a `readme.md` too) to each that lacks it. It is not a way to keep anything secret: what a client draws, it has either way.
 `depends_on` lists what must load before this pack: other packs, or the
 name of a plugin the game has blocks from (`base_blocks`). A pack may change only blocks of its own and of the names it
 depends on (and what those depend on). Packs load in dependency order, ties by id, and the files of a pack in order of their

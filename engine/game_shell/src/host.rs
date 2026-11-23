@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use plugin_host::{Plugin, PluginHost};
-use server::{Server, ServerConfig, ServerError, ShipSettings};
+use server::{ServedPack, Server, ServerConfig, ServerError, ShipSettings};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::tcp::{TcpConnection, TcpServerListener};
 use transport::{ConnectionClosed, Listener, ListenerSet};
@@ -38,8 +38,11 @@ fn server_config<G: GameDefinition>(
     view_radius_bricks: i128,
     counted_challenges: bool,
     ships: ShipSettings,
+    packs: Vec<ServedPack>,
 ) -> ServerConfig {
-    let mut config = ServerConfig::new(G::id()).with_package(package);
+    let mut config = ServerConfig::new(G::id())
+        .with_package(package)
+        .with_packs(packs);
     config.ships = ships;
     if counted_challenges {
         config = config.with_counted_challenges(1);
@@ -81,6 +84,7 @@ fn new_server<G: GameDefinition>(
             view_radius_bricks,
             counted_challenges,
             ships.settings,
+            content.replicated_packs().to_vec(),
         ),
         world,
         &content.registries(),
@@ -436,11 +440,18 @@ mod tests {
 
     #[test]
     fn the_server_is_configured_with_the_gravity_of_the_game() {
-        let plain = server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default());
+        let plain =
+            server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default(), Vec::new());
         assert_eq!(plain.gravity, voxel_space::GravitySettings::default());
         assert!(plain.level_gravity.is_empty());
 
-        let space = server_config::<ExampleSpaceGame>(Vec::new(), 3, true, ShipSettings::default());
+        let space = server_config::<ExampleSpaceGame>(
+            Vec::new(),
+            3,
+            true,
+            ShipSettings::default(),
+            Vec::new(),
+        );
         assert_eq!(space.gravity.base, [0.0, -9.0, 0.0]);
         assert_eq!(space.gravity.pull_mass_threshold, Some(1.0e20));
         assert_eq!(

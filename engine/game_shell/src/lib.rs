@@ -30,6 +30,7 @@ mod planet_view_tests;
 mod player_identity;
 mod pointer_hold;
 pub mod reload;
+mod remote_world;
 pub mod screen;
 pub mod serve;
 pub mod session;

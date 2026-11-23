@@ -3647,3 +3647,301 @@ fn a_replacement_that_drops_renames_or_adds_a_kind_of_registry_is_refused_and_ch
     assert_eq!(welcome.package, Vec::<u8>::new());
     assert_eq!(welcome.world_description, before);
 }
+
+// ---- Packs that clients keep as files (`specs/pack-archive-spec.md`, step 4) ----
+
+/// A pack of a few small files and one large one, with `code/secret.py` withheld from clients. The large file is not compressible by design (there is no compression),
+/// so its size is the archive's.
+fn a_served_pack(pack_id: &str, filler: usize) -> server::ServedPack {
+    let big: Vec<u8> = (0..filler)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    let archive = pack_archive::Archive::from_files([
+        (
+            "pack.json".to_owned(),
+            format!("{{\"id\":\"{pack_id}\"}}").into_bytes(),
+        ),
+        ("blocks/a.json".to_owned(), b"A".to_vec()),
+        ("code/secret.py".to_owned(), b"withheld".to_vec()),
+        ("textures/big.bin".to_owned(), big),
+    ])
+    .unwrap();
+    server::ServedPack::new(pack_id, &archive, |path| !path.starts_with("code/")).unwrap()
+}
+
+fn pack_harness(packs: Vec<server::ServedPack>, bytes_per_tick: usize) -> (Game, Harness) {
+    let game = Game::new(&ALL_PLUGINS);
+    let config = ServerConfig::new(game_id())
+        .with_packs(packs)
+        .with_pack_bytes_per_tick(bytes_per_tick);
+    let harness = Harness::new(&game, game.new_world(), config);
+    (game, harness)
+}
+
+/// The pieces of packs among `messages`, as (root, offset, bytes).
+fn pack_chunks_in(messages: &[ServerMessage]) -> Vec<(pack_archive::Hash, u64, Vec<u8>)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::PackChunk {
+                root,
+                offset,
+                bytes,
+            } => Some((*root, *offset, bytes.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_server_without_packs_never_sends_a_list_and_asks_for_none_are_answered_with_nothing() {
+    let (_, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter().all(|message| !matches!(
+            message,
+            ServerMessage::Packs(_) | ServerMessage::PackChunk { .. }
+        )),
+        "{told:?}"
+    );
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![pack_archive::Hash::of(b"nothing")],
+    });
+    harness.server.step();
+    assert!(pack_chunks_in(&client.received()).is_empty());
+}
+
+#[test]
+fn a_server_with_packs_lists_them_in_load_order_right_after_the_welcome_to_every_client() {
+    let packs = vec![a_served_pack("zeta", 10), a_served_pack("alpha", 20)];
+    let listings: Vec<protocol::PackListing> =
+        packs.iter().map(|pack| pack.listing().clone()).collect();
+    let (_, mut harness) = pack_harness(packs, 1 << 20);
+    let mut first = harness.connect();
+    let mut second = harness.connect();
+    harness.log_in(&mut [&mut first, &mut second]);
+    for client in [&mut first, &mut second] {
+        let told = client.received();
+        assert!(
+            matches!(&told[..], [
+                ServerMessage::Welcome(_),
+                ServerMessage::Packs(list),
+                ServerMessage::TickCompleted { .. },
+            ] if *list == listings),
+            "{told:?}"
+        );
+    }
+    // The order is the order the server was given (zeta loads before alpha), not the order of the names.
+    assert_eq!(listings[0].id, "zeta");
+}
+
+#[test]
+fn a_client_that_asks_for_a_pack_is_sent_its_archive_without_what_is_withheld_a_piece_a_tick() {
+    use protocol::MAXIMUM_PACK_CHUNK;
+    let pack = a_served_pack("my_pack", MAXIMUM_PACK_CHUNK * 2 + 1_000);
+    let listing = pack.listing().clone();
+    let (_, mut harness) = pack_harness(vec![pack], MAXIMUM_PACK_CHUNK);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![listing.root()],
+    });
+    let mut pieces = Vec::new();
+    let mut ticks_with_pieces = 0;
+    for _ in 0..8 {
+        harness.server.step();
+        let told = client.received();
+        let now = pack_chunks_in(&told);
+        // a tick closes the pieces it carries: the last message of the tick is its completion
+        assert!(matches!(
+            told.last(),
+            Some(ServerMessage::TickCompleted { .. })
+        ));
+        if !now.is_empty() {
+            ticks_with_pieces += 1;
+        }
+        assert!(
+            now.len() <= 1,
+            "the budget is one piece a tick: {}",
+            now.len()
+        );
+        pieces.extend(now);
+    }
+    assert!(pieces.len() >= 3, "{}", pieces.len());
+    assert_eq!(
+        ticks_with_pieces,
+        pieces.len(),
+        "spread over ticks, not sent at once"
+    );
+    let mut archive = Vec::new();
+    for (root, offset, bytes) in &pieces {
+        assert_eq!(*root, listing.root());
+        assert_eq!(*offset as usize, archive.len(), "in order");
+        archive.extend_from_slice(bytes);
+    }
+    assert_eq!(archive.len() as u64, listing.archive_size);
+    let received = pack_archive::Archive::from_bytes(&archive, &pack_archive::Limits::default())
+        .expect("the pieces put together are the canonical archive");
+    listing
+        .index
+        .verify_received(&received)
+        .expect("it holds exactly the files sent, each as the index says");
+    assert!(received.get("code/secret.py").is_none());
+    assert!(
+        listing
+            .index
+            .entries()
+            .iter()
+            .any(|entry| entry.path == "code/secret.py" && !entry.sent)
+    );
+    assert_eq!(listing.index.root_hash(), listing.root());
+}
+
+#[test]
+fn a_request_for_a_pack_that_is_not_listed_is_ignored_and_a_pack_asked_for_twice_is_sent_once() {
+    let one = a_served_pack("one", 100);
+    let two = a_served_pack("two", 200);
+    let (root_one, root_two) = (one.listing().root(), two.listing().root());
+    let (_, mut harness) = pack_harness(vec![one, two], 1 << 20);
+    let mut asking = harness.connect();
+    let mut idle = harness.connect();
+    harness.log_in(&mut [&mut asking, &mut idle]);
+    asking.received();
+    idle.received();
+    asking.send(&ClientMessage::RequestPacks {
+        roots: vec![pack_archive::Hash::of(b"not a pack here"), root_two],
+    });
+    asking.send(&ClientMessage::RequestPacks {
+        roots: vec![root_two],
+    });
+    harness.server.step();
+    let pieces = pack_chunks_in(&asking.received());
+    assert_eq!(pieces.len(), 1, "one small pack, one piece, once");
+    assert_eq!(pieces[0].0, root_two);
+    assert!(
+        pack_chunks_in(&idle.received()).is_empty(),
+        "only to who asked"
+    );
+    // another pack, asked for later, is sent too
+    asking.send(&ClientMessage::RequestPacks {
+        roots: vec![root_one],
+    });
+    harness.server.step();
+    let pieces = pack_chunks_in(&asking.received());
+    assert_eq!(
+        pieces.iter().map(|piece| piece.0).collect::<Vec<_>>(),
+        [root_one]
+    );
+}
+
+#[test]
+fn a_request_before_the_client_is_logged_in_is_refused_like_any_other_message() {
+    let (_, mut harness) = pack_harness(vec![a_served_pack("one", 10)], 1 << 20);
+    let mut client = harness.connect();
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![pack_archive::Hash::of(b"x")],
+    });
+    let report = harness.server.step();
+    assert!(
+        matches!(&report.left[..], [(_, LeaveReason::Refused(_))]),
+        "{:?}",
+        report.left
+    );
+}
+
+#[test]
+fn a_replaced_list_is_told_after_the_replaced_package_only_when_it_changed_and_a_pack_being_sent_goes_on()
+ {
+    use protocol::MAXIMUM_PACK_CHUNK;
+    let kept = a_served_pack("kept", MAXIMUM_PACK_CHUNK * 3);
+    let kept_root = kept.listing().root();
+    let (mut game, mut harness) = pack_harness(vec![kept.clone()], MAXIMUM_PACK_CHUNK);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![kept_root],
+    });
+    harness.server.step();
+    assert_eq!(pack_chunks_in(&client.received()).len(), 1);
+
+    // The package is replaced with a new pack in the list: the list follows the replaced package, and the pack that was being sent goes on.
+    let added = a_served_pack("added", 50);
+    let added_listing = added.listing().clone();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![5], &game.registries())
+        .unwrap();
+    harness.server.replace_packs(vec![kept.clone(), added]);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        matches!(told[0], ServerMessage::PackageReplaced { .. }),
+        "{told:?}"
+    );
+    assert!(
+        matches!(&told[1], ServerMessage::Packs(list) if list.len() == 2 && list[1] == added_listing),
+        "{told:?}"
+    );
+    assert_eq!(
+        pack_chunks_in(&told).len(),
+        1,
+        "the second piece of the pack it was being sent"
+    );
+
+    // The same list again is not told again, and the rest of the pack arrives.
+    harness
+        .server
+        .replace_packs(vec![kept.clone(), a_served_pack("added", 50)]);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter()
+            .all(|message| !matches!(message, ServerMessage::Packs(_))),
+        "{told:?}"
+    );
+    assert!(!pack_chunks_in(&told).is_empty(), "the next piece");
+
+    // A list that ends empty is told, so that a client forgets what it was told of.
+    harness.server.replace_packs(Vec::new());
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter()
+            .any(|message| matches!(message, ServerMessage::Packs(list) if list.is_empty())),
+        "{told:?}"
+    );
+}
+
+#[test]
+fn a_client_that_leaves_while_a_pack_is_sent_stops_it_and_the_server_goes_on() {
+    use protocol::MAXIMUM_PACK_CHUNK;
+    let pack = a_served_pack("big", MAXIMUM_PACK_CHUNK * 4);
+    let root = pack.listing().root();
+    let (_, mut harness) = pack_harness(vec![pack], MAXIMUM_PACK_CHUNK);
+    let mut leaving = harness.connect();
+    let mut staying = harness.connect();
+    harness.log_in(&mut [&mut leaving, &mut staying]);
+    leaving.send(&ClientMessage::RequestPacks { roots: vec![root] });
+    staying.send(&ClientMessage::RequestPacks { roots: vec![root] });
+    harness.server.step();
+    leaving.send(&ClientMessage::Goodbye);
+    drop(leaving);
+    for _ in 0..8 {
+        harness.server.step();
+    }
+    let told = staying.received();
+    let pieces = pack_chunks_in(&told);
+    let archive: usize = pieces.iter().map(|piece| piece.2.len()).sum();
+    assert!(
+        pieces.len() >= 4,
+        "every piece of its own pack: {}",
+        pieces.len()
+    );
+    assert!(archive > MAXIMUM_PACK_CHUNK * 4);
+}

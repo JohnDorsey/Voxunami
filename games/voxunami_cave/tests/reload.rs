@@ -40,7 +40,13 @@ fn the_pack(marble: &str, lamp: u32) -> Vec<RawPack> {
 
 fn reload(scene: &mut Scene, packs: &[RawPack]) -> Result<Reloaded, ReloadError> {
     let Scene { rig, package, .. } = scene;
-    game_shell::reload_packs(&mut rig.content, packs, package, &mut rig.server)
+    game_shell::reload_packs(
+        &mut rig.content,
+        packs,
+        Vec::new(),
+        package,
+        &mut rig.server,
+    )
 }
 
 #[test]
@@ -297,4 +303,70 @@ fn a_recording_of_a_session_across_a_reload_shows_the_package_and_the_block_as_i
     assert_eq!(replay.block_table().color(marble), [0.1, 0.2, 0.3]);
     assert_eq!(replay.mesher().material_at(at), Some(marble));
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_reload_that_changes_the_list_of_packs_tells_the_players_that_were_there_and_a_player_who_joins_after_and_all_are_sent_the_pack()
+ {
+    let mut scene = Scene::new();
+    let (mut player, _) = above_the_ground(&mut scene.rig, None);
+    scene.rig.settle(&mut [&mut player]);
+    assert!(player.client().packs().listed().is_empty());
+
+    // The pack the packs folder now holds, as the shell makes it from the folder: all its files, the one the loader reads and a note.
+    let archive = pack_archive::Archive::from_files([
+        (
+            "pack.json".to_owned(),
+            br#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_vec(),
+        ),
+        (
+            "blocks/marble.json".to_owned(),
+            br#"{ "color": [0.9, 0.9, 0.95] }"#.to_vec(),
+        ),
+        ("readme.md".to_owned(), b"a note".to_vec()),
+    ])
+    .unwrap();
+    let served = server::ServedPack::new("my_pack", &archive, |_| true).unwrap();
+    let root = served.root();
+    let Scene { rig, package, .. } = &mut scene;
+    game_shell::reload_packs(
+        &mut rig.content,
+        &the_pack("[0.9, 0.9, 0.95]", 90),
+        vec![served],
+        package,
+        &mut rig.server,
+    )
+    .unwrap();
+    assert_eq!(scene.rig.content.replicated_packs().len(), 1);
+    let mut late = scene.rig.join([24.5, 110.0, 24.5], 0.0, 0.0);
+    for _ in 0..3 {
+        scene.rig.settle(&mut [&mut player, &mut late]);
+    }
+    for client in [&player, &late] {
+        assert!(client.client().packs().is_complete());
+        let held = client
+            .client()
+            .packs()
+            .get(&root)
+            .expect("the pack is held");
+        assert_eq!(
+            held.archive, archive,
+            "every file of the folder, the note too"
+        );
+    }
+
+    // The same list again changes nothing a client is told of the packs.
+    let Scene { rig, package, .. } = &mut scene;
+    let served = rig.content.replicated_packs().to_vec();
+    game_shell::reload_packs(
+        &mut rig.content,
+        &the_pack("[0.9, 0.9, 0.95]", 90),
+        served,
+        package,
+        &mut rig.server,
+    )
+    .unwrap();
+    scene.rig.settle(&mut [&mut player, &mut late]);
+    assert_eq!(player.client().packs().listed().len(), 1);
+    assert!(player.client().packs().is_complete());
 }
