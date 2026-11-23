@@ -629,7 +629,9 @@ fn an_orbit_made_again_from_the_place_and_the_speed_of_a_ship_on_it_is_not_the_o
     let made_again: Arc<Mutex<Option<(u64, Rail)>>> = Arc::default();
     let slot = Arc::clone(&made_again);
     scene.run(move |world| {
-        let now = world.data().clock();
+        // (A system that runs before the bodies' step sees every ship where the last tick left it, which is the state of the tick before the clock's: the orbit is
+        // fitted through it for that time.)
+        let now = world.data().clock() - 1;
         let refit = world
             .coasting_rail(ship_id(number), RailTime::of_tick(now, TICKS_A_SECOND))
             .expect("a ship on its rail can coast");

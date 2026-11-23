@@ -89,8 +89,17 @@ impl ServerWorld {
     /// tick at the start of it (`apply_rails`), and a ship that is free is at its place of the start until the bodies step it.
     pub fn is_placed_by_a_rail(&self, ship: GridId) -> bool {
         let grids = self.data.grids();
-        grids.get(ship).is_some_and(|grid| grid.rail.is_some())
-            || (grids.has_partners(ship) && self.rail_group_of(ship).is_some())
+        // (A ship whose rail waits for the step is where the last tick left it, as a free one is.)
+        let placed = |id: GridId| {
+            self.rails_placed_at_the_start
+                .as_ref()
+                .is_none_or(|placed| placed.contains(&id))
+        };
+        (grids.get(ship).is_some_and(|grid| grid.rail.is_some()) && placed(ship))
+            || (grids.has_partners(ship)
+                && self
+                    .rail_group_of(ship)
+                    .is_some_and(|group| placed(group.anchor)))
     }
 
     /// `lag` for a ship that the rails place, and 0 for one that is not.

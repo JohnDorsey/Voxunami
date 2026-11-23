@@ -415,6 +415,18 @@ impl WorldData {
         time: impl Into<RailTime>,
         memory: &mut RailMemo,
     ) -> Vec<GridId> {
+        self.put_ships_on_their_rails_selected(time, memory, |_| true)
+    }
+
+    /// As [`WorldData::put_ships_on_their_rails_remembering`], for the ships that `selected` says yes to only (the others are left where they are; what the orbits say of all the
+    /// ships on rails is kept in `memory` as before). A ship that goes round another is put by the place the other has when it is asked, so the ship it goes round is selected
+    /// with it or placed already.
+    pub fn put_ships_on_their_rails_selected(
+        &mut self,
+        time: impl Into<RailTime>,
+        memory: &mut RailMemo,
+        selected: impl Fn(GridId) -> bool,
+    ) -> Vec<GridId> {
         let time = time.into();
         let on_rails: Vec<GridId> = self
             .grids
@@ -422,8 +434,9 @@ impl WorldData {
             .filter(|(_, ship)| ship.rail.is_some())
             .map(|(id, _)| id)
             .collect();
-        let mut not_placed = Vec::new();
         let listed: std::collections::BTreeSet<GridId> = on_rails.iter().copied().collect();
+        let on_rails: Vec<GridId> = on_rails.into_iter().filter(|id| selected(*id)).collect();
+        let mut not_placed = Vec::new();
         for id in on_rails {
             // A group of ships (ships coupled by their joint ends) has one rail, on its anchor, its lowest number: the rail of the centre of mass of the group. A rail on another
             // ship of a group is of no group and is not placed (the server takes it away).

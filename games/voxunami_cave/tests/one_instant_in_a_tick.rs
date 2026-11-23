@@ -9,12 +9,15 @@
 //!    of the end of the tick: **a 76.14-voxel step instead of 38.07, and the ship a tick ahead of its undisturbed twin for good**
 //!    (`disturbing_a_ship_on_a_rail_before_the_step_does_not_make_it_go_a_tick_too_far`). The pilot's `seat.rs` does it when it stops a turn.
 //!
-//! The two tests that say so are `#[ignore]`d until the placement of rails is moved to after the step: each was run with `--ignored` and fails for its reason (the numbers are in
-//! the messages). The controls that hold today and must go on holding are not ignored.
+//! The two tests that say so were `#[ignore]`d until the rails of ships alone with no frame were placed after the step (4c-5-4d, phase 1, built 2026-11-22); each was run with
+//! `--ignored` before and failed for its reason (76.14 voxels against 38.07; 38.07 voxels from where the last tick left the ship). They are for a ship alone on a rail with no frame
+//! of its own (not turning, nothing near it, no torque waiting): ships with a frame, groups and planets are the later phases, and each gets its cases here when it is built. The
+//! control, which held before and holds now, is a force or a torque asked of a ship alone on a rail.
 
 mod common;
 
 use common::docking::{make_going, stones};
+use common::rails::put_on_a_rail_near_another_ship;
 use common::{Scene, circular_speed, length, minus, pose_at, ship_id};
 use server::ServerWorld;
 use voxel_space::GridId;
@@ -127,7 +130,6 @@ fn disturbances() -> Vec<(&'static str, Asked)> {
 }
 
 #[test]
-#[ignore = "until the rails are placed after the bodies' step (4c-5-4d): a ship on a rail is read a tick ahead by what runs before the step"]
 fn the_places_a_controller_reads_are_the_places_the_last_tick_ended_at() {
     let (mut scene, ship, speed) = a_ship_on_a_rail();
     for tick in 0..4 {
@@ -147,7 +149,6 @@ fn the_places_a_controller_reads_are_the_places_the_last_tick_ended_at() {
 }
 
 #[test]
-#[ignore = "until the rails are placed after the bodies' step (4c-5-4d): the ship is stepped again from the place of the end of the tick"]
 fn disturbing_a_ship_on_a_rail_before_the_step_does_not_make_it_go_a_tick_too_far() {
     // (Every case is run before any is judged, so that one that fails does not hide another.)
     let mut problems = Vec::new();
@@ -219,4 +220,85 @@ fn a_force_or_a_torque_asked_of_a_ship_alone_on_a_rail_leaves_it_on_its_rail_and
             apart(twin.after, hit.after)
         );
     }
+}
+
+/// What a system that runs after the bodies (the watchers of a scene run in the settling phase) reads of a ship, each tick: it must be where the tick ended.
+fn watch_the_place_of(
+    scene: &mut Scene,
+    ship: GridId,
+) -> std::sync::Arc<std::sync::Mutex<Vec<[f64; 3]>>> {
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<[f64; 3]>>> = Default::default();
+    let sink = std::sync::Arc::clone(&seen);
+    scene.watch(move |world| {
+        sink.lock().unwrap().push(
+            world
+                .data()
+                .grids()
+                .get(ship)
+                .unwrap()
+                .pose
+                .position
+                .in_voxels(),
+        );
+    });
+    seen
+}
+
+#[test]
+fn after_the_bodies_have_stepped_a_ship_on_a_rail_is_where_the_tick_ends() {
+    let (mut scene, ship, _) = a_ship_on_a_rail();
+    let seen = watch_the_place_of(&mut scene, ship);
+    for tick in 0..4 {
+        scene.ticks(1);
+        let at_the_end = place(&scene, ship);
+        let after_the_bodies = *seen.lock().unwrap().last().unwrap();
+        assert_eq!(
+            after_the_bodies,
+            at_the_end,
+            "tick {tick}: a system after the bodies read the ship {} voxels from where the tick ended",
+            apart(after_the_bodies, at_the_end)
+        );
+    }
+}
+
+#[test]
+fn a_ship_that_is_given_a_rail_in_a_tick_is_put_by_it_after_the_step_and_goes_as_its_twin() {
+    let mut ends = Vec::new();
+    for rail in [true, false] {
+        let (mut scene, _) = Scene::reporting_in_a_new_world();
+        let speed = circular_speed(&scene, 0, DISTANCE);
+        make_going(
+            &mut scene,
+            pose_at(0.0, DISTANCE, 0.0),
+            stones(0, 4),
+            [0.0, 0.0, speed],
+        );
+        let ship = ship_id(1);
+        scene.ticks(3);
+        let seen = watch_the_place_of(&mut scene, ship);
+        if rail {
+            scene.run(put_on_a_rail_near_another_ship_of(ship));
+        } else {
+            scene.run(|_| {});
+        }
+        let at_the_end = place(&scene, ship);
+        assert_eq!(rides(&scene, ship), rail);
+        assert_eq!(
+            *seen.lock().unwrap().last().unwrap(),
+            at_the_end,
+            "rail {rail}: a system after the bodies read the ship away from where the tick ended"
+        );
+        ends.push(at_the_end);
+    }
+    assert!(
+        apart(ends[0], ends[1]) < 0.1,
+        "the ship given a rail is {} voxels from the one left free",
+        apart(ends[0], ends[1])
+    );
+}
+
+fn put_on_a_rail_near_another_ship_of(
+    ship: GridId,
+) -> impl FnOnce(&mut ServerWorld) + Send + 'static {
+    move |world| put_on_a_rail_near_another_ship(world, ship)
 }

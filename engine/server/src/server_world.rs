@@ -242,6 +242,12 @@ pub struct ServerWorld {
     quiet_since: BTreeMap<GridId, u64>,
     /// The ships that are alone, ride a rail, and have another ship in the way of them as of the last `update_coasting` (see [`ServerWorld::has_a_stranger_near_on_its_rail`]).
     railed_with_a_stranger_near: BTreeSet<GridId>,
+    /// The ships whose rails the start of this tick placed, between that and the end of the bodies' step (see [`ServerWorld::apply_rails_before_the_step`]); `None` when every
+    /// ship on a rail is placed. The others (a ship alone with no frame, and a ship that was given a rail or a new number since) are where the last tick left them, as the free
+    /// ships are, until the bodies have stepped, and are placed after the step.
+    rails_placed_at_the_start: Option<BTreeSet<GridId>>,
+    /// The ticks of a second of the clock that the last placing of the rails was made with, for the placing after the step.
+    rail_ticks_per_second: u32,
     /// What the orbits of the rails said at the time of the last putting of ships on them, so that the second putting of a tick works out nothing twice.
     rail_memo: RailMemo,
     /// How many orbits were made from a state (see [`ServerWorld::rail_work`]).
@@ -312,6 +318,8 @@ impl ServerWorld {
             carried_entities: BTreeMap::new(),
             quiet_since: BTreeMap::new(),
             railed_with_a_stranger_near: BTreeSet::new(),
+            rails_placed_at_the_start: None,
+            rail_ticks_per_second: 20,
             rail_memo: RailMemo::default(),
             orbit_fits: Cell::new(0),
             ship_pairs_asked: Cell::new(0),
@@ -1525,6 +1533,66 @@ impl ServerWorld {
     /// while the speed of whatever keeps a state for an entity (the body of a player) is against the planet that carries it, so that it is carried by the displacement and
     /// not twice (see [`ServerWorld::carrier_of_entity`]). See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
+        self.rails_placed_at_the_start = None;
+        self.place_rails(ticks_per_second);
+    }
+
+    /// The placing of the rails at the start of a tick: **every ship on a rail that is placed by it, but the ships that wait for the bodies' step** (a ship alone on a rail that has no
+    /// frame to turn or to be hit in: see `waits_for_the_step`), which stay at the place of the end of the last tick, as the free ships are, so that what runs before the step sees every
+    /// ship at one instant. They are placed after it ([`ServerWorld::place_the_rails_that_waited`], by the bodies, or at the end of the tick by `apply_rails`).
+    pub(crate) fn apply_rails_before_the_step(&mut self, ticks_per_second: u32) {
+        self.rail_ticks_per_second = ticks_per_second;
+        self.rails_placed_at_the_start = Some(
+            self.data
+                .grids()
+                .iter()
+                .filter(|(id, ship)| ship.rail.is_some() && !self.waits_for_the_step(*id))
+                .map(|(id, _)| id)
+                .collect(),
+        );
+        self.place_rails(ticks_per_second);
+    }
+
+    /// Whether a ship's rail is left to be placed after the bodies' step: it is alone, rides a coasting rail that goes round a planet or a point, is not turning, has no stranger
+    /// near it and no torque waiting (so that it has no frame of its own in the step).
+    fn waits_for_the_step(&self, id: GridId) -> bool {
+        let grids = self.data.grids();
+        let Some(ship) = grids.get(id) else {
+            return false;
+        };
+        let goes_round_what_is_placed_first =
+            |rail: &Rail| match rail.orbit.as_ref().map(|orbit| orbit.around) {
+                Some(Centre::Point(_)) => true,
+                Some(Centre::Grid(parent)) => grids
+                    .get(parent)
+                    .is_some_and(|parent| parent.terrain.is_some()),
+                None => false,
+            };
+        ship.terrain.is_none()
+            && !grids.has_partners(id)
+            && ship.angular_velocity == [0.0; 3]
+            && ship.rail.as_ref().is_some_and(|rail| {
+                coasting::is_a_coasting_rail(rail) && goes_round_what_is_placed_first(rail)
+            })
+            && !self.has_a_stranger_near_on_its_rail(id)
+            && !self.has_a_torque_waiting(id)
+    }
+
+    /// Puts the ships on rails that the start of the tick left for the step where their rails say, now that the bodies have stepped: after it every ship is at the place of the end of
+    /// the tick. A ship that lost its rail in between (it was disturbed) is where the bodies put it.
+    pub fn place_the_rails_that_waited(&mut self) {
+        let Some(placed) = self.rails_placed_at_the_start.take() else {
+            return;
+        };
+        let time = RailTime::of_tick(self.data.clock(), self.rail_ticks_per_second);
+        let _ = self
+            .data
+            .put_ships_on_their_rails_selected(time, &mut self.rail_memo, |id| {
+                !placed.contains(&id)
+            });
+    }
+
+    fn place_rails(&mut self, ticks_per_second: u32) {
         let time = RailTime::of_tick(self.data.clock(), ticks_per_second);
         self.carried_entities.clear();
         if !self
@@ -1589,9 +1657,13 @@ impl ServerWorld {
             }
         }
         self.carried_ships = carried_ships.iter().copied().collect();
+        let placed = self.rails_placed_at_the_start.take();
         let _ = self
             .data
-            .put_ships_on_their_rails_remembering(time, &mut self.rail_memo);
+            .put_ships_on_their_rails_selected(time, &mut self.rail_memo, |id| {
+                placed.as_ref().is_none_or(|placed| placed.contains(&id))
+            });
+        self.rails_placed_at_the_start = placed;
         let displacement_of = |world: &Self, planet: GridId| {
             let from = carriers
                 .iter()

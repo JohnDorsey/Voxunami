@@ -1740,6 +1740,8 @@ impl Bodies {
                 .max(report.ship_bricks_made_last_tick);
         });
         self.write_back(world);
+        // (The ships whose rails waited for the step are put now, so that every ship is at the place of the end of the tick.)
+        world.place_the_rails_that_waited();
         // (After the step, where the world has every ship at the place of the end of the tick: a ship on a rail is no tick ahead of the others, and a ship that docks with it does not
         // have to be put back a tick to be measured against it.)
         self.dock_ships_on_rails(world);
