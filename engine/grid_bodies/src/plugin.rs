@@ -579,6 +579,16 @@ impl Follow {
         }
     }
 
+    /// How fast the world moves the frame in the tick: the speed of the point it goes with, if the world puts the point (a planet's, a ship's or a group's on a rail), the planet's
+    /// if a planet carries the group of a frame that moves itself, and nothing for a frame that moves itself alone.
+    fn velocity_the_world_moves_it_at(self) -> [f64; 3] {
+        match self.carrying {
+            Some(carrying) => carrying.planet_velocity,
+            None if self.followed.moves_itself() => [0.0; 3],
+            None => self.velocity,
+        }
+    }
+
     /// How fast the frame goes for the frame's own motion: against the planet that carries its group, or in the world.
     fn own_velocity(&self) -> [f64; 3] {
         self.carrying
@@ -703,8 +713,15 @@ impl Follow {
         left_for_the_step: &BTreeSet<GridId>,
     ) -> Follow {
         // (A frame of a ship or a group on a rail that the world left for the step is at the start of the tick already.)
-        if let Followed::RailPoint(anchor) | Followed::RailGroup(anchor) = self.followed
+        if let Followed::RailPoint(anchor) | Followed::RailGroup(anchor) | Followed::Planet(anchor) =
+            self.followed
             && left_for_the_step.contains(&anchor)
+        {
+            return self;
+        }
+        // (And so is the frame of a group that such a planet carries: the world has not moved the group by the planet's displacement yet.)
+        if let Some(carrying) = self.carrying
+            && left_for_the_step.contains(&carrying.planet)
         {
             return self;
         }
@@ -896,6 +913,31 @@ fn state_before(state: BodyState, time_step: f64) -> BodyState {
         linear_velocity: state.linear_velocity,
         angular_velocity: state.angular_velocity,
     }
+}
+
+/// Where a body that is at `pose` at the start of a step of `time_step` seconds is at the end of it, going as it goes (the opposite of [`state_before`]).
+fn pose_after(
+    pose: GridPose,
+    linear_velocity: [f64; 3],
+    angular_velocity: [f64; 3],
+    time_step: f64,
+) -> GridPose {
+    let position = pose
+        .position
+        .translated(linear_velocity.map(|speed| speed * time_step));
+    let [x, y, z] = angular_velocity;
+    let speed = libm::sqrt(x * x + y * y + z * z);
+    let orientation = if speed > 0.0 {
+        let half = 0.5 * speed * time_step;
+        let (sine, cosine) = (libm::sin(half) / speed, libm::cos(half));
+        match Orientation::from_components([x * sine, y * sine, z * sine, cosine]) {
+            Some(turn) => turn.compose(pose.orientation),
+            None => pose.orientation,
+        }
+    } else {
+        pose.orientation
+    };
+    GridPose::new(position, orientation)
 }
 
 /// The state a planet's body is given before the step of a tick, from the pose and velocities the world has the planet at (the end of the tick): a planet that moves,
@@ -2011,12 +2053,19 @@ impl Bodies {
         self.rail_frames_left_for_the_step = self
             .frames
             .values()
-            .filter_map(|frame| match frame.follow?.followed {
-                Followed::RailPoint(anchor) | Followed::RailGroup(anchor)
+            .filter_map(|frame| frame.follow)
+            .filter_map(|follow| match follow.followed {
+                Followed::RailPoint(anchor)
+                | Followed::RailGroup(anchor)
+                | Followed::Planet(anchor)
                     if !world.is_placed_by_a_rail(anchor) =>
                 {
                     Some(anchor)
                 }
+                Followed::Group(_) => follow
+                    .carrying
+                    .map(|carrying| carrying.planet)
+                    .filter(|planet| !world.is_placed_by_a_rail(*planet)),
                 _ => None,
             })
             .collect();
@@ -2078,11 +2127,28 @@ impl Bodies {
                 } else {
                     BodyKind::Fixed
                 };
+                // (A planet that the world has not put yet in this tick is at its place of the start: the end of the tick it is given to the body is where it will be.)
+                let pose = if planet.rail.is_some() && !world.is_placed_by_a_rail(id) {
+                    // (How far it goes in the tick **against what the world moves in it**: a frame that goes with a planet, or with a planet that carries its group, has moved by the
+                    // planet's displacement of the tick when the world puts the planet, and that is not the planet's, in the frame.)
+                    let moved_with_the_world =
+                        follow.map_or([0.0; 3], Follow::velocity_the_world_moves_it_at);
+                    let against_the_frame = [0, 1, 2]
+                        .map(|axis| planet.linear_velocity[axis] - moved_with_the_world[axis]);
+                    pose_after(
+                        planet.pose,
+                        against_the_frame,
+                        planet.angular_velocity,
+                        time_step,
+                    )
+                } else {
+                    planet.pose
+                };
                 let Some(state) = planet_state(
                     follow,
                     id,
                     moves,
-                    planet.pose,
+                    pose,
                     (planet.linear_velocity, planet.angular_velocity),
                     time_step,
                     pull,

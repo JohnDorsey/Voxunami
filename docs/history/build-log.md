@@ -2662,3 +2662,11 @@ Built as the decision file says (`decisions/joints-and-cars.md`, 4c-5-4d phase 2
 fitted placing after the step, and the oracle tests of hits (momentum, pivot gaps to 1e-3, the kick once) passed unmodified. The one piece that needed thought was the kick, which the rail's placing would erase: it is now `Kick { moved, sped }`
 given after the rail has put the group. A mutant that left the displacement out survived the old tests (a hit moves the chain 0.07 to 0.5 voxels in the tick, under every tolerance), and a test was added for it. 4,108 passed, 0 failed.
 Phase 3 (planets, what they carry, the players' speed against their carrier) is next and is the risky one: the first experiment (deleting the first placing alone) broke the carrying hand-over by exactly a tick of the planet's speed.
+
+## Removing the skew, phase 3: planets, what they carry, and the speed they carry it at (2026-11-22)
+
+Built as the decision file says (`decisions/joints-and-cars.md`, 4c-5-4d phase 3). The first full run had 11 failures, in three kinds, each a real thing: a carried ship's world speed did not follow the planet's (a held deck 0.00197 metres a second off, the
+planet's change of speed over a tick: the world now gives it with the displacement); an entity put in a ship in the tick was carried by the planet's displacement in the ship's coordinates (it fell off the deck), and one whose ship was taken was not carried
+(6.28 voxels behind): who is carried is asked when the planet is put; and the planet's own body was D off in its own frame (found only by the five cost tests, which count the bricks of ground that get colliders). 4,109 passed, 0 failed. Mutants: 6 of 7 killed.
+The one test that pinned the old order (`bodies.rs`) is rewritten for the new rule. With the three phases the world is at one instant in each stretch of a tick: that is the owner's question of 2026-11-22 closed. What is left of the lag code is for the exotic rails
+that are still placed at the start; it can go when they do.

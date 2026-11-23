@@ -1499,6 +1499,7 @@ fn a_ship_in_the_sphere_of_a_planet_on_a_rail_goes_with_it_held_or_free_and_one_
         place_of(&world, held),
         place_of(&world, distant),
     );
+    let planet_velocity_before = world.data().grids().get(planet).unwrap().linear_velocity;
     world.data.set_clock(20);
     world.apply_rails(20);
     let moved = planet_before
@@ -1522,9 +1523,22 @@ fn a_ship_in_the_sphere_of_a_planet_on_a_rail_goes_with_it_held_or_free_and_one_
         distant_before,
         "beyond the sphere"
     );
-    // What is carried keeps its own velocity: the planet's is the planet's, and the ship's speed against it is the ship's.
+    // What is carried keeps its own velocity against the planet: the world's speed of it changes with the planet's over the tick (the planet's speed of the end of the tick is put
+    // after the bodies' step, and what it carries is given the change with the displacement: 2026-11-22, 4c-5-4d phase 3), and the ship's speed against the planet is the ship's.
+    let planet_velocity = world.data().grids().get(planet).unwrap().linear_velocity;
+    assert!(
+        (0..3).any(|axis| planet_velocity[axis] != planet_velocity_before[axis]),
+        "the planet's speed changed in the tick"
+    );
     let carried_ship = world.data().grids().get(free).unwrap();
-    assert_eq!(carried_ship.linear_velocity, [1.0, 2.0, 3.0]);
+    for axis in 0..3 {
+        let expected = [1.0, 2.0, 3.0][axis] + planet_velocity[axis] - planet_velocity_before[axis];
+        assert!(
+            (carried_ship.linear_velocity[axis] - expected).abs() < 1.0e-12,
+            "axis {axis}: {} against {expected}",
+            carried_ship.linear_velocity[axis]
+        );
+    }
     assert_eq!(carried_ship.angular_velocity, [0.0, 0.5, 0.0]);
     // Told again in the same tick (the server does, after the rules), nothing moves it twice.
     let (once_planet, once_free) = (place_of(&world, planet), place_of(&world, free));

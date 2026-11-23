@@ -148,12 +148,24 @@ const GREATEST_INFLUENCE: f64 = 120_000.0;
 const INFLUENCE_LEAVING: f64 = 1.25;
 
 /// A planet on a rail, for the choice of which one carries a place.
+#[derive(Debug)]
 struct Carrier {
     id: GridId,
     level: LevelIndex,
     position: WorldPosition,
+    /// How fast it went before it moved.
+    velocity: [f64; 3],
     /// How far it carries, in voxels.
     radius: f64,
+}
+
+/// Who a planet carries in a tick, by the places the planets had before they moved: the carriers, and the ships each carries (the entities are asked when the planet is put:
+/// one that was put in the level in this tick, as one whose ship was taken from under it, goes with the planet like the others). A planet that waits for the bodies'
+/// step carries them after it (see [`ServerWorld::place_the_rails_that_waited`]).
+#[derive(Debug)]
+struct Carriage {
+    carriers: Vec<Carrier>,
+    ships: Vec<(GridId, GridId)>,
 }
 
 /// The planet among `carriers` that carries a place of a level: the one whose sphere the place is in, and if it is in several, the smallest (a moon's before its
@@ -246,6 +258,8 @@ pub struct ServerWorld {
     /// ship on a rail is placed. The others (a ship alone with no frame, and a ship that was given a rail or a new number since) are where the last tick left them, as the free
     /// ships are, until the bodies have stepped, and are placed after the step.
     rails_placed_at_the_start: Option<BTreeSet<GridId>>,
+    /// What the planets that were not placed at the start carry, to be moved by their displacements when they are (`Some` only while `rails_placed_at_the_start` is).
+    pending_carriage: Option<Carriage>,
     /// The ticks of a second of the clock that the last placing of the rails was made with, for the placing after the step.
     rail_ticks_per_second: u32,
     /// What the orbits of the rails said at the time of the last putting of ships on them, so that the second putting of a tick works out nothing twice.
@@ -319,6 +333,7 @@ impl ServerWorld {
             quiet_since: BTreeMap::new(),
             railed_with_a_stranger_near: BTreeSet::new(),
             rails_placed_at_the_start: None,
+            pending_carriage: None,
             rail_ticks_per_second: 20,
             rail_memo: RailMemo::default(),
             orbit_fits: Cell::new(0),
@@ -1528,8 +1543,11 @@ impl ServerWorld {
     /// What is in a level near a planet on a rail goes with the planet: a player or an item (in the level's own coordinates) and a ship, whether it is free or
     /// held, are moved by the planet's displacement, so that each stays where it is from the planet, and a player there falls to it and stands on it however
     /// fast the planet goes. (A ship's body is the plugin's: it simulates the ships a planet carries in a frame that goes with the planet, and puts them where
-    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) **Speeds are not
-    /// the same for the two kinds**: a ship's `linear_velocity` is left as it is and is the world's (the plugin writes the planet's speed and the ship's own against it),
+    /// they are against it.) **When the planet is put is in the second part of a tick since 4c-5-4d (2026-11-22)**: the start of the tick leaves the planets, what they carry and the
+    /// ships on rails where the last tick left them (as the free ships are), the bodies step, and [`ServerWorld::place_the_rails_that_waited`] puts them and carries what they carry
+    /// by their displacements; the players' bodies (which run after the bodies of the ships) see the planet and what it carries as they did. **Speeds are not
+    /// the same for the two kinds**: a ship's `linear_velocity` is the world's and **goes with the planet's change of speed in the tick as well as its displacement** (the plugin
+    /// writes the planet's speed of the start of the tick and the ship's own against it, and the planet's speed of the end of it is put with the planet),
     /// while the speed of whatever keeps a state for an entity (the body of a player) is against the planet that carries it, so that it is carried by the displacement and
     /// not twice (see [`ServerWorld::carrier_of_entity`]). See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
@@ -1553,25 +1571,11 @@ impl ServerWorld {
         self.place_rails(ticks_per_second);
     }
 
-    /// Whether a ship's rail is left to be placed after the bodies' step: it rides a coasting rail that goes round a planet or a point, **alone or as the anchor of a group** (a
-    /// ship with a frame of its own in the bodies, or a group's frame, is at the place of the last tick's end in it, as the free ships are).
+    /// Whether a ship's rail is left to be placed after the bodies' step: **every rail is**, a planet's as well, **alone or as the anchor of a group** (a ship of a group that is not
+    /// its anchor has no rail of its own, and a group that is not whole is not asked: those are placed at the start, as before). What the planet carries is carried then too.
     fn waits_for_the_step(&self, id: GridId) -> bool {
         let grids = self.data.grids();
-        let Some(ship) = grids.get(id) else {
-            return false;
-        };
-        let goes_round_what_is_placed_first =
-            |rail: &Rail| match rail.orbit.as_ref().map(|orbit| orbit.around) {
-                Some(Centre::Point(_)) => true,
-                Some(Centre::Grid(parent)) => grids
-                    .get(parent)
-                    .is_some_and(|parent| parent.terrain.is_some()),
-                None => false,
-            };
-        ship.terrain.is_none()
-            && ship.rail.as_ref().is_some_and(|rail| {
-                coasting::is_a_coasting_rail(rail) && goes_round_what_is_placed_first(rail)
-            })
+        grids.get(id).is_some_and(|ship| ship.rail.is_some())
             && (!grids.has_partners(id)
                 || self
                     .rail_group_of(id)
@@ -1605,6 +1609,76 @@ impl ServerWorld {
             .put_ships_on_their_rails_selected(time, &mut self.rail_memo, |id| {
                 !placed.contains(&id)
             });
+        // (And what the planets that were put now carry goes by their displacements, which are from where they were at the start of the tick.)
+        if let Some(carriage) = self.pending_carriage.take() {
+            self.carry(&carriage, |planet| !placed.contains(&planet));
+        }
+    }
+
+    /// Moves what the planets for which `placed` says yes carry by their displacements since `carriage` was made (the places they had before they moved), as entities and as ships.
+    fn carry(&mut self, carriage: &Carriage, placed: impl Fn(GridId) -> bool) {
+        let displacement_of = |world: &Self, planet: GridId| {
+            let from = carriage
+                .carriers
+                .iter()
+                .find(|carrier| carrier.id == planet)?
+                .position;
+            let to = world.data.grids().get(planet)?.pose.position;
+            Some(from.displacement_to(to))
+                .filter(|displacement| *displacement != Displacement::NONE)
+        };
+        let entities: Vec<(EntityId, GridId)> = self
+            .data
+            .entities()
+            .iter()
+            .filter_map(|entity| {
+                let level = entity.pose.grid.root_level()?;
+                let planet = pick_carrier(
+                    &carriage.carriers,
+                    level,
+                    entity.pose.position,
+                    self.carried_by.get(&entity.id).copied(),
+                )?;
+                Some((entity.id, planet))
+            })
+            .filter(|(_, planet)| placed(*planet))
+            .collect();
+        for (entity, planet) in entities {
+            let Some(displacement) = displacement_of(self, planet) else {
+                continue;
+            };
+            let Some(mut pose) = self.data.entities().get(entity).map(|entity| entity.pose) else {
+                continue;
+            };
+            if let Some(position) = pose.position.displaced(displacement) {
+                pose.position = position;
+                if self.data.entities_mut().set_pose(entity, pose).is_ok() {
+                    self.carried_entities.insert(entity, displacement);
+                }
+            }
+        }
+        for (ship, planet) in carriage.ships.iter().copied().filter(|(_, p)| placed(*p)) {
+            let Some(displacement) = displacement_of(self, planet) else {
+                continue;
+            };
+            // (Its speed is the world's: what it goes at against the planet and the planet's, which has changed with the planet's place in the tick.)
+            let change = carriage
+                .carriers
+                .iter()
+                .find(|carrier| carrier.id == planet)
+                .zip(self.data.grids().get(planet))
+                .map(|(carrier, now)| {
+                    [0, 1, 2].map(|axis| now.linear_velocity[axis] - carrier.velocity[axis])
+                })
+                .unwrap_or([0.0; 3]);
+            let Some(grid) = self.data.grids_mut().get_mut(ship) else {
+                continue;
+            };
+            if let Some(position) = grid.pose.position.displaced(displacement) {
+                grid.pose.position = position;
+            }
+            grid.linear_velocity = [0, 1, 2].map(|axis| grid.linear_velocity[axis] + change[axis]);
+        }
     }
 
     fn place_rails(&mut self, ticks_per_second: u32) {
@@ -1618,6 +1692,7 @@ impl ServerWorld {
         {
             self.carried_by.clear();
             self.carried_ships.clear();
+            self.pending_carriage = None;
             self.rail_memo.keep_only(|_| false);
             return;
         }
@@ -1625,7 +1700,6 @@ impl ServerWorld {
         self.hand_over_what_has_left_its_sphere(time);
         // Who is carried by which planet, by where the planets are before they move.
         let carriers = self.carriers();
-        let mut carried_entities: Vec<(EntityId, GridId)> = Vec::new();
         let mut now_carried: BTreeMap<EntityId, GridId> = BTreeMap::new();
         for entity in self.data.entities().iter() {
             let Some(level) = entity.pose.grid.root_level() else {
@@ -1637,7 +1711,6 @@ impl ServerWorld {
                 entity.pose.position,
                 self.carried_by.get(&entity.id).copied(),
             ) {
-                carried_entities.push((entity.id, planet));
                 now_carried.insert(entity.id, planet);
             }
         }
@@ -1672,47 +1745,24 @@ impl ServerWorld {
             }
         }
         self.carried_ships = carried_ships.iter().copied().collect();
+        let carriage = Carriage {
+            carriers,
+            ships: carried_ships,
+        };
         let placed = self.rails_placed_at_the_start.take();
         let _ = self
             .data
             .put_ships_on_their_rails_selected(time, &mut self.rail_memo, |id| {
                 placed.as_ref().is_none_or(|placed| placed.contains(&id))
             });
+        // (What the planets put now carry goes with them now; what the others carry waits for them: `place_the_rails_that_waited`.)
+        self.carry(&carriage, |planet| {
+            placed
+                .as_ref()
+                .is_none_or(|placed| placed.contains(&planet))
+        });
+        self.pending_carriage = placed.is_some().then_some(carriage);
         self.rails_placed_at_the_start = placed;
-        let displacement_of = |world: &Self, planet: GridId| {
-            let from = carriers
-                .iter()
-                .find(|carrier| carrier.id == planet)?
-                .position;
-            let to = world.data.grids().get(planet)?.pose.position;
-            Some(from.displacement_to(to))
-                .filter(|displacement| *displacement != Displacement::NONE)
-        };
-        for (entity, planet) in carried_entities {
-            let Some(displacement) = displacement_of(self, planet) else {
-                continue;
-            };
-            let Some(mut pose) = self.data.entities().get(entity).map(|entity| entity.pose) else {
-                continue;
-            };
-            if let Some(position) = pose.position.displaced(displacement) {
-                pose.position = position;
-                if self.data.entities_mut().set_pose(entity, pose).is_ok() {
-                    self.carried_entities.insert(entity, displacement);
-                }
-            }
-        }
-        for (ship, planet) in carried_ships {
-            let Some(displacement) = displacement_of(self, planet) else {
-                continue;
-            };
-            let Some(grid) = self.data.grids_mut().get_mut(ship) else {
-                continue;
-            };
-            if let Some(position) = grid.pose.position.displaced(displacement) {
-                grid.pose.position = position;
-            }
-        }
     }
 
     /// The planet that carried a ship in the last tick, if one did: the planet on a rail whose sphere of influence the ship was in (see
@@ -1748,6 +1798,7 @@ impl ServerWorld {
                     id,
                     level: ship.level,
                     position: ship.pose.position,
+                    velocity: ship.linear_velocity,
                     radius: self.influence_radius(id)?,
                 })
             })

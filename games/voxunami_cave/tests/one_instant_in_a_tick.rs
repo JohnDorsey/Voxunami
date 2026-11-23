@@ -18,6 +18,7 @@ mod common;
 
 use common::chains::{a_chain, a_chain_in_orbit, put_on_its_rail};
 use common::docking::{make_going, stones};
+use common::moving_planet::{WANDERER, a_scene};
 use common::rails::put_on_a_rail_near_another_ship;
 use common::{Scene, circular_speed, length, minus, pose_at, ship_id};
 use server::ServerWorld;
@@ -380,7 +381,7 @@ fn reader_of_the_ship(ship: GridId) -> Reader {
 }
 
 /// Four ticks of a thing that rides a rail, each read as a system before the bodies' step reads it and as one after them does.
-fn the_places_in_each_tick(scene: &mut Scene, read: &Reader) {
+fn the_places_in_each_tick(scene: &mut Scene, read: &Reader, at_least: f64) {
     let after: std::sync::Arc<std::sync::Mutex<[f64; 3]>> = Default::default();
     let (sink, reader) = (std::sync::Arc::clone(&after), std::sync::Arc::clone(read));
     scene.watch(move |world| *sink.lock().unwrap() = reader(world.data()));
@@ -399,7 +400,7 @@ fn the_places_in_each_tick(scene: &mut Scene, read: &Reader) {
             apart(*after.lock().unwrap(), reads.end)
         );
         assert!(
-            apart(reads.before, reads.end) > 30.0,
+            apart(reads.before, reads.end) > at_least,
             "tick {tick}: it went {} voxels",
             apart(reads.before, reads.end)
         );
@@ -410,14 +411,14 @@ fn the_places_in_each_tick(scene: &mut Scene, read: &Reader) {
 fn a_group_on_a_rail_is_read_where_the_last_tick_left_it_before_the_step_and_where_the_tick_ends_after_it()
  {
     let (mut scene, ships) = a_chain_on_a_rail();
-    the_places_in_each_tick(&mut scene, &reader_of_the_chain(ships));
+    the_places_in_each_tick(&mut scene, &reader_of_the_chain(ships), 30.0);
 }
 
 #[test]
 fn a_ship_with_a_frame_of_its_own_on_a_rail_is_read_where_the_last_tick_left_it_before_the_step_and_where_the_tick_ends_after_it()
  {
     let (mut scene, ship) = a_turning_ship_on_a_rail();
-    the_places_in_each_tick(&mut scene, &reader_of_the_ship(ship));
+    the_places_in_each_tick(&mut scene, &reader_of_the_ship(ship), 30.0);
 }
 
 #[test]
@@ -452,4 +453,48 @@ fn disturbing_a_car_of_a_group_on_a_rail_before_the_step_does_not_make_the_group
         !rides(&disturbed, same_ships[0]),
         "the chain was taken off its rail"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Phase 3 (2026-11-22): a planet on a rail and what it carries.
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/// The planet that goes round the home planet at 125.7 voxels a second (6.28 a tick) and a ship that it carries (held over it), read at the four instants of a tick: each is where the
+/// last tick left it before the bodies' step and where the tick ends after it, and **the two are the same distance apart at every instant** (the world moves what a planet carries by the
+/// planet's displacement when it moves the planet, so the one is never a tick ahead of the other).
+#[test]
+fn a_planet_on_a_rail_and_what_it_carries_are_at_one_instant_before_the_step_and_at_one_after_it() {
+    let mut scene = a_scene(None);
+    scene.ticks(2);
+    let raft = common::raft_over(&mut scene, WANDERER, [0.0, 10_060.0, 0.0], true, [0.0; 3]);
+    scene.ticks(3);
+    let (planet, carried) = (
+        reader_of_the_ship(ship_id(WANDERER)),
+        reader_of_the_ship(ship_id(raft)),
+    );
+    the_places_in_each_tick(&mut scene, &planet, 6.0);
+    the_places_in_each_tick(&mut scene, &carried, 6.0);
+    // (The two together: the ship is where it was from the planet at the end of every tick and in the middle of it.)
+    let apart_in_the_tick = {
+        let (planet, carried) = (planet.clone(), carried.clone());
+        std::sync::Arc::new(move |world: &world_storage::WorldData| {
+            let (a, b) = (planet(world), carried(world));
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+        }) as Reader
+    };
+    let at_the_end = apart_in_the_tick(scene.rig.server.world());
+    for tick in 0..4 {
+        let reads = reading_tick(&mut scene, &apart_in_the_tick, |_| {});
+        for (instant, offset) in [
+            ("before", reads.before),
+            ("in the tick", reads.in_the_tick),
+            ("at the end", reads.end),
+        ] {
+            assert!(
+                apart(offset, at_the_end) < 1.0e-6,
+                "tick {tick}: the ship is {} voxels from where it is from the planet at the end of the ticks, {instant}",
+                apart(offset, at_the_end)
+            );
+        }
+    }
 }
