@@ -22,6 +22,9 @@ pub struct ClientSettings {
     pub shadows: bool,
     /// Whether each pixel of a block's picture is wholly in the light or wholly in a shadow (`.pixelshadows`, `renderer::VoxelRenderer::set_pixelated_shadows`). Off by default.
     pub pixelated_shadows: bool,
+    /// Whether the pictures that were made for a map that is kept ready, and have never been drawn, are let go of when the map is taken away (`.maprelease`,
+    /// `world_view::LodView::set_release_warm_pictures`). On by default; off leaves them held on the graphics card until the room is needed.
+    pub release_map_pictures: bool,
     /// How far from the camera, in voxels, a block's picture is drawn on it (`.textures`); beyond a quarter more the block is its flat colour. 0 draws no pictures.
     pub texture_distance: u32,
     /// The shader packs the player has (`.shader`), by id, and the id of the one chosen (`None`: the default). The session is told of the first when it starts; a pack the
@@ -44,6 +47,7 @@ impl ClientSettings {
             time_of_day: None,
             shadows: true,
             pixelated_shadows: false,
+            release_map_pictures: true,
             texture_distance: renderer::DEFAULT_PICTURE_DISTANCE as u32,
             shader_packs: Vec::new(),
             shader_pack: None,
@@ -336,6 +340,38 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                     "pixelated shadows are now off".to_owned()
                 }
                 _ => "usage: .pixelshadows [on|off]".to_owned(),
+            }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "maprelease",
+            "says whether the pictures that were made for a map you had ready and have taken away, and that were never drawn, are let go of at once (they are: on) or left on the graphics card until the room is needed (off); .maprelease alone says which",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("on|off").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return format!(
+                    "pictures made for a map are {} when it is taken away",
+                    if settings.release_map_pictures {
+                        "let go of"
+                    } else {
+                        "kept"
+                    }
+                );
+            }
+            match arguments.word(0) {
+                "on" => {
+                    settings.release_map_pictures = true;
+                    "pictures made for a map are now let go of when it is taken away".to_owned()
+                }
+                "off" => {
+                    settings.release_map_pictures = false;
+                    "pictures made for a map are now kept when it is taken away".to_owned()
+                }
+                _ => "usage: .maprelease [on|off]".to_owned(),
             }
         },
     );
@@ -823,6 +859,41 @@ mod tests {
     }
 
     #[test]
+    fn map_pictures_are_released_to_begin_with_and_the_setting_can_be_turned_off_and_on_and_nothing_else()
+     {
+        let mut settings = ClientSettings::new(0);
+        assert!(settings.release_map_pictures);
+        assert_eq!(
+            run(".maprelease", &mut settings),
+            "pictures made for a map are let go of when it is taken away"
+        );
+        assert_eq!(
+            run(".maprelease off", &mut settings),
+            "pictures made for a map are now kept when it is taken away"
+        );
+        assert!(!settings.release_map_pictures);
+        assert_eq!(
+            run(".maprelease", &mut settings),
+            "pictures made for a map are kept when it is taken away"
+        );
+        assert_eq!(
+            run(".maprelease on", &mut settings),
+            "pictures made for a map are now let go of when it is taken away"
+        );
+        assert!(settings.release_map_pictures);
+        // What is neither changes nothing.
+        for bad in [".maprelease maybe", ".maprelease 1", ".maprelease ON"] {
+            settings.release_map_pictures = false;
+            assert_eq!(
+                run(bad, &mut settings),
+                "usage: .maprelease [on|off]",
+                "{bad}"
+            );
+            assert!(!settings.release_map_pictures, "{bad}");
+        }
+    }
+
+    #[test]
     fn pixel_shadows_are_off_to_begin_with_and_can_be_turned_on_and_off_and_nothing_else() {
         let mut settings = ClientSettings::new(0);
         assert!(!settings.pixelated_shadows);
@@ -983,18 +1054,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

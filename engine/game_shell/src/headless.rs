@@ -76,6 +76,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     session.set_pixelated_shadows(view.pixelated_shadows);
+    session.set_release_map_pictures(view.release_map_pictures);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -157,6 +158,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     session.set_pixelated_shadows(view.pixelated_shadows);
+    session.set_release_map_pictures(view.release_map_pictures);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }

@@ -36,11 +36,13 @@ enum Picture {
     },
     /// A picture made from data of this version, up to date, **kept** though the node is not shown: the renderer holds a mesh of it, hidden, if `uploaded`, and showing
     /// it again is a move. `order` says how long ago it was taken down (a number that is never used twice and counts up: no clock), which is the order it is let go in.
+    /// `parked` is whether it was made for the warm cut alone and has never been shown ([`CubeStates::park`]).
     Held {
         version: u64,
         uploaded: bool,
         cost: usize,
         order: u64,
+        parked: bool,
     },
 }
 
@@ -230,6 +232,11 @@ impl CubeStates {
         });
     }
 
+    /// Whether any cube is pinned.
+    pub(crate) fn has_pins(&self) -> bool {
+        !self.pinned.is_empty()
+    }
+
     /// Whether the cube is pinned.
     #[cfg(test)]
     pub(crate) fn is_pinned(&self, cube: BrickCube) -> bool {
@@ -269,10 +276,44 @@ impl CubeStates {
             uploaded: !mesh.is_empty(),
             cost,
             order,
+            parked: true,
         };
         self.held_order.insert(order, cube);
         self.held_bytes += cost;
         Some(mesh)
+    }
+
+    /// Lets go of the held pictures that were made for the warm cut alone ([`CubeStates::park`]) and are not to be made for anything now (not wanted, a step, or pinned): returns
+    /// the nodes whose hidden meshes the renderer is to take down. A picture that was shown and taken down is held like any other and stays.
+    pub(crate) fn release_parked(&mut self) -> Vec<BrickCube> {
+        let victims: Vec<(u64, BrickCube)> = self
+            .held_order
+            .iter()
+            .filter(|&(_, cube)| {
+                !self.is_to_be_made(cube)
+                    && matches!(
+                        self.nodes.get(cube).map(|node| &node.picture),
+                        Some(Picture::Held { parked: true, .. })
+                    )
+            })
+            .map(|(&order, &cube)| (order, cube))
+            .collect();
+        let mut taken_down = Vec::new();
+        for (order, cube) in victims {
+            self.held_order.remove(&order);
+            let Some(Node {
+                picture: Picture::Held { cost, uploaded, .. },
+                ..
+            }) = self.nodes.remove(&cube)
+            else {
+                unreachable!("a node in the order of the held has a held picture");
+            };
+            self.held_bytes -= cost;
+            if uploaded {
+                taken_down.push(cube);
+            }
+        }
+        taken_down
     }
 
     /// Whether the picture of a node that is wanted or shown has to be made (again), from data of this version: it is not being made already, and the one it has
@@ -400,6 +441,7 @@ impl CubeStates {
             uploaded,
             cost,
             order,
+            ..
         } = node.picture
         else {
             panic!("only a picture that is held is revealed");
@@ -446,6 +488,7 @@ impl CubeStates {
             uploaded,
             cost,
             order,
+            parked: false,
         };
         self.held_order.insert(order, cube);
         self.held_bytes += cost;
@@ -467,6 +510,7 @@ impl CubeStates {
             uploaded,
             cost,
             order,
+            ..
         } = node.picture
         else {
             return Taken::Nothing;

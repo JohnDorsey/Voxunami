@@ -503,6 +503,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.settings.pinned_time = minutes;
     }
 
+    /// Says whether the pictures made for a map that is kept ready ([`Session::keep_ready`]) are let go of when it is taken away, or left held until the room is needed (what
+    /// `.maprelease` does; on by default).
+    pub fn set_release_map_pictures(&mut self, release: bool) {
+        self.settings.release_map_pictures = release;
+    }
+
     /// Makes every pixel of a block's picture wholly lit or wholly shaded, or not, for this player (what `.pixelshadows` does).
     pub fn set_pixelated_shadows(&mut self, on: bool) {
         self.settings.pixelated_shadows = on;
@@ -942,6 +948,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         match (&mut self.terrain, request) {
             (TerrainView::Coarse(coarse), Some(request)) => {
                 let settings = lod_settings_of(&request, &coarse.detail);
+                coarse
+                    .view
+                    .set_release_warm_pictures(self.settings.release_map_pictures);
                 coarse.view.set_warm_viewpoint(
                     self.warm_places
                         .get(&GridId::root(level))
@@ -1081,6 +1090,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);
             }
+            planet.set_release_warm_pictures(self.settings.release_map_pictures);
             planet.keep_ready(self.warm_places.get(&id).copied());
             let source = match (ship.terrain, ship.far) {
                 (Some(terrain), _) => {

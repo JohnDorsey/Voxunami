@@ -550,6 +550,17 @@ impl WorldMesher {
         }
     }
 
+    /// Lets go of the pictures that were made for the second ball alone and held hidden ([`WorldMesher::park_ready`]) and that `keep` does not say are kept (a brick that is
+    /// wanted by the viewer is): returns what the renderer is to take down. Pictures that were shown and taken down are not let go of. For when the second ball is
+    /// taken away ([`WorldMesher::set_warm_centre`] with `None`).
+    pub fn release_parked(&mut self, keep: impl Fn(BrickCoordinate) -> bool) -> Vec<MeshUpdate> {
+        self.states
+            .release_parked(keep)
+            .into_iter()
+            .map(MeshUpdate::Remove)
+            .collect()
+    }
+
     /// Holds the pictures of the second ball that are made and waiting: returns what the renderer is to be given, each mesh hidden. (One of them that the viewer comes to draw is
     /// shown by a move, as any held picture is.)
     pub fn park_ready(&mut self) -> Vec<MeshUpdate> {

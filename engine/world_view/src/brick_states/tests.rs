@@ -688,3 +688,50 @@ fn a_parked_picture_is_let_go_of_by_the_budget_like_any_held_one_unless_it_is_ke
     assert!(states.is_held(at(0)) && !states.is_held(at(1)) && states.is_held(at(2)));
     assert_consistent(&states, true);
 }
+
+#[test]
+fn pictures_made_for_the_warm_viewpoint_alone_are_let_go_of_unless_kept_and_a_picture_that_was_shown_is_not()
+ {
+    let mut states = BrickStates::new();
+    states.set_budget(1 << 20);
+    made_and_waiting(&mut states, at(0), mesh_of(100));
+    made_and_waiting(&mut states, at(1), mesh_of(0));
+    made_and_waiting(&mut states, at(2), mesh_of(100));
+    for x in 0..3 {
+        assert!(states.park(at(x)).is_some());
+    }
+    // A picture that is held because it was shown and taken down.
+    held(&mut states, at(3), mesh_of(100));
+    assert_eq!(states.held_pictures().bricks, 4);
+
+    let released = states.release_parked(|coordinate| coordinate == at(2));
+    assert_eq!(
+        released,
+        [at(0)],
+        "the renderer holds a mesh of the first; the second had none; the third is wanted"
+    );
+    assert!(!states.is_held(at(0)) && !states.is_held(at(1)));
+    assert!(states.is_held(at(2)), "kept");
+    assert!(states.is_held(at(3)), "the view's own");
+    assert_eq!(states.held_pictures().bricks, 2);
+    assert_consistent(&states, true);
+
+    // What was kept is let go of when it is not kept any more.
+    assert_eq!(states.release_parked(|_| false), [at(2)]);
+    assert!(states.is_held(at(3)));
+    assert!(states.release_parked(|_| false).is_empty(), "once");
+    assert_consistent(&states, true);
+}
+
+#[test]
+fn a_parked_picture_that_was_shown_and_taken_down_again_is_held_like_any_other_brick() {
+    let mut states = BrickStates::new();
+    states.set_budget(1 << 20);
+    made_and_waiting(&mut states, at(0), mesh_of(100));
+    states.park(at(0));
+    assert_eq!(states.reveal(at(0)), Some(true));
+    assert!(matches!(states.hold_down(at(0)), Some(Taken::Hidden)));
+    assert!(states.release_parked(|_| false).is_empty());
+    assert!(states.is_held(at(0)));
+    assert_consistent(&states, true);
+}

@@ -709,3 +709,74 @@ fn a_pinned_picture_of_data_that_has_changed_is_made_again_and_an_unpinned_one_w
     states.pin(&[]);
     assert!(!states.needs_making(node(1), 1));
 }
+
+#[test]
+fn pictures_made_for_the_warm_cut_alone_are_let_go_of_when_nothing_is_pinned_and_a_picture_that_was_shown_is_not()
+ {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture_of(100));
+    made_for_the_warm_cut(&mut states, node(2), PackedBrickMesh::default());
+    states.park(node(1));
+    states.park(node(2));
+    // A picture that is held because it was shown and taken down.
+    shown_with_budget(&mut states, node(3), picture_of(50), 1 << 20);
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(3), 0), Taken::Hidden);
+    let held_before = states.held_pictures();
+    assert_eq!(held_before.nodes, 3);
+
+    states.pin(&[]);
+    assert_eq!(
+        states.release_parked(),
+        [node(1)],
+        "the renderer holds a mesh of the first only: the second had nothing to see"
+    );
+    assert!(!states.has_node(node(1)) && !states.has_node(node(2)));
+    assert!(states.is_held(node(3)), "that picture was the view's own");
+    assert_eq!(
+        states.held_pictures(),
+        HeldPictures {
+            nodes: 1,
+            with_mesh: 1,
+            bytes: 400
+        }
+    );
+    assert_eq!(states.uploaded_nodes(), [node(3)]);
+    assert!(states.release_parked().is_empty(), "once");
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_parked_picture_that_was_shown_and_taken_down_again_is_held_like_any_other() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture_of(100));
+    states.park(node(1));
+    states.want(&[node(1)]);
+    assert!(states.reveal_node(node(1)));
+    states.want(&[]);
+    assert_eq!(states.hold_node(node(1), 0), Taken::Hidden);
+    states.pin(&[]);
+    assert!(states.release_parked().is_empty());
+    assert!(states.is_held(node(1)));
+    assert_consistent(&states);
+}
+
+#[test]
+fn a_parked_picture_of_a_cube_that_is_wanted_or_still_pinned_is_not_let_go_of() {
+    let mut states = CubeStates::new();
+    states.set_budget(1 << 20);
+    made_for_the_warm_cut(&mut states, node(1), picture_of(100));
+    made_for_the_warm_cut(&mut states, node(2), picture_of(100));
+    states.park(node(1));
+    states.park(node(2));
+    // Both pinned: nothing is let go of.
+    assert!(states.release_parked().is_empty());
+    // One is wanted, and nothing is pinned: that one stays, to be shown.
+    states.want(&[node(1)]);
+    states.pin(&[]);
+    assert_eq!(states.release_parked(), [node(2)]);
+    assert!(states.is_held(node(1)) && !states.has_node(node(2)));
+    assert_consistent(&states);
+}

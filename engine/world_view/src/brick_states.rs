@@ -38,7 +38,12 @@ enum Picture {
     Current { mesh_bytes: usize },
     /// It is made and up to date, and **kept** though the brick is not shown: the renderer holds the mesh, hidden, if the state says it is `displayed`, and showing the
     /// brick again is a move. `order` says how long ago it was taken down (a number that is never used twice and counts up: no clock), which is the order it is let go in.
-    Held { mesh_bytes: usize, order: u64 },
+    /// `parked` is whether it was made for the warm viewpoint alone and has never been shown ([`BrickStates::park`]).
+    Held {
+        mesh_bytes: usize,
+        order: u64,
+        parked: bool,
+    },
 }
 
 /// What is held: the pictures of bricks that are not shown and are kept.
@@ -486,7 +491,11 @@ impl BrickStates {
                 unreachable!("it was checked");
             };
             state.shown = false;
-            state.picture = Picture::Held { mesh_bytes, order };
+            state.picture = Picture::Held {
+                mesh_bytes,
+                order,
+                parked: false,
+            };
             if state.displayed {
                 Taken::Hidden
             } else {
@@ -512,10 +521,41 @@ impl BrickStates {
             state.picture = Picture::Held {
                 mesh_bytes: mesh.byte_size(),
                 order,
+                parked: true,
             };
             state.displayed = !mesh.is_empty();
             mesh
         })
+    }
+
+    /// Lets go of the held pictures that were made for the warm viewpoint alone ([`BrickStates::park`]) and that `keep` does not say are kept (one that is wanted): returns the
+    /// bricks whose hidden meshes the renderer is to take down. A picture that was shown and taken down is held like any other and stays.
+    pub(crate) fn release_parked(
+        &mut self,
+        keep: impl Fn(BrickCoordinate) -> bool,
+    ) -> Vec<BrickCoordinate> {
+        let victims: Vec<BrickCoordinate> = self
+            .held_order
+            .values()
+            .copied()
+            .filter(|&coordinate| {
+                !keep(coordinate)
+                    && self.records.get(&coordinate).is_some_and(|state| {
+                        matches!(state.picture, Picture::Held { parked: true, .. })
+                    })
+            })
+            .collect();
+        let mut to_take_down = Vec::new();
+        for coordinate in victims {
+            let displayed = self.change(coordinate, |state| {
+                state.picture = Picture::Missing;
+                std::mem::take(&mut state.displayed)
+            });
+            if displayed {
+                to_take_down.push(coordinate);
+            }
+        }
+        to_take_down
     }
 
     /// Shows a brick whose picture is held, with it: returns whether the renderer holds a mesh of it, which it is to show (it is hidden). `None` if the picture of the

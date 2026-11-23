@@ -199,6 +199,7 @@ pub struct LodView {
     /// The thread that works out the cubes of the warm viewpoint (made when there is first something for it to do), whether it has been handed a place and not given the
     /// cubes back, which of the lives of the view its work is for (what comes of another is thrown away), and what it has learnt of the terrain (with it while it works).
     warm_worker: Option<WarmWorker>,
+    release_warm_pictures: bool,
     warm_in_flight: bool,
     warm_epoch: u64,
     warm_memo: Option<MayShowMemo>,
@@ -303,6 +304,7 @@ impl LodView {
             warm_queue: Vec::new(),
             updates_since_warm_selection: 0,
             warm_worker: None,
+            release_warm_pictures: true,
             warm_in_flight: false,
             warm_epoch: 0,
             warm_memo: None,
@@ -397,6 +399,13 @@ impl LodView {
     /// Whether the cubes of the warm viewpoint are being worked out on the thread that does it, and are not given back yet.
     pub fn warm_selection_pending(&self) -> bool {
         self.warm_in_flight
+    }
+
+    /// Whether the pictures that were made for the warm viewpoint alone (held hidden, never shown) are let go of when it is taken away ([`LodView::set_warm_viewpoint`] with
+    /// `None`), at that update; the pictures that were held because they were shown and taken down are the view's own, and stay either way. True, the default. False leaves
+    /// them to the budget, the oldest going first, as any held picture.
+    pub fn set_release_warm_pictures(&mut self, release: bool) {
+        self.release_warm_pictures = release;
     }
 
     /// How many times the cubes of a place have been worked out from what the terrain says may show (the work that a place kept ready, or the one that was just left, saves
@@ -546,7 +555,7 @@ impl LodView {
         if moved || new_edits {
             left = self.reselect(centre, viewer, settings, source);
         }
-        self.update_warm(source, left);
+        self.update_warm(source, left, &mut updates);
         updates.extend(self.mesher.park_ready());
         self.start_jobs(source, &mut updates);
         let serial = self.mesher.ready_serial();
@@ -863,12 +872,22 @@ impl LodView {
     }
 
     /// Keeps the warm viewpoint's cubes worked out, pinned and queued ([`LodView::set_warm_viewpoint`]). `left` is what was drawn before this update if that changed.
-    fn update_warm(&mut self, source: &impl CoarseTerrainSource, left: Option<KeptCut>) {
+    fn update_warm(
+        &mut self,
+        source: &impl CoarseTerrainSource,
+        left: Option<KeptCut>,
+        updates: &mut Vec<MeshUpdate>,
+    ) {
         let Some(asked) = self.warm_wanted.filter(|_| self.cubes.holds_pictures()) else {
             self.forget_the_warm_selection();
-            if self.warm_cut.take().is_some() {
+            self.warm_cut = None;
+            // (The cubes are pinned though the cut they were pinned for is gone, if the viewer went to the place and the drawn cut took it.)
+            if self.cubes.has_pins() {
                 self.cubes.pin(&[]);
                 self.warm_queue.clear();
+                if self.release_warm_pictures {
+                    self.release_what_was_made_for_the_warm_viewpoint(updates);
+                }
             }
             return;
         };
@@ -927,6 +946,20 @@ impl LodView {
             self.updates_since_warm_selection = 0;
             self.work_out_warm_cut(source, &asked, version, edits);
         }
+    }
+
+    /// Lets go of the pictures that were made for the warm viewpoint alone and held hidden, and that nothing wants now (what the viewer draws, or is about to, stays).
+    fn release_what_was_made_for_the_warm_viewpoint(&mut self, updates: &mut Vec<MeshUpdate>) {
+        updates.extend(
+            self.cubes
+                .release_parked()
+                .into_iter()
+                .map(MeshUpdate::RemoveCoarse),
+        );
+        let cubes = &self.cubes;
+        updates.extend(self.mesher.release_parked(|coordinate| {
+            BrickCube::new(coordinate, 0).is_ok_and(|cube| cubes.is_to_be_made(&cube))
+        }));
     }
 
     /// Pins the cubes of a cut, and queues the nodes of them to be made (`queue`: [`warm_queue_of`], which the thread that worked the cut out has made, and the others make).

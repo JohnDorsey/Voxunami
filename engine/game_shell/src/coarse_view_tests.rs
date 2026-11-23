@@ -376,6 +376,35 @@ fn a_place_that_is_kept_ready_is_held_hidden_and_a_player_who_stands_there_draws
     );
 }
 
+/// How many nodes a player holds hidden with a place kept ready, and how many after it is not kept ready any more, with the setting as given.
+fn nodes_held_with_a_place_kept_ready_and_after(release: bool) -> (usize, usize) {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, WATCHER);
+    watcher.hold_hidden_pictures(64 << 20);
+    watcher.set_release_map_pictures(release);
+    let there = camera_at([8.5, 60.0, 8.5], 0.0, 0.0).position;
+    watcher.keep_ready(GridId::MAIN, Some(there));
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    let held = screen.hidden_nodes.len();
+    watcher.keep_ready(GridId::MAIN, None);
+    rig.settle(&mut watcher, &mut screen);
+    (held, screen.hidden_nodes.len())
+}
+
+#[test]
+fn a_place_that_is_not_kept_ready_any_more_has_its_pictures_let_go_of_unless_the_player_says_to_keep_them()
+ {
+    let (held, after) = nodes_held_with_a_place_kept_ready_and_after(true);
+    assert!(held > 20, "the place was held: {held} nodes");
+    assert_eq!(after, 0, "every picture was made for the place alone");
+
+    let (held, after) = nodes_held_with_a_place_kept_ready_and_after(false);
+    assert!(held > 20, "the place was held: {held} nodes");
+    assert_eq!(after, held, "left to the budget, which is not full");
+}
+
 #[test]
 fn a_recording_of_the_watcher_shows_what_the_watcher_saw() {
     let directory =

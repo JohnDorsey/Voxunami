@@ -2856,6 +2856,8 @@ fn what_is_held_for_a_warm_viewpoint_is_not_let_go_of_by_the_budget_until_it_is_
     let budget = 64 << 10;
     let mut view = view_of(&trip.scene, 3);
     view.hold_hidden_pictures(budget);
+    // (What is held for the viewpoint is left to the budget when it is taken away, which is what this is about.)
+    view.set_release_warm_pictures(false);
     view.set_warm_viewpoint(warm(Trip::ground(), &far()));
     let mut screen = Screen::default();
     settle_checked_in(
@@ -4037,5 +4039,247 @@ fn bricks_that_are_made_for_the_warm_viewpoint_alone_do_not_ask_the_planner_to_l
         view.mesher().ready_serial(),
         serial,
         "a brick that only the warm viewpoint wants was made, and the planner was asked to look again"
+    );
+}
+
+// ---- A warm viewpoint taken away ----
+
+/// A view that has drawn the ground and then the sky, so that the pictures of the ground are held because they were shown and taken down: the view's own.
+fn view_with_pictures_of_its_own(trip: &Trip, screen: &mut Screen) -> LodView {
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    for (viewer, context) in [(Trip::ground(), "the ground"), (sky(), "the sky")] {
+        settle_checked_in(
+            &mut view,
+            screen,
+            trip.scene.world.main(),
+            viewer,
+            &far(),
+            context,
+        );
+    }
+    view
+}
+
+#[test]
+fn a_warm_viewpoint_taken_away_lets_go_of_what_was_made_for_it_alone_and_keeps_what_the_view_held_of_its_own()
+ {
+    let trip = Trip::new();
+    let fresh_sky = what_a_fresh_view_draws(&trip.scene, brick(0, 100, 0), &far());
+    let mut screen = Screen::default();
+    let mut view = view_with_pictures_of_its_own(&trip, &mut screen);
+    let own_nodes: HashSet<BrickCube> = screen.hidden.keys().copied().collect();
+    let own_bricks: HashSet<BrickCoordinate> = screen.hidden_bricks.keys().copied().collect();
+    let own_held = (view.held_pictures(), view.held_brick_pictures());
+    assert!(
+        own_nodes.len() > 100 && own_bricks.len() > 20,
+        "the ground is held: {} nodes and {} bricks",
+        own_nodes.len(),
+        own_bricks.len()
+    );
+
+    // A place that was never drawn is kept warm: pictures are made for it.
+    let along = viewer_in(brick(30, 0, 0));
+    view.set_warm_viewpoint(warm(along, &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "a place kept warm",
+    );
+    assert!(
+        screen.hidden.len() > own_nodes.len() + 100
+            && screen.hidden_bricks.len() > own_bricks.len() + 20,
+        "pictures were made for the warm place: {} nodes and {} bricks held",
+        screen.hidden.len(),
+        screen.hidden_bricks.len()
+    );
+
+    // Taken away: what was made for it is let go of at once, and what the ground left is not.
+    view.set_warm_viewpoint(None);
+    let updates = view.update(GridId::MAIN, trip.scene.world.main(), sky(), &far());
+    screen.apply(updates);
+    let held_nodes: HashSet<BrickCube> = screen.hidden.keys().copied().collect();
+    let held_bricks: HashSet<BrickCoordinate> = screen.hidden_bricks.keys().copied().collect();
+    assert_eq!(held_nodes, own_nodes);
+    assert_eq!(held_bricks, own_bricks);
+    assert_eq!((view.held_pictures(), view.held_brick_pictures()), own_held);
+    view.check_consistency().expect("the records agree");
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "taken away",
+    );
+    assert_eq!(screen.nodes, fresh_sky.nodes, "what is drawn is untouched");
+    assert_eq!(screen.hidden.len(), own_nodes.len());
+    assert_eq!(screen.hidden_bricks.len(), own_bricks.len());
+}
+
+#[test]
+fn without_the_release_a_warm_viewpoint_taken_away_leaves_what_was_made_for_it_to_the_budget() {
+    let trip = Trip::new();
+    let mut screen = Screen::default();
+    let mut view = view_with_pictures_of_its_own(&trip, &mut screen);
+    view.set_release_warm_pictures(false);
+    view.set_warm_viewpoint(warm(viewer_in(brick(30, 0, 0)), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "a place kept warm",
+    );
+    let (nodes, bricks) = (screen.hidden.len(), screen.hidden_bricks.len());
+    view.set_warm_viewpoint(None);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "taken away",
+    );
+    assert_eq!(
+        (screen.hidden.len(), screen.hidden_bricks.len()),
+        (nodes, bricks),
+        "nothing was let go of: the budget is large"
+    );
+}
+
+#[test]
+fn what_was_made_for_the_warm_viewpoint_is_not_let_go_of_when_it_is_taken_away_as_the_viewer_goes_there()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let mut screen = Screen::default();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    // The viewer goes to the ground and the warm viewpoint is taken away in the same update: what was made for it is wanted now, and is shown by moves.
+    view.set_warm_viewpoint(None);
+    let (mut uploads, mut brick_uploads) = (0, 0);
+    let started = std::time::Instant::now();
+    loop {
+        let updates = view.update(
+            GridId::MAIN,
+            trip.scene.world.main(),
+            Trip::ground(),
+            &far(),
+        );
+        uploads += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::UploadCoarse { mesh, .. } if !mesh.is_empty()))
+            .count();
+        brick_uploads += updates
+            .iter()
+            .filter(|update| matches!(update, MeshUpdate::Upload { mesh, .. } if !mesh.is_empty()))
+            .count();
+        screen.apply(updates);
+        screen.apply_occupancy(view.mesher_mut().take_occupancy_updates());
+        view.check_consistency().expect("the records agree");
+        if view.is_settled() {
+            break;
+        }
+        assert!(started.elapsed() < DEADLINE, "does not settle");
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    assert_eq!(screen.nodes, fresh_ground.nodes);
+    assert_eq!(screen.bricks, fresh_ground.bricks);
+    assert!(
+        uploads * 20 < fresh_ground.nodes.len(),
+        "{uploads} nodes were put up for the ground, which has {}",
+        fresh_ground.nodes.len()
+    );
+    assert_eq!(
+        brick_uploads, 0,
+        "every brick of the ground was made for the warm viewpoint, and is shown by a move"
+    );
+}
+
+#[test]
+fn a_warm_viewpoint_that_moves_on_leaves_what_was_made_for_the_place_it_left_to_the_budget() {
+    let trip = Trip::new();
+    let mut screen = Screen::default();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    let first: HashSet<BrickCube> = screen.hidden.keys().copied().collect();
+    view.set_warm_viewpoint(warm(viewer_in(brick(150, 0, 0)), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the warm viewpoint moved on",
+    );
+    for cube in &first {
+        assert!(screen.hidden.contains_key(cube), "{cube:?} was let go of");
+    }
+}
+
+#[test]
+fn a_warm_viewpoint_taken_away_as_the_viewer_goes_there_leaves_nothing_pinned_for_the_budget_to_spare()
+ {
+    let trip = Trip::new();
+    let budget = 64 << 10;
+    let mut screen = Screen::default();
+    let mut view = view_of(&trip.scene, 3);
+    view.hold_hidden_pictures(budget);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    // The viewer goes where the warm viewpoint is, and it is taken away: the cubes of the place were its, and are the viewer's now.
+    view.set_warm_viewpoint(None);
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        Trip::ground(),
+        &far(),
+        "the ground",
+    );
+    // And away again: what was drawn is taken down and held, within the budget, as any picture the view's own.
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        sky(),
+        &far(),
+        "the sky again",
+    );
+    assert_held_pictures_match(&screen, &view, budget, "the sky again");
+    assert!(
+        view.held_brick_pictures().bytes <= budget,
+        "{} bytes of bricks are held of {budget}",
+        view.held_brick_pictures().bytes
     );
 }

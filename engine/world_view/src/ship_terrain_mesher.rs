@@ -266,6 +266,14 @@ impl ShipTerrainMesher {
         }
     }
 
+    /// Says whether the pictures made for a place kept ready are let go of when it is taken away ([`LodView::set_release_warm_pictures`]). A mesher of the bricks alone keeps
+    /// no place ready.
+    pub fn set_release_warm_pictures(&mut self, release: bool) {
+        if let Drawn::Detailed { view, .. } = &mut self.drawn {
+            view.set_release_warm_pictures(release);
+        }
+    }
+
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.
     pub fn set_detail(&mut self, detail: LodSettings) {
         if let Drawn::Detailed { settings, .. } = &mut self.drawn {
