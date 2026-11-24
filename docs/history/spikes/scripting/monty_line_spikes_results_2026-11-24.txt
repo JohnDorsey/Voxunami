@@ -1,0 +1,214 @@
+Monty in the command line: spikes S2, S3 and S4 of docs/specs/scripting-spec.md, run 2026-11-24
+Program: docs/history/spikes/scripting/monty_line_spikes/ (bins module_audit and session_costs, tests/scanner.rs).
+Fork: JohnDorsey/monty rev 78269eda (step budgets, the deterministic maths, worker protocol), ruff_python_parser 0.0.21.
+Machine: Windows 10, release build, in process (no worker). Cargo target on E:. One run each; the timings are medians of
+the counts shown, p99 beside them. Nothing here is a guarantee for another machine; the step counts are exact and the
+timings are this machine's.
+
+Spike S1 (worker latency per host call) was NOT run: no worker is chosen, scripts run on the server's thread.
+
+Read with it: the first tests (scanner) take about a second, the audit 10 s, the costs 2 s.
+
+S2 mutation checks (each breakage of the hand-written scanner must fail both_scanners_find_the_end_of_a_complete_expression):
+  M1 a backslash skips one byte instead of two      -> FAILED, minimal input  expression = "'it\\'s}'"
+  M2 no {{ literal in f-strings                     -> FAILED, minimal input  1[1:f"{{"]
+  M3 triple quotes not recognised                   -> FAILED, minimal input  {{1 for _ in """a}"b"""}: '''}'''}
+  M4 an f-string field is not entered               -> FAILED, minimal input  {(1 if f"{x["}"]}" else 1) for _ in 1}
+  (before the pool held f"{{", f"}}" and nested-quote fields, M2 and M4 survived: the generator was blind to them, then fixed.)
+  the file was restored from a copy after each and compared identical.
+
+====================================================================================================
+S2: where does a {>...} hole end (cargo test --release --test scanner -- --nocapture)
+====================================================================================================
+    Finished `release` profile [optimized] target(s) in 1.62s
+     Running tests\scanner.rs (E:/s/vx/spike-scripting-target\release\deps\scanner-34feef8115b45eff.exe)
+
+running 7 tests
+test a_leading_blank_is_an_indentation_error_in_monty ... a leading blank: Some("Traceback (most recent call last):\n  File \"p.py\", line 1\n    1+1\n    ~\nSyntaxError: Unexpected indentation")
+ok
+test a_scanner_that_only_counts_braces_is_caught ... the brace counter was wrong on 1560 of 2000
+ok
+test both_scanners_find_the_end_of_a_complete_expression ... ok
+test corner_cases_agree ... ok
+test no_valid_code_has_a_sigil_after_a_brace_except_a_dot_before_a_number_or_dot ... 19729 valid snippets looked at; 0 had a brace followed by a number or an ellipsis (valid, and not a hole)
+ok
+test the_generated_expressions_compile_in_monty ... monty compiled 3000 of 3000 generated expressions
+ok
+test where_the_two_scanners_disagree_on_soup ... soup: 60000 strings, scanners agree on 57989, differ on 2011
+    1608  a # (ruff: a comment that hides the rest of the line; lexical: ordinary)   e.g. "#}"  ruff None lexical Some(1)
+     403  a newline (ruff ends a logical line)   e.g. "'\n}"  ruff Some(2) lexical None
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.80s
+
+====================================================================================================
+S3: built-in module audit, Windows (module_audit.exe: two processes per policy)
+====================================================================================================
+=== policy default: 146 lines, two separate processes
+importable (28): sys typing asyncio pathlib os os.path math json re datetime unicodedata itertools dataclasses collections functools copy csv decimal fnmatch hashlib random statistics time tomllib base64 binascii bisect annotationlib
+refused (43): gc uuid string textwrap operator enum abc io struct secrets threading subprocess socket ctypes platform locale tempfile shutil glob pickle array heapq contextlib warnings traceback inspect builtins weakref types numbers fractions zoneinfo calendar difflib concurrent.futures multiprocessing select signal ssl http urllib zlib gzip
+DIFFERS  time.time()                        => 1795504594.600649
+     vs  1795504599.608773
+DIFFERS  time.time_ns()                     => 1795504594600669700
+     vs  1795504599608790100
+DIFFERS  time.monotonic()                   => 1795504594.600686
+     vs  1795504599.608805
+DIFFERS  time.perf_counter()                => 1795504594.600697
+     vs  1795504599.608817
+DIFFERS  time.localtime()                   => (2026, 11, 24, 7, 16, 34, 1, 328, 0, 0, 'UTC')
+     vs  (2026, 11, 24, 7, 16, 39, 1, 328, 0, 0, 'UTC')
+DIFFERS  datetime.now()                     => '2026-11-24 07:16:39.601291'
+     vs  '2026-11-24 07:16:44.608988'
+DIFFERS  random.random()                    => 0.08542617012106712
+     vs  0.6769035578678009
+DIFFERS  random.randint                     => 218746712
+     vs  733361926
+DIFFERS  random.Random().random()           => 0.9360107312562402
+     vs  0.8915327426704712
+DIFFERS  random.choice                      => 'd'
+     vs  'c'
+DIFFERS  random.shuffle                     => [9, 6, 4, 7, 2, 1, 8, 0, 5, 3]
+     vs  [0, 6, 9, 5, 2, 7, 4, 8, 1, 3]
+DIFFERS  random.gauss                       => 1.3534221557692265
+     vs  -1.7878973762063026
+12 of 146 lines differ between the two processes
+
+=== policy pinned: 146 lines, two separate processes
+importable (28): sys typing asyncio pathlib os os.path math json re datetime unicodedata itertools dataclasses collections functools copy csv decimal fnmatch hashlib random statistics time tomllib base64 binascii bisect annotationlib
+refused (43): gc uuid string textwrap operator enum abc io struct secrets threading subprocess socket ctypes platform locale tempfile shutil glob pickle array heapq contextlib warnings traceback inspect builtins weakref types numbers fractions zoneinfo calendar difflib concurrent.futures multiprocessing select signal ssl http urllib zlib gzip
+0 of 146 lines differ between the two processes
+
+--- every probe's result under policy pinned (for reading, not only for the differences)
+hash('abc')                        => -1222198482973350627
+hash(b'abc')                       => 5378393838603134665
+hash(1.5)                          => 4609434218613702656
+hash((1,'a'))                      => 7753503449929154330
+hash(frozenset)                    => 0
+set of str, order                  => ['b', 'a', 'c', 'd', 'e', 'f', 'g', 'h']
+set of mixed, order                => [1.5, 2.5, 'x', (1, 2), None, 7]
+str(set of str)                    => "{'x', 'y', 'z', 'w', 'v'}"
+dict of str keys, order            => ['b', 'a', 'c']
+set(range) order                   => [40, 37, 34, 31, 28, 25, 22, 19, 16, 13, 10, 7, 4, 1]
+id(1)                              => 69
+id('a')                            => 3111
+id([])                             => 48
+id of two lists differ             => True
+repr(print)                        => '<built-in function print>'
+repr(lambda)                       => '<function <lambda> at 0xc>'
+repr(object())                     => ERROR TypeError: cannot create 'object' instances
+time.time()                        => 1700000000.0
+time.time_ns()                     => 1700000000000000000
+time.monotonic()                   => 1700000000.0
+time.perf_counter()                => 1700000000.0
+time.process_time()                => 0.0
+time.localtime()                   => (2023, 11, 14, 22, 13, 20, 1, 318, 0, 0, 'UTC')
+time.sleep(5)                      => 'slept'
+datetime.now()                     => '2023-11-14 22:13:20'
+datetime.utcnow()                  => ERROR AttributeError: type object 'datetime.datetime' has no attribute 'utcnow'
+date.today()                       => '2023-11-14'
+random.random()                    => 0.5016930963015209
+random.randint                     => 538688861
+random.Random().random()           => 0.5951582795621723
+random.SystemRandom()              => ERROR AttributeError: module 'random' has no attribute 'SystemRandom'
+random.seed(5) then random         => 0.6229016948897019
+random.choice                      => 'e'
+random.shuffle                     => [4, 5, 6, 2, 7, 1, 3, 0, 9, 8]
+random.gauss                       => -2.154601204627114
+os.urandom(4)                      => ERROR NotImplementedError: OS function 'os.urandom' not implemented with standard execution
+os.getpid()                        => ERROR AttributeError: module 'os' has no attribute 'getpid'
+os.cpu_count()                     => ERROR AttributeError: module 'os' has no attribute 'cpu_count'
+os.getcwd()                        => '/'
+os.getenv('PATH')                  => ERROR NotImplementedError: OS function 'os.getenv' not implemented with standard execution
+os.name                            => 'posix'
+os.sep                             => '/'
+sys.platform                       => 'monty'
+sys.version                        => '3.14.0 (Monty)'
+sys.byteorder                      => 'little'
+sys.maxsize                        => 9223372036854775807
+sys.getsizeof([])                  => ERROR AttributeError: module 'sys' has no attribute 'getsizeof'
+sys.executable                     => ''
+sys.argv                           => ['probe.py']
+sys.getrecursionlimit()            => ERROR AttributeError: module 'sys' has no attribute 'getrecursionlimit'
+uuid.uuid4()                       => ERROR ModuleNotFoundError: No module named 'uuid'
+secrets.token_hex                  => ERROR ModuleNotFoundError: No module named 'secrets'
+gc.collect()                       => ERROR ModuleNotFoundError: No module named 'gc'
+math.sin(1.0)                      => 0.8414709848078965
+math.exp(0.1)                      => 1.1051709180756477
+2 ** 0.5                           => 1.4142135623730951
+float repr                         => [0.30000000000000004, 1e+22, 1e-07, 5e-324, 1.7976931348623157e+308]
+round(2.675, 2)                    => 2.68
+fsum                               => 1.0
+sum floats                         => 0.9999999999999999
+nan                                => False
+str.upper unicode                  => 'STRASSE É İ'
+sorted str                         => ['B', 'Z', 'a', 'b', 'z', 'é']
+hashlib.sha256                     => 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+json.dumps dict                    => '{"b": 1, "a": [1.5, null]}'
+json.dumps set error               => '{"a": 2, "b": 1}'
+collections.Counter order          => [('m', 1), ('i', 4), ('s', 4), ('p', 2)]
+decimal                            => '0.3333333333333333333333333333'
+statistics.mean                    => 2.1666666666666665
+re.match                           => True
+pathlib cwd                        => '/'
+open a file                        => ERROR NotImplementedError: OS function 'open' not implemented with standard execution
+input()                            => ERROR NameError: name 'input' is not defined
+globals() keys                     => ERROR NameError: name 'globals' is not defined
+dir() of builtins sample           => ERROR NameError: name 'globals' is not defined
+
+real	0m10.232s
+user	0m0.015s
+sys	0m0.000s
+
+====================================================================================================
+S3: Windows against Linux (WSL Ubuntu), policy pinned, module_audit child pinned, diff of the two outputs
+====================================================================================================
+Linux: WSL2 Ubuntu (Linux 6.18 x86_64) on the same machine, same sources copied to ~/vx_spike_s4, cargo build --release --bin module_audit, then 'module_audit child pinned'.
+Windows output (146 lines) and Linux output (146 lines) compared with diff: IDENTICAL, byte for byte (hash, set order, id, floats, math, random draws under the seed, clock under the fixed instant).
+Limits: one architecture (x86_64); the same CPU and the same libm crate on both, so this does not test a different processor; the 28 imports, hash/set/dict order and the random stream are what was compared.
+
+====================================================================================================
+S4: costs of a line, a host call, a session, a restart (session_costs.exe)
+====================================================================================================
+== creating a session
+new session: median 0.9 us, p99 1.9 us
+an empty session holds 38731 live bytes
+
+== one line, no host call (steps are bytecode instructions, plus 64 per 64 items of a native loop)
+snippet                                                              steps     median        p99   ns/step
+1 + 1                                                                    4     3.1 us     8.4 us     775.0
+x = 5                                                                    4     2.9 us     6.4 us     725.0
+f(1)                                                                     8     3.3 us     9.1 us     412.5
+[f(i) for i in range(100)]                                            1106    16.1 us    24.7 us      14.6
+sum(range(1000))                                                       964    35.5 us    45.8 us      36.8
+[i * i for i in range(1000)]                                          7006    62.3 us   200.0 us       8.9
+sorted(xs)                                                             963    26.8 us    63.9 us      27.8
+{i: i * i for i in range(1000)}                                       8006   165.5 us   222.7 us      20.7
+'-'.join(words)                                                        196     7.5 us    12.7 us      38.3
+len(str(2 ** 1000))                                                      7     5.7 us    13.2 us     814.3
+fib(15)                                                              22689   149.3 us   203.9 us       6.6
+fib(20)                                                             251746  1654.6 us  2171.2 us       6.6
+fib(25)                                                            2792027 18725.3 us 24508.7 us       6.7
+sum(f(i) for i in range(10000))                                     119991  1156.3 us  1639.5 us       9.6
+
+== a host call (the name looked up, the call suspended, resumed with a value)
+host_ping(1) as a whole line: median 4.2 us, p99 7.7 us
+100 host calls in one line: median 126.5 us (1.3 us per call)
+
+== a step budget: the same cut-off every time
+max_feed_steps     10000: TimeoutError: feed step limit exceeded: 10240 steps > 10000 steps | n at the cut-off = 1462 | same in 3 runs: true | 88.0 us (8.8 us per 1000 steps)
+max_feed_steps    100000: TimeoutError: feed step limit exceeded: 100096 steps > 100000 steps | n at the cut-off = 14299 | same in 3 runs: true | 351.8 us (3.5 us per 1000 steps)
+max_feed_steps   1000000: TimeoutError: feed step limit exceeded: 1000192 steps > 1000000 steps | n at the cut-off = 142884 | same in 3 runs: true | 3205.4 us (3.2 us per 1000 steps)
+
+== a realistic session: 27 definitions, a dictionary of 200, 1,000 numbers, 100 names
+source: 34 snippets, 3538 bytes; replaying it from nothing: median 550.6 us, p99 809.5 us
+dump: 35079 bytes (9.9x the source); dump median 71.5 us; load median 125.2 us
+live session says     (55, 5, 200, 249750.0, 5.0, 'x: 2.50')
+restored session says (55, 5, 200, 249750.0, 5.0, 'x: 2.50')
+the same: true
+
+== many idle sessions (one per player who has scripts)
+100 sessions built by replaying the source: 0.06 s in all, 577.0 us per session, 133039 live bytes per session
+100 sessions restored from a dump: 0.020 s in all, 198.9 us per session
+1000 sessions built by replaying the source: 0.56 s in all, 560.4 us per session, 133039 live bytes per session
+1000 sessions restored from a dump: 0.170 s in all, 169.6 us per session
+

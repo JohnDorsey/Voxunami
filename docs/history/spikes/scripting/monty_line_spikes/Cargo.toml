@@ -1,0 +1,21 @@
+[package]
+name = "monty-line-spikes"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace root, so that the game's workspace does not try to own it.
+[workspace]
+
+[dependencies]
+monty = { git = "https://github.com/JohnDorsey/monty", rev = "78269eda" }
+monty-types = { git = "https://github.com/JohnDorsey/monty", rev = "78269eda" }
+ruff_python_parser = "=0.0.21"
+ruff_text_size = "=0.0.21"
+ruff_python_ast = "=0.0.21"
+
+[dev-dependencies]
+proptest = "1.12"
+
+[profile.release]
+debug = false

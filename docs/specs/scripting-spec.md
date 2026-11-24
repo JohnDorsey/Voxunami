@@ -1,6 +1,6 @@
 # Scripting and the command line: a specification
 
-**Status: a draft written on 2026-11-23, nothing built.** It follows the owner's rule, "let's not build anything until we have a good design and plan". It makes concrete the decisions the owner gave in four rounds of questions (2026-11-22 and 2026-11-23) and in the answers to the ten questions at the end of `permissions-survey.md` (2026-11-23). Branch `scripting-integration`.
+**Status: a draft written on 2026-11-23, nothing built; the spikes of section 12 were run on 2026-11-24 and their findings are in sections 4.2, 4.4, 9.1 and 9.3 (the programs are in `docs/history/spikes/scripting/monty_line_spikes/`, the numbers in `docs/history/spikes/scripting/monty_line_spikes_results_2026-11-24.txt`); the owner answered S1 to S9 with yes on 2026-11-24.** It follows the owner's rule, "let's not build anything until we have a good design and plan". It makes concrete the decisions the owner gave in four rounds of questions (2026-11-22 and 2026-11-23) and in the answers to the ten questions at the end of `permissions-survey.md` (2026-11-23). Branch `scripting-integration`.
 
 **What it is.** Monty (the owner's fork of a sandboxed Python-like interpreter, see `monty-step-budget-plan.md`) comes into the game by way of the chat and the command line: a line may hold *holes*, `{/slash_text}`, `{.dot_text}` and `{>monty_text}`, that nest in any structure, and later command blocks run the same lines. Players keep functions, scripts and shared variables that survive sign-off and restart. Under all of it sits a permission system, because a public server with strangers is expected.
 
@@ -60,7 +60,8 @@ All **[read]** on 2026-11-22 and 2026-11-23 unless said:
 Each sigil picks its own scanner for where the hole ends. **[decided]**
 
 - **`/` and `.` text:** the hole ends at the first unescaped `}` that does not belong to a nested hole. Only sigil-started holes nest; a bare `{hi` inside the text is plain, so a following `}` ends the hole. To say `{hi}` there, write `\{hi\}`. **[proposed]**
-- **`>` code:** the hole ends at the `}` that closes it as **Monty's tokenizer** sees it, so dictionary and set literals and strings that hold braces work (`{>{"a": 1}["a"]}`). This is the part that most needs a test against the real tokenizer (spike S2). **[proposed; the owner approved "sigil picks the sub-language and its scanner"]**
+- **`>` code:** the hole ends at the `}` that closes it as Python's lexical rules see it: brackets nest, and strings, f-strings (with their own fields and format specs), triple quotes and escapes hide their braces, so dictionary and set literals work (`{>{"a": 1}["a"]}`). **[decided: the owner approved "sigil picks the sub-language and its scanner"]** **Measured (spike S2, 2026-11-24):** a hand-written scanner of about 100 lines and a scanner driven by ruff's token stream (ruff's lexer is the tokenizer Monty itself uses) agree on all 4,000 generated expressions full of braces, quotes and backslashes, with random tails after the hole; Monty compiled all 3,000 generated expressions it was given; four deliberate breakages of the hand-written scanner (a backslash skipping one byte, no `{{` literal, no triple quotes, an f-string field not entered) were each caught; a brace counter was wrong on 1,560 of 2,000. On 60,000 random strings of brace-and-quote soup the two agree on 57,989 and differ only on `#` and on newlines. **Proposed:** use the hand-written scanner (the game need not link a parser to find an end), and keep the differential test against ruff's tokens in the game's own tests, so that a change in Monty's lexer is a failing test, not a silent drift. **`#` is an ordinary character in a hole** (ruff would read it as a comment that hides the closing brace; a line holds no newline), and **blanks right after `{>` are stripped** before Monty sees the code, because Monty reads a leading blank as indentation (`SyntaxError: Unexpected indentation`, checked).
+- **No holes inside `>` code in the first version.** A script reaches commands by typed calls (S6), not by `{/...}` inside Python. This closes an ambiguity that the spike found: `{.5}` and `{...}` are valid Python sets, so `{.` cannot always mean a client-command hole. Inside `>` code a `{` followed by `/` or `>` (never valid Python: no valid snippet in 19,729 random ones had it) and `{.` followed by a letter are **reserved and an error** for now, so that allowing nested holes later changes no line that works today. **[proposed, S10]**
 - **Depth** is limited (eight levels, **[proposed]**, a number to measure, not a principle) and a deeper line is an error.
 - A hole may not stand in the name of a command or subcommand. Holes are for arguments only. **[proposed]**
 
@@ -87,7 +88,7 @@ Innermost first, left to right; **any failure aborts the whole line** and the er
 2. Each hole is evaluated and gives a value (4.5).
 3. The outer command is built from its text and its values and checked against its `CommandSpec`, then permission-checked (section 7), then run.
 
-**Cost of a line.** One step budget and one memory limit cover the whole line, so nesting cannot multiply the cost. Each hole result is limited to 1,024 bytes of text and the whole expanded line to 1,024 bytes. **[proposed; the numbers are guesses until spike S4]**
+**Cost of a line.** One step budget and one memory limit cover the whole line, so nesting cannot multiply the cost. Each hole result is limited to 1,024 bytes of text and the whole expanded line to 1,024 bytes. **[proposed]** **Measured (spike S4, 2026-11-24, release build, Windows, in process):** a line of `1 + 1` costs 4 steps and 3 us; `f(1)` 8 steps, 3 us; a host call 1.4 us (4.2 us for a whole line that is one call, name look-up included); 100 calls in one line 143 us. A step is 4 to 16 ns on ordinary bytecode, so 100,000 steps are about 0.5 to 1.5 ms: `fib(20)` is 252,000 steps and 1.9 ms, `fib(25)` 2.8 million steps and 45 ms. A runaway `while True` stopped at 10,240, 100,096 and 1,000,192 steps for limits of 10,000, 100,000 and 1,000,000, at the same loop count in each of three runs (the same cut-off). **Proposed defaults, a setting each:** 200,000 steps for a line typed in chat (about 1 to 3 ms), more for a registered script (to be set in phase 5 from a measurement of real scripts). Steps bound bytecode, not one huge native operation (the 2026-11-16 audit found single calls that run for seconds), so the memory limit and the removal of `re` stay.
 
 ### 4.5 Values, and what a hole is worth where
 
@@ -217,7 +218,7 @@ The owner agreed "yes for now" and asked what the setup code and the key file ar
 
 - **The player's key file** is the identity file of 32 secret bytes (`identity` in the game's data folder, or `--identity FILE`). The public key is worked out from it and is who the player is. It is the thing a player must keep.
 - **The server's root list** is a *different* file on the server: the public keys that are root. A dedicated server needs one, and a new server has none.
-- **The setup code:** if the server finds no root key on start, it prints a one-time code (at least 64 bits from the operating system's randomness) **only on its console**. The first player to run `/setup CODE` in the game becomes root, the server writes their public key into the root list, and the code is destroyed. A new code is made at each start for as long as no root key exists. Wrong attempts are counted and slowed, and the code is never in a log a player can read.
+- **The setup code:** if the server finds no root key on start, it prints a one-time code (at least 64 bits from the operating system's randomness) **only on its console**. The first player to run `/perm become_root CODE` in the game becomes root, the server writes their public key into the root list, and the code is destroyed. A new code is made at each start for as long as no root key exists. Wrong attempts are counted and slowed, and the code is never in a log a player can read.
 - The old route stays: an admin may write a public key into the root list by hand (`--root KEY` or the file), and a client command shows a player's own public key to copy.
 - Why: a stranger can walk up to a new server, and nobody should have to copy a 64-character public key into a file by hand. The same trick is TShock's. **[`permissions-survey.md` D9]**
 
@@ -235,7 +236,7 @@ One grammar for every change **[proposed, D10]**, each printing a summary of wha
 | `/perm new` | commands that arrived and have no grant yet |
 | `/perm log [N]` | the change log |
 | `/perm export`, `/perm import` | the whole rule set as one string, for backup (later) |
-| `/setup CODE` | 7.8 |
+| `/perm become_root CODE` | on a server with no root key yet, the first player to give the console's one-time code becomes root (7.8) |
 
 ## 8. Commands become richer
 
@@ -265,7 +266,7 @@ A handler receives the actor next to the client (`Context` today has `client: Op
 
 - `>` and every `{>...}` run **only on the server**. **[decided]**
 - **No parallelism and no snapshots:** scripts run on the server's thread at a fixed point in the tick, reading live state. The owner will "build without parallelism and without snapshots and see how it performs". **[decided]** Process or thread per player is **not** built; if scripts run in step-counted slices while the server waits, a worker would buy fault isolation only, no speed (**[my position, unmeasured]**).
-- **Determinism.** The Monty fork has a deterministic step budget and memory limit, so a script is cut off at the same instruction on every machine **[read]**. A script's effect on the world is a command, and commands are in the stream, so a recording does not need to run scripts again. **[proposed]** The simulation's hard rules hold: no wall-clock time in a script (a script's time is the game tick), no std transcendental float functions (the fork's patched maths, owner 2026-11-15). **I have not audited which of the fork's built-in modules are nondeterministic** (a `time` or `random` module, if loaded): that is spike S3, and it decides what else is denied beside `re`. **[not run]**
+- **Determinism.** The Monty fork has a deterministic step budget and memory limit, so a script is cut off at the same instruction on every machine **[read]**. A script's effect on the world is a command, and commands are in the stream, so a recording does not need to run scripts again. **[proposed]** The simulation's hard rules hold: no wall-clock time in a script (a script's time is the game tick), no std transcendental float functions (the fork's patched maths, owner 2026-11-15). **Audited (spike S3, 2026-11-24):** 28 built-in modules import (`sys typing asyncio pathlib os os.path math json re datetime unicodedata itertools dataclasses collections functools copy csv decimal fnmatch hashlib random statistics time tomllib base64 binascii bisect annotationlib`) and 43 other common names do not (`uuid secrets threading subprocess socket io struct enum string` and more). 146 probes were run in two separate processes under each policy. **Under `OsPolicy::default()`, 12 differ between processes: every clock call (`time.time`, `time.monotonic`, `time.perf_counter`, `time.localtime`, `datetime.now`) and every `random` draw. Under the pinned policy none differ.** So the host must set the policy, and set it again before every feed from the game tick: `datetime` is `Fixed` at the instant of the tick, `sleep` is `Zero`, `random_start` is `Seed` (derived from the world seed and the owner's key), process time stays `Zero` (its default). Nothing else in the audit was nondeterministic: `hash()` of strings and numbers, the iteration order of sets and dicts, `id()`, float formatting, sorting and `math` (the fork's `libm`) gave the same results in every process. `os.getenv`, `os.urandom` and `open()` are refused by the standard execution (the host answers no OS call), and `os`, `pathlib`, `asyncio`, `csv` and `tomllib` import but cannot reach the machine; whether they stay in a player's reach is a question for the data review. Two things to know: a `random` generator's state is part of a dump, so a session rebuilt from source starts its stream again; and `frozenset` hashes to 0 (harmless, noticed in the results). **[observed in two processes on Windows, and the pinned output was byte-identical to the same program's on Linux (WSL2, x86_64, 146 lines); one architecture only]**
 - **Monty's `re` is disabled** in the fork by a deny list (the owner approved it on 2026-11-23): `re.sub` on large text is uninterruptible. The patch is made when building starts, not before.
 
 ### 9.2 What the box can type
@@ -276,7 +277,7 @@ One line, 1,024 bytes, and no Python indentation: indentation is only possible a
 
 **[decided]** Per-player scripts are saved **on the server**, with no export to a file yet.
 
-- **What is saved is source and plain values**, not the interpreter's state: the text of each `def` and `class`, and a store of plain values (None, bool, int, float, str, lists, dicts of those; a size limit). A restart replays the source and restores the store. The interpreter's `dump` is an optional speed-up and may be thrown away at any time, because host objects die on dump and restore **[read]**, and because step counts move with the compiler when the fork changes.
+- **What is saved is source and plain values**, not the interpreter's state: the text of each `def` and `class`, and a store of plain values (None, bool, int, float, str, lists, dicts of those; a size limit). A restart replays the source and restores the store. The interpreter's `dump` is **not needed at first**: host objects die on dump and restore **[read]**, step counts move with the compiler when the fork changes, and the **measurement says the gain is small** (spike S4): replaying the source of a realistic session (27 functions and classes, a dictionary of 200, 1,000 numbers, 100 names; 34 snippets, 3.5 KB) takes 0.55 ms; loading its dump takes 0.13 ms, and the dump is 35 KB (9.9 times the source); the restored session gave the same answers as the live one. A session costs 39 KB empty and 133 KB with that content, so 1,000 sessions are 133 MB: sessions load on demand and are dropped when idle (counted in ticks, not time).
 - A script's owner's session loads **on demand** (a command block runs while its owner is offline).
 - A new save scope, `PerPlayer`, beside `Global` and `PerGrid`, keyed by the public key, in a part of the world file the world file format records; data of a missing plugin is preserved byte for byte like all other data. **[proposed]** The exact layout belongs to `world-file-format.md` when built.
 
@@ -326,11 +327,11 @@ Tests first in each phase, the safest piece next, verify, continue (the project'
 
 | Phase | Builds | Tests that lock it in |
 |---|---|---|
-| **S0 spikes** | S1 worker latency per host call (only if a worker is ever chosen); S2 a **brace scanner property test against Monty's tokenizer**; S3 an audit of the fork's built-in modules for non-determinism and for what `re` removal touches; S4 measure the step cost of typical lines, the dump size and time of a realistic session, and set the limits | the spikes' own output kept in `docs/history/spikes/scripting/` |
+| **S0 spikes** | **Run 2026-11-24** (`docs/history/spikes/scripting/monty_line_spikes/`): S1 worker latency per host call **not run**, since no worker is chosen (scripts run in process); S2 brace scanner against Monty's tokenizer, done; S3 audit of the fork's built-in modules for non-determinism, done; S4 step cost of lines, host calls, session size, dump and replay, done | the results in `docs/history/spikes/scripting/monty_line_spikes_results_2026-11-24.txt` |
 | **1 chat** | nicknames (charset, uniqueness, protocol bump), the `chat` message, rate limit, box opens on a non-sigil line | wire round-trip; charset property test; two players with the same wish get distinct names; replay shows chat |
 | **2 line language** | scanner and evaluator for `/` and `.` holes (no Monty yet), escapes, typed slots, return values, errors that name the hole | scanner property tests; golden table of section 4.7; "results are never rescanned" test; client `{.}` escaping test |
 | **3 subcommands** | the tree in `CommandSpec`, ids, classes, usage and `help` from the tree, the self-check | every existing command parses the same text as before; usage lines unchanged except the new ones |
-| **4a actors and ops** | `Actor`, the `op` group, op-only defaults, `/setup`, the root list, console as root | `/gamemode`, `light`, `tp` refused for a non-op with words; the first-start flow; empty list means nobody |
+| **4a actors and ops** | `Actor`, the `op` group, op-only defaults, `/perm become_root`, the root list, console as root | `/gamemode`, `light`, `tp` refused for a non-op with words; the first-start flow; empty list means nobody |
 | **4b groups and grants** | groups, grants, the two layers, delegation, expiry in ticks, change log, `why/what/who`, `/perm new`, packs' proposed defaults | decision-record golden tests; the two-dimension conflict fixtures; a ban in the guardrail layer beats a personal allow; expiry is by tick (a clock-free test); a rename keeps grants |
 | **P playtest** | the protocol in `docs/history/permissions-survey/notes-5-models-and-method.md` (five testers, three rounds, success criteria first) on tasks T3, T8, T11, T13 first | **no later than the first prototype of 4b's two layers** (P10) |
 | **data review** | a document: what Monty sees, and its Python names, for the owner's yes | owner's review; no code |
@@ -339,9 +340,9 @@ Tests first in each phase, the safest piece next, verify, continue (the project'
 | **7 marked functions** | marks, ceilings, "on behalf of", clearing on edit, the caller-target check | the confused-deputy tests (a function with a caller's target) |
 | **8 command blocks** | after block data exists: ownership, claim, ownerless stand-in, ownerless listing | banned owner's block loses power at once; `{.}` refused in a block |
 
-## 13. Questions this draft raises
+## 13. Questions this draft raised
 
-Each has my recommendation. They are the owner's to answer; none blocks phase 1 or 2.
+**The owner answered yes to S1 to S9 on 2026-11-24** (and renamed the setup command, 7.8). S10 came from the spike and is open. None blocks phase 1 or 2.
 
 - **S1. Which narrower?** What first, then who (7.3). *Recommend yes; confidence medium; playtest it.*
 - **S2. Who may type `>` on a server?** Ops only by default, a permission any admin may grant. *Recommend yes.*
@@ -352,6 +353,7 @@ Each has my recommendation. They are the owner's to answer; none blocks phase 1 
 - **S7. Shared variable grants** as in 9.5. *Recommend yes; medium confidence.*
 - **S8. Singleplayer:** the local player is op **and** root. *Recommend yes.*
 - **S9. Setup code details** as in 7.8 (a new code each start while no root exists, rate-limited attempts). *Recommend yes.*
+- **S10. Holes inside `>` code?** None in the first version; a script calls commands by typed calls (S6), and `{/` and `{>` inside code stay reserved (4.2). *Recommend yes. Open.*
 
 ## 14. What nobody has measured
 
