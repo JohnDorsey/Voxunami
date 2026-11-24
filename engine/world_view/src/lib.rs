@@ -11,6 +11,7 @@ mod cube_states;
 mod grid_mesher;
 mod horizon;
 mod job_feed;
+mod job_queue;
 mod lod;
 mod may_show_memo;
 mod mesher;

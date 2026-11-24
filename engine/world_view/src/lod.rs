@@ -8,7 +8,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use coarse_cells::{
@@ -24,9 +24,17 @@ use world_storage::LevelData;
 use crate::brick_states::HeldBricks;
 use crate::cube_states::{Arrival, CubeStates, HeldPictures, Replacement, Taken};
 use crate::job_feed::jobs_to_hold;
+use crate::job_queue::{JobQueue, Taken as Handed};
 use crate::may_show_memo::MayShowMemo;
 use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
 use crate::warm_cut::{KeptCut, Selection, WarmFinished, WarmJob, WarmWorker, warm_queue_of};
+
+/// How many of the threads that make nodes make the nodes of the warm viewpoint at the same time, unless the view is told otherwise
+/// ([`LodView::set_warm_worker_count`]): half of them, at least one. What is only kept ready is not to take the whole machine from the player (a ground map that was kept ready
+/// took 10 cores of 12 for 1.7 s, measured 2026-11-23), and what is drawn is made first by whichever thread is free.
+fn default_warm_workers(workers: usize) -> usize {
+    (workers / 2).max(1)
+}
 
 /// How much a picture is asked to show.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,7 +224,13 @@ pub struct LodView {
     in_flight: usize,
     /// How many nodes the threads finished since the update before (what [`jobs_to_hold`] sizes what is handed to them by).
     finished_last_update: usize,
-    jobs: Option<mpsc::Sender<Job>>,
+    /// How many of the nodes handed to the threads are for the warm viewpoint (counted apart from `in_flight`: what is held for it is not held from what is drawn), which
+    /// cubes they are for, how many of them the threads finished since the update before, and how many threads may make them at the same time.
+    warm_nodes_in_flight: usize,
+    warm_node_cubes: HashSet<BrickCube>,
+    warm_finished_last_update: usize,
+    warm_worker_count: usize,
+    jobs: Option<Arc<JobQueue<Job>>>,
     results: mpsc::Receiver<Finished>,
     workers: Vec<JoinHandle<()>>,
     /// Whether the view had nothing more to do at the end of the last update, so that it is looked at once when it comes to rest and not at every update.
@@ -243,18 +257,20 @@ impl LodView {
     /// A view whose bricks are made by `mesher`, which is held back from now on.
     pub fn new(mesher: WorldMesher, config: LodConfig) -> Self {
         let mesher = mesher.with_held_back_display();
-        let (job_sender, job_receiver) = mpsc::channel::<Job>();
+        let jobs = Arc::new(JobQueue::<Job>::new(default_warm_workers(
+            config.worker_count,
+        )));
         let (result_sender, results) = mpsc::channel::<Finished>();
-        let job_receiver = Arc::new(Mutex::new(job_receiver));
         let workers = (0..config.worker_count.max(1))
             .map(|_| {
-                let job_receiver = Arc::clone(&job_receiver);
+                let jobs = Arc::clone(&jobs);
                 let result_sender = result_sender.clone();
                 std::thread::spawn(move || {
                     loop {
-                        // Hold the lock only while waiting for the next job, not while running it.
-                        let job = job_receiver.lock().expect("job queue lock").recv();
-                        let Ok(job) = job else { return };
+                        // (A thread waits here for a job it may take: a drawn one, or a warm one if the threads that are for those are not all busy.)
+                        let Some(Handed { job, warm }) = jobs.next() else {
+                            return;
+                        };
                         // A generator with a bug panics here, on a thread nobody is watching: it is caught, and said to the view, which panics with it. (A thread that dies with
                         // its job leaves the job in flight for ever and the view waiting for it, with nothing to say why.)
                         let finished = catch_unwind(AssertUnwindSafe(|| {
@@ -276,6 +292,7 @@ impl LodView {
                             }
                         }))
                         .map_or_else(Finished::Panicked, Finished::Done);
+                        jobs.done(warm);
                         if result_sender.send(finished).is_err() {
                             return;
                         }
@@ -316,7 +333,11 @@ impl LodView {
             epoch: 0,
             in_flight: 0,
             finished_last_update: 0,
-            jobs: Some(job_sender),
+            warm_nodes_in_flight: 0,
+            warm_node_cubes: HashSet::new(),
+            warm_finished_last_update: 0,
+            warm_worker_count: default_warm_workers(config.worker_count),
+            jobs: Some(jobs),
             results,
             workers,
             was_settled: false,
@@ -347,12 +368,31 @@ impl LodView {
 
     /// Work in progress: bricks and nodes being made.
     pub fn pending_jobs(&self) -> usize {
-        self.mesher.pending_jobs() + self.in_flight
+        self.mesher.pending_jobs() + self.in_flight + self.warm_nodes_in_flight
     }
 
     /// How many coarse nodes the threads have been handed and the view has not collected yet (the part of [`LodView::pending_jobs`] that is not bricks).
     pub fn nodes_being_made(&self) -> usize {
-        self.in_flight
+        self.in_flight + self.warm_nodes_in_flight
+    }
+
+    /// How many of [`LodView::nodes_being_made`] were handed out for the warm viewpoint, and not for what is drawn (and have not become the drawn ones' since: see the cubes
+    /// that are drawn from the place that was warm).
+    pub fn warm_nodes_being_made(&self) -> usize {
+        self.warm_nodes_in_flight
+    }
+
+    /// How many threads make the nodes of the warm viewpoint at the same time.
+    pub fn warm_worker_count(&self) -> usize {
+        self.warm_worker_count
+    }
+
+    /// Sets how many threads make the nodes of the warm viewpoint at the same time (at least one, at most the threads there are). By default half of them.
+    pub fn set_warm_worker_count(&mut self, count: usize) {
+        self.warm_worker_count = count.clamp(1, self.workers.len().max(1));
+        if let Some(jobs) = &self.jobs {
+            jobs.set_warm_threads(self.warm_worker_count);
+        }
     }
 
     /// Keeps the pictures of nodes that leave the screen, up to `budget_bytes` of them, instead of dropping them: a node that is taken down is **hidden** in the renderer
@@ -378,6 +418,7 @@ impl LodView {
     pub fn is_settled(&self) -> bool {
         self.mesher.is_settled()
             && self.in_flight == 0
+            && self.warm_nodes_in_flight == 0
             && self.queue.is_empty()
             && self.warm_queue.is_empty()
             && !self.warm_in_flight
@@ -519,6 +560,9 @@ impl LodView {
         self.epoch += 1;
         self.in_flight = 0;
         self.finished_last_update = 0;
+        self.warm_nodes_in_flight = 0;
+        self.warm_node_cubes.clear();
+        self.warm_finished_last_update = 0;
         self.was_settled = false;
         self.stalls.clear();
         self.stall_reported.clear();
@@ -623,10 +667,10 @@ impl LodView {
             }
         }
         let requested = self.cubes.requested_count();
-        if requested > self.in_flight {
+        if requested > self.in_flight + self.warm_nodes_in_flight {
             return Err(format!(
                 "{requested} pictures have been asked for and {} jobs are in flight",
-                self.in_flight
+                self.in_flight + self.warm_nodes_in_flight
             ));
         }
         Ok(())
@@ -723,6 +767,7 @@ impl LodView {
 
     fn collect_nodes(&mut self, updates: &mut Vec<MeshUpdate>) {
         let mut finished_now = 0;
+        let mut warm_finished_now = 0;
         while let Ok(finished) = self.results.try_recv() {
             // As if the work had been done here: a bug in a generator is a panic of whoever asked for the node.
             let done = match finished {
@@ -732,8 +777,13 @@ impl LodView {
             if done.epoch != self.epoch {
                 continue;
             }
-            self.in_flight = self.in_flight.saturating_sub(1);
-            finished_now += 1;
+            if self.warm_node_cubes.remove(&done.cube) {
+                self.warm_nodes_in_flight = self.warm_nodes_in_flight.saturating_sub(1);
+                warm_finished_now += 1;
+            } else {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                finished_now += 1;
+            }
             let current = self.data_version(done.cube);
             let cube = done.cube;
             match self
@@ -758,6 +808,7 @@ impl LodView {
             }
         }
         self.finished_last_update = finished_now;
+        self.warm_finished_last_update = warm_finished_now;
     }
 
     fn reselect(
@@ -843,7 +894,39 @@ impl LodView {
         });
         self.queue.extend(jump);
         self.plan_needed = true;
+        self.promote_the_warm_nodes_that_are_wanted();
         left
+    }
+
+    /// A node that was handed out for the warm viewpoint and that no thread has taken yet is a drawn one when what is drawn now wants its cube (the viewer has gone to the
+    /// place that was kept ready): it is made before the warm ones that wait, and counted with what is drawn.
+    fn promote_the_warm_nodes_that_are_wanted(&mut self) {
+        let Some(jobs) = self.jobs.clone() else {
+            return;
+        };
+        let mut wanted: Vec<BrickCube> = self
+            .warm_node_cubes
+            .iter()
+            .copied()
+            .filter(|cube| self.cubes.wanted().contains(cube))
+            .collect();
+        // (The coarsest first, as what is drawn is: not the order of a set.)
+        wanted.sort_by_key(|cube| {
+            let origin = cube.origin();
+            (
+                std::cmp::Reverse(cube.level()),
+                origin.x(),
+                origin.y(),
+                origin.z(),
+            )
+        });
+        for cube in wanted {
+            if jobs.promote(|job| job.cube == cube) {
+                self.warm_node_cubes.remove(&cube);
+                self.warm_nodes_in_flight = self.warm_nodes_in_flight.saturating_sub(1);
+                self.in_flight += 1;
+            }
+        }
     }
 
     /// The cubes a view at `viewer` draws, worked out from what the terrain says may show.
@@ -1045,46 +1128,71 @@ impl LodView {
     }
 
     fn start_jobs(&mut self, source: &impl CoarseTerrainSource, updates: &mut Vec<MeshUpdate>) {
-        let source_waits = source.waits_for_nodes();
+        // What is drawn is held for the threads by what they finished of it; what the warm viewpoint needs is held for its share of the threads by what they finished of
+        // that. Neither takes room from the other, and the threads take what is drawn first ([`JobQueue`]).
         let limit = jobs_to_hold(self.workers.len(), self.finished_last_update);
         while self.in_flight < limit {
-            // (What the warm viewpoint needs waits for what is drawn.)
-            let Some(cube) = self.queue.pop().or_else(|| self.warm_queue.pop()) else {
+            let Some(cube) = self.queue.pop() else {
                 break;
             };
-            let version = self.data_version(cube);
-            if !self.cubes.needs_making(cube, version) {
-                continue;
-            }
-            // A picture that was held of data that has changed since is let go of, and the node is made again.
-            if self.cubes.drop_stale_held(cube, version) == Taken::Removed {
-                updates.push(MeshUpdate::RemoveCoarse(cube));
-            }
-            let source = match self.overrides.get(&(self.grid, cube)) {
-                Some(held) => Source::Override(Arc::clone(&held.node)),
-                None => match source.coarse_generator(cube) {
-                    Some(generator) => Source::Generator(generator),
-                    None if source_waits && !self.is_told_empty(cube) => {
-                        // Nothing is made of it: it is not known to be empty, and what is drawn in its place stays until the server says.
-                        self.waiting_for_the_server.insert(cube);
-                        continue;
-                    }
-                    None => Source::Nothing,
-                },
+            self.start_node(source, cube, false, updates);
+        }
+        let warm_limit = jobs_to_hold(self.warm_worker_count, self.warm_finished_last_update);
+        while self.warm_nodes_in_flight < warm_limit {
+            let Some(cube) = self.warm_queue.pop() else {
+                break;
             };
-            self.cubes.start_making(cube, version);
+            self.start_node(source, cube, true, updates);
+        }
+    }
+
+    /// Hands the node of a cube to the threads, if it is to be made, for what is drawn or for the warm viewpoint.
+    fn start_node(
+        &mut self,
+        source: &impl CoarseTerrainSource,
+        cube: BrickCube,
+        warm: bool,
+        updates: &mut Vec<MeshUpdate>,
+    ) {
+        let version = self.data_version(cube);
+        if !self.cubes.needs_making(cube, version) {
+            return;
+        }
+        // A picture that was held of data that has changed since is let go of, and the node is made again.
+        if self.cubes.drop_stale_held(cube, version) == Taken::Removed {
+            updates.push(MeshUpdate::RemoveCoarse(cube));
+        }
+        let source = match self.overrides.get(&(self.grid, cube)) {
+            Some(held) => Source::Override(Arc::clone(&held.node)),
+            None => match source.coarse_generator(cube) {
+                Some(generator) => Source::Generator(generator),
+                None if source.waits_for_nodes() && !self.is_told_empty(cube) => {
+                    // Nothing is made of it: it is not known to be empty, and what is drawn in its place stays until the server says.
+                    self.waiting_for_the_server.insert(cube);
+                    return;
+                }
+                None => Source::Nothing,
+            },
+        };
+        self.cubes.start_making(cube, version);
+        if warm {
+            self.warm_nodes_in_flight += 1;
+            self.warm_node_cubes.insert(cube);
+        } else {
             self.in_flight += 1;
-            self.jobs
-                .as_ref()
-                .expect("workers run until the view is dropped")
-                .send(Job {
+        }
+        self.jobs
+            .as_ref()
+            .expect("workers run until the view is dropped")
+            .push(
+                Job {
                     epoch: self.epoch,
                     cube,
                     version,
                     source,
-                })
-                .expect("workers are running");
-        }
+                },
+                warm,
+            );
     }
 
     fn is_ready(&self, cube: BrickCube) -> bool {
@@ -1157,8 +1265,10 @@ impl LodView {
 
 impl Drop for LodView {
     fn drop(&mut self) {
-        // Closing the job queue ends each worker's loop.
-        self.jobs = None;
+        // Closing the job queue ends each worker's loop (what waits in it is dropped).
+        if let Some(jobs) = self.jobs.take() {
+            jobs.close();
+        }
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }

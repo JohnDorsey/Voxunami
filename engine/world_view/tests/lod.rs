@@ -2759,21 +2759,19 @@ impl CoarseTerrainSource for Recording<'_> {
     }
 }
 
+/// What the drawn viewpoint needs is made before what the warm one waits to have made: the threads take a drawn job before any warm one that waits, whichever was handed to
+/// them first. (Before the share of the threads, the view handed out nothing for the warm viewpoint until everything drawn was handed out, and this was a test of the order of
+/// the handing out; the warm nodes are handed out under a limit of their own now, and the order that matters is the one the threads take them in.)
 #[test]
-fn what_the_drawn_viewpoint_needs_is_made_before_anything_for_the_warm_one() {
+fn what_the_drawn_viewpoint_needs_is_made_before_the_warm_nodes_that_wait_though_they_were_handed_out_first()
+ {
     let trip = Trip::new();
     let along = viewer_in(brick(60, 0, 0));
     let up_there = viewer_in(brick(0, 80, 0));
 
-    // A view with nothing warm moves along the ground: every node it has to make for that.
-    let made = std::cell::RefCell::new(Vec::new());
-    let generated = std::cell::RefCell::new(Vec::new());
-    let terrain = Recording {
-        level: trip.scene.world.main(),
-        made: &made,
-        generated: &generated,
-    };
-    let mut view = view_of(&trip.scene, 3);
+    // The nodes a view with nothing warm makes for the move along the ground.
+    let terrain = Counted::new(trip.scene.world.main(), true, std::time::Duration::ZERO);
+    let mut view = view_with(&trip.scene, 3);
     view.hold_hidden_pictures(256 << 20);
     let mut screen = Screen::default();
     settle_checked_in(
@@ -2784,7 +2782,7 @@ fn what_the_drawn_viewpoint_needs_is_made_before_anything_for_the_warm_one() {
         &far(),
         "the ground",
     );
-    made.borrow_mut().clear();
+    terrain.started();
     settle_checked_in(
         &mut view,
         &mut screen,
@@ -2793,22 +2791,16 @@ fn what_the_drawn_viewpoint_needs_is_made_before_anything_for_the_warm_one() {
         &far(),
         "along the ground",
     );
-    let needed: HashSet<BrickCube> = made.borrow().iter().copied().collect();
+    let needed: HashSet<BrickCube> = terrain.started().into_iter().collect();
     assert!(
         needed.len() > 100,
         "{} nodes to make for the move",
         needed.len()
     );
 
-    // The same with a warm viewpoint that has a good deal to make too (what the threads were handed before the move is theirs to finish): in the order the nodes are started
-    // after the move, none that the move needs comes after one that it does not.
-    let made = std::cell::RefCell::new(Vec::new());
-    let terrain = Recording {
-        level: trip.scene.world.main(),
-        made: &made,
-        generated: &generated,
-    };
-    let mut view = view_of(&trip.scene, 3);
+    // The same with a warm viewpoint whose nodes are handed out, and wait, before the move: the 3 threads are held at a gate by the first nodes they take, and the viewer moves.
+    let terrain = Counted::new(trip.scene.world.main(), true, std::time::Duration::ZERO);
+    let mut view = view_with(&trip.scene, 3);
     view.hold_hidden_pictures(256 << 20);
     let mut screen = Screen::default();
     settle_checked_in(
@@ -2819,9 +2811,29 @@ fn what_the_drawn_viewpoint_needs_is_made_before_anything_for_the_warm_one() {
         &far(),
         "the ground",
     );
+    terrain.gate.close();
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
     view.set_warm_viewpoint(warm(up_there, &far()));
-    screen.apply(view.update(GridId::MAIN, &terrain, Trip::ground(), &far()));
-    made.borrow_mut().clear();
+    let started = std::time::Instant::now();
+    while view.warm_nodes_being_made() < 4 {
+        screen.apply(view.update(GridId::MAIN, &terrain, Trip::ground(), &far()));
+        assert!(
+            started.elapsed() < DEADLINE,
+            "no nodes were handed out for the sky"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    terrain.started();
+    // The move: what it needs is handed out (4 for each of 3 threads) behind the warm nodes that were handed out first, which wait or are held at the gate.
+    while view.nodes_being_made() - view.warm_nodes_being_made() < 12 {
+        screen.apply(view.update(GridId::MAIN, &terrain, along, &far()));
+        assert!(
+            started.elapsed() < DEADLINE,
+            "nothing was handed out for the move"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    terrain.gate.open();
     settle_checked_in(
         &mut view,
         &mut screen,
@@ -2830,22 +2842,17 @@ fn what_the_drawn_viewpoint_needs_is_made_before_anything_for_the_warm_one() {
         &far(),
         "along the ground, the sky warm",
     );
-    let started = made.borrow().clone();
-    let first_for_the_warm_one = started
+    let order = terrain.started();
+    let first_for_the_warm_one = order
         .iter()
         .position(|cube| !needed.contains(cube))
         .expect("the warm viewpoint has nodes to make too");
+    // (The threads write what they start a moment after they take it, so a few of those that were taken together may be written in another order.)
     assert!(
-        first_for_the_warm_one >= 50,
-        "only {first_for_the_warm_one} nodes were started for the move before one for the warm viewpoint, of {} needed",
-        needed.len()
+        first_for_the_warm_one >= 9,
+        "only {first_for_the_warm_one} nodes were started for the move before one for the warm viewpoint: {:?}",
+        &order[..order.len().min(16)]
     );
-    for cube in &started[first_for_the_warm_one..] {
-        assert!(
-            !needed.contains(cube),
-            "{cube:?}, which the move needs, was started after one for the warm viewpoint"
-        );
-    }
 }
 
 #[test]
@@ -3276,6 +3283,7 @@ impl CoarseTerrainSource for OnThisThread<'_> {
 // ---- The cubes of the warm viewpoint are worked out on a thread of their own ----
 
 /// A gate that the answers asked for on another thread wait at until a test opens it, and a count of the answers that were given through it.
+#[derive(Debug)]
 struct Gate {
     open: Mutex<bool>,
     changed: Condvar,
@@ -4282,4 +4290,252 @@ fn a_warm_viewpoint_taken_away_as_the_viewer_goes_there_leaves_nothing_pinned_fo
         "{} bytes of bricks are held of {budget}",
         view.held_brick_pictures().bytes
     );
+}
+
+// ---- A share of the threads for the warm viewpoint (docs/specs/viewpoints-spec.md, section 9l) ----
+
+/// A generator whose nodes go through a gate, take a moment, and are counted as they are made: how many at the same time, at most.
+#[derive(Debug)]
+struct Counting1 {
+    inner: Arc<dyn TerrainGenerator>,
+    gate: Arc<Gate>,
+    now: Arc<std::sync::atomic::AtomicUsize>,
+    most: Arc<std::sync::atomic::AtomicUsize>,
+    pause: std::time::Duration,
+    /// The cubes whose nodes were started, in the order the threads started them.
+    started: Arc<Mutex<Vec<BrickCube>>>,
+}
+
+impl TerrainGenerator for Counting1 {
+    fn generate_brick(&self, layout: &GridLayout, coordinate: BrickCoordinate) -> Brick {
+        self.inner.generate_brick(layout, coordinate)
+    }
+
+    fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+        self.started.lock().unwrap().push(cube);
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        self.gate.pass();
+        std::thread::sleep(self.pause);
+        let node = self.inner.coarse_node(cube, unlit);
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        node
+    }
+}
+
+/// The terrain of a level whose nodes are made through a gate and counted ([`Counting1`]).
+struct Counted<'a> {
+    level: &'a LevelData,
+    gate: Arc<Gate>,
+    now: Arc<std::sync::atomic::AtomicUsize>,
+    most: Arc<std::sync::atomic::AtomicUsize>,
+    pause: std::time::Duration,
+    started: Arc<Mutex<Vec<BrickCube>>>,
+}
+
+impl<'a> Counted<'a> {
+    fn new(level: &'a LevelData, open: bool, pause: std::time::Duration) -> Self {
+        Self {
+            level,
+            gate: Gate::new(open),
+            now: Arc::default(),
+            most: Arc::default(),
+            pause,
+            started: Arc::default(),
+        }
+    }
+
+    /// The cubes whose nodes were started since this was last asked, in the order the threads started them.
+    fn started(&self) -> Vec<BrickCube> {
+        std::mem::take(&mut *self.started.lock().unwrap())
+    }
+
+    /// The most nodes that were being made at the same time since this was last asked.
+    fn most_at_once(&self) -> usize {
+        self.most
+            .swap(self.now.load(Ordering::SeqCst), Ordering::SeqCst)
+    }
+}
+
+impl TerrainSource for Counted<'_> {
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
+        self.level.known(coordinate)
+    }
+
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        self.level.generator_for(coordinate)
+    }
+
+    fn layout(&self) -> &Arc<GridLayout> {
+        self.level.layout()
+    }
+}
+
+impl CoarseTerrainSource for Counted<'_> {
+    fn version(&self) -> u64 {
+        self.level.version()
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        self.level.may_show(cube)
+    }
+
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        let inner = self.level.coarse_generator(cube)?;
+        Some(Arc::new(Counting1 {
+            inner,
+            gate: Arc::clone(&self.gate),
+            now: Arc::clone(&self.now),
+            most: Arc::clone(&self.most),
+            pause: self.pause,
+            started: Arc::clone(&self.started),
+        }))
+    }
+}
+
+fn view_with(scene: &Scene, workers: usize) -> LodView {
+    LodView::new(
+        scene.mesher(3),
+        LodConfig {
+            unlit: 0,
+            worker_count: workers,
+        },
+    )
+}
+
+#[test]
+fn a_view_makes_the_nodes_of_its_warm_place_on_half_its_threads_at_most_and_all_of_them() {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let terrain = Counted::new(
+        trip.scene.world.main(),
+        true,
+        std::time::Duration::from_millis(1),
+    );
+    let mut view = view_with(&trip.scene, 6);
+    assert_eq!(view.warm_worker_count(), 3, "half of 6");
+    assert_eq!(
+        view_with(&trip.scene, 1).warm_worker_count(),
+        1,
+        "at least one"
+    );
+    assert_eq!(
+        view_with(&trip.scene, 11).warm_worker_count(),
+        5,
+        "half of 11, down"
+    );
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    // The sky is drawn alone first: what it takes is not what is looked at.
+    settle_checked_in(&mut view, &mut screen, &terrain, sky(), &far(), "the sky");
+    terrain.most_at_once();
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    let most = terrain.most_at_once();
+    assert!(
+        most <= 3,
+        "{most} nodes were made at the same time for a place that is only kept ready, by 6 threads"
+    );
+    assert_nodes_are_drawn_or_held(&screen, &fresh_ground, "the ground, warm");
+
+    // A view that is told to use more threads for it does.
+    view.set_warm_worker_count(6);
+    assert_eq!(view.warm_worker_count(), 6);
+}
+
+#[test]
+fn what_is_held_for_the_warm_place_is_apart_from_what_is_held_for_the_drawn_one_and_neither_takes_the_others()
+ {
+    let trip = Trip::new();
+    let terrain = Counted::new(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    let mut view = view_with(&trip.scene, 2);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let started = std::time::Instant::now();
+    while view.warm_nodes_being_made() < 4 {
+        view.update(GridId::MAIN, &terrain, sky(), &far());
+        assert!(
+            started.elapsed() < DEADLINE,
+            "no nodes were handed out for the ground"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    // 2 threads hold 4 each of what is drawn, and 1 thread (half of 2) holds 4 of what is only kept ready: the drawn jobs are not fewer for the warm ones, and
+    // the warm ones are not more than the share holds.
+    view.update(GridId::MAIN, &terrain, sky(), &far());
+    assert_eq!(view.warm_nodes_being_made(), 4);
+    assert_eq!(view.nodes_being_made() - view.warm_nodes_being_made(), 8);
+}
+
+#[test]
+fn a_warm_job_that_waits_when_its_place_is_the_one_that_is_drawn_is_made_as_a_drawn_one_and_a_reset_forgets_what_was_held()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let terrain = Counted::new(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    // One thread, held at the gate by a drawn job: what the view hands out for the ground waits behind it.
+    let mut view = view_with(&trip.scene, 1);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let started = std::time::Instant::now();
+    while view.warm_nodes_being_made() < 4 {
+        view.update(GridId::MAIN, &terrain, sky(), &far());
+        assert!(
+            started.elapsed() < DEADLINE,
+            "no nodes were handed out for the ground"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    let drawn_before = view.nodes_being_made() - view.warm_nodes_being_made();
+    assert_eq!(view.warm_nodes_being_made(), 4);
+
+    // The viewer goes to the ground: the nodes that were handed out for it are its own now, and are counted so.
+    view.set_warm_viewpoint(None);
+    view.update(GridId::MAIN, &terrain, Trip::ground(), &far());
+    assert_eq!(
+        view.warm_nodes_being_made(),
+        0,
+        "they wait, and are drawn ones now"
+    );
+    assert_eq!(view.nodes_being_made(), drawn_before + 4);
+
+    // The gate opens: the view is what a fresh view at the ground is, and nothing is left in flight.
+    let mut screen = Screen::default();
+    terrain.gate.open();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &far(),
+        "the ground",
+    );
+    assert_eq!(screen.nodes, fresh_ground.nodes);
+    assert_eq!(view.nodes_being_made(), 0);
+    assert_eq!(view.warm_nodes_being_made(), 0);
+
+    // A reset forgets what was held for the warm place, as what was held for the drawn one.
+    terrain.gate.close();
+    view.set_warm_viewpoint(warm(sky(), &far()));
+    let started = std::time::Instant::now();
+    while view.warm_nodes_being_made() == 0 {
+        view.update(GridId::MAIN, &terrain, Trip::ground(), &far());
+        assert!(
+            started.elapsed() < DEADLINE,
+            "no nodes were handed out for the sky"
+        );
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+    let _ = view.reset();
+    assert_eq!(view.warm_nodes_being_made(), 0);
+    assert_eq!(view.nodes_being_made(), 0);
 }
