@@ -39,6 +39,7 @@ mod sun_view_tests;
 #[cfg(test)]
 mod test_support;
 pub mod view;
+pub mod view_rig;
 mod windowed;
 
 pub use data_packs::{BodySupport, GameTexture, PackErrors, RawFile, RawPack, RawTexture};

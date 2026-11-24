@@ -21,11 +21,12 @@ use world_view::MeshUpdate;
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
-use crate::session::{Mode, Session};
+use crate::session::{Mode, Session, ViewMode};
 use crate::test_support::{
     CoarseWatch, ExampleContent, ExampleDetailGame, ExampleGame, ExampleOneCoarseLevelGame,
 };
 use crate::view::camera_at;
+use crate::view_rig::{Focus, Orbit};
 
 type Player = Session<Box<dyn Connection>, ExampleGame>;
 
@@ -648,4 +649,197 @@ fn a_game_that_only_says_how_far_terrain_is_drawn_draws_every_level_so_and_one_t
         assert_eq!(said, ExampleDetailGame::coarse_detail());
         assert_eq!(ExampleGame::level_detail(&level(name)), None, "{name}");
     }
+}
+
+// ---- The map: a picture made from a camera that goes round a focus (docs/specs/viewpoints-spec.md, phase 5) ----
+
+/// A position as the voxels from the origin of the world, for a player to be put at.
+fn voxels_of(position: voxel_space::WorldPosition) -> [f64; 3] {
+    let (brick, offset) = (position.brick(), position.offset());
+    [
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
+    ]
+}
+
+#[test]
+fn the_map_is_a_camera_that_goes_round_the_player_and_the_players_own_camera_is_not_moved_by_it() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    assert_eq!(player.view_mode(), ViewMode::Body);
+    assert_eq!(player.drawn_camera(), player.camera);
+    let body = player.camera;
+
+    player.show_map();
+    assert_eq!(player.view_mode(), ViewMode::Map);
+    assert_eq!(player.focus(), Focus::Body);
+    let map = player.drawn_camera();
+    let to_body = body.position.relative_to(map.position);
+    let distance = to_body.iter().map(|c| c * c).sum::<f64>().sqrt();
+    assert!(
+        distance > 4.0 && distance < Orbit::MAXIMUM_DISTANCE,
+        "{distance} voxels from the player"
+    );
+    // It looks at the player.
+    let forward = map.forward().to_array().map(f64::from);
+    let cosine = (0..3)
+        .map(|axis| to_body[axis] * forward[axis])
+        .sum::<f64>()
+        / distance;
+    assert!(cosine > 1.0 - 1e-6, "{cosine}");
+
+    // Turning and zooming move the map's camera and not the player's.
+    player.orbit_by(0.5, 0.2);
+    player.orbit_zoom(2.0);
+    assert_ne!(player.drawn_camera().position, map.position);
+    assert_eq!(player.camera, body);
+
+    // Back to the player's eyes as they were; and the map comes back where it was left.
+    let left = player.orbit().expect("the map has an orbit");
+    player.show_body();
+    assert_eq!(player.view_mode(), ViewMode::Body);
+    assert_eq!(player.drawn_camera(), body);
+    assert_eq!(player.orbit(), None);
+    player.show_map();
+    assert_eq!(player.orbit(), Some(left));
+
+    // A camera that is let go of flies where it is, and the player stays.
+    let flying_from = player.drawn_camera();
+    player.detach_camera();
+    assert_eq!(player.view_mode(), ViewMode::Fly);
+    assert_eq!(player.drawn_camera(), flying_from);
+    player.fly_look_by(0.3, 0.1);
+    player.fly_move_relative(glam::DVec3::new(0.0, 0.0, -10.0));
+    assert_ne!(player.drawn_camera().position, flying_from.position);
+    assert_ne!(player.drawn_camera().yaw, flying_from.yaw);
+    assert_eq!(player.camera, body);
+    player.show_body();
+    assert_eq!(player.drawn_camera(), body);
+}
+
+#[test]
+fn what_a_player_in_the_map_is_shown_is_what_a_player_standing_where_the_map_is_is_shown_and_the_server_is_told_of_the_body_only()
+ {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    player.hold_hidden_pictures(64 << 20);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    let on_the_ground = screen.nodes.clone();
+    let watched = player.client().world().watched();
+    assert!(watched.is_some());
+
+    player.show_map();
+    player.orbit_zoom(200.0);
+    player.orbit_by(1.0, 0.3);
+    rig.settle(&mut player, &mut screen);
+    let map = player.drawn_camera().position;
+    assert_ne!(
+        screen.nodes, on_the_ground,
+        "the picture is of somewhere else"
+    );
+    // The server is told where the body is, and not where the map is: the map's place is asked for as a free region, which holds the edited bricks round it and
+    // is read-only, and for the nodes that an edit changes round it.
+    assert_eq!(player.client().world().watched(), watched);
+    assert!(
+        player
+            .client()
+            .world()
+            .watched_free()
+            .iter()
+            .any(|region| region.contains(map.brick())),
+        "the server was not asked for the edited bricks round the map"
+    );
+    assert!(
+        player.detail_places().contains(&DetailPlace {
+            grid: GridId::MAIN,
+            brick: map.brick()
+        }),
+        "the server was not asked for the nodes round the map"
+    );
+
+    let connection = rig.connection();
+    let mut there = rig.join(connection, 2, voxels_of(map));
+    let mut there_screen = Screen::default();
+    rig.settle(&mut there, &mut there_screen);
+    assert_same_nodes(&screen, &there_screen);
+
+    // The player's own view is kept ready meanwhile, held hidden, and coming back is the picture it was.
+    assert!(
+        screen.hidden_nodes.len() > 20,
+        "the body's view is held: {} nodes",
+        screen.hidden_nodes.len()
+    );
+    player.show_body();
+    rig.settle(&mut player, &mut screen);
+    assert_eq!(screen.nodes, on_the_ground);
+}
+
+#[test]
+fn the_map_is_kept_ready_for_a_counted_while_after_it_is_left_and_then_let_go_of() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    player.hold_hidden_pictures(64 << 20);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(player.warm_places_now().is_empty(), "no map has been used");
+
+    player.show_map();
+    rig.settle(&mut player, &mut screen);
+    let body_place = player.warm_places_now();
+    assert_eq!(
+        body_place.get(&GridId::MAIN),
+        Some(&player.camera.position),
+        "the player's own place is kept ready while the map is drawn"
+    );
+
+    // Left, the map is kept ready: in the place it was in, not the player's.
+    let map_place = player.drawn_camera().position;
+    player.show_body();
+    assert_eq!(
+        player.warm_places_now().get(&GridId::MAIN),
+        Some(&map_place)
+    );
+    // The window is counted in ticks of the server's: after the last of them it is let go of.
+    for _ in 0..MAP_WARM_TICKS_FOR_THE_TEST + 10 {
+        let (server, nodes) = (&mut rig.server, &rig.nodes);
+        nodes.step(server);
+        player.advance().unwrap();
+        if player.warm_places_now().is_empty() {
+            break;
+        }
+    }
+    assert!(
+        player.warm_places_now().is_empty(),
+        "the map is still kept ready long after it was left"
+    );
+    // A place that a game asked to be kept ready itself is the game's, and is not let go of.
+    let there = camera_at(WATCHER, 0.0, 0.0).position;
+    player.keep_ready(GridId::MAIN, Some(there));
+    assert_eq!(player.warm_places_now().get(&GridId::MAIN), Some(&there));
+}
+
+/// The window the map is kept ready for after it was left, in ticks (`docs/specs/viewpoints-spec.md`, 6.1): the test counts what the session says.
+const MAP_WARM_TICKS_FOR_THE_TEST: u64 = crate::session::MAP_WARM_TICKS;
+
+#[test]
+fn nothing_is_aimed_at_from_the_map_and_the_player_is_not_walked_by_it() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, [8.5, 12.5, 8.5]);
+    player.camera.pitch = -1.4;
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(player.target().is_some(), "the player looks at the ground");
+    player.show_map();
+    assert!(
+        player.target().is_none(),
+        "nothing is aimed at from the map"
+    );
+    player.show_body();
+    assert!(player.target().is_some());
 }

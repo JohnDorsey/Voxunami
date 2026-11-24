@@ -9,6 +9,7 @@ use entities::{Inventory, ItemStack};
 use game_shell::client_plugin::{
     ActionSpec, Appearance, ClientContext, ClientPlugin, ClientRegistrar, MouseButton,
 };
+use game_shell::session::ViewCommand;
 use game_shell::{GameContent, KeyCode};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
@@ -538,7 +539,10 @@ impl ClientPlugin for ClientItems {
     }
 }
 
-/// The client half of `voxunami_cave:movement`: the keys that fly and that switch the suit thrusters (`R`, the key that switches RCS in Kerbal Space Program).
+/// The client half of `voxunami_cave:movement`: the keys that fly and that switch the suit thrusters (`R`, the key that switches RCS in Kerbal Space Program), and the keys of the
+/// picture's camera, which is where the player is looking from and so a kind of movement: `M` draws the map (a camera that goes round the player, or a ship or a planet that
+/// `Tab` locks it on) and draws the player's eyes again; `V` lets the camera go to fly where the mouse points it while the player stands, and takes it back. The movement keys
+/// and the mouse move whichever of them is drawn, and the wheel zooms the map (the window's work, `docs/specs/viewpoints-spec.md`, phase 5).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClientMovement;
 
@@ -560,6 +564,30 @@ impl ClientPlugin for ClientMovement {
                 "switches the suit thrusters, which push you in the air along the movement keys (space and shift for up and down) with nothing to brake you",
             ),
             |context| context.send_command("/thrusters"),
+        );
+        registrar.key(
+            KeyCode::KeyM,
+            ActionSpec::new(
+                "voxunami_cave:toggle_map",
+                "draws the map, a camera that goes round you (or the ship or planet Tab locks it on), or your own eyes again",
+            ),
+            |context| context.view(ViewCommand::ToggleMap),
+        );
+        registrar.key(
+            KeyCode::KeyV,
+            ActionSpec::new(
+                "voxunami_cave:toggle_detached_camera",
+                "lets the camera go to fly where you point it while you stand, or takes it back",
+            ),
+            |context| context.view(ViewCommand::ToggleDetached),
+        );
+        registrar.key(
+            KeyCode::Tab,
+            ActionSpec::new(
+                "voxunami_cave:next_map_focus",
+                "locks the map on the next thing it can go round: you, then the ships and planets there are",
+            ),
+            |context| context.view(ViewCommand::CycleFocus(1)),
         );
     }
 }
