@@ -55,6 +55,13 @@ Two questions follow that the owner should answer:
 - The compiled-in generators (Cave's) are **a different case I have not checked**: they are in the program, so a client whose program is older than the server's would regenerate differently if a compiled generator changed under one id. Whether the handshake already refuses a mismatch of them, I did not look; with bending allowed it must, by version, and the first release's rule ("ids may change until then") is the time to give them versions.
 - **`CLAUDE.md`'s hard rule and `TerrainGenerator`'s documentation say the opposite today.** They should be reworded when the owner decides, not before: *a generator's id is its author's to choose; what a session runs is named by its module's hash; the same module gives the same terrain on every machine.* I have not changed them.
 
+## Answered by the owner, 2026-11-24
+
+- **Question 2, the meaning of the three numbers:** agreed (patch: the same terrain; minor: details; major: a different world).
+- **What the namespace of a generator id is:** **the id of the pack that owns the generator**, as for blocks today (`my_pack:hills`), so the namespace of a generator always equals its pack's folder name and `check-pack` can rely on it. There is no separate vendor part. An author who ships several packs shows it in the pack ids (a naming convention such as `acme_terrain`), not in the syntax. An optional `author` key in `pack.json` may be added later as metadata only (not built). Shader packs keep their `author:name` ids. The `@1.2.3` stays a way to write the version beside a `NamespacedId`; nothing that reads `NamespacedId` changes.
+- **Question 1 (the spelling)** is settled by this: `pack_id:generator_name@1.2.3`, with the version stored as three numbers beside the id. The dotted form is not used.
+- **Still open:** 3 (what the world stores), 4 (the policies), 5 (the spike first).
+
 ## Questions for the owner
 
 1. The spelling: `vendor_name:generator_name@1.2.3` (my pick) or the dotted form?
