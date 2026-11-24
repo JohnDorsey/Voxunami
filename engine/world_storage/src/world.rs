@@ -885,6 +885,7 @@ impl WorldData {
                 .map(|(id, successors)| (id, successors.to_vec()))
                 .collect(),
             couplings: self.grids.coupled().iter().copied().collect(),
+            immobilized: self.grids.immobilized().iter().copied().collect(),
         }
     }
 
@@ -1782,6 +1783,7 @@ impl ParsedWorld {
                     parked,
                     record.tombstones,
                     record.couplings,
+                    record.immobilized,
                 )
             }
         };

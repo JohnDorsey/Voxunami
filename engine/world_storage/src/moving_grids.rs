@@ -226,6 +226,8 @@ pub struct GridStore {
     tombstones: BTreeMap<GridId, Vec<(GridId, LatticeTransform)>>,
     /// The pairs of ships that are coupled by their joint ends, the lower identifier first: both of a pair are ships of the store, in memory or in files.
     coupled: BTreeSet<(GridId, GridId)>,
+    /// The pairs of `coupled` that were made rigid at the turn they had (`/joint immobilize`), the lower identifier first: a subset of the coupled pairs, let go of with them.
+    immobilized: BTreeSet<(GridId, GridId)>,
     /// The same, by ship: the ships each one is coupled to (so that a group is found by walking it, and a ship that is alone is found to be so at once).
     partners: BTreeMap<GridId, BTreeSet<GridId>>,
 }
@@ -245,6 +247,7 @@ impl GridStore {
             parked: BTreeMap::new(),
             tombstones: BTreeMap::new(),
             coupled: BTreeSet::new(),
+            immobilized: BTreeSet::new(),
             partners: BTreeMap::new(),
         }
     }
@@ -257,6 +260,7 @@ impl GridStore {
         parked: Vec<(GridId, ParkedGrid)>,
         tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
         coupled: Vec<(GridId, GridId)>,
+        immobilized: Vec<(GridId, GridId)>,
     ) -> Self {
         let mut partners: BTreeMap<GridId, BTreeSet<GridId>> = BTreeMap::new();
         for &(first, second) in &coupled {
@@ -270,6 +274,7 @@ impl GridStore {
             parked: parked.into_iter().collect(),
             tombstones: tombstones.into_iter().collect(),
             coupled: coupled.into_iter().collect(),
+            immobilized: immobilized.into_iter().collect(),
             partners,
         }
     }
@@ -278,6 +283,28 @@ impl GridStore {
     /// world, so that a group that was coupled is kept together by whoever keeps ships by how near the players are, and its joint is made again, after a restart.
     pub fn coupled(&self) -> &BTreeSet<(GridId, GridId)> {
         &self.coupled
+    }
+
+    /// The coupled pairs that were made rigid at the turn they had, the lower identifier first, in order. Saved with the pairs, so that a mechanism that was made stiff is still
+    /// stiff when it is brought back from files or the world is loaded; a pair that is let go of is not in it.
+    pub fn immobilized(&self) -> &BTreeSet<(GridId, GridId)> {
+        &self.immobilized
+    }
+
+    /// Records that a coupled pair is rigid, or is not (in either order). Nothing is recorded of a pair that is not coupled. Whether it changed.
+    pub fn set_immobilized(&mut self, first: GridId, second: GridId, immobilized: bool) -> bool {
+        let pair = (first.min(second), first.max(second));
+        if immobilized == self.immobilized.contains(&pair)
+            || (immobilized && !self.coupled.contains(&pair))
+        {
+            return false;
+        }
+        if immobilized {
+            self.immobilized.insert(pair);
+        } else {
+            self.immobilized.remove(&pair);
+        }
+        true
     }
 
     /// Records that two ships are coupled, or that they are not (in either order). Nothing is recorded of a ship the store does not know, or of a ship with itself.
@@ -300,6 +327,7 @@ impl GridStore {
             self.partners.entry(second).or_default().insert(first);
         } else {
             self.coupled.remove(&pair);
+            self.immobilized.remove(&pair);
             self.unlink(first, second);
         }
         let after = (self.group_of(first), self.group_of(second));
@@ -396,6 +424,7 @@ impl GridStore {
         self.clear_group_rails(group.into_iter().filter(|member| *member != id));
         for partner in self.partners.remove(&id).unwrap_or_default() {
             self.coupled.remove(&(id.min(partner), id.max(partner)));
+            self.immobilized.remove(&(id.min(partner), id.max(partner)));
             self.unlink(partner, id);
         }
     }
@@ -636,6 +665,10 @@ impl GridStore {
         for partner in self.partners.remove(&id).unwrap_or_default() {
             self.coupled.remove(&(id.min(partner), id.max(partner)));
             self.coupled.insert((new.min(partner), new.max(partner)));
+            if self.immobilized.remove(&(id.min(partner), id.max(partner))) {
+                self.immobilized
+                    .insert((new.min(partner), new.max(partner)));
+            }
             if let Some(partners) = self.partners.get_mut(&partner) {
                 partners.remove(&id);
                 partners.insert(new);
@@ -1168,6 +1201,55 @@ mod tests {
     }
 
     #[test]
+    fn a_pair_is_immobilized_only_while_it_is_coupled_and_is_let_go_of_with_the_coupling_the_ship_or_a_renumbering()
+     {
+        let mut store = GridStore::new();
+        let (first, second, third) = (
+            store.create(grid(1)),
+            store.create(grid(2)),
+            store.create(grid(3)),
+        );
+        // A pair that is not coupled is not immobilized, and nothing says it is.
+        assert!(!store.set_immobilized(first, second, true));
+        assert!(store.immobilized().is_empty());
+        store.set_coupled(first, second, true);
+        store.set_coupled(second, third, true);
+        // In either order, once, and saying so again says nothing changed.
+        assert!(store.set_immobilized(second, first, true));
+        assert!(!store.set_immobilized(first, second, true));
+        assert_eq!(
+            store.immobilized().iter().copied().collect::<Vec<_>>(),
+            [(first, second)]
+        );
+        // Mobile again.
+        assert!(store.set_immobilized(first, second, false));
+        assert!(!store.set_immobilized(first, second, false));
+        assert!(store.immobilized().is_empty());
+        // Let go of with the coupling.
+        store.set_immobilized(first, second, true);
+        store.set_coupled(first, second, false);
+        assert!(store.immobilized().is_empty());
+        // Coupled again, it is mobile: a pair that was let go of does not come back stiff.
+        store.set_coupled(first, second, true);
+        assert!(store.immobilized().is_empty());
+        // Let go of with a ship that is gone.
+        store.set_immobilized(second, third, true);
+        store.remove(third);
+        assert!(store.immobilized().is_empty());
+        // And carried to the new id of a ship that is renumbered.
+        store.set_immobilized(first, second, true);
+        let renumbered = store.renumber(first).unwrap();
+        assert_eq!(
+            store.immobilized().iter().copied().collect::<Vec<_>>(),
+            [(second, renumbered)]
+        );
+        assert_eq!(
+            store.coupled().iter().copied().collect::<Vec<_>>(),
+            [(second, renumbered)]
+        );
+    }
+
+    #[test]
     fn setting_a_pair_says_whether_the_pairs_changed() {
         let mut store = GridStore::new();
         let (first, second) = (store.create(grid(1)), store.create(grid(2)));
@@ -1319,6 +1401,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![(ids[0], ids[5])],
+            Vec::new(),
         );
         assert_eq!(saved.group_of(ids[5]), [ids[0], ids[5]]);
     }

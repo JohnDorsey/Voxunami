@@ -418,6 +418,30 @@ fn anything_done_to_a_ship_of_a_group_takes_the_rail_from_its_anchor_and_leaves_
 }
 
 #[test]
+fn a_pair_made_rigid_is_told_to_the_world_changes_no_ones_group_and_is_let_go_of_with_the_coupling()
+{
+    let (mut world, _planet, ships, rail) = a_group_on_a_rail();
+    assert!(world.immobilized_ships().is_empty());
+    // Stiffening a pair of the group changes who is in it not at all: the rail stays.
+    assert!(world.set_ships_immobilized(ships[1], ships[0], true));
+    assert!(!world.set_ships_immobilized(ships[0], ships[1], true));
+    assert_eq!(
+        world
+            .immobilized_ships()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [(ships[0], ships[1])]
+    );
+    assert_eq!(world.data().grids().get(ships[0]).unwrap().rail, Some(rail));
+    // A pair that is not coupled is not stiff.
+    assert!(!world.set_ships_immobilized(ships[0], ships[2], true));
+    // Let go of with the coupling.
+    world.set_ships_coupled(ships[0], ships[1], false);
+    assert!(world.immobilized_ships().is_empty());
+}
+
+#[test]
 fn a_change_in_who_is_in_the_group_takes_the_rail_from_its_anchor() {
     // A ship gone (destroyed), a ship let go, a ship joined: the rail was of the centre of mass of other ships.
     let (mut world, _planet, ships, _rail) = a_group_on_a_rail();

@@ -32,7 +32,7 @@
 //!   id (its level, where it was, the bricks it touched, and its file: the number of the write and the checksum of the bytes), then the
 //!   ids that were retired by a split or a merge and
 //!   the ships that took their places, then, only if there are any, the pairs of ships that are coupled by their joint ends (a count, and the two ids of each pair, the lower
-//!   first, in order). A coupling is derived from the blocks and places, and only which pairs there were is saved: the joint is made again when both ships are in memory and their ends
+//!   first, in order), and after them, only if any is rigid (`/joint immobilize`), the same of the pairs that are (a count, then the pairs, each one of those). A coupling is derived from the blocks and places, and only which pairs there were is saved: the joint is made again when both ships are in memory and their ends
 //!   are together. The voxels of the ships are in files of their own. Written only when the world has had ships (so a
 //!   world without them is byte for byte what it was before ships).
 //! - `engine:clock`: the ticks since the world was made (a varint), a twentieth of a second each. Written only when it is not zero (so a world that has not
@@ -302,6 +302,8 @@ pub struct GridsRecord {
     pub tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
     /// The pairs of ships that were coupled by their joint ends, the lower id first, in order, each once: both ships are in `ships`.
     pub couplings: Vec<(GridId, GridId)>,
+    /// The pairs among them that were made rigid at the turn they had, the lower id first, in order, each once: each is one of `couplings`.
+    pub immobilized: Vec<(GridId, GridId)>,
 }
 
 /// Whether a ship id is one a world has given out.
@@ -362,6 +364,14 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
         for (first, second) in &record.couplings {
             writer.write_varint(first.get());
             writer.write_varint(second.get());
+        }
+        // The pairs that are rigid, after them and only if there are any (so a world with none is byte for byte what it was before they were saved): a count, then each pair's two ids.
+        if !record.immobilized.is_empty() {
+            writer.write_varint(record.immobilized.len() as u64);
+            for (first, second) in &record.immobilized {
+                writer.write_varint(first.get());
+                writer.write_varint(second.get());
+            }
         }
     }
     writer.into_bytes()
@@ -515,6 +525,37 @@ pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
             couplings.push((first, second));
         }
     }
+    let mut immobilized: Vec<(GridId, GridId)> = Vec::new();
+    if !reader.remaining().is_empty() {
+        let count = reader.read_count(2)?;
+        if count == 0 {
+            return Err(DecodeError::Invalid(
+                "the rigid pairs are listed, and there are none",
+            ));
+        }
+        immobilized.reserve(count);
+        for _ in 0..count {
+            let first = GridId::new(reader.read_varint()?);
+            let second = GridId::new(reader.read_varint()?);
+            if first >= second {
+                return Err(DecodeError::Invalid(
+                    "a rigid pair does not have the lower id first",
+                ));
+            }
+            if immobilized
+                .last()
+                .is_some_and(|previous| *previous >= (first, second))
+            {
+                return Err(DecodeError::Invalid(
+                    "the rigid pairs are not in order, each once",
+                ));
+            }
+            if couplings.binary_search(&(first, second)).is_err() {
+                return Err(DecodeError::Invalid("a rigid pair is not a coupled pair"));
+            }
+            immobilized.push((first, second));
+        }
+    }
     reader.finish()?;
     Ok(GridsRecord {
         next,
@@ -522,6 +563,7 @@ pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
         ships,
         tombstones,
         couplings,
+        immobilized,
     })
 }
 

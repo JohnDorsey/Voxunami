@@ -397,6 +397,25 @@ impl ServerWorld {
         }
     }
 
+    /// The coupled pairs that are rigid (`/joint immobilize`), the lower id first: a part of [`ServerWorld::coupled_ships`], saved with it ([`world_storage::GridStore::immobilized`]),
+    /// so that a mechanism that was made stiff is stiff when it is brought back from files or loaded.
+    pub fn immobilized_ships(&self) -> &BTreeSet<(GridId, GridId)> {
+        self.data.grids().immobilized()
+    }
+
+    /// Records that a coupled pair is rigid, or is not (in either order). Nothing is recorded of a pair that is not coupled, and a pair that is let go of is not stiff when it
+    /// is coupled again. It changes no one's group, so no ship loses its rail or waits. Whether it changed.
+    pub fn set_ships_immobilized(
+        &mut self,
+        first: GridId,
+        second: GridId,
+        immobilized: bool,
+    ) -> bool {
+        self.data
+            .grids_mut()
+            .set_immobilized(first, second, immobilized)
+    }
+
     /// How the paths of ships on rails are kept.
     pub fn rail_settings(&self) -> &RailSettings {
         &self.rail_settings

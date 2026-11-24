@@ -376,6 +376,122 @@ fn the_pairs_of_coupled_ships_are_saved_whether_the_ships_are_in_memory_or_in_fi
 }
 
 #[test]
+fn the_pairs_that_are_immobilized_are_saved_with_the_pairs_and_come_back_and_a_world_with_none_is_as_it_was()
+ {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    let ships: Vec<GridId> = (0..4)
+        .map(|number| {
+            let ship = game.sample_ship(&world, number * 100);
+            world.grids_mut().create(ship)
+        })
+        .collect();
+    world.grids_mut().set_coupled(ships[0], ships[1], true);
+    world.grids_mut().set_coupled(ships[1], ships[2], true);
+    world.grids_mut().set_coupled(ships[2], ships[3], true);
+    // The first and the last are stiff, the middle one is a ball; the last pair is in files.
+    world.grids_mut().set_immobilized(ships[0], ships[1], true);
+    world.grids_mut().set_immobilized(ships[3], ships[2], true);
+    let mut files = MemoryShipFiles::new();
+    let format = game.ship_format(&world);
+    for id in [ships[2], ships[3]] {
+        world.park_ship(id, false, &mut files, &format).unwrap();
+    }
+    let expected = vec![(ships[0], ships[1]), (ships[2], ships[3])];
+    let save = game.save_with_ships(&mut world);
+    assert_eq!(grids_of(&save.world).immobilized, expected);
+    let mut other = Game::new(&ALL_PLUGINS);
+    let (loaded, _) = other.load(&save.world).unwrap();
+    assert_eq!(
+        loaded
+            .grids()
+            .immobilized()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(loaded.grids().coupled().len(), 3);
+    // A save of what was loaded says the same.
+    let mut again = loaded;
+    assert_eq!(
+        grids_of(&other.save_with_ships(&mut again).world).immobilized,
+        expected
+    );
+
+    // Pairs and none immobilized: nothing of it is written, and the section is what it was before.
+    let mut plain = game.new_world();
+    let ships: Vec<GridId> = (0..2)
+        .map(|number| {
+            let ship = game.sample_ship(&plain, number * 100);
+            plain.grids_mut().create(ship)
+        })
+        .collect();
+    plain.grids_mut().set_coupled(ships[0], ships[1], true);
+    let plain_save = game.save_with_ships(&mut plain);
+    assert!(grids_of(&plain_save.world).immobilized.is_empty());
+}
+
+#[test]
+fn the_immobilized_pairs_of_the_ships_section_round_trip_are_only_there_if_there_are_any_and_must_be_coupled_pairs()
+ {
+    let with_none = sample_record();
+    let stiff = GridsRecord {
+        immobilized: with_none.couplings.clone(),
+        ..sample_record()
+    };
+    let bytes = encode_grids(&stiff);
+    assert_eq!(decode_grids(&bytes).unwrap(), stiff);
+    // After the coupled pairs and only if there are any: a record with none is the bytes from before, and the stiff one begins with them (one more count and the pair).
+    let before = encode_grids(&with_none);
+    assert!(bytes.starts_with(&before) && bytes.len() > before.len());
+    // The count of one, then the same two ids that the coupled pair has, which are the end of the pairs before it.
+    assert_eq!(bytes[before.len()], 1);
+    let pair = &before[before.len() - (bytes.len() - before.len() - 1)..];
+    assert_eq!(
+        &bytes[before.len() + 1..],
+        pair,
+        "the same pair, written again"
+    );
+    assert_eq!(decode_grids(&before).unwrap(), with_none);
+    // A cut after the pairs and inside the list is damage, and a cut at the end of the pairs is a section with none.
+    assert_eq!(decode_grids(&bytes[..before.len()]).unwrap(), with_none);
+    for length in before.len() + 1..bytes.len() {
+        assert!(decode_grids(&bytes[..length]).is_err(), "cut at {length}");
+    }
+    // A list of none, written, is damage.
+    let mut empty_list = before.clone();
+    empty_list.push(0);
+    assert!(decode_grids(&empty_list).is_err());
+
+    let ship_a = GridId::new(FIRST + 1);
+    let ship_b = GridId::new(FIRST + 4);
+    let broken = |change: &dyn Fn(&mut GridsRecord)| {
+        let mut record = stiff.clone();
+        change(&mut record);
+        decode_grids(&encode_grids(&record))
+    };
+    assert!(
+        broken(&|record| record.immobilized = vec![(ship_b, ship_a)]).is_err(),
+        "the higher id first"
+    );
+    assert!(
+        broken(&|record| record.immobilized = vec![(ship_a, ship_b), (ship_a, ship_b)]).is_err(),
+        "a pair twice"
+    );
+    assert!(
+        broken(&|record| {
+            let mut third = record.ships[1].clone();
+            third.id = GridId::new(FIRST + 6);
+            record.ships.push(third);
+            record.immobilized = vec![(ship_a, GridId::new(FIRST + 6))];
+        })
+        .is_err(),
+        "a pair that is not coupled"
+    );
+}
+
+#[test]
 fn a_ship_in_another_level_is_in_it_again_and_one_in_a_level_the_world_lacks_is_refused() {
     let game = Game::new(&ALL_PLUGINS);
     let mut world = game.new_world();
@@ -821,6 +937,7 @@ fn sample_record() -> GridsRecord {
             )],
         )],
         couplings: vec![(GridId::new(FIRST + 1), GridId::new(FIRST + 4))],
+        immobilized: Vec::new(),
     }
 }
 
@@ -832,6 +949,7 @@ fn the_ships_section_round_trips_and_refuses_what_cannot_be_right() {
     // (The coupled pairs are the end of the section and only there if there are any, so a cut just before them is a section from before they were saved: it reads, with none.)
     let before_pairs = encode_grids(&GridsRecord {
         couplings: Vec::new(),
+        immobilized: Vec::new(),
         ..sample_record()
     });
     assert!(bytes.starts_with(&before_pairs) && bytes.len() > before_pairs.len());
@@ -841,6 +959,7 @@ fn the_ships_section_round_trips_and_refuses_what_cannot_be_right() {
                 decode_grids(&bytes[..length]).unwrap(),
                 GridsRecord {
                     couplings: Vec::new(),
+                    immobilized: Vec::new(),
                     ..good.clone()
                 }
             );
@@ -989,6 +1108,7 @@ proptest! {
             )).collect(),
             // (Ships 10 and 11, 12 and 13, and so on, are coupled.)
             couplings: (0..count as u64 / 2).map(|pair| (GridId::new(FIRST + 10 + 2 * pair), GridId::new(FIRST + 11 + 2 * pair))).collect(),
+            immobilized: Vec::new(),
         };
         prop_assert_eq!(decode_grids(&encode_grids(&record)).unwrap(), record);
     }
@@ -1039,6 +1159,7 @@ fn the_flags_of_a_ship_in_the_world_file_are_one_byte_of_three_bits_the_old_flag
         }],
         tombstones: Vec::new(),
         couplings: Vec::new(),
+        immobilized: Vec::new(),
     };
     // (The byte is the last but the count of the retired ids, which is none.)
     let flags_of = |waits, terrain, rail| {
@@ -1139,6 +1260,7 @@ fn the_box_of_a_ships_own_bricks_is_a_flag_and_a_box_after_the_flags_and_a_ship_
         }],
         tombstones: Vec::new(),
         couplings: Vec::new(),
+        immobilized: Vec::new(),
     };
     let without = encode_grids(&record(None));
     let bounds = voxel_space::BrickBox::new(
