@@ -22,7 +22,7 @@ use world_view::{RayHit, ViewChannels};
 
 use crate::client_commands::ClientSettings;
 use crate::package_data::PackageData;
-use crate::session::Mode;
+use crate::session::{Mode, ViewCommand};
 
 /// The client half of a plugin.
 pub trait ClientPlugin: Any + Send + std::fmt::Debug {
@@ -98,6 +98,7 @@ pub(crate) fn describe_prompt(prompt: &Prompt, waiting: usize) -> String {
 pub(crate) enum Outgoing {
     Command(String),
     Message(NamespacedId, Vec<u8>),
+    View(ViewCommand),
 }
 
 /// What a hook can see of the player's session and ask of the server. A narrow view: it has no
@@ -152,6 +153,11 @@ impl<'a> ClientContext<'a> {
     /// Asks the server to run a command, as if the player had typed it (`/fly`).
     pub fn send_command(&mut self, text: &str) {
         self.outgoing.push(Outgoing::Command(text.to_owned()));
+    }
+
+    /// Asks the session to do something to the camera the picture is made from: the map, a camera that flies off (the keys are the game's).
+    pub fn view(&mut self, command: ViewCommand) {
+        self.outgoing.push(Outgoing::View(command));
     }
 
     /// Sends the server a message of the game.

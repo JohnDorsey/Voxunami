@@ -984,8 +984,16 @@ impl State {
             state.selected_from = None;
             return;
         };
-        let from = viewer_bricks(config, data, level, position);
-        let far_from = far_viewer_bricks(data, level, position, far);
+        let mut from = viewer_bricks(config, data, level, position);
+        let mut far_from = far_viewer_bricks(data, level, position, far);
+        // The places of the viewpoints that have no body are selected from as the player is, after the player (what is wanted by both is sent where the player's names it).
+        for place in &state.detail.places {
+            if far.contains(&place.grid) {
+                far_from.push((place.grid, place.brick));
+            } else if keeps_nodes_of(config, data, place.grid) {
+                from.push((place.grid, place.brick));
+            }
+        }
         // (The ships that are far no more: what was sent of them is not on the client any more.)
         let left: Vec<GridId> = state
             .selected_far_from
@@ -999,7 +1007,7 @@ impl State {
         }
         let moved = state.selected_from.as_ref() != Some(&from)
             || state.selected_far_from != far_from
-            || state.selected_for != Some(state.detail);
+            || state.selected_for.as_ref() != Some(&state.detail);
         if moved || state.selected_edit_epoch != self.edit_epoch {
             state.leaves = from
                 .iter()
@@ -1018,7 +1026,7 @@ impl State {
                 .collect();
             state.selected_far_from = far_from;
             state.selected_from = Some(from);
-            state.selected_for = Some(state.detail);
+            state.selected_for = Some(state.detail.clone());
             state.selected_edit_epoch = self.edit_epoch;
             state.pending_epoch = u64::MAX;
         }
@@ -1114,6 +1122,9 @@ fn pending_updates(
             .filter(|key| !overrides.contains_key(key) && sent.get(key) != Some(&EMPTY_VERSION))
             .map(|key| (key, EMPTY_VERSION)),
     );
+    // (Two viewpoints that want a cube both name it: it is sent once, where the first names it.)
+    let mut named = BTreeSet::new();
+    wanted.retain(|(key, _)| named.insert(*key));
     wanted.sort_by_key(|(key, _)| std::cmp::Reverse(key.0));
     sent.iter()
         .filter(|(key, version)| !overrides.contains_key(key) && **version != EMPTY_VERSION)
@@ -1540,6 +1551,30 @@ mod tests {
     }
 
     #[test]
+    fn a_node_that_two_viewpoints_want_is_sent_once_where_the_first_of_them_names_it() {
+        let held = overrides(&[(key(0, 2), 1), (key(4, 2), 2), (key(32, 5), 8)]);
+        // The player's cubes, and then those of a place that has two of them too.
+        let order = pending(
+            &held,
+            &[],
+            &[cube(4, 2), cube(0, 2), cube(0, 2), cube(32, 5), cube(4, 2)],
+        );
+        assert_eq!(
+            order,
+            [
+                (key(32, 5), Some(8)),
+                (key(4, 2), Some(2)),
+                (key(0, 2), Some(1))
+            ]
+        );
+        // A cube that is empty for both is told once as well.
+        let wanted_empty = [(GridId::MAIN, cube(8, 3)), (GridId::MAIN, cube(8, 3))];
+        let order: Vec<_> =
+            pending_updates(&BTreeMap::new(), &BTreeMap::new(), &[], &wanted_empty).into();
+        assert_eq!(order, [(key(8, 3), Some(EMPTY_VERSION))]);
+    }
+
+    #[test]
     fn leaves_of_one_level_stay_in_the_order_the_walk_gave_them() {
         let held = overrides(&[(key(0, 2), 1), (key(4, 2), 2), (key(8, 2), 3)]);
         let order = pending(&held, &[], &[cube(4, 2), cube(8, 2), cube(0, 2)]);
@@ -1673,6 +1708,7 @@ mod tests {
                 bytes_per_second: 1_000_000,
                 fine_radius: 2,
                 zoom: None,
+                places: Vec::new(),
             },
             selected_from: None,
             selected_far_from: Vec::new(),
@@ -1756,6 +1792,7 @@ mod tests {
             bytes_per_second: 1_000_000,
             fine_radius: 2,
             zoom: None,
+            places: Vec::new(),
         };
         let mut edited = EditedCubes::new();
         let none = select_leaves(&config, &edited, GridId::MAIN, at(100).brick(), &detail);

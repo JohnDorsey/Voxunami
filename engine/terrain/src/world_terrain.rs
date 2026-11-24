@@ -35,7 +35,7 @@ pub enum GenerationOutcome {
 /// the default generator is at that moment, and then keep that generator forever. Changing the
 /// default therefore affects only regions generated afterwards. The assignment tree collapses
 /// uniform areas, so it stays small enough to send to clients.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldTerrain {
     generators: Registry<Arc<dyn TerrainGenerator>>,
     assignments: RegionOctree<Option<GeneratorId>>,

@@ -32,6 +32,8 @@ Usage: voxunami {command} [options]
   --shadows on|off                shadows of the terrain (default on); .shadows changes it while playing
   --pixel-shadows on|off          every pixel of a block's picture wholly lit or wholly shaded (default off);
                                   .pixelshadows changes it while playing
+  --map-release on|off            let go at once of the pictures made for a map that is taken away
+                                  (default on); .maprelease changes it while playing
   --shader-pack NAME              start with this shader pack (its id or name, or the beginning of one);
                                   .shader changes it while playing
   --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
@@ -172,6 +174,8 @@ pub struct ViewOptions {
     pub shadows: bool,
     /// Whether each pixel of a block's picture is wholly in the light or wholly in a shadow (`--pixel-shadows`); off by default.
     pub pixelated_shadows: bool,
+    /// Whether the pictures made for a map that is kept ready are let go of when it is taken away (`--map-release`); on by default.
+    pub release_map_pictures: bool,
     /// A folder of shader packs besides the one in the game data folder (`--shader-packs`).
     pub shader_packs: Option<PathBuf>,
     /// The shader pack to start with (`--shader-pack`): an id or a name, or the beginning of one.
@@ -191,6 +195,7 @@ impl Default for ViewOptions {
             time: None,
             shadows: true,
             pixelated_shadows: false,
+            release_map_pictures: true,
             shader_packs: None,
             shader_pack: None,
         }
@@ -320,6 +325,13 @@ fn parse_view_flag(
                 "on" => true,
                 "off" => false,
                 other => return Err(format!("--pixel-shadows: {other:?} should be on or off")),
+            };
+        }
+        "--map-release" => {
+            view.release_map_pictures = match value(flag)?.as_str() {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("--map-release: {other:?} should be on or off")),
             };
         }
         _ => return Ok(false),
@@ -558,7 +570,7 @@ mod tests {
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
              --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off \
-             --shader-pack cel --shader-packs my_shaders",
+             --map-release off --shader-pack cel --shader-packs my_shaders",
         );
         assert_eq!(
             parsed,
@@ -574,6 +586,7 @@ mod tests {
                     time: Some(18 * 60 + 30),
                     shadows: false,
                     pixelated_shadows: false,
+                    release_map_pictures: false,
                     shader_packs: Some(PathBuf::from("my_shaders")),
                     shader_pack: Some("cel".to_owned()),
                 },
@@ -603,6 +616,25 @@ mod tests {
                 .unwrap_err();
             assert!(error.contains("--pixel-shadows"), "{bad:?}: {error}");
         }
+    }
+
+    #[test]
+    fn map_pictures_are_released_unless_the_player_says_off_and_nothing_else_is_a_state() {
+        assert!(play("").view.release_map_pictures);
+        assert!(play("--map-release on").view.release_map_pictures);
+        assert!(!play("--map-release off").view.release_map_pictures);
+        for bad in ["maybe", "1", "ON", ""] {
+            let error =
+                parse_play::<ExampleGame>(arguments(&format!("--map-release {bad}"))).unwrap_err();
+            assert!(error.contains("--map-release"), "{bad:?}: {error}");
+        }
+        // A recording can be watched either way.
+        let Parsed::Run(options) =
+            parse_replay(arguments("r.voxreplay --map-release off")).unwrap()
+        else {
+            panic!("a recording to watch");
+        };
+        assert!(!options.view.release_map_pictures);
     }
 
     #[test]

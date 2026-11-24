@@ -131,8 +131,10 @@ The two messages are **plugin game messages**, not parts of the protocol: `engin
 the plugin `engine:coarse_streaming` (`coarse_streaming::CoarseServerPlugin`, which depends on `player_presence:players` for where each player is). Recordings carry them like any other
 game message, so a replay needs nothing else, and a server without the plugin simply ignores the first.
 
-- `SetDetail { cell_pixels, pixel_size, bytes_per_second, fine_radius, zoom }`: how fine the picture is (3.3), how fast the client can be told, the radius of its ball of bricks (3.6a) and
-  an optional telescope cone. Sent when it joins and whenever it changes; 0 bytes a second asks for nothing. Values that make no sense are refused at decode.
+- `SetDetail { cell_pixels, pixel_size, bytes_per_second, fine_radius, zoom, places }`: how fine the picture is (3.3), how fast the client can be told, the radius of its ball of bricks (3.6a),
+  an optional telescope cone, and (2026-11-23, `viewpoints-spec.md` 9k) the **places** besides the player's that it draws from: up to 8, each a grid and a brick in that grid's own coordinates, selected from
+  by the server with the same settings and the same function as the player's brick (the nodes of a place are sent after the player's, a cube both want once). Sent when it joins and whenever it
+  changes; 0 bytes a second asks for nothing. Values that make no sense are refused at decode.
 - `CoarseNodes(Vec<CoarseNodeUpdate { grid, cube, node: Option<CoarseNode> }>)`, at most 256 to a message: a node is one cell, or runs of cells (equal neighbours cost one run);
   the *exposure* of a cell is working data for making parents and is not sent. `None` takes back what was said.
 - **The server** keeps an **override** for every cube of detail level 1 to 12 (cells of 4 kilometres) that holds an edited brick: the generator's node for the cube, patched with the exact cells

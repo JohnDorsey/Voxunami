@@ -17,6 +17,7 @@ use world_storage::{MemoryShipFiles, SaveError, ShipFiles, ShipLoadError, WorldD
 use crate::config::ServerConfig;
 use crate::game_logic::GameLogic;
 use crate::grid_replication::{self, EditedBrick, KnownGrids};
+use crate::interest::{Watch, newly_covered};
 use crate::replication::{KnownEntities, ViewCache, entity_messages};
 use crate::server_world::{Audience, OutgoingGameMessage, ServerWorld};
 use crate::ship_settings::ShipSettings;
@@ -64,11 +65,11 @@ enum Phase {
         challenge: [u8; 32],
     },
     Joined {
-        /// The region of a level the client has been told it watches.
-        watched: Option<(LevelIndex, BrickBox)>,
-        /// The latest region it asked for, not yet answered. (Boxed: it is mostly none, and a region is two coordinates of 128 bits each, which would make this variant
+        /// What the client has been told it watches.
+        watched: Option<Watch>,
+        /// The latest it asked for, not yet answered. (Boxed: it is mostly none, and a region is two coordinates of 128 bits each, which would make this variant
         /// much larger than the others.)
-        requested: Option<Box<(LevelIndex, BrickBox)>>,
+        requested: Option<Box<Watch>>,
         /// The entities it has been told of, and as what.
         known_entities: KnownEntities,
         /// The ships it has been told of.
@@ -383,7 +384,14 @@ impl Server {
             (Stage::Joined, ClientMessage::Hello { .. } | ClientMessage::Prove { .. }) => {
                 Some(self.refuse(id, "hello was already sent".to_owned()))
             }
-            (Stage::Joined, ClientMessage::SetInterest { level, region }) => {
+            (
+                Stage::Joined,
+                ClientMessage::SetInterest {
+                    level,
+                    region,
+                    free,
+                },
+            ) => {
                 if self.world.data().level(level).is_none() {
                     return Some(self.refuse(id, format!("the world has no {level}")));
                 }
@@ -397,13 +405,39 @@ impl Server {
                         ),
                     ));
                 }
+                if free.len() > self.config.maximum_free_regions {
+                    return Some(self.refuse(
+                        id,
+                        format!(
+                            "watching {} free regions exceeds the limit of {}",
+                            free.len(),
+                            self.config.maximum_free_regions
+                        ),
+                    ));
+                }
+                let free_bricks = free.iter().fold(0u128, |total, region| {
+                    total.saturating_add(region.brick_count())
+                });
+                if free_bricks > u128::from(self.config.maximum_free_bricks) {
+                    return Some(self.refuse(
+                        id,
+                        format!(
+                            "watching {free_bricks} bricks in free regions exceeds the limit of {}",
+                            self.config.maximum_free_bricks
+                        ),
+                    ));
+                }
                 if let Phase::Joined { requested, .. } = &mut self
                     .sessions
                     .get_mut(&id)
                     .expect("the session exists")
                     .phase
                 {
-                    *requested = Some(Box::new((level, region)));
+                    *requested = Some(Box::new(Watch {
+                        level,
+                        region,
+                        free,
+                    }));
                 }
                 None
             }
@@ -629,39 +663,48 @@ impl Server {
         else {
             unreachable!("only joined clients are sent updates");
         };
-        let previous = *watched;
+        let previous = watched.clone();
         let current = match requested.take().map(|asked| *asked) {
-            Some(asked) if previous != Some(asked) => {
-                *watched = Some(asked);
+            Some(asked) if previous.as_ref() != Some(&asked) => {
+                *watched = Some(asked.clone());
                 Some(asked)
             }
-            _ => previous,
+            _ => previous.clone(),
         };
+        // What the body is told of besides the terrain (the entities, the ships and the messages of the game) is in the region round it only.
+        let body = current.as_ref().map(Watch::body);
 
         let mut messages = Vec::new();
         if current != previous
-            && let Some((level, region)) = current
+            && let Some(now) = &current
         {
-            // Within the same level only the newly watched part is new; another level is new whole.
-            let newly_watched = match previous {
-                Some((before_level, before)) if before_level == level => region.without(before),
-                _ => vec![region],
+            // What the client watched of this level before: within the same level only what is newly watched is new; another level is new whole.
+            let before = previous.as_ref().filter(|before| before.level == now.level);
+            // The body's region is given generators where it has none, for the part of it that the body did not watch.
+            let given = match before {
+                Some(before) => now.region.without(before.region),
+                None => vec![now.region],
             };
+            let newly_watched = newly_covered(
+                &now.regions(),
+                &before.map(Watch::regions).unwrap_or_default(),
+            );
             messages.push(ServerMessage::InterestChanged {
-                level,
-                region,
-                assignments: self.assignments_covering(level, &newly_watched),
+                level: now.level,
+                region: now.region,
+                free: now.free.clone(),
+                assignments: self.assignments_covering(now.level, &given, &newly_watched),
             });
             let overrides = &self
                 .world
                 .data()
-                .level(level)
+                .level(now.level)
                 .expect("a watched level exists")
                 .overrides;
             for slab in newly_watched {
                 for brick in edited_bricks_in(overrides, slab) {
                     messages.push(ServerMessage::BrickContents {
-                        grid: GridId::root(level),
+                        grid: GridId::root(now.level),
                         brick,
                         contents: Arc::clone(
                             overrides.brick(brick).expect("the brick was just found"),
@@ -670,15 +713,18 @@ impl Server {
                 }
             }
         }
-        // Bricks the client has just been sent are in their final state already.
-        if let (Some((before_level, before)), Some((level, now))) = (previous, current)
-            && before_level == level
-            && let Some(kept) = before.intersection(now)
+        // Bricks the client has just been sent are in their final state already: the edits are sent for those it had, and that it still has.
+        if let (Some(before), Some(now)) = (&previous, &current)
+            && before.level == now.level
         {
             messages.extend(
                 edited
                     .iter()
-                    .filter(|entry| entry.grid == GridId::root(level) && kept.contains(entry.brick))
+                    .filter(|entry| {
+                        entry.grid == GridId::root(now.level)
+                            && before.covers(now.level, entry.brick)
+                            && now.covers(now.level, entry.brick)
+                    })
                     .map(|entry| entry.update.clone()),
             );
         }
@@ -700,7 +746,7 @@ impl Server {
             &self.world,
             ships,
             known_grids,
-            current,
+            body,
             aboard,
             grid_replication::ShipLimits {
                 maximum_bricks: self.config.maximum_ship_bricks,
@@ -712,7 +758,7 @@ impl Server {
             &self.world,
             &mut self.entity_views,
             known_entities,
-            current,
+            body,
             known_grids,
         ));
         let far_ships: BTreeSet<GridId> = known_grids
@@ -722,7 +768,7 @@ impl Server {
             .collect();
         self.world.set_far_ships(id, far_ships);
         for outgoing in &self.world.outgoing {
-            if reaches(outgoing, id, current) {
+            if reaches(outgoing, id, body) {
                 messages.push(ServerMessage::GameMessage {
                     kind: outgoing.kind.clone(),
                     payload: outgoing.payload.clone(),
@@ -738,12 +784,14 @@ impl Server {
         messages.iter().map(ServerMessage::encode).collect()
     }
 
-    /// Which generator made the terrain of every assignment cube of `level` touching `regions`,
-    /// assigning the level's current default to cubes that have none yet.
+    /// Which generator made the terrain of every assignment cube of `level` touching `given` or `seen`, in the order of the cubes. A cube that touches `given` (the
+    /// part of the region round a body that it had not watched) that has no generator yet is **assigned** the level's current default, as the body will build and
+    /// walk there; one that touches only `seen` (the free regions, which have no body) is **told** the generator it would have, and nothing is written in the world.
     fn assignments_covering(
         &mut self,
         level: LevelIndex,
-        regions: &[BrickBox],
+        given: &[BrickBox],
+        seen: &[BrickBox],
     ) -> Vec<GeneratorAssignment> {
         let terrain = &mut self
             .world
@@ -752,20 +800,30 @@ impl Server {
             .expect("a watched level exists")
             .terrain;
         let cube_level = terrain.assignment_cube_level();
-        let origins: BTreeSet<BrickCoordinate> = regions
-            .iter()
-            .flat_map(|&region| BrickCube::covering(region, cube_level))
-            .map(|cube| cube.origin())
-            .collect();
-        origins
+        let origins_of = |regions: &[BrickBox]| -> BTreeSet<BrickCoordinate> {
+            regions
+                .iter()
+                .flat_map(|&region| BrickCube::covering(region, cube_level))
+                .map(|cube| cube.origin())
+                .collect()
+        };
+        let mut generators: BTreeMap<BrickCoordinate, u32> = origins_of(given)
             .into_iter()
-            .map(|origin| {
-                let generator = terrain.assign_unassigned(origin);
-                GeneratorAssignment {
-                    cube: BrickCube::new(origin, cube_level)
-                        .expect("covering yields aligned cubes"),
-                    generator: Some(generator.raw()),
-                }
+            .map(|origin| (origin, terrain.assign_unassigned(origin).raw()))
+            .collect();
+        for origin in origins_of(seen) {
+            generators.entry(origin).or_insert_with(|| {
+                terrain
+                    .assigned_generator(origin)
+                    .unwrap_or_else(|| terrain.default_generator())
+                    .raw()
+            });
+        }
+        generators
+            .into_iter()
+            .map(|(origin, generator)| GeneratorAssignment {
+                cube: BrickCube::new(origin, cube_level).expect("covering yields aligned cubes"),
+                generator: Some(generator),
             })
             .collect()
     }

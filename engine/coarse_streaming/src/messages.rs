@@ -31,8 +31,20 @@ pub struct ZoomRequest {
     pub pixel_size: f32,
 }
 
+/// The most places besides the player's that one [`SetDetail`] may name: a client that names more is refused.
+pub const MAXIMUM_PLACES: usize = 8;
+
+/// A place besides the player's that the client draws terrain from (a map kept ready, `docs/specs/viewpoints-spec.md`, 6.3): the brick it is in, in the coordinates of one
+/// grid (the root grid of a level, or a planet, or a ship that is told of as far away), which is where the server selects nodes from as it does for the player. The detail
+/// settings of the [`SetDetail`] it is in are the settings it is drawn with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DetailPlace {
+    pub grid: GridId,
+    pub brick: BrickCoordinate,
+}
+
 /// Client to server: how this client wants things drawn, and how fast it can be told. Sent when it joins and whenever a setting changes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SetDetail {
     /// How many pixels across a cell may be before it is split (`.detail`).
     pub cell_pixels: f32,
@@ -44,6 +56,9 @@ pub struct SetDetail {
     /// [`coarse_cells::FineRegion`]): the server leaves out the nodes there, and the client draws no node of a level finer than 1 anywhere.
     pub fine_radius: u8,
     pub zoom: Option<ZoomRequest>,
+    /// The places besides the player's that the client draws from, with the same settings: the server sends the nodes that an edit changes round each, as it does
+    /// round the player (the places of the viewpoints that have no body, `docs/specs/viewpoints-spec.md`, 6.3). At most [`MAXIMUM_PLACES`].
+    pub places: Vec<DetailPlace>,
 }
 
 impl SetDetail {
@@ -108,6 +123,15 @@ impl Message for SetDetail {
                 write_f32(&mut writer, zoom.pixel_size);
             }
         }
+        assert!(
+            self.places.len() <= MAXIMUM_PLACES,
+            "too many places for a message"
+        );
+        writer.write_varint(self.places.len() as u64);
+        for place in &self.places {
+            writer.write_varint(place.grid.get());
+            write_brick_coordinate(&mut writer, place.brick);
+        }
         writer.into_bytes()
     }
 
@@ -159,6 +183,18 @@ impl Message for SetDetail {
             }
             _ => return Err(DecodeError::Invalid("a zoom flag is neither 0 nor 1")),
         };
+        // A grid and a brick (three coordinates).
+        let count = reader.read_count(4)?;
+        if count > MAXIMUM_PLACES {
+            return Err(DecodeError::Invalid("too many places"));
+        }
+        let mut places = Vec::with_capacity(count);
+        for _ in 0..count {
+            places.push(DetailPlace {
+                grid: GridId::new(reader.read_varint()?),
+                brick: read_brick_coordinate(&mut reader)?,
+            });
+        }
         reader.finish()?;
         Ok(Self {
             cell_pixels,
@@ -166,6 +202,7 @@ impl Message for SetDetail {
             bytes_per_second,
             fine_radius,
             zoom,
+            places,
         })
     }
 
@@ -177,6 +214,7 @@ impl Message for SetDetail {
                 bytes_per_second: 250_000,
                 fine_radius: 12,
                 zoom: None,
+                places: Vec::new(),
             },
             Self {
                 cell_pixels: 0.5,
@@ -188,6 +226,10 @@ impl Message for SetDetail {
                     half_angle: 0.05,
                     pixel_size: 0.000_13,
                 }),
+                places: vec![DetailPlace {
+                    grid: GridId::MAIN,
+                    brick: BrickCoordinate::new(-4, 0, 1_000_000),
+                }],
             },
             Self {
                 cell_pixels: MAXIMUM_CELL_PIXELS,
@@ -199,6 +241,16 @@ impl Message for SetDetail {
                     half_angle: std::f32::consts::FRAC_PI_2,
                     pixel_size: 0.000_000_1,
                 }),
+                places: (0..MAXIMUM_PLACES as u64)
+                    .map(|index| DetailPlace {
+                        grid: GridId::new(GridId::FIRST_ALLOCATED + index),
+                        brick: BrickCoordinate::new(
+                            voxel_space::BRICK_COORDINATE_MINIMUM + index as i128,
+                            0,
+                            -(index as i128),
+                        ),
+                    })
+                    .collect(),
             },
         ]
     }
@@ -576,38 +628,38 @@ mod tests {
         for bad in [
             SetDetail {
                 cell_pixels: 0.0,
-                ..sample
+                ..sample.clone()
             },
             SetDetail {
                 cell_pixels: -1.0,
-                ..sample
+                ..sample.clone()
             },
             SetDetail {
                 cell_pixels: MAXIMUM_CELL_PIXELS + 1.0,
-                ..sample
+                ..sample.clone()
             },
             SetDetail {
                 pixel_size: 0.0,
-                ..sample
+                ..sample.clone()
             },
             SetDetail {
                 pixel_size: 2.0,
-                ..sample
+                ..sample.clone()
             },
             SetDetail {
                 cell_pixels: f32::NAN,
-                ..sample
+                ..sample.clone()
             },
             SetDetail {
                 pixel_size: f32::INFINITY,
-                ..sample
+                ..sample.clone()
             },
         ] {
             assert!(SetDetail::decode(&bad.encode()).is_err(), "{bad:?}");
         }
         let zoom = |zoom: ZoomRequest| SetDetail {
             zoom: Some(zoom),
-            ..sample
+            ..sample.clone()
         };
         let good = ZoomRequest {
             direction: [0.0, 0.0, -1.0],
@@ -657,6 +709,85 @@ mod tests {
         assert!((zoom.half_angle_sine - libm::sin(0.5)).abs() < 1e-12);
         assert_eq!(detail.settings().cell_pixels, 3.0);
         assert_eq!(SetDetail::samples().remove(0).zoom(), None);
+    }
+
+    /// The bytes of a setting with no places and no zoom, up to the count of places (which is the last byte).
+    fn bytes_before_the_places() -> Vec<u8> {
+        let mut bytes = SetDetail::samples().remove(0).encode();
+        assert_eq!(
+            bytes.pop(),
+            Some(0),
+            "a setting with no places ends in a count of none"
+        );
+        bytes
+    }
+
+    #[test]
+    fn the_places_come_last_as_a_count_and_for_each_a_grid_and_a_brick() {
+        let place = DetailPlace {
+            grid: GridId::new(GridId::FIRST_ALLOCATED + 2),
+            brick: BrickCoordinate::new(-5, 70_000, 3),
+        };
+        let setting = SetDetail {
+            places: vec![
+                place,
+                DetailPlace {
+                    grid: GridId::MAIN,
+                    brick: BrickCoordinate::ORIGIN,
+                },
+            ],
+            ..SetDetail::samples().remove(0)
+        };
+        let mut expected = bytes_before_the_places();
+        let mut writer = ByteWriter::new();
+        writer.write_varint(2);
+        writer.write_varint(place.grid.get());
+        for component in [-5i128, 70_000, 3] {
+            writer.write_wide_signed(component);
+        }
+        writer.write_varint(GridId::MAIN.get());
+        for component in [0i128, 0, 0] {
+            writer.write_wide_signed(component);
+        }
+        expected.extend(writer.into_bytes());
+        assert_eq!(setting.encode(), expected);
+        assert_eq!(SetDetail::decode(&expected), Ok(setting));
+    }
+
+    #[test]
+    fn a_setting_with_more_places_than_the_limit_or_fewer_than_it_says_is_refused() {
+        let with_places = |count: usize, written: usize| {
+            let mut bytes = bytes_before_the_places();
+            let mut writer = ByteWriter::new();
+            writer.write_varint(count as u64);
+            for _ in 0..written {
+                writer.write_varint(0);
+                for component in [0i128, 0, 0] {
+                    writer.write_wide_signed(component);
+                }
+            }
+            bytes.extend(writer.into_bytes());
+            bytes
+        };
+        assert_eq!(
+            SetDetail::decode(&with_places(MAXIMUM_PLACES, MAXIMUM_PLACES))
+                .unwrap()
+                .places
+                .len(),
+            MAXIMUM_PLACES
+        );
+        assert_eq!(
+            SetDetail::decode(&with_places(MAXIMUM_PLACES + 1, MAXIMUM_PLACES + 1)),
+            Err(DecodeError::Invalid("too many places"))
+        );
+        assert!(
+            SetDetail::decode(&with_places(3, 2)).is_err(),
+            "a place is missing"
+        );
+        assert!(
+            SetDetail::decode(&with_places(1, 2)).is_err(),
+            "a place is left over"
+        );
     }
 
     proptest! {

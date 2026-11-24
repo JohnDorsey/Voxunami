@@ -177,7 +177,22 @@ impl<C: Connection> Client<C> {
 
     /// Asks the server to send, and keep up to date, the bricks of `region` of `level`.
     pub fn watch(&mut self, level: LevelIndex, region: BrickBox) -> Result<(), ClientError> {
-        self.send(&ClientMessage::SetInterest { level, region })
+        self.watch_with_free(level, region, Vec::new())
+    }
+
+    /// The same, and the edited bricks of the free regions as well: the places of viewpoints that have no body, such as a map kept ready (see
+    /// [`protocol::ClientMessage::SetInterest`]).
+    pub fn watch_with_free(
+        &mut self,
+        level: LevelIndex,
+        region: BrickBox,
+        free: Vec<BrickBox>,
+    ) -> Result<(), ClientError> {
+        self.send(&ClientMessage::SetInterest {
+            level,
+            region,
+            free,
+        })
     }
 
     /// Sends a line of text as a command. The server's answer arrives as a

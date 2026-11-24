@@ -50,6 +50,8 @@ fn server_config<G: GameDefinition>(
     config.level_gravity = G::level_gravity();
     let edge = (2 * (view_radius_bricks + COARSE_WATCH_MARGIN_BRICKS) + 1) as u64;
     config.maximum_watched_bricks = edge * edge * edge;
+    // (A place kept ready is watched as far as the camera is, and the server allows as many of them as it has regions for.)
+    config.maximum_free_bricks = config.maximum_watched_bricks * config.maximum_free_regions as u64;
     config
 }
 

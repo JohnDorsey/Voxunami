@@ -102,6 +102,7 @@ impl Rig {
         self.send(ServerMessage::InterestChanged {
             level: LevelIndex::MAIN,
             region: BrickBox::around(BrickCoordinate::ORIGIN, radius),
+            free: Vec::new(),
             assignments: vec![assignment_everywhere(0)],
         });
         self.tick(5);
@@ -242,6 +243,7 @@ fn a_tick_is_applied_only_when_all_of_it_has_arrived() {
     rig.send(ServerMessage::InterestChanged {
         level: LevelIndex::MAIN,
         region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+        free: Vec::new(),
         assignments: vec![assignment_everywhere(0)],
     });
     // Half a tick: the message is held back, the view unchanged.
@@ -254,7 +256,8 @@ fn a_tick_is_applied_only_when_all_of_it_has_arrived() {
         update.events,
         [ClientEvent::WatchedRegionChanged {
             level: LevelIndex::MAIN,
-            region: BrickBox::around(BrickCoordinate::ORIGIN, 1)
+            region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+            free: Vec::new(),
         }]
     );
     assert_eq!(rig.client.world().tick(), Tick::new(5));
@@ -322,6 +325,7 @@ fn watch_around(rig: &mut Rig, at: BrickCoordinate, other: Option<u32>) {
     rig.send(ServerMessage::InterestChanged {
         level: LevelIndex::MAIN,
         region,
+        free: Vec::new(),
         assignments,
     });
 }
@@ -444,6 +448,7 @@ fn moving_the_watched_region_forgets_bricks_left_behind_and_keeps_the_rest() {
     rig.send(ServerMessage::InterestChanged {
         level: LevelIndex::MAIN,
         region: BrickBox::new(brick(0, -2, -2), brick(4, 2, 2)).unwrap(),
+        free: Vec::new(),
         assignments: vec![],
     });
     rig.tick(7);
@@ -456,6 +461,136 @@ fn moving_the_watched_region_forgets_bricks_left_behind_and_keeps_the_rest() {
             .overrides
             .sorted_brick_coordinates(),
         [brick(0, 0, 0), brick(1, 0, 0)]
+    );
+}
+
+/// Tells the client that it now watches `region` of the main level and the free regions, and sends the edited bricks (given by a voxel in each) and completes the tick.
+fn watch_with_free(
+    rig: &mut Rig,
+    region: BrickBox,
+    free: &[BrickBox],
+    edited: &[[i128; 3]],
+    tick: u64,
+) {
+    rig.send(ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
+        region,
+        free: free.to_vec(),
+        assignments: vec![],
+    });
+    for &at in edited {
+        rig.send(ServerMessage::BrickContents {
+            grid: GridId::MAIN,
+            brick: VoxelCoordinate::new(at[0], at[1], at[2]).split().0,
+            contents: rig.edited_brick(at, "fancy_blocks:marble"),
+        });
+    }
+    rig.tick(tick);
+    rig.client.poll_tick().unwrap().unwrap();
+}
+
+fn held_bricks(rig: &Rig) -> Vec<BrickCoordinate> {
+    rig.client
+        .world()
+        .world()
+        .main()
+        .overrides
+        .sorted_brick_coordinates()
+}
+
+#[test]
+fn a_free_region_is_watched_with_the_region_of_the_body_and_its_bricks_are_kept_as_long_as_either_has_them()
+ {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    let body = BrickBox::around(brick(0, 0, 0), 1);
+    let far = BrickBox::around(brick(40, 0, 0), 1);
+    // Bricks 0 (in the body's region) and 40 (in the free one) were edited.
+    watch_with_free(&mut rig, body, &[far], &[[1, 2, 3], [1300, 2, 3]], 6);
+    assert_eq!(rig.client.world().watched(), Some((LevelIndex::MAIN, body)));
+    assert_eq!(rig.client.world().watched_free(), [far]);
+    assert_eq!(held_bricks(&rig), [brick(0, 0, 0), brick(40, 0, 0)]);
+
+    // The body moves a little and the free region stays: the server does not send the brick of the free region again, and the client does not forget it.
+    let body_moved = BrickBox::around(brick(1, 0, 0), 1);
+    watch_with_free(&mut rig, body_moved, &[far], &[], 7);
+    assert_eq!(held_bricks(&rig), [brick(0, 0, 0), brick(40, 0, 0)]);
+
+    // The body goes where the free region was, which is not told again: the brick it holds there is the body's now, and brick 0 is forgotten.
+    watch_with_free(&mut rig, far, &[], &[], 8);
+    assert_eq!(rig.client.world().watched(), Some((LevelIndex::MAIN, far)));
+    assert!(rig.client.world().watched_free().is_empty());
+    assert_eq!(held_bricks(&rig), [brick(40, 0, 0)]);
+}
+
+#[test]
+fn a_free_region_that_moves_on_takes_the_bricks_it_leaves_with_it() {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    let body = BrickBox::around(brick(0, 0, 0), 1);
+    let far = BrickBox::around(brick(40, 0, 0), 1);
+    watch_with_free(&mut rig, body, &[far], &[[1, 2, 3], [1300, 2, 3]], 6);
+    let elsewhere = BrickBox::around(brick(-40, 0, 0), 1);
+    watch_with_free(&mut rig, body, &[elsewhere], &[], 7);
+    assert_eq!(rig.client.world().watched_free(), [elsewhere]);
+    assert_eq!(held_bricks(&rig), [brick(0, 0, 0)]);
+}
+
+#[test]
+fn a_brick_in_a_free_region_that_has_gone_is_an_error_like_any_brick_outside_what_is_watched() {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    let body = BrickBox::around(brick(0, 0, 0), 1);
+    let far = BrickBox::around(brick(40, 0, 0), 1);
+    watch_with_free(&mut rig, body, &[far], &[], 6);
+    // (A brick in the free region is accepted, and one beside it is not.)
+    rig.send(ServerMessage::BrickContents {
+        grid: GridId::MAIN,
+        brick: brick(42, 0, 0),
+        contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
+    });
+    rig.tick(7);
+    assert!(matches!(
+        rig.client.poll_tick(),
+        Err(ClientError::BrickOutsideWatchedRegion(_, brick_outside)) if brick_outside == brick(42, 0, 0)
+    ));
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    watch_with_free(&mut rig, body, &[far], &[], 6);
+    watch_with_free(&mut rig, body, &[], &[], 7);
+    rig.send(ServerMessage::BrickContents {
+        grid: GridId::MAIN,
+        brick: brick(40, 0, 0),
+        contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
+    });
+    rig.tick(8);
+    assert!(matches!(
+        rig.client.poll_tick(),
+        Err(ClientError::BrickOutsideWatchedRegion(_, _))
+    ));
+}
+
+#[test]
+fn what_a_client_asks_to_watch_it_says_with_its_free_regions() {
+    let mut rig = Rig::new();
+    let body = BrickBox::around(brick(3, 3, 3), 1);
+    let free = [
+        BrickBox::around(brick(-500, 0, 20), 2),
+        BrickBox::around(brick(9, 9, 9), 0),
+    ];
+    rig.client
+        .watch_with_free(LevelIndex::MAIN, body, free.to_vec())
+        .unwrap();
+    let sent: Vec<ClientMessage> = std::iter::from_fn(|| rig.server.receive().unwrap())
+        .map(|frame| ClientMessage::decode(&frame).unwrap())
+        .collect();
+    assert_eq!(
+        sent,
+        [ClientMessage::SetInterest {
+            level: LevelIndex::MAIN,
+            region: body,
+            free: free.to_vec(),
+        }]
     );
 }
 
@@ -504,6 +639,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
                 vec![ServerMessage::InterestChanged {
                     level: LevelIndex::MAIN,
                     region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                    free: Vec::new(),
                     assignments: vec![assignment_everywhere(99)],
                 }]
             }),
@@ -660,7 +796,8 @@ fn game_messages_arrive_as_events_in_order_and_requests_reach_the_server() {
         [
             ClientMessage::SetInterest {
                 level: LevelIndex::MAIN,
-                region
+                region,
+                free: Vec::new(),
             },
             ClientMessage::GameMessage {
                 kind: id("test_game:chat"),
@@ -848,6 +985,7 @@ impl Rig {
         self.send(ServerMessage::InterestChanged {
             level,
             region: BrickBox::around(BrickCoordinate::ORIGIN, radius),
+            free: Vec::new(),
             assignments: vec![assignment_everywhere(0)],
         });
         self.tick(tick);
@@ -884,6 +1022,7 @@ fn following_the_server_into_another_level_forgets_what_was_held_of_the_first() 
     rig.send(ServerMessage::InterestChanged {
         level: SECOND,
         region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+        free: Vec::new(),
         assignments: vec![assignment_everywhere(1)],
     });
     rig.send(ServerMessage::BrickContents {
@@ -898,7 +1037,8 @@ fn following_the_server_into_another_level_forgets_what_was_held_of_the_first() 
         [
             ClientEvent::WatchedRegionChanged {
                 level: SECOND,
-                region: BrickBox::around(BrickCoordinate::ORIGIN, 1)
+                region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                free: Vec::new(),
             },
             ClientEvent::BrickChanged {
                 grid: GridId::root(SECOND),
@@ -978,6 +1118,7 @@ fn what_names_a_level_the_world_does_not_have_or_one_that_is_not_watched_is_an_e
             ServerMessage::InterestChanged {
                 level: LevelIndex::new(5),
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                free: Vec::new(),
                 assignments: vec![],
             },
             |error| matches!(error, ClientError::UnknownLevel(level) if level.get() == 5),
@@ -1045,7 +1186,8 @@ fn watching_names_the_level_and_commands_go_out_as_text_and_replies_come_in_as_e
         [
             ClientMessage::SetInterest {
                 level: SECOND,
-                region: BrickBox::around(brick(2, 2, 2), 1)
+                region: BrickBox::around(brick(2, 2, 2), 1),
+                free: Vec::new(),
             },
             ClientMessage::Command {
                 text: "/level go second".to_owned()

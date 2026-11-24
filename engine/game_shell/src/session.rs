@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
-use coarse_streaming::{CoarseNodes, SetDetail};
+use coarse_streaming::{CoarseNodes, DetailPlace, MAXIMUM_PLACES, SetDetail};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::{
@@ -26,8 +26,8 @@ use voxel_space::{
 use winit::keyboard::KeyCode;
 use world_view::{
     GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange, OccupancyStatistics,
-    RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, WorldMesher,
-    cast_ray,
+    RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, Viewpoint,
+    WorldMesher, cast_ray,
 };
 
 use crate::client_commands::ClientSettings;
@@ -39,6 +39,10 @@ use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
 use crate::package_data::{PackageData, PackageError, check_materials};
 use crate::sun::{SunView, position_of_voxels, sun_view};
+
+mod view_modes;
+use view_modes::ViewRig;
+pub use view_modes::{MAP_WARM_TICKS, ViewCommand, ViewMode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -163,6 +167,11 @@ pub struct Session<C: Connection, G: GameDefinition> {
     grid_detail: Option<CoarseDetail>,
     /// How many bytes of pictures of nodes that have left the screen each view of terrain keeps, hidden, to show again without making them again (0: none).
     held_picture_budget: usize,
+    /// The places the terrain of a grid (a level's root grid, or a planet) is kept ready to be drawn from, besides the camera's, in that grid's coordinates
+    /// ([`Session::keep_ready`]).
+    warm_places: BTreeMap<GridId, WorldPosition>,
+    /// What the picture is made from: the player's eyes, the map, or a camera that flies (`view_modes.rs`).
+    rig: ViewRig,
     /// The nodes the server has told this session of, which it does not tell again: a view of the terrain that is made again is given them.
     coarse_overrides: CoarseOverrides,
     /// What the server was last asked about how the terrain is drawn (or would have been, in a replay).
@@ -197,7 +206,7 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// The level the player is in, and so the one they ask to watch.
     level: LevelIndex,
     /// Where and in which level the server was last asked to send what the player sees.
-    watched_center: Option<(LevelIndex, BrickCoordinate)>,
+    watched_center: Option<(LevelIndex, BrickCoordinate, Vec<BrickCoordinate>)>,
     /// The level the meshes are of: the one the server last confirmed watching.
     meshed_level: Option<LevelIndex>,
     command_replies: Vec<String>,
@@ -290,6 +299,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             planets: BTreeMap::new(),
             grid_detail: None,
             held_picture_budget: 0,
+            warm_places: BTreeMap::new(),
+            rig: ViewRig::default(),
             coarse_overrides: CoarseOverrides::default(),
             asked: None,
             occupancy_wanted: false,
@@ -465,9 +476,46 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
+    /// Keeps the terrain of a grid (the root grid of a level, or a planet) ready to be drawn from `place`, in that grid's own coordinates, besides the camera's place: what is
+    /// drawn from there is made, after what the camera needs, and held hidden on the graphics card (`docs/specs/viewpoints-spec.md`, phase 3), so that the camera going there is
+    /// a move of pictures. It reads the same detail settings as the camera. The server is told of a place in the level's own terrain, and sends the edited bricks round it as
+    /// it does round the camera (`docs/specs/viewpoints-spec.md`, 6.3; a planet's bricks are known whole whenever the planet is), and **the coarse nodes** that an edit
+    /// changes round the place, as it does for the camera (the place is named in the [`SetDetail`] the session sends, phase 4b: so is a place in a planet, or in a far ship).
+    /// Needs [`Session::hold_hidden_pictures`]. `None`, the default, keeps nothing ready.
+    pub fn keep_ready(&mut self, grid: GridId, place: Option<WorldPosition>) {
+        match place {
+            Some(place) => {
+                self.warm_places.insert(grid, place);
+            }
+            None => {
+                self.warm_places.remove(&grid);
+            }
+        }
+    }
+
+    /// Where the camera is, in the coordinates of a grid: the same place in the level's root grid, and in a ship or planet its own coordinates (for [`Session::keep_ready`]).
+    /// `None` if the session does not know the grid, or it is not placed.
+    pub fn camera_place_in(&self, grid: GridId) -> Option<WorldPosition> {
+        if grid.root_level().is_some() {
+            return Some(self.camera.position);
+        }
+        self.client
+            .world()
+            .grids()
+            .get(grid)?
+            .pose
+            .world_to_local(self.camera.position)
+    }
+
     /// Pins the sun at a time of day, in minutes from midnight, for this player (what `.time` does), or lets the world's clock move it again.
     pub fn pin_time(&mut self, minutes: Option<u16>) {
         self.settings.pinned_time = minutes;
+    }
+
+    /// Says whether the pictures made for a map that is kept ready ([`Session::keep_ready`]) are let go of when it is taken away, or left held until the room is needed (what
+    /// `.maprelease` does; on by default).
+    pub fn set_release_map_pictures(&mut self, release: bool) {
+        self.settings.release_map_pictures = release;
     }
 
     /// Makes every pixel of a block's picture wholly lit or wholly shaded, or not, for this player (what `.pixelshadows` does).
@@ -622,7 +670,39 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             bytes_per_second: detail.bytes_per_second,
             fine_radius: u8::try_from(self.view_radius_bricks).unwrap_or(u8::MAX),
             zoom: None,
+            places: self.detail_places(),
         }
+    }
+
+    /// The places that are kept ready ([`Session::keep_ready`]) in a grid whose nodes this session draws, in each grid's own coordinates: the server is asked for the nodes
+    /// that an edit changes round each, as it is round the camera (`docs/specs/viewpoints-spec.md`, 6.3). A place in another level's terrain, or in a ship that has no
+    /// terrain of its own and is not far, is a place nothing is drawn from, and is not asked for.
+    pub(crate) fn detail_places(&self) -> Vec<DetailPlace> {
+        let ships = self.client.world().grids();
+        let draws_the_terrain_of_the_level = matches!(self.terrain, TerrainView::Coarse(_));
+        let mut places: Vec<DetailPlace> = Vec::new();
+        for (grid, place) in self
+            .warm_places_now()
+            .into_iter()
+            .chain(self.drawn_places_besides_the_body())
+        {
+            let wanted = if grid.root_level().is_some() {
+                draws_the_terrain_of_the_level && grid == GridId::root(self.level)
+            } else {
+                ships
+                    .get(grid)
+                    .is_some_and(|ship| ship.terrain.is_some() || ship.far.is_some())
+            };
+            let place = DetailPlace {
+                grid,
+                brick: place.brick(),
+            };
+            if wanted && !places.contains(&place) {
+                places.push(place);
+            }
+        }
+        places.truncate(MAXIMUM_PLACES);
+        places
     }
 
     /// What every block and state of this game looks like and how it fills its cell.
@@ -878,15 +958,37 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// Keeps the watched region around the camera, and the meshes around it up to date. Returns what
     /// the renderer must change.
     pub fn update_view(&mut self) -> Vec<MeshUpdate> {
+        // What the picture is made from is the drawn camera's; what the server is told of is the player's body.
+        let drawn = self.drawn_camera();
         let center = self.camera.position.brick();
-        if self.mode == Mode::Playing && self.watched_center != Some((self.level, center)) {
-            let region = BrickBox::around(
-                center,
-                (self.view_radius_bricks + self.watch_margin_bricks()) as u32,
-            );
+        let warm = self.warm_places_now();
+        // The places that are not the body's but are drawn or kept ready, in the level's own terrain, are watched as well, as free regions (a planet's bricks are all known of
+        // whenever it is: see `docs/specs/viewpoints-spec.md`, 6.3): the one kept ready, and the one that is drawn when it is not the player's own.
+        let mut free_centres: Vec<BrickCoordinate> = Vec::new();
+        let beside_the_body = warm
+            .get(&GridId::root(self.level))
+            .map(|place| place.brick())
+            .into_iter()
+            .chain((self.view_mode() != ViewMode::Body).then(|| drawn.position.brick()));
+        for place in beside_the_body {
+            if place != center && !free_centres.contains(&place) {
+                free_centres.push(place);
+            }
+        }
+        if self.mode == Mode::Playing
+            && self.watched_center.as_ref() != Some(&(self.level, center, free_centres.clone()))
+        {
+            let radius = (self.view_radius_bricks + self.watch_margin_bricks()) as u32;
             // A closed connection shows up in the next `advance`, which reports it.
-            let _ = self.client.watch(self.level, region);
-            self.watched_center = Some((self.level, center));
+            let _ = self.client.watch_with_free(
+                self.level,
+                BrickBox::around(center, radius),
+                free_centres
+                    .iter()
+                    .map(|&place| BrickBox::around(place, radius))
+                    .collect(),
+            );
+            self.watched_center = Some((self.level, center, free_centres));
         }
         let mut updates = Vec::new();
         if self.follows_level_detail
@@ -906,20 +1008,29 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             TerrainView::Coarse(coarse) => Some(self.coarse_request(&coarse.detail)),
             TerrainView::Bricks(_) => None,
         };
-        match (&mut self.terrain, request) {
+        match (&mut self.terrain, &request) {
             (TerrainView::Coarse(coarse), Some(request)) => {
-                let settings = lod_settings_of(&request, &coarse.detail);
+                let settings = lod_settings_of(request, &coarse.detail);
+                coarse
+                    .view
+                    .set_release_warm_pictures(self.settings.release_map_pictures);
+                coarse.view.set_warm_viewpoint(
+                    warm.get(&GridId::root(level))
+                        .map(|&viewer| Viewpoint { viewer, settings }),
+                );
                 updates.extend(coarse.view.update(
                     GridId::root(level),
                     data,
-                    self.camera.position,
+                    drawn.position,
                     &settings,
                 ));
                 if let Some(report) = coarse.view.take_stall_report() {
                     eprintln!("warning: {report}");
                 }
             }
-            (terrain, _) => updates.extend(terrain.mesher_mut().update(data, center)),
+            (terrain, _) => {
+                updates.extend(terrain.mesher_mut().update(data, drawn.position.brick()))
+            }
         }
         // What the server is asked is how the level is drawn if it is drawn in nodes, and otherwise how the planets are, if they are.
         let planets = self.grid_detail.map(|detail| self.coarse_request(&detail));
@@ -932,17 +1043,19 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// Tells the server how the terrain is drawn, when that is not what it was told last. A replay asks for nothing.
     fn ask_for_coarse_nodes(&mut self, request: SetDetail) {
-        if self.asked == Some(request) {
+        if self.asked.as_ref() == Some(&request) {
             return;
         }
-        self.asked = Some(request);
         if self.mode == Mode::Playing {
             self.send_game_message(SetDetail::kind(), request.encode());
         }
+        self.asked = Some(request);
     }
 
     /// What the renderer must change for the ships: the ones that are gone, the ones that moved, and the bricks that were meshed.
     fn ship_updates(&mut self) -> Vec<MeshUpdate> {
+        let drawn = self.drawn_camera();
+        let warm = self.warm_places_now();
         let ships = self.client.world().grids();
         let mut updates = Vec::new();
         // (A ship that is told of again as far, or near, is another picture of it: taken down whole and made afresh.)
@@ -995,7 +1108,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             if ship.terrain.is_none() && (ship.far.is_none() || detail.is_none()) {
                 continue;
             }
-            let Some(local) = ship.pose.world_to_local(self.camera.position) else {
+            let Some(local) = ship.pose.world_to_local(drawn.position) else {
                 continue;
             };
             // (No brick of a far ship is ever drawn: the ball of bricks round the viewer has no radius. And it is meshed from nodes the server made, a few at a time: one
@@ -1043,6 +1156,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);
             }
+            planet.set_release_warm_pictures(self.settings.release_map_pictures);
+            planet.keep_ready(warm.get(&id).copied());
             let source = match (ship.terrain, ship.far) {
                 (Some(terrain), _) => {
                     let generator = world
@@ -1156,6 +1271,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// The solid voxel under the crosshair, within the game's reach: of the terrain of the level, or of a ship, whichever the ray
     /// reaches first. A ship is aimed at by turning the ray into the ship's own coordinates.
     pub fn target(&self) -> Option<RayHit> {
+        // (A map or a camera that flew off is not where the player's hands are.)
+        if self.view_mode() != ViewMode::Body {
+            return None;
+        }
         let forward = self.camera.forward().to_array().map(f64::from);
         let terrain = cast_ray(
             GridId::root(self.level()),
@@ -1316,7 +1435,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         Some(sun_view(
             &sun,
             hours,
-            self.camera.position,
+            self.drawn_camera().position,
             self.planet_cores(),
         ))
     }
@@ -1339,8 +1458,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.settings.time_of_day = self
             .sun_by_the_clock()
             .map(|(_, hours)| (hours * 60.0) as u16 % (24 * 60));
+        let drawn = self.drawn_camera();
         let mut context = ClientContext::new(SessionView {
-            camera: &self.camera,
+            camera: &drawn,
             block_table: &self.block_table,
             package: &self.package,
             players: &self.players,
@@ -1359,6 +1479,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             match item {
                 Outgoing::Command(text) => self.send_command(&text),
                 Outgoing::Message(kind, payload) => self.send_game_message(kind, payload),
+                Outgoing::View(command) => self.apply_view_command(command),
             }
         }
         result

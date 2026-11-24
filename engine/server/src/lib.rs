@@ -16,6 +16,7 @@ mod game_logic;
 mod generated_cache;
 mod grid_replication;
 mod grid_view;
+mod interest;
 mod merge;
 mod prefetch;
 mod rail_settings;

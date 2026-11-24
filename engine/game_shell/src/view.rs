@@ -239,6 +239,12 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             MeshUpdate::RemoveGridCoarse { grid, cube } => {
                 renderer.remove_grid_coarse_node(grid, cube);
             }
+            MeshUpdate::UploadHiddenCoarse { cube, mesh } => {
+                renderer.upload_hidden_mesh(HeldMesh::Node(cube), &mesh);
+            }
+            MeshUpdate::UploadHiddenGridCoarse { grid, cube, mesh } => {
+                renderer.upload_hidden_mesh(HeldMesh::GridNode(grid, cube), &mesh);
+            }
             MeshUpdate::HideCoarse(cube) => {
                 renderer.hide_mesh(HeldMesh::Node(cube));
             }
@@ -250,6 +256,16 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             }
             MeshUpdate::ShowGridCoarse { grid, cube } => {
                 renderer.show_mesh(HeldMesh::GridNode(grid, cube));
+            }
+            MeshUpdate::UploadHiddenBrick { coordinate, mesh } => {
+                renderer.upload_hidden_mesh(HeldMesh::Brick(coordinate), &mesh);
+            }
+            MeshUpdate::UploadHiddenGridBrick {
+                grid,
+                coordinate,
+                mesh,
+            } => {
+                renderer.upload_hidden_mesh(HeldMesh::GridBrick(grid, coordinate), &mesh);
             }
             MeshUpdate::HideBrick(coordinate) => {
                 renderer.hide_mesh(HeldMesh::Brick(coordinate));

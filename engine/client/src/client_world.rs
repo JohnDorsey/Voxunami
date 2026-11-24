@@ -19,7 +19,11 @@ use crate::error::ClientError;
 pub enum ClientEvent {
     /// The client now watches exactly this region of this level. Edited bricks outside it were
     /// forgotten, and the terrain generators of the newly watched part are known.
-    WatchedRegionChanged { level: LevelIndex, region: BrickBox },
+    WatchedRegionChanged {
+        level: LevelIndex,
+        region: BrickBox,
+        free: Vec<BrickBox>,
+    },
     /// A brick's edited contents arrived or changed: a brick of a level's terrain, or of a ship.
     BrickChanged {
         grid: GridId,
@@ -75,6 +79,8 @@ pub struct GridSummary {
 pub struct ViewSummary {
     pub tick: Tick,
     pub watched: Option<(LevelIndex, BrickBox)>,
+    /// The free regions watched besides it.
+    pub watched_free: Vec<BrickBox>,
     /// Every level of the world, in order.
     pub levels: Vec<LevelSummary>,
     /// The entities the client has been told of, in order of id.
@@ -99,6 +105,8 @@ pub struct ClientWorld {
     /// The time of the world at `tick`.
     world_clock: u64,
     watched: Option<(LevelIndex, BrickBox)>,
+    /// The regions of the watched level that are watched besides `watched`, for viewpoints that have no body.
+    watched_free: Vec<BrickBox>,
     entities: ClientEntities,
     grids: ClientGrids,
 }
@@ -133,6 +141,7 @@ impl ClientWorld {
                 tick: welcome.tick,
                 world_clock: welcome.world_clock,
                 watched: None,
+                watched_free: Vec::new(),
                 entities: ClientEntities::default(),
                 grids: ClientGrids::default(),
             },
@@ -187,9 +196,14 @@ impl ClientWorld {
         Some((ship.level, position, orientation))
     }
 
-    /// The level and region the server has told this client it watches.
+    /// The level and region round the body that the server has told this client it watches.
     pub fn watched(&self) -> Option<(LevelIndex, BrickBox)> {
         self.watched
+    }
+
+    /// The regions of that level that it watches besides, the places of viewpoints that have no body: their edited bricks are held as well.
+    pub fn watched_free(&self) -> &[BrickBox] {
+        &self.watched_free
     }
 
     /// The data of the level being watched.
@@ -208,6 +222,7 @@ impl ClientWorld {
         ViewSummary {
             tick: self.tick,
             watched: self.watched,
+            watched_free: self.watched_free.clone(),
             entities: self.entities.iter().cloned().collect(),
             grids: self
                 .grids
@@ -323,12 +338,13 @@ impl ClientWorld {
             ServerMessage::InterestChanged {
                 level,
                 region,
+                free,
                 assignments,
             } => {
                 if self.world.level(level).is_none() {
                     return Err(ClientError::UnknownLevel(level));
                 }
-                // Edited bricks outside the new region are forgotten, and so is everything held
+                // Edited bricks outside the new regions are forgotten, and so is everything held
                 // of every other level.
                 for index in 0..self.world.level_count() {
                     let index = LevelIndex::new(index as u32);
@@ -337,7 +353,11 @@ impl ClientWorld {
                         .overrides
                         .bricks()
                         .map(|(brick, _)| brick)
-                        .filter(|brick| index != level || !region.contains(*brick))
+                        .filter(|brick| {
+                            index != level
+                                || !(region.contains(*brick)
+                                    || free.iter().any(|free| free.contains(*brick)))
+                        })
                         .collect();
                     for brick in forgotten {
                         data.overrides.remove_brick(brick);
@@ -355,7 +375,12 @@ impl ClientWorld {
                         .set_assignment(assignment.cube, generator);
                 }
                 self.watched = Some((level, region));
-                Ok(Some(ClientEvent::WatchedRegionChanged { level, region }))
+                self.watched_free = free.clone();
+                Ok(Some(ClientEvent::WatchedRegionChanged {
+                    level,
+                    region,
+                    free,
+                }))
             }
             ServerMessage::BrickContents {
                 grid,
@@ -367,7 +392,9 @@ impl ClientWorld {
                 match grid.root_level() {
                     Some(level) => {
                         if !self.watched.is_some_and(|(watched, region)| {
-                            watched == level && region.contains(brick)
+                            watched == level
+                                && (region.contains(brick)
+                                    || self.watched_free.iter().any(|free| free.contains(brick)))
                         }) {
                             return Err(ClientError::BrickOutsideWatchedRegion(grid, brick));
                         }

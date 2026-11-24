@@ -14,6 +14,10 @@ pub struct ServerConfig {
     /// The most bricks one client may watch at once. A request for more disconnects the client,
     /// since the server would otherwise spend unbounded time on it.
     pub maximum_watched_bricks: u64,
+    /// The most free regions (of viewpoints with no body, such as a map kept ready: `protocol::ClientMessage::SetInterest`) one client may watch, besides the region
+    /// round its body, and the most bricks they may hold together. A request for more disconnects the client.
+    pub maximum_free_regions: usize,
+    pub maximum_free_bricks: u64,
     /// The most bricks of ships that may be in one client's picture. A ship that would take it past this is not sent, and the
     /// client sees nothing of it (levels of detail will fill that gap).
     pub maximum_ship_bricks: u64,
@@ -43,12 +47,14 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// The default tick rate and limits: 20 ticks per second, a 33-brick-wide cube of bricks per
-    /// client, and ten seconds to say hello.
+    /// client (and room for two free regions as big), and ten seconds to say hello.
     pub fn new(game: NamespacedId) -> Self {
         Self {
             game,
             ticks_per_second: 20,
             maximum_watched_bricks: 33 * 33 * 33,
+            maximum_free_regions: 2,
+            maximum_free_bricks: 2 * 33 * 33 * 33,
             maximum_ship_bricks: 16 * 1024,
             far_ships: None,
             handshake_timeout_ticks: 200,

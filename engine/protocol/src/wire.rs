@@ -65,6 +65,24 @@ pub fn read_brick_box(reader: &mut ByteReader<'_>) -> Result<BrickBox, DecodeErr
     ))
 }
 
+/// The free regions of an interest (see [`crate::ClientMessage::SetInterest`]): how many, then each as a box.
+pub fn write_free_regions(writer: &mut ByteWriter, free: &[BrickBox]) {
+    writer.write_varint(free.len() as u64);
+    for region in free {
+        write_brick_box(writer, *region);
+    }
+}
+
+/// The free regions of an interest: no more than [`crate::MAXIMUM_FREE_REGIONS`], whatever a server allows.
+pub fn read_free_regions(reader: &mut ByteReader<'_>) -> Result<Vec<BrickBox>, DecodeError> {
+    // (A box is six coordinates of at least a byte each.)
+    let count = reader.read_count(6)?;
+    if count > crate::MAXIMUM_FREE_REGIONS {
+        return Err(DecodeError::Invalid("too many free regions"));
+    }
+    (0..count).map(|_| read_brick_box(reader)).collect()
+}
+
 /// A grid: the number of the level for the root grid of a level, and from `GridId::FIRST_ALLOCATED` up for a ship.
 pub fn write_grid(writer: &mut ByteWriter, grid: GridId) {
     writer.write_varint(grid.get());

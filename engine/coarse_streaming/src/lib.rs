@@ -4,6 +4,7 @@ mod messages;
 mod server;
 
 pub use messages::{
-    CoarseNodeUpdate, CoarseNodes, MAXIMUM_CELL_PIXELS, MAXIMUM_UPDATES, SetDetail, ZoomRequest,
+    CoarseNodeUpdate, CoarseNodes, DetailPlace, MAXIMUM_CELL_PIXELS, MAXIMUM_PLACES,
+    MAXIMUM_UPDATES, SetDetail, ZoomRequest,
 };
 pub use server::{Brightness, CoarseConfig, CoarseHandle, CoarseServerPlugin};

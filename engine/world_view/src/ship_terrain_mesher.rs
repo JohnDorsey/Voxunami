@@ -14,7 +14,9 @@ use terrain::{SolidBall, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
 
-use crate::lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView, Stalled};
+use crate::lod::{
+    CoarseTerrainSource, LodConfig, LodSettings, LodView, MayShowOracle, Stalled, Viewpoint,
+};
 use crate::mesher::{MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher};
 use crate::occupancy::{OccupancyChange, OccupancyStatistics};
 
@@ -98,6 +100,18 @@ impl CoarseTerrainSource for ShipTerrainSource<'_> {
             return version_of_box(self.extent);
         }
         0
+    }
+
+    fn detached_may_show(&self) -> Option<MayShowOracle> {
+        let (generator, extent, far) = (self.generator.clone(), self.extent, self.far);
+        Some(Arc::new(move |cube| {
+            if far {
+                return cube.meets(extent);
+            }
+            generator
+                .as_ref()
+                .is_some_and(|generator| cube.meets(extent) && generator.may_show(cube))
+        }))
     }
 
     /// Nothing outside the extent is drawn, and nothing at all of a planet whose generator this program lacks (a node the server corrected is kept by the view whatever the
@@ -241,6 +255,25 @@ impl ShipTerrainMesher {
         }
     }
 
+    /// Keeps the planet ready to be drawn from `viewer`, a place in the ship's coordinates, as well as from where it is updated (see [`LodView::set_warm_viewpoint`]), at the
+    /// detail the planet is drawn at. A mesher of the bricks alone has no nodes to keep ready.
+    pub fn keep_ready(&mut self, viewer: Option<WorldPosition>) {
+        if let Drawn::Detailed { view, settings } = &mut self.drawn {
+            view.set_warm_viewpoint(viewer.map(|viewer| Viewpoint {
+                viewer,
+                settings: *settings,
+            }));
+        }
+    }
+
+    /// Says whether the pictures made for a place kept ready are let go of when it is taken away ([`LodView::set_release_warm_pictures`]). A mesher of the bricks alone keeps
+    /// no place ready.
+    pub fn set_release_warm_pictures(&mut self, release: bool) {
+        if let Drawn::Detailed { view, .. } = &mut self.drawn {
+            view.set_release_warm_pictures(release);
+        }
+    }
+
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.
     pub fn set_detail(&mut self, detail: LodSettings) {
         if let Drawn::Detailed { settings, .. } = &mut self.drawn {
@@ -278,6 +311,16 @@ impl ShipTerrainMesher {
             MeshUpdate::RemoveCoarse(cube) => MeshUpdate::RemoveGridCoarse { grid, cube },
             MeshUpdate::HideCoarse(cube) => MeshUpdate::HideGridCoarse { grid, cube },
             MeshUpdate::ShowCoarse(cube) => MeshUpdate::ShowGridCoarse { grid, cube },
+            MeshUpdate::UploadHiddenCoarse { cube, mesh } => {
+                MeshUpdate::UploadHiddenGridCoarse { grid, cube, mesh }
+            }
+            MeshUpdate::UploadHiddenBrick { coordinate, mesh } => {
+                MeshUpdate::UploadHiddenGridBrick {
+                    grid,
+                    coordinate,
+                    mesh,
+                }
+            }
             MeshUpdate::HideBrick(coordinate) => MeshUpdate::HideGridBrick { grid, coordinate },
             MeshUpdate::ShowBrick(coordinate) => MeshUpdate::ShowGridBrick { grid, coordinate },
             other => unreachable!("a mesher of terrain makes nothing else: {other:?}"),

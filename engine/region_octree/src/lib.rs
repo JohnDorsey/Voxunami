@@ -9,6 +9,8 @@
 //! whatever order the cubes were assigned in, so equal trees compare equal and
 //! [`RegionOctree::leaves`] is a stable serialization order.
 
+use std::sync::Arc;
+
 use voxel_space::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, BrickBox, BrickCoordinate};
 
 /// Level of the root cube, which spans every valid brick coordinate (2^116 bricks per axis).
@@ -139,10 +141,13 @@ impl BrickCube {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Node<V> {
     Leaf(V),
-    Branch(Box<[Node<V>; 8]>),
+    Branch(Arc<[Node<V>; 8]>),
 }
 
 /// Maps every brick to a value; see the crate documentation.
+///
+/// A copy shares what has not been changed since with the tree it was made from (a branch is copied when one of the two is assigned to), so copying costs the same
+/// for a tree of ten nodes and of ten million: a thread that is to read the assignments of a level while the level goes on is given a copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionOctree<V> {
     root: Node<V>,
@@ -295,13 +300,15 @@ fn assign<V: Clone + PartialEq>(
             return;
         }
         let existing = existing.clone();
-        *node = Node::Branch(Box::new(std::array::from_fn(|_| {
+        *node = Node::Branch(Arc::new(std::array::from_fn(|_| {
             Node::Leaf(existing.clone())
         })));
     }
     let Node::Branch(children) = node else {
         unreachable!("a leaf was just split into a branch");
     };
+    // (Shared with a copy of the tree, the branch is copied before it is changed.)
+    let children = Arc::make_mut(children);
     assign(
         &mut children[child_index(target_offset, node_level)],
         node_level - 1,
@@ -884,6 +891,39 @@ mod tests {
                 }
             }
             prop_assert!(assert_canonical(&tree.root));
+        }
+
+        /// A copy is a tree of its own: what is done to it is not done to the tree it was made from, nor the other way round, and each is what the same assignments give from
+        /// nothing.
+        #[test]
+        fn a_copy_is_independent_of_the_tree_it_was_made_from(
+            before in assignments(),
+            in_the_copy in assignments(),
+            in_the_original in assignments(),
+        ) {
+            fn apply(tree: &mut RegionOctree<u8>, assignments: &[Assignment]) {
+                for assignment in assignments {
+                    let origin = brick(assignment.origin[0], assignment.origin[1], assignment.origin[2]);
+                    tree.set_cube(BrickCube::new(origin, assignment.level).unwrap(), assignment.value);
+                }
+            }
+            let mut original = RegionOctree::new(0u8);
+            apply(&mut original, &before);
+            let mut copy = original.clone();
+            let original_then = original.clone();
+            apply(&mut copy, &in_the_copy);
+            prop_assert_eq!(&original, &original_then);
+            let copy_then = copy.clone();
+            apply(&mut original, &in_the_original);
+            prop_assert_eq!(&copy, &copy_then);
+            let mut copy_from_nothing = RegionOctree::new(0u8);
+            apply(&mut copy_from_nothing, &before);
+            apply(&mut copy_from_nothing, &in_the_copy);
+            prop_assert_eq!(&copy, &copy_from_nothing);
+            let mut original_from_nothing = RegionOctree::new(0u8);
+            apply(&mut original_from_nothing, &before);
+            apply(&mut original_from_nothing, &in_the_original);
+            prop_assert_eq!(&original, &original_from_nothing);
         }
     }
 }

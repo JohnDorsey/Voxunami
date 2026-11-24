@@ -604,3 +604,134 @@ fn what_the_check_says_of_held_pictures() {
     states.records.get_mut(&at(0)).unwrap().shown = false;
     assert!(states.check_consistency(true).is_err());
 }
+
+/// A brick whose picture was made and is waiting, with this picture.
+fn made_and_waiting(states: &mut BrickStates, coordinate: BrickCoordinate, mesh: PackedBrickMesh) {
+    states.load(coordinate, voxels());
+    states.start_meshing(coordinate);
+    assert!(states.finish_meshing(coordinate));
+    states.hold(coordinate, mesh);
+}
+
+#[test]
+fn a_picture_that_is_waiting_is_parked_as_a_held_one_the_renderer_is_given_hidden() {
+    let mut states = BrickStates::new();
+    states.set_budget(1 << 20);
+    let mesh = mesh_of(100);
+    let bytes = mesh.byte_size();
+    let occupancy = a_mixed_occupancy();
+    made_and_waiting(&mut states, at(0), mesh.clone());
+    states.keep_occupancy(at(0), occupancy.clone());
+
+    assert_eq!(states.park(at(0)), Some(mesh));
+    assert!(states.is_held(at(0)) && !states.is_shown(at(0)) && !states.is_waiting(at(0)));
+    assert!(
+        states.is_displayed(at(0)),
+        "the renderer holds a mesh of it"
+    );
+    assert!(states.is_ready(at(0)));
+    assert_eq!(
+        states.held_pictures(),
+        HeldBricks {
+            bricks: 1,
+            with_mesh: 1,
+            bytes: bytes + occupancy.byte_size()
+        }
+    );
+    assert_eq!(
+        states.occupancy(at(0)),
+        Some(&occupancy),
+        "what the sun is told is kept for when it is shown"
+    );
+    assert_eq!(states.park(at(0)), None, "once");
+    assert_eq!(states.reveal(at(0)), Some(true), "and shown by a move");
+    assert_consistent(&states, true);
+}
+
+#[test]
+fn a_picture_of_nothing_is_parked_without_a_mesh_and_one_that_is_not_waiting_or_has_no_budget_is_not_parked()
+ {
+    let mut states = BrickStates::new();
+    states.set_budget(1 << 20);
+    made_and_waiting(&mut states, at(0), mesh_of(0));
+    assert_eq!(states.park(at(0)), Some(mesh_of(0)));
+    assert!(states.is_held(at(0)) && !states.is_displayed(at(0)));
+    assert_eq!(states.held_pictures().with_mesh, 0);
+    assert_eq!(states.held_pictures().bytes, MINIMUM_HELD_COST);
+
+    // Shown, being made, or not made: nothing to park.
+    on_screen(&mut states, at(1), mesh_of(10));
+    assert_eq!(states.park(at(1)), None);
+    states.load(at(2), voxels());
+    states.start_meshing(at(2));
+    assert_eq!(states.park(at(2)), None);
+    assert_eq!(states.park(at(3)), None);
+
+    // No budget: nothing is held.
+    let mut states = BrickStates::new();
+    made_and_waiting(&mut states, at(0), mesh_of(10));
+    assert_eq!(states.park(at(0)), None);
+    assert!(states.is_waiting(at(0)));
+    assert_consistent(&states, true);
+}
+
+#[test]
+fn a_parked_picture_is_let_go_of_by_the_budget_like_any_held_one_unless_it_is_kept() {
+    let mut states = BrickStates::new();
+    states.set_budget(2 * (mesh_of(100).byte_size()));
+    for x in 0..3 {
+        made_and_waiting(&mut states, at(x), mesh_of(100));
+        states.park(at(x));
+    }
+    let victims = states.evict_over_budget(|coordinate| coordinate == at(0));
+    assert_eq!(victims, [at(1)], "the oldest that is not kept");
+    assert!(states.is_held(at(0)) && !states.is_held(at(1)) && states.is_held(at(2)));
+    assert_consistent(&states, true);
+}
+
+#[test]
+fn pictures_made_for_the_warm_viewpoint_alone_are_let_go_of_unless_kept_and_a_picture_that_was_shown_is_not()
+ {
+    let mut states = BrickStates::new();
+    states.set_budget(1 << 20);
+    made_and_waiting(&mut states, at(0), mesh_of(100));
+    made_and_waiting(&mut states, at(1), mesh_of(0));
+    made_and_waiting(&mut states, at(2), mesh_of(100));
+    for x in 0..3 {
+        assert!(states.park(at(x)).is_some());
+    }
+    // A picture that is held because it was shown and taken down.
+    held(&mut states, at(3), mesh_of(100));
+    assert_eq!(states.held_pictures().bricks, 4);
+
+    let released = states.release_parked(|coordinate| coordinate == at(2));
+    assert_eq!(
+        released,
+        [at(0)],
+        "the renderer holds a mesh of the first; the second had none; the third is wanted"
+    );
+    assert!(!states.is_held(at(0)) && !states.is_held(at(1)));
+    assert!(states.is_held(at(2)), "kept");
+    assert!(states.is_held(at(3)), "the view's own");
+    assert_eq!(states.held_pictures().bricks, 2);
+    assert_consistent(&states, true);
+
+    // What was kept is let go of when it is not kept any more.
+    assert_eq!(states.release_parked(|_| false), [at(2)]);
+    assert!(states.is_held(at(3)));
+    assert!(states.release_parked(|_| false).is_empty(), "once");
+    assert_consistent(&states, true);
+}
+
+#[test]
+fn a_parked_picture_that_was_shown_and_taken_down_again_is_held_like_any_other_brick() {
+    let mut states = BrickStates::new();
+    states.set_budget(1 << 20);
+    made_and_waiting(&mut states, at(0), mesh_of(100));
+    states.park(at(0));
+    assert_eq!(states.reveal(at(0)), Some(true));
+    assert!(matches!(states.hold_down(at(0)), Some(Taken::Hidden)));
+    assert!(states.release_parked(|_| false).is_empty());
+    assert!(states.is_held(at(0)));
+    assert_consistent(&states, true);
+}

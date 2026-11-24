@@ -143,6 +143,23 @@ fn the_reader_refuses_what_the_writer_would_not_write() {
                 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0,
             ],
         ),
+        // The varints of the format have one form each: these are the same values with a group of zeros on top.
+        (
+            "a precision of 128 written in three bytes",
+            vec![0x80, 0x81, 0x00, 1, 0x00, 1, 0x01],
+        ),
+        (
+            "an exponent of 0 written in two bytes",
+            vec![0x80, 0x01, 1, 0x80, 0x00, 1, 0x01],
+        ),
+        (
+            "the exponent of the failing case of 2026-11-23, 1 (that is -1) written in two bytes",
+            vec![178, 1, 1, 129, 0, 1, 0x01],
+        ),
+        (
+            "the length of a mantissa written in two bytes",
+            vec![0x80, 0x01, 1, 0x00, 0x81, 0x00, 0x01],
+        ),
         ("a kind of 3", vec![0x80, 0x01, 3]),
         ("a mantissa of nothing", vec![0x80, 0x01, 1, 0x00, 0]),
         ("an even mantissa", vec![0x80, 0x01, 1, 0x00, 1, 0x02]),
@@ -193,6 +210,29 @@ fn the_reader_refuses_what_the_writer_would_not_write() {
     let mut trailing = encode(&parse("0x1p0", 128));
     trailing.push(7);
     assert!(decode(&trailing).is_err());
+}
+
+/// The case that `a_number_has_one_encoding` found by chance on 2026-11-23 (its seed is in `codec.proptest-regressions`), and every other change of one byte of it: a changed byte
+/// either does not decode or writes back as it is. Before the fix a changed exponent byte could decode from a longer form of the varint.
+#[test]
+fn every_change_of_one_byte_of_the_number_that_failed_decodes_to_nothing_or_writes_back_as_it_is() {
+    let number = parse("0x200000000000000000000000000000000000000000035p-193", 178);
+    let bytes = encode(&number);
+    for at in 0..bytes.len() {
+        for flip in 1..=255u8 {
+            let mut changed = bytes.clone();
+            changed[at] ^= flip;
+            let mut reader = ByteReader::new(&changed);
+            if let Ok(other) = WideFloat::read_from(&mut reader) {
+                let used = changed.len() - reader.remaining().len();
+                assert_eq!(
+                    encode(&other),
+                    changed[..used].to_vec(),
+                    "byte {at} changed by {flip:#x}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

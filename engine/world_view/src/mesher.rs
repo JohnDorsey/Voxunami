@@ -10,7 +10,7 @@
 //! from the generator the world assigns to their region, and edited bricks are taken as they are.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -189,6 +189,18 @@ pub enum MeshUpdate {
     HideCoarse(BrickCube),
     /// Shows the picture of a coarse node that was hidden.
     ShowCoarse(BrickCube),
+    /// Gives the renderer the picture of a coarse node of the terrain that is **not** to be drawn: it holds it hidden (`renderer::VoxelRenderer::upload_hidden_mesh`), made for a
+    /// viewpoint that is kept warm ([`crate::LodView::set_warm_viewpoint`]). A later [`MeshUpdate::ShowCoarse`] shows it. A mesh that is drawn is replaced where it is.
+    UploadHiddenCoarse {
+        cube: BrickCube,
+        mesh: PackedBrickMesh,
+    },
+    /// [`MeshUpdate::UploadHiddenCoarse`] for a node of a planet.
+    UploadHiddenGridCoarse {
+        grid: GridId,
+        cube: BrickCube,
+        mesh: PackedBrickMesh,
+    },
     /// [`MeshUpdate::HideCoarse`] for a node of a planet.
     HideGridCoarse {
         grid: GridId,
@@ -204,6 +216,18 @@ pub enum MeshUpdate {
     HideBrick(BrickCoordinate),
     /// Shows the picture of a brick that was hidden.
     ShowBrick(BrickCoordinate),
+    /// Gives the renderer the picture of a brick of the terrain that is **not** to be drawn: it holds it hidden, made for a viewpoint that is kept warm
+    /// ([`crate::LodView::set_warm_viewpoint`]), as [`MeshUpdate::UploadHiddenCoarse`] does for a node. A later [`MeshUpdate::ShowBrick`] shows it.
+    UploadHiddenBrick {
+        coordinate: BrickCoordinate,
+        mesh: PackedBrickMesh,
+    },
+    /// [`MeshUpdate::UploadHiddenBrick`] for a brick of a planet.
+    UploadHiddenGridBrick {
+        grid: GridId,
+        coordinate: BrickCoordinate,
+        mesh: PackedBrickMesh,
+    },
     /// [`MeshUpdate::HideBrick`] for a brick of a planet.
     HideGridBrick {
         grid: GridId,
@@ -335,6 +359,10 @@ pub struct WorldMesher {
     /// The bricks whose pictures were held, whose hidden meshes the renderer is to take down: their pictures went out of date (an edit, a change of what is drawn from)
     /// since the last update, which says so.
     pending_removals: Vec<BrickCoordinate>,
+    /// The centre of a second ball of bricks that is made and kept as well as the one round the viewer ([`WorldMesher::set_warm_centre`]).
+    warm_centre: Option<BrickCoordinate>,
+    /// The bricks of that ball whose pictures are made and waiting: held, hidden, once nothing wants them drawn ([`WorldMesher::park_ready`]).
+    warm_waiting: HashSet<BrickCoordinate>,
 }
 
 impl std::fmt::Debug for WorldMesher {
@@ -448,6 +476,8 @@ impl WorldMesher {
             epoch: 0,
             occupancy: OccupancyLog::new(),
             pending_removals: Vec::new(),
+            warm_centre: None,
+            warm_waiting: HashSet::new(),
         }
     }
 
@@ -508,6 +538,44 @@ impl WorldMesher {
             .into_iter()
             .map(MeshUpdate::Remove)
             .collect()
+    }
+
+    /// Makes and keeps the bricks of a second ball, round `centre`, as well as those round the viewer (`None`, the default, none): what is made for the viewer comes first, and
+    /// a picture made for the second ball alone is not told to the sun, and is held hidden by [`WorldMesher::park_ready`]. Needs pictures to be held
+    /// ([`WorldMesher::hold_hidden_pictures`]).
+    pub fn set_warm_centre(&mut self, centre: Option<BrickCoordinate>) {
+        if self.warm_centre != centre {
+            self.warm_centre = centre;
+            self.warm_waiting.clear();
+        }
+    }
+
+    /// Lets go of the pictures that were made for the second ball alone and held hidden ([`WorldMesher::park_ready`]) and that `keep` does not say are kept (a brick that is
+    /// wanted by the viewer is): returns what the renderer is to take down. Pictures that were shown and taken down are not let go of. For when the second ball is
+    /// taken away ([`WorldMesher::set_warm_centre`] with `None`).
+    pub fn release_parked(&mut self, keep: impl Fn(BrickCoordinate) -> bool) -> Vec<MeshUpdate> {
+        self.states
+            .release_parked(keep)
+            .into_iter()
+            .map(MeshUpdate::Remove)
+            .collect()
+    }
+
+    /// Holds the pictures of the second ball that are made and waiting: returns what the renderer is to be given, each mesh hidden. (One of them that the viewer comes to draw is
+    /// shown by a move, as any held picture is.)
+    pub fn park_ready(&mut self) -> Vec<MeshUpdate> {
+        let mut candidates: Vec<BrickCoordinate> = self.warm_waiting.drain().collect();
+        candidates.sort();
+        let mut updates = Vec::new();
+        for coordinate in candidates {
+            // (One that is not waiting any more was shown, or its picture went: it is not the second ball's to hold.)
+            if let Some(mesh) = self.states.park(coordinate)
+                && !mesh.is_empty()
+            {
+                updates.push(MeshUpdate::UploadHiddenBrick { coordinate, mesh });
+            }
+        }
+        updates
     }
 
     /// How many pictures have become ready since the mesher was made (when held back).
@@ -593,6 +661,12 @@ impl WorldMesher {
             return displayed.then_some(MeshUpdate::ShowBrick(coordinate));
         }
         let mesh = self.states.hand_out(coordinate)?;
+        // (A picture made for the second ball alone was not told to the sun: it is now, and nothing is sent if it was.)
+        if self.occupancy.is_enabled()
+            && let Some(occupancy) = self.states.occupancy(coordinate).cloned()
+        {
+            self.occupancy.set(coordinate, occupancy);
+        }
         if mesh.is_empty() {
             return None;
         }
@@ -724,6 +798,7 @@ impl WorldMesher {
         displayed.dedup();
         self.versions.clear();
         self.scheduled_last_update = 0;
+        self.warm_waiting.clear();
         self.occupancy.clear_all();
         displayed.into_iter().map(MeshUpdate::Remove).collect()
     }
@@ -748,6 +823,10 @@ impl WorldMesher {
         let view_radius = self.settings.view_radius_bricks;
         let keep_radius = view_radius + if self.held_back { 4 } else { 2 };
         let fine_region = FineRegion::new(center, u32::try_from(view_radius).unwrap_or(0));
+        let warm_region = self
+            .warm_centre
+            .filter(|_| self.held_back && self.states.holds_pictures())
+            .map(|warm| FineRegion::new(warm, u32::try_from(view_radius).unwrap_or(0)));
 
         while let Ok(result) = self.results.try_recv() {
             match result {
@@ -781,7 +860,14 @@ impl WorldMesher {
                     } else {
                         None
                     };
-                    if let Some(occupancy) = occupancy {
+                    // A brick that is in the second ball and not the first is made to be held: the sun is told of it when it is drawn (the renderer's tables of the sun are
+                    // for what is near the camera, and a brick far from it would take the place of one that is near).
+                    let for_the_warm_ball_alone = self.held_back
+                        && !fine_region.wants_brick(coordinate)
+                        && warm_region
+                            .as_ref()
+                            .is_some_and(|region| region.wants_brick(coordinate));
+                    if !for_the_warm_ball_alone && let Some(occupancy) = occupancy {
                         self.occupancy.set(coordinate, occupancy);
                     }
                     if self.held_back && !self.states.is_shown(coordinate) {
@@ -789,7 +875,13 @@ impl WorldMesher {
                         if let Some(occupancy) = to_keep {
                             self.states.keep_occupancy(coordinate, occupancy);
                         }
-                        self.ready_serial += 1;
+                        // (A brick that only the warm viewpoint wants is no part of what the planner of the swaps looks at: it is looked at once the brick is wanted by
+                        // the viewer, and the viewer moving says so.)
+                        if for_the_warm_ball_alone {
+                            self.warm_waiting.insert(coordinate);
+                        } else {
+                            self.ready_serial += 1;
+                        }
                         continue;
                     }
                     self.states.deliver(coordinate, mesh.byte_size());
@@ -810,6 +902,12 @@ impl WorldMesher {
             .states
             .loaded_coordinates()
             .filter(|&coordinate| is_farther_than(coordinate, center, keep_radius))
+            .filter(|&coordinate| {
+                warm_region.is_none()
+                    || self
+                        .warm_centre
+                        .is_none_or(|warm| is_farther_than(coordinate, warm, keep_radius))
+            })
             .collect();
         for coordinate in too_far {
             self.states.unload(coordinate);
@@ -820,6 +918,27 @@ impl WorldMesher {
             }
         }
 
+        let mut scheduled = self.schedule_around(source, center, &fine_region);
+        // (A second ball round the same centre is the first.)
+        if let Some(region) = &warm_region
+            && let Some(warm) = self.warm_centre.filter(|&warm| warm != center)
+        {
+            // (What is made for the viewer comes first: the limit on jobs is the same.)
+            scheduled += self.schedule_around(source, warm, region);
+        }
+        self.scheduled_last_update = scheduled;
+        updates
+    }
+
+    /// Loads the bricks round `center` that are not, starts the jobs that generate the voxels of those that are not known, and the jobs that mesh the bricks of `fine_region`
+    /// whose neighbours are loaded; at most as many as the limit on jobs in flight. Returns how many things it started or loaded.
+    fn schedule_around(
+        &mut self,
+        source: &impl TerrainSource,
+        center: BrickCoordinate,
+        fine_region: &FineRegion,
+    ) -> usize {
+        let view_radius = self.settings.view_radius_bricks;
         let maximum_in_flight = self.workers.len() * 4;
         let mut scheduled = 0;
         for &[dx, dy, dz] in &self.load_offsets {
@@ -880,8 +999,7 @@ impl WorldMesher {
                 scheduled += 1;
             }
         }
-        self.scheduled_last_update = scheduled;
-        updates
+        scheduled
     }
 
     /// The brick and its six neighbours, if all of them are loaded.

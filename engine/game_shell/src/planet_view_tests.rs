@@ -27,9 +27,10 @@ use crate::coarse_view_tests::Digger;
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
-use crate::session::{Mode, Session};
+use crate::session::{Mode, Session, ViewCommand};
 use crate::test_support::{CoarseWatch, ExampleContent, ExampleGame};
 use crate::view::camera_at;
+use crate::view_rig::Focus;
 
 type Player = Session<Box<dyn Connection>, ExampleGame>;
 
@@ -887,4 +888,78 @@ fn the_fog_reaches_as_far_as_the_terrain_that_is_drawn_whether_it_is_a_level_or_
     assert_eq!(radius_of(Some(700.0), None), 22);
     assert_eq!(radius_of(Some(3200.0), Some(700.0)), 100);
     assert_eq!(radius_of(Some(700.0), Some(3200.0)), 100);
+}
+
+// ---- The map locked on a planet (docs/specs/viewpoints-spec.md, phase 5) ----
+
+#[test]
+fn the_map_can_be_locked_on_a_planet_and_goes_round_the_middle_of_it_and_the_next_focus_after_the_last_is_the_player()
+ {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, OVER_THE_PLANET, 0.0);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+
+    assert_eq!(
+        player.focus_candidates(),
+        [Focus::Body, Focus::Grid(rig.planet)],
+        "the body, and the planet the player has been told of"
+    );
+    // (The key's command does nothing while the map is not drawn.)
+    player.apply_view_command(ViewCommand::CycleFocus(1));
+    assert_eq!(player.focus(), Focus::Body);
+    player.show_map();
+    assert_eq!(player.focus(), Focus::Body);
+    player.apply_view_command(ViewCommand::CycleFocus(1));
+    assert_eq!(player.focus(), Focus::Grid(rig.planet));
+
+    // The camera is as far from the middle of the planet's bricks as the orbit says, and the planet is the size it is told.
+    let grid = player.client().world().grids().get(rig.planet).unwrap();
+    let extent = grid.terrain.as_ref().unwrap().extent;
+    let (min, max) = (extent.min(), extent.max());
+    let size = [
+        (max.x() - min.x() + 1) as f64 * 32.0,
+        (max.y() - min.y() + 1) as f64 * 32.0,
+        (max.z() - min.z() + 1) as f64 * 32.0,
+    ];
+    let middle = grid
+        .pose
+        .local_to_world(
+            WorldPosition::new(min, [0.0; 3]).translated(size.map(|length| length / 2.0)),
+        )
+        .unwrap();
+    let radius = size
+        .iter()
+        .map(|length| length * length)
+        .sum::<f64>()
+        .sqrt()
+        / 2.0;
+    let orbit = player.orbit().unwrap();
+    assert!(
+        orbit.distance >= radius * 1.5 - 1e-9,
+        "outside the planet: {} of {radius}",
+        orbit.distance
+    );
+    let to_the_middle = middle.relative_to(player.drawn_camera().position);
+    let distance = to_the_middle.iter().map(|c| c * c).sum::<f64>().sqrt();
+    assert!(
+        (distance - orbit.distance).abs() < 1e-6 * orbit.distance,
+        "{distance} from the middle of the planet, the orbit says {}",
+        orbit.distance
+    );
+    // Round the end of the list the focus is the player again, and a step back is the planet.
+    player.cycle_focus(1);
+    assert_eq!(player.focus(), Focus::Body);
+    player.cycle_focus(-1);
+    assert_eq!(player.focus(), Focus::Grid(rig.planet));
+    // The player's own camera has not moved.
+    assert_eq!(
+        player.camera.position,
+        camera_at(OVER_THE_PLANET, 0.0, 0.0).position
+    );
+    // A map that is left comes back locked on what it was locked on.
+    player.show_body();
+    player.show_map();
+    assert_eq!(player.focus(), Focus::Grid(rig.planet));
 }

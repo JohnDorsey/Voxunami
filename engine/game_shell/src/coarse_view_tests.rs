@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use coarse_streaming::{CoarseConfig, CoarseServerPlugin};
+use coarse_streaming::{CoarseConfig, CoarseServerPlugin, DetailPlace};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
@@ -15,17 +15,18 @@ use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_grid::ChannelIndex;
 use voxel_meshing::PackedBrickMesh;
-use voxel_space::{BrickCoordinate, GridId, VoxelCoordinate};
+use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 use world_view::MeshUpdate;
 
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
-use crate::session::{Mode, Session};
+use crate::session::{Mode, Session, ViewMode};
 use crate::test_support::{
     CoarseWatch, ExampleContent, ExampleDetailGame, ExampleGame, ExampleOneCoarseLevelGame,
 };
 use crate::view::camera_at;
+use crate::view_rig::{Focus, Orbit};
 
 type Player = Session<Box<dyn Connection>, ExampleGame>;
 
@@ -34,6 +35,8 @@ type Player = Session<Box<dyn Connection>, ExampleGame>;
 struct Screen {
     bricks: HashMap<BrickCoordinate, PackedBrickMesh>,
     nodes: HashMap<BrickCube, PackedBrickMesh>,
+    /// The nodes the renderer holds and does not draw.
+    hidden_nodes: HashMap<BrickCube, PackedBrickMesh>,
 }
 
 impl Screen {
@@ -57,6 +60,22 @@ impl Screen {
                 }
                 MeshUpdate::RemoveCoarse(cube) => {
                     self.nodes.remove(&cube);
+                    self.hidden_nodes.remove(&cube);
+                }
+                MeshUpdate::UploadHiddenCoarse { cube, mesh } => {
+                    if let Some(drawn) = self.nodes.get_mut(&cube) {
+                        *drawn = mesh;
+                    } else {
+                        self.hidden_nodes.insert(cube, mesh);
+                    }
+                }
+                MeshUpdate::HideCoarse(cube) => {
+                    let mesh = self.nodes.remove(&cube).expect("it was drawn");
+                    self.hidden_nodes.insert(cube, mesh);
+                }
+                MeshUpdate::ShowCoarse(cube) => {
+                    let mesh = self.hidden_nodes.remove(&cube).expect("it was hidden");
+                    self.nodes.insert(cube, mesh);
                 }
                 _ => {}
             }
@@ -314,6 +333,221 @@ fn an_edit_far_away_shows_in_the_coarse_view_of_a_player_who_is_far_from_it_and_
 }
 
 #[test]
+fn a_place_that_is_kept_ready_is_held_hidden_and_a_player_who_stands_there_draws_what_is_held() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, WATCHER);
+    watcher.hold_hidden_pictures(64 << 20);
+    let there = camera_at([8.5, 60.0, 8.5], 0.0, 0.0).position;
+    watcher.keep_ready(GridId::MAIN, Some(there));
+    assert_eq!(
+        watcher.camera_place_in(GridId::MAIN),
+        Some(watcher.camera.position)
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    assert!(
+        screen.hidden_nodes.len() > 20,
+        "the place kept ready is held hidden: {} nodes",
+        screen.hidden_nodes.len()
+    );
+
+    // A player who stands there draws nodes that the watcher draws or holds, the same pictures.
+    let connection = rig.connection();
+    let mut near = rig.join(connection, 2, [8.5, 60.0, 8.5]);
+    let mut near_screen = Screen::default();
+    rig.settle(&mut near, &mut near_screen);
+    assert!(near_screen.nodes.len() > 20);
+    for (cube, mesh) in &near_screen.nodes {
+        assert_eq!(
+            screen
+                .nodes
+                .get(cube)
+                .or_else(|| screen.hidden_nodes.get(cube)),
+            Some(mesh),
+            "{cube:?} is drawn where the watcher keeps ready, and neither drawn nor held by the watcher"
+        );
+    }
+
+    // Not kept ready any more: what was held beyond the budget goes (nothing here is over it), and nothing new is made for the place.
+    watcher.keep_ready(GridId::MAIN, None);
+    assert_eq!(
+        watcher.camera_place_in(GridId::MAIN),
+        Some(watcher.camera.position)
+    );
+}
+
+/// Whether the player holds the edited brick at the origin, 350 voxels from where it is, after the crater was dug there, with a place beside the origin kept ready in
+/// the grid given (if one is), and whether it holds it after the place is not kept ready any more.
+fn holds_the_edited_brick_at_the_origin(kept_ready_in: Option<GridId>) -> (bool, bool) {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, WATCHER);
+    watcher.hold_hidden_pictures(64 << 20);
+    if let Some(grid) = kept_ready_in {
+        let there = camera_at([8.5, 60.0, 8.5], 0.0, 0.0).position;
+        watcher.keep_ready(grid, Some(there));
+    }
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    rig.dig_a_crater();
+    rig.settle(&mut watcher, &mut screen);
+    let holds = |player: &Player| {
+        player
+            .client()
+            .world()
+            .world()
+            .main()
+            .overrides
+            .brick(BrickCoordinate::ORIGIN)
+            .is_some()
+    };
+    let while_kept = holds(&watcher);
+    if let Some(grid) = kept_ready_in {
+        watcher.keep_ready(grid, None);
+    }
+    rig.settle(&mut watcher, &mut screen);
+    (while_kept, holds(&watcher))
+}
+
+#[test]
+fn the_edited_bricks_of_a_place_that_is_kept_ready_are_held_while_it_is_and_forgotten_when_it_is_not_any_more()
+ {
+    // The player is 350 voxels from the crater, farther than its bricks are watched: it holds them only for the place that is kept ready.
+    assert_eq!(holds_the_edited_brick_at_the_origin(None), (false, false));
+    assert_eq!(
+        holds_the_edited_brick_at_the_origin(Some(GridId::MAIN)),
+        (true, false)
+    );
+    // A place kept ready in another level is not a place of this level's terrain: nothing is watched for it.
+    assert_eq!(
+        holds_the_edited_brick_at_the_origin(Some(GridId::root(LevelIndex::new(1)))),
+        (false, false)
+    );
+}
+
+/// Where the watcher is when it is far from the crater and a place is kept ready near it: 1,000 voxels from it, beyond the 700 that terrain is drawn to.
+const FAR_FROM_THE_CRATER: [f64; 3] = [1_008.5, 60.0, 8.5];
+
+#[test]
+fn the_nodes_an_edit_changes_round_a_place_kept_ready_are_held_as_a_player_there_draws_them() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, FAR_FROM_THE_CRATER);
+    watcher.hold_hidden_pictures(64 << 20);
+    // The place is where the player of the second connection stands, 350 voxels from the crater: the crater is in its cut, as a node, and not in the watcher's own.
+    watcher.keep_ready(GridId::MAIN, Some(camera_at(WATCHER, 0.0, 0.0).position));
+    let mut screen = Screen::default();
+    let connection = rig.connection();
+    let mut near = rig.join(connection, 2, WATCHER);
+    let mut near_screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    rig.settle(&mut near, &mut near_screen);
+    let before: HashMap<BrickCube, PackedBrickMesh> = near_screen.nodes.clone();
+    assert!(
+        screen.hidden_nodes.len() > 20,
+        "the place is held: {} nodes",
+        screen.hidden_nodes.len()
+    );
+
+    rig.dig_a_crater();
+    rig.settle(&mut watcher, &mut screen);
+    rig.settle(&mut near, &mut near_screen);
+    rig.settle(&mut watcher, &mut screen);
+
+    let changed: Vec<BrickCube> = near_screen
+        .nodes
+        .iter()
+        .filter(|(cube, mesh)| before.get(cube) != Some(mesh))
+        .map(|(cube, _)| *cube)
+        .collect();
+    assert!(
+        !changed.is_empty(),
+        "the crater is not in the picture of the player who stands at the place"
+    );
+    for cube in &changed {
+        assert_eq!(
+            screen
+                .nodes
+                .get(cube)
+                .or_else(|| screen.hidden_nodes.get(cube)),
+            near_screen.nodes.get(cube),
+            "{cube:?} is drawn with the crater in it where the place is, and not held so for it"
+        );
+    }
+}
+
+#[test]
+fn the_places_the_server_is_asked_the_nodes_of_are_those_kept_ready_in_terrain_the_player_draws_in_nodes()
+ {
+    let mut rig = Rig::new();
+    let there = camera_at(WATCHER, 0.0, 0.0).position;
+
+    // A level drawn in nodes: the place kept ready in its terrain is asked for, with the brick it is in, and one in another level's terrain or in a grid there is not is not.
+    let connection = rig.connection();
+    let mut coarse = rig.join(connection, 1, FAR_FROM_THE_CRATER);
+    assert_eq!(coarse.detail_places(), []);
+    coarse.keep_ready(GridId::MAIN, Some(there));
+    coarse.keep_ready(GridId::root(LevelIndex::new(1)), Some(there));
+    coarse.keep_ready(GridId::new(GridId::FIRST_ALLOCATED + 40), Some(there));
+    assert_eq!(
+        coarse.detail_places(),
+        [DetailPlace {
+            grid: GridId::MAIN,
+            brick: there.brick()
+        }]
+    );
+    coarse.keep_ready(GridId::MAIN, None);
+    assert_eq!(coarse.detail_places(), []);
+
+    // A level drawn in bricks only has no nodes to ask for.
+    let (server, nodes) = (&mut rig.server, &rig.nodes);
+    let mut bricks = Session::<_, ExampleGame>::connect(
+        Box::new(rig.connector.connect().unwrap()) as Box<dyn Connection>,
+        &Identity::from_secret([2; 32]),
+        Mode::Playing,
+        3,
+        camera_at(FAR_FROM_THE_CRATER, 0.0, 0.0),
+        || {
+            nodes.step(server);
+        },
+    )
+    .unwrap();
+    bricks.keep_ready(GridId::MAIN, Some(there));
+    assert!(!bricks.draws_coarse_terrain());
+    assert_eq!(bricks.detail_places(), []);
+}
+
+/// How many nodes a player holds hidden with a place kept ready, and how many after it is not kept ready any more, with the setting as given.
+fn nodes_held_with_a_place_kept_ready_and_after(release: bool) -> (usize, usize) {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut watcher = rig.join(connection, 1, WATCHER);
+    watcher.hold_hidden_pictures(64 << 20);
+    watcher.set_release_map_pictures(release);
+    let there = camera_at([8.5, 60.0, 8.5], 0.0, 0.0).position;
+    watcher.keep_ready(GridId::MAIN, Some(there));
+    let mut screen = Screen::default();
+    rig.settle(&mut watcher, &mut screen);
+    let held = screen.hidden_nodes.len();
+    watcher.keep_ready(GridId::MAIN, None);
+    rig.settle(&mut watcher, &mut screen);
+    (held, screen.hidden_nodes.len())
+}
+
+#[test]
+fn a_place_that_is_not_kept_ready_any_more_has_its_pictures_let_go_of_unless_the_player_says_to_keep_them()
+ {
+    let (held, after) = nodes_held_with_a_place_kept_ready_and_after(true);
+    assert!(held > 20, "the place was held: {held} nodes");
+    assert_eq!(after, 0, "every picture was made for the place alone");
+
+    let (held, after) = nodes_held_with_a_place_kept_ready_and_after(false);
+    assert!(held > 20, "the place was held: {held} nodes");
+    assert_eq!(after, held, "left to the budget, which is not full");
+}
+
+#[test]
 fn a_recording_of_the_watcher_shows_what_the_watcher_saw() {
     let directory =
         std::env::temp_dir().join(format!("voxunami_coarse_view_{}", std::process::id()));
@@ -383,6 +617,7 @@ fn an_edit_the_server_told_of_is_still_drawn_far_away_after_a_visit_to_a_level_t
     let with_the_crater = Screen {
         nodes: screen.nodes.clone(),
         bricks: HashMap::new(),
+        hidden_nodes: HashMap::new(),
     };
     assert_ne!(
         with_the_crater.nodes, before,
@@ -414,4 +649,197 @@ fn a_game_that_only_says_how_far_terrain_is_drawn_draws_every_level_so_and_one_t
         assert_eq!(said, ExampleDetailGame::coarse_detail());
         assert_eq!(ExampleGame::level_detail(&level(name)), None, "{name}");
     }
+}
+
+// ---- The map: a picture made from a camera that goes round a focus (docs/specs/viewpoints-spec.md, phase 5) ----
+
+/// A position as the voxels from the origin of the world, for a player to be put at.
+fn voxels_of(position: voxel_space::WorldPosition) -> [f64; 3] {
+    let (brick, offset) = (position.brick(), position.offset());
+    [
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
+    ]
+}
+
+#[test]
+fn the_map_is_a_camera_that_goes_round_the_player_and_the_players_own_camera_is_not_moved_by_it() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    assert_eq!(player.view_mode(), ViewMode::Body);
+    assert_eq!(player.drawn_camera(), player.camera);
+    let body = player.camera;
+
+    player.show_map();
+    assert_eq!(player.view_mode(), ViewMode::Map);
+    assert_eq!(player.focus(), Focus::Body);
+    let map = player.drawn_camera();
+    let to_body = body.position.relative_to(map.position);
+    let distance = to_body.iter().map(|c| c * c).sum::<f64>().sqrt();
+    assert!(
+        distance > 4.0 && distance < Orbit::MAXIMUM_DISTANCE,
+        "{distance} voxels from the player"
+    );
+    // It looks at the player.
+    let forward = map.forward().to_array().map(f64::from);
+    let cosine = (0..3)
+        .map(|axis| to_body[axis] * forward[axis])
+        .sum::<f64>()
+        / distance;
+    assert!(cosine > 1.0 - 1e-6, "{cosine}");
+
+    // Turning and zooming move the map's camera and not the player's.
+    player.orbit_by(0.5, 0.2);
+    player.orbit_zoom(2.0);
+    assert_ne!(player.drawn_camera().position, map.position);
+    assert_eq!(player.camera, body);
+
+    // Back to the player's eyes as they were; and the map comes back where it was left.
+    let left = player.orbit().expect("the map has an orbit");
+    player.show_body();
+    assert_eq!(player.view_mode(), ViewMode::Body);
+    assert_eq!(player.drawn_camera(), body);
+    assert_eq!(player.orbit(), None);
+    player.show_map();
+    assert_eq!(player.orbit(), Some(left));
+
+    // A camera that is let go of flies where it is, and the player stays.
+    let flying_from = player.drawn_camera();
+    player.detach_camera();
+    assert_eq!(player.view_mode(), ViewMode::Fly);
+    assert_eq!(player.drawn_camera(), flying_from);
+    player.fly_look_by(0.3, 0.1);
+    player.fly_move_relative(glam::DVec3::new(0.0, 0.0, -10.0));
+    assert_ne!(player.drawn_camera().position, flying_from.position);
+    assert_ne!(player.drawn_camera().yaw, flying_from.yaw);
+    assert_eq!(player.camera, body);
+    player.show_body();
+    assert_eq!(player.drawn_camera(), body);
+}
+
+#[test]
+fn what_a_player_in_the_map_is_shown_is_what_a_player_standing_where_the_map_is_is_shown_and_the_server_is_told_of_the_body_only()
+ {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    player.hold_hidden_pictures(64 << 20);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    let on_the_ground = screen.nodes.clone();
+    let watched = player.client().world().watched();
+    assert!(watched.is_some());
+
+    player.show_map();
+    player.orbit_zoom(200.0);
+    player.orbit_by(1.0, 0.3);
+    rig.settle(&mut player, &mut screen);
+    let map = player.drawn_camera().position;
+    assert_ne!(
+        screen.nodes, on_the_ground,
+        "the picture is of somewhere else"
+    );
+    // The server is told where the body is, and not where the map is: the map's place is asked for as a free region, which holds the edited bricks round it and
+    // is read-only, and for the nodes that an edit changes round it.
+    assert_eq!(player.client().world().watched(), watched);
+    assert!(
+        player
+            .client()
+            .world()
+            .watched_free()
+            .iter()
+            .any(|region| region.contains(map.brick())),
+        "the server was not asked for the edited bricks round the map"
+    );
+    assert!(
+        player.detail_places().contains(&DetailPlace {
+            grid: GridId::MAIN,
+            brick: map.brick()
+        }),
+        "the server was not asked for the nodes round the map"
+    );
+
+    let connection = rig.connection();
+    let mut there = rig.join(connection, 2, voxels_of(map));
+    let mut there_screen = Screen::default();
+    rig.settle(&mut there, &mut there_screen);
+    assert_same_nodes(&screen, &there_screen);
+
+    // The player's own view is kept ready meanwhile, held hidden, and coming back is the picture it was.
+    assert!(
+        screen.hidden_nodes.len() > 20,
+        "the body's view is held: {} nodes",
+        screen.hidden_nodes.len()
+    );
+    player.show_body();
+    rig.settle(&mut player, &mut screen);
+    assert_eq!(screen.nodes, on_the_ground);
+}
+
+#[test]
+fn the_map_is_kept_ready_for_a_counted_while_after_it_is_left_and_then_let_go_of() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    player.hold_hidden_pictures(64 << 20);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(player.warm_places_now().is_empty(), "no map has been used");
+
+    player.show_map();
+    rig.settle(&mut player, &mut screen);
+    let body_place = player.warm_places_now();
+    assert_eq!(
+        body_place.get(&GridId::MAIN),
+        Some(&player.camera.position),
+        "the player's own place is kept ready while the map is drawn"
+    );
+
+    // Left, the map is kept ready: in the place it was in, not the player's.
+    let map_place = player.drawn_camera().position;
+    player.show_body();
+    assert_eq!(
+        player.warm_places_now().get(&GridId::MAIN),
+        Some(&map_place)
+    );
+    // The window is counted in ticks of the server's: after the last of them it is let go of.
+    for _ in 0..MAP_WARM_TICKS_FOR_THE_TEST + 10 {
+        let (server, nodes) = (&mut rig.server, &rig.nodes);
+        nodes.step(server);
+        player.advance().unwrap();
+        if player.warm_places_now().is_empty() {
+            break;
+        }
+    }
+    assert!(
+        player.warm_places_now().is_empty(),
+        "the map is still kept ready long after it was left"
+    );
+    // A place that a game asked to be kept ready itself is the game's, and is not let go of.
+    let there = camera_at(WATCHER, 0.0, 0.0).position;
+    player.keep_ready(GridId::MAIN, Some(there));
+    assert_eq!(player.warm_places_now().get(&GridId::MAIN), Some(&there));
+}
+
+/// The window the map is kept ready for after it was left, in ticks (`docs/specs/viewpoints-spec.md`, 6.1): the test counts what the session says.
+const MAP_WARM_TICKS_FOR_THE_TEST: u64 = crate::session::MAP_WARM_TICKS;
+
+#[test]
+fn nothing_is_aimed_at_from_the_map_and_the_player_is_not_walked_by_it() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, [8.5, 12.5, 8.5]);
+    player.camera.pitch = -1.4;
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(player.target().is_some(), "the player looks at the ground");
+    player.show_map();
+    assert!(
+        player.target().is_none(),
+        "nothing is aimed at from the map"
+    );
+    player.show_body();
+    assert!(player.target().is_some());
 }

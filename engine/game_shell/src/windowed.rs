@@ -28,7 +28,7 @@ use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turn
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
-use crate::session::{Mode, Session};
+use crate::session::{Mode, Session, ViewMode};
 use crate::view::{
     apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
     hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
@@ -38,6 +38,9 @@ use crate::view::{
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f64 = 5.0;
 const MOUSE_SENSITIVITY: f64 = 0.0025; // radians per pixel
+const MAP_TURN_RATE: f64 = 1.5; // radians a second, with a key held
+const MAP_ZOOM_RATE: f64 = 1.0; // e-folds of the distance a second, with a key held
+const MAP_WHEEL_ZOOM: f64 = 0.15; // e-folds of the distance for a notch of the wheel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often what the keys ask is sent again when it has not changed.
@@ -96,6 +99,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     session.set_pixelated_shadows(view.pixelated_shadows);
+    session.set_release_map_pictures(view.release_map_pictures);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -143,6 +147,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     session.set_pixelated_shadows(view.pixelated_shadows);
+    session.set_release_map_pictures(view.release_map_pictures);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -349,6 +354,11 @@ impl<G: GameDefinition> Viewer<G> {
                     self.session.players().len().max(1),
                     hexadecimal_voxel_coordinates(self.session.camera.position)
                 ));
+                match self.session.view_mode() {
+                    ViewMode::Body => {}
+                    ViewMode::Map => status.push("map".to_owned()),
+                    ViewMode::Fly => status.push("camera detached".to_owned()),
+                }
                 status.extend(self.session.hud_lines());
             }
             Mode::Replaying => status.push(format!(
@@ -463,15 +473,42 @@ impl<G: GameDefinition> Viewer<G> {
             } else {
                 1.0
             };
-        let camera = &mut self.session.camera;
-        camera.move_relative(movement.normalize_or_zero() * speed * seconds);
-        camera.move_in_world(DVec3::Y * vertical * speed * seconds);
+        match self.session.view_mode() {
+            ViewMode::Body => {
+                let camera = &mut self.session.camera;
+                camera.move_relative(movement.normalize_or_zero() * speed * seconds);
+                camera.move_in_world(DVec3::Y * vertical * speed * seconds);
+            }
+            // The camera that flew off goes where the keys say, and the player's body stays.
+            ViewMode::Fly => {
+                self.session
+                    .fly_move_relative(movement.normalize_or_zero() * speed * seconds);
+                self.session
+                    .fly_move_in_world(DVec3::Y * vertical * speed * seconds);
+            }
+            // The map: the sideways keys go round the focus, space and shift raise and lower the camera, and forward and back are nearer and farther.
+            ViewMode::Map => {
+                self.session.orbit_by(
+                    movement.x * MAP_TURN_RATE * seconds,
+                    vertical * MAP_TURN_RATE * seconds,
+                );
+                self.session
+                    .orbit_zoom(libm::exp(movement.z * MAP_ZOOM_RATE * seconds));
+            }
+        }
     }
 
     /// Tells a server that moves the player what the keys ask: when that changes, and now and then so
     /// that the server knows the player is still there.
     fn send_movement(&mut self, now: Instant) {
-        let Some(message) = G::movement_message(&self.keys, &self.session.camera) else {
+        // (The keys move the camera that is drawn when it is not the player's eyes: the body stands.)
+        let no_keys = HashSet::new();
+        let keys = if self.session.view_mode() == ViewMode::Body {
+            &self.keys
+        } else {
+            &no_keys
+        };
+        let Some(message) = G::movement_message(keys, &self.session.camera) else {
             return;
         };
         let changed = self.last_movement.as_ref() != Some(&message);
@@ -487,6 +524,9 @@ impl<G: GameDefinition> Viewer<G> {
     fn follow_server(&mut self, now: Instant, seconds: f64) -> Result<(), ClientError> {
         match self.session.mode() {
             Mode::Playing if G::server_moves_players() => {
+                if self.session.view_mode() != ViewMode::Body {
+                    self.move_camera(seconds);
+                }
                 self.send_movement(now);
                 self.session.advance()?;
                 let seen = self.tick_seen(now);
@@ -652,7 +692,8 @@ impl<G: GameDefinition> Viewer<G> {
             self.surface_configuration.width,
             self.surface_configuration.height,
         );
-        self.last_statistics = self.renderer.render(&view, size, &self.session.camera);
+        let drawn = self.session.drawn_camera();
+        self.last_statistics = self.renderer.render(&view, size, &drawn);
         self.window.pre_present_notify();
         self.context.queue.present(frame);
         if reconfigure {
@@ -823,6 +864,18 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 _ => {}
             },
             WindowEvent::CursorMoved { position, .. } => viewer.cursor = (position.x, position.y),
+            // The wheel brings the map nearer and sends it farther.
+            WindowEvent::MouseWheel { delta, .. }
+                if viewer.session.view_mode() == ViewMode::Map =>
+            {
+                let notches = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, lines) => f64::from(lines),
+                    winit::event::MouseScrollDelta::PixelDelta(position) => position.y / 40.0,
+                };
+                viewer
+                    .session
+                    .orbit_zoom(libm::exp(-notches * MAP_WHEEL_ZOOM));
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 viewer.shift = modifiers.state().shift_key()
             }
@@ -866,12 +919,21 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
         if let DeviceEvent::MouseMotion { delta } = event
             && viewer.mouse_captured
             && viewer.session.mode() == Mode::Playing
-            && !G::server_sets_view()
         {
-            viewer
-                .session
-                .camera
-                .look_by(-delta.0 * MOUSE_SENSITIVITY, -delta.1 * MOUSE_SENSITIVITY);
+            match viewer.session.view_mode() {
+                ViewMode::Body if !G::server_sets_view() => viewer
+                    .session
+                    .camera
+                    .look_by(-delta.0 * MOUSE_SENSITIVITY, -delta.1 * MOUSE_SENSITIVITY),
+                ViewMode::Body => {}
+                ViewMode::Fly => viewer
+                    .session
+                    .fly_look_by(-delta.0 * MOUSE_SENSITIVITY, -delta.1 * MOUSE_SENSITIVITY),
+                // The mouse takes the map round its focus: right is the camera going left round it, down is higher.
+                ViewMode::Map => viewer
+                    .session
+                    .orbit_by(-delta.0 * MOUSE_SENSITIVITY, delta.1 * MOUSE_SENSITIVITY),
+            }
         }
     }
 
