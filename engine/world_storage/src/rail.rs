@@ -24,7 +24,7 @@ use std::f64::consts::TAU;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{GridId, Orientation};
 use wide_float::{Precision, WideFloat};
-use wide_kepler::{Elements, KeplerError, PreparedElements, Time};
+use wide_kepler::{Elements, KeplerError, Place, PreparedElements, Time};
 
 pub use crate::hand_over::BITS_ADDED_BY_A_HAND_OVER;
 
@@ -640,6 +640,16 @@ impl Orbit {
     /// it below 2^-64 voxel (see [`answer_precision`]), and rounded once, to whole bricks and a rest in steps of 2^-32 voxel; the speed is the same working rounded to an `f64`.
     fn at(&self, time: RailTime) -> Option<(ExactOffset, [f64; 3])> {
         Self::at_prepared(&self.prepare(), time)
+    }
+
+    /// Where the body is from its centre at `time`, and its velocity against the centre, **exact**: the numbers of the working in wide numbers (the width of `answer_precision`, enough that the last bit is below 2^-64 voxel),
+    /// not rounded to whole bricks and steps of 2^-32 voxel, and not to an `f64` speed (what [`Rail::state`] gives). This is what to make a new orbit from when a body on the
+    /// orbit is pushed and stays on a rail (see [`Orbit::with_speed_changed_at`]): an orbit made again every tick from rounded numbers loses a long orbit and a small push
+    /// (measured 2026-11-19, phase 0 of 4c-5-4b).
+    pub fn wide_state_at(&self, time: RailTime) -> Place {
+        self.prepare()
+            .place_at(time.wide())
+            .expect("an orbit made by this module is one `wide_kepler` works out")
     }
 
     /// What the place of this orbit needs whatever the time is, worked out once (see [`RailMemo`], which keeps it while the orbit does not change).

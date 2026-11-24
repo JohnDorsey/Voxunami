@@ -527,7 +527,23 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // Control: the old build and this one printed the position and both speeds of each of the three ships of this scene in voxels, with the same inputs: the largest difference in any coordinate is
     // 1.3e-5 for the ship that falls clear and 2.2e-3 and 9.0e-3 for the two that slide and spin on the ground, which is as far as that kind of scene moves with a change of this size (the note of
     // Phase 32h above found 0.003 and 0.004 from a change of which terrain the solver sees).)
-    assert_eq!(hash_of_poses(&busy_scene()), 16_099_571_271_623_696_968);
+    // (And on 2026-11-14: 16_099_571_271_623_696_968 before. Every body is given 15 extra solver passes and a step is cut where two bodies first touch: step 4c-5-A of
+    // `docs/decisions/joints-and-cars.md`. Control: with a temporary switch in the game's plugin that turned both off, this test and the next passed with the old values, bit for bit
+    // (ran, then the switch was removed); the physics crate keeps the same control for its own pins.)
+    // (And again on 2026-11-14: 833_817_479_913_002_864 before. The solver makes 16 settling passes after each part of a step, where Rapier makes one, and the piece after a cut is
+    // what is left of the step, not a twelfth of a tick at most: `docs/history/loop-probe.md`, section 20. Control: with the one pass and the piece of a twelfth of a tick put
+    // back, this test and the next passed with the values before, bit for bit (ran, then they were removed).)
+    // (And a third time on 2026-11-14: 3_334_067_579_008_514_955 before. The 16 settling passes are made while a touch is found, or shapes that touch go against each other, and
+    // for half a second after, and the world makes Rapier's one pass in between, unless it has a coupling in it: `docs/history/loop-probe.md`, section 21. Control: with a temporary
+    // switch in the game's plugin that made the 16 between hits as well, this test and the next passed with the values before, bit for bit (ran, then the switch was removed).)
+    // (And a fourth time on 2026-11-14: 14_452_881_593_180_846_775 before. The 15 extra solver passes are made in the pieces that are solved as a hit, as the settling passes are,
+    // and no longer in every piece: `docs/history/loop-probe.md`, section 22. Control: with a temporary switch in the game's plugin that made them between hits as well, this test
+    // and the next passed with the values before, bit for bit; with that and the 16 settling passes between hits, with the values of the third move's "before" (3_334_067_579_008_514_955
+    // and 9_337_883_707_654_218_207) (ran, then the switch was removed).)
+    // (And a fifth time on 2026-11-14: 4_235_048_276_999_765_216 before. Whether two shapes that have a contact go against each other, which makes the pieces a hit, is judged by the
+    // speeds of their bodies at the points of the contact, no longer by a bound with the whole reach of a turning body in it: `docs/history/loop-probe.md`, section 23. Control:
+    // with the rule as it was and nothing else changed, this test and the next passed with the values before, bit for bit (ran, with the file put back from a copy).)
+    assert_eq!(hash_of_poses(&busy_scene()), 16_152_974_566_890_003_541);
 }
 
 #[test]
@@ -541,7 +557,12 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (And in Phase 38a: 8_817_648_817_650_209_632 before; see the test of the poses.)
     // (And on 2026-11-01: 15_605_515_214_656_621_284 before; see the test of the poses.)
     // (And on 2026-11-02: 17_869_319_792_822_264_929 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 13_859_437_887_424_448_532);
+    // (And on 2026-11-14: 13_859_437_887_424_448_532 before; see the test of the poses.)
+    // (And again on 2026-11-14: 3_693_345_421_220_211_019 before; see the test of the poses.)
+    // (And a third time on 2026-11-14: 9_337_883_707_654_218_207 before; see the test of the poses.)
+    // (And a fourth time on 2026-11-14: 546_511_535_485_162_239 before; see the test of the poses.)
+    // (And a fifth time on 2026-11-14: 5_214_168_435_068_449_193 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 16_942_630_422_457_954_318);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where

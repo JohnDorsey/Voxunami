@@ -33,13 +33,18 @@ pub trait ClientPlugin: Any + Send + std::fmt::Debug {
     fn register(&self, registrar: &mut ClientRegistrar<'_>);
 }
 
-/// The mouse buttons that do something in a game, while the mouse is captured.
+/// The mouse buttons that do something in a game, while the mouse is captured. The wheel is two of them: each notch it turns is one press of the side it turns to (a touchpad's
+/// slide is counted in notches too, see `wheel`), so a turn of three notches runs the action three times.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     /// The left button.
     Primary,
     /// The right button.
     Secondary,
+    /// A notch of the wheel turned away from the player (up).
+    WheelUp,
+    /// A notch of the wheel turned toward the player (down).
+    WheelDown,
 }
 
 /// What an action is: an identifier (unique among all the actions, so that a later phase can rebind it by
@@ -270,6 +275,8 @@ pub struct Appearance {
     /// The palette value it is drawn in: a block's number, to look like that block.
     pub material: u32,
     pub centre_offset: [f64; 3],
+    /// What it is shaped like: a box of `size`, or a ball (which ignores it).
+    pub shape: renderer::EntityShape,
 }
 
 type MessageHook = Box<dyn FnMut(&[u8]) -> bool + Send>;
@@ -1205,6 +1212,7 @@ mod tests {
                     size: [4, 4, 4],
                     material: entity.id.get() as u32 + 2,
                     centre_offset: [0.0, -0.25, 0.0],
+                    shape: renderer::EntityShape::Box,
                 })
             });
             // One that says nothing for an entity it will not draw.
@@ -1217,6 +1225,7 @@ mod tests {
                 size: [4, 4, 4],
                 material: 3,
                 centre_offset: [0.0, -0.25, 0.0],
+                shape: renderer::EntityShape::Box,
             })
         );
         assert_eq!(host.appearance_of(&an_entity_of("test:hidden")), None);

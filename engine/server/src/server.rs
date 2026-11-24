@@ -266,7 +266,8 @@ impl Server {
         // (The time of the world, which is saved with it, passes a tick at the start of each: what runs in this tick sees it.)
         self.world.data.advance_clock(1);
         // (And what is on rails is where its rail says it is at that time, before anything in the tick looks at it.)
-        self.world.apply_rails(self.config.ticks_per_second);
+        self.world
+            .apply_rails_before_the_step(self.config.ticks_per_second);
         let mut report = StepReport {
             tick,
             joined: Vec::new(),

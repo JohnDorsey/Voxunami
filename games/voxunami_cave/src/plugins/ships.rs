@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use block_models::BlockTable;
 use game_shell::GameContent;
 use grid_bodies::collision::BlockCollisions;
-use grid_bodies::{Docking, UndockError};
+use grid_bodies::{DockedPair, Docking, JointDesk, UndockError};
 use namespaced_id::NamespacedId;
 use physics::Collision;
 use player_presence::{Presence, SharedPresence, lock};
@@ -18,7 +18,9 @@ use plugin_host::{
 use protocol::ClientId;
 use server::{GridView, LogoutPolicy, ServerWorld, ShipSettings};
 use voxel_grid::ChannelIndex;
-use voxel_space::{BrickCoordinate, GridId, GridPose, Orientation, VoxelCoordinate, WorldPosition};
+use voxel_space::{
+    BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
+};
 use world_storage::PilotLogout;
 use world_view::cast_ray;
 
@@ -32,6 +34,10 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
+const JOINT_USAGE: &str =
+    "usage: /joint lock|unlock|mobilize [SECONDS]|immobilize [SECONDS]|decouple";
+/// How long a joint is braked over before it is made rigid, when the player does not say (owner, 2026-11-24).
+const DEFAULT_BRAKING_SECONDS: f64 = 1.0;
 const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | buckle | unbuckle | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
 
 /// A distance in a command: a number of voxels that is not below zero, or `everywhere` (or `nowhere`) for none.
@@ -112,6 +118,8 @@ struct Ships {
     table: BlockTable,
     /// How ships dock, shared with the plugin that moves them.
     docking: Docking,
+    /// Which cars are coupled where, and the cars to be parted, shared with the plugin that moves them.
+    joint_desk: JointDesk,
 }
 
 impl ShipCommandsPlugin {
@@ -120,12 +128,14 @@ impl ShipCommandsPlugin {
         players: SharedPresence,
         movement: SharedMovement,
         docking: Docking,
+        joint_desk: JointDesk,
     ) -> Self {
         Self {
             ships: Arc::new(Ships {
                 presence: players,
                 movement,
                 docking,
+                joint_desk,
                 pilots: Mutex::new(BTreeMap::new()),
                 seats: Mutex::new(BTreeMap::new()),
                 seat_block: content.registries()[0]
@@ -231,6 +241,20 @@ impl Plugin for ShipCommandsPlugin {
             .argument(Argument::rest("details").optional()),
             move |context, client, arguments| {
                 let reply = ships.command(context.world(), client, arguments);
+                context.reply(client, &reply);
+            },
+        );
+
+        let ships = Arc::clone(&self.ships);
+        registrar.command(
+            CommandSpec::new(
+                "joint",
+                "locks, unlocks, stiffens, frees and parts cars that are coupled by their joints",
+            )
+            .argument(Argument::word("action"))
+            .argument(Argument::word("seconds").optional()),
+            move |context, client, arguments| {
+                let reply = ships.joint_command(context.world(), client, arguments);
                 context.reply(client, &reply);
             },
         );
@@ -473,6 +497,288 @@ impl Ships {
             Ok(()) => format!("ship {} is let go", number(ship)),
             Err(_) => "that ship is gone".to_owned(),
         }
+    }
+
+    /// `/joint lock|unlock|decouple`, each about the coupling or the lock nearest to the player's eyes (within [`NEAR`], in their level; the nearest of the *pivots*, not of the ships: a
+    /// ship is as near as its bricks are, thirty-two voxels at a time, and two couplings of a chain of cars are often in the bricks of one).
+    fn joint_command(
+        &self,
+        world: &mut ServerWorld,
+        client: ClientId,
+        arguments: &Arguments<'_>,
+    ) -> String {
+        let action = arguments.word(0);
+        if !["lock", "unlock", "mobilize", "immobilize", "decouple"].contains(&action) {
+            return JOINT_USAGE.to_owned();
+        }
+        // A time is for `immobilize` (to brake over; one second if none is said) and `mobilize` (to wait before the joint is let go; none if none is said): a number that is not below zero.
+        let seconds = if arguments.present(1) {
+            match arguments.word(1).parse::<f64>() {
+                Ok(seconds)
+                    if ["immobilize", "mobilize"].contains(&action)
+                        && seconds.is_finite()
+                        && seconds >= 0.0 =>
+                {
+                    seconds
+                }
+                _ => return JOINT_USAGE.to_owned(),
+            }
+        } else if action == "mobilize" {
+            0.0
+        } else {
+            DEFAULT_BRAKING_SECONDS
+        };
+        let (level, eyes) = {
+            let presence = lock(&self.presence);
+            let Some((eyes, _)) = presence.view_in_the_world(world.data(), client) else {
+                return "you have not joined yet".to_owned();
+            };
+            (presence.level_of(world.data(), client), eyes)
+        };
+        match action {
+            "decouple" => self.decouple_nearest(level, eyes),
+            "lock" => self.lock_nearest(world, level, eyes),
+            "mobilize" => self.mobilize_nearest(world, level, eyes, seconds),
+            "immobilize" => self.immobilize_nearest(world, level, eyes, seconds),
+            _ => self.unlock_nearest(world, level, eyes),
+        }
+    }
+
+    /// The coupling whose pivot is nearest to a place, within [`NEAR`], and how far it is.
+    fn nearest_coupling(
+        &self,
+        level: LevelIndex,
+        eyes: WorldPosition,
+    ) -> Option<(f64, (GridId, GridId))> {
+        self.joint_desk
+            .couplings_within(level, eyes, NEAR)
+            .into_iter()
+            .next()
+    }
+
+    /// `/joint decouple`: the coupling nearest the player is let go of: the two cars are parted, and are not drawn together or coupled again until they have been farther apart than
+    /// their ends pull (and then are, if they are brought back). Nothing else is done to them. (A lock that was wanted of the pair is not wanted any more.)
+    fn decouple_nearest(&self, level: LevelIndex, eyes: WorldPosition) -> String {
+        let Some((_, (first, second))) = self.nearest_coupling(level, eyes) else {
+            return format!("nothing is coupled within {NEAR} voxels of you");
+        };
+        self.joint_desk.decouple((first, second));
+        format!("decoupled ships {} and {}", number(first), number(second))
+    }
+
+    /// `/joint lock`: the coupling nearest the player is to be locked: its two cars are turned into line, if they are not, and made one ship. It is asked of the plugin that couples, which
+    /// does it as soon as it can and tries again until it has, or the pair is parted or the lock is taken back (`/joint unlock`).
+    fn lock_nearest(&self, world: &ServerWorld, level: LevelIndex, eyes: WorldPosition) -> String {
+        let Some((_, (first, second))) = self.nearest_coupling(level, eyes) else {
+            return format!("nothing is coupled within {NEAR} voxels of you");
+        };
+        // (A lock turns the cars into line, and a joint that is rigid, or is being made so, is held at the turn it has: mobilize first.)
+        if world.immobilized_ships().contains(&(first, second))
+            || self.joint_desk.is_braking((first, second))
+        {
+            return format!(
+                "ships {} and {} are immobilized: mobilize them first",
+                number(first),
+                number(second)
+            );
+        }
+        if self.joint_desk.is_lock_wanted((first, second)) {
+            return format!(
+                "ships {} and {} are already being locked",
+                number(first),
+                number(second)
+            );
+        }
+        self.joint_desk.lock((first, second));
+        format!("locking ships {} and {}", number(first), number(second))
+    }
+
+    /// `/joint immobilize [SECONDS]`: the coupling nearest the player is made rigid at the turn its cars have, after the swing has been braked over this many seconds (none: at
+    /// once; one if the player says nothing), and is held so until `/joint mobilize` (or `/joint decouple`, which parts it). A lock that was asked of it is taken back. A locked pair of
+    /// joint ends is rigid already, and is said to be.
+    fn immobilize_nearest(
+        &self,
+        world: &ServerWorld,
+        level: LevelIndex,
+        eyes: WorldPosition,
+        seconds: f64,
+    ) -> String {
+        let coupling = self.nearest_coupling(level, eyes);
+        if let Some((distance, ship, _)) = self.nearest_locked_pair(world, level, eyes)
+            && coupling.is_none_or(|(coupled, _)| distance < coupled)
+        {
+            return format!(
+                "ship {} is locked there, which is rigid already; /joint unlock lets it turn",
+                number(ship)
+            );
+        }
+        let Some((_, (first, second))) = coupling else {
+            return format!("nothing is coupled within {NEAR} voxels of you");
+        };
+        if world.immobilized_ships().contains(&(first, second)) {
+            // (A wait to let it go is taken back: asked to be immobile, it stays so.)
+            if self.joint_desk.is_mobilizing((first, second)) {
+                self.joint_desk.end_mobilization((first, second));
+                return format!(
+                    "ships {} and {} are already immobilized, and stay so",
+                    number(first),
+                    number(second)
+                );
+            }
+            return format!(
+                "ships {} and {} are already immobilized",
+                number(first),
+                number(second)
+            );
+        }
+        let had_a_lock = self.joint_desk.is_lock_wanted((first, second));
+        self.joint_desk.immobilize((first, second), seconds);
+        let mut reply = if seconds == 0.0 {
+            format!("immobilized ships {} and {}", number(first), number(second))
+        } else {
+            format!(
+                "immobilizing ships {} and {} over {seconds} second{}",
+                number(first),
+                number(second),
+                if seconds == 1.0 { "" } else { "s" }
+            )
+        };
+        if had_a_lock {
+            reply.push_str(", and the lock that was asked of them is taken back");
+        }
+        reply
+    }
+
+    /// `/joint mobilize`: the coupling nearest the player that is rigid, being braked to be so, or has a lock asked of it is let turn again as a ball (what was asked of it and has
+    /// not been done is taken back).
+    fn mobilize_nearest(
+        &self,
+        world: &ServerWorld,
+        level: LevelIndex,
+        eyes: WorldPosition,
+        seconds: f64,
+    ) -> String {
+        let found = self
+            .joint_desk
+            .couplings_within(level, eyes, NEAR)
+            .into_iter()
+            .find(|(_, pair)| {
+                world.immobilized_ships().contains(pair)
+                    || self.joint_desk.is_braking(*pair)
+                    || self.joint_desk.is_lock_wanted(*pair)
+            });
+        let Some((_, pair)) = found else {
+            return match self.nearest_locked_pair(world, level, eyes) {
+                Some((_, ship, _)) => format!(
+                    "ship {} is locked there: /joint unlock lets it turn",
+                    number(ship)
+                ),
+                None => format!("nothing is immobilized within {NEAR} voxels of you"),
+            };
+        };
+        let (first, second) = pair;
+        let (was_rigid, was_braking, had_a_lock) = (
+            world.immobilized_ships().contains(&pair),
+            self.joint_desk.is_braking(pair),
+            self.joint_desk.is_lock_wanted(pair),
+        );
+        self.joint_desk.mobilize(pair, seconds);
+        let (first, second) = (number(first), number(second));
+        if was_rigid && seconds > 0.0 {
+            format!(
+                "mobilizing ships {first} and {second} in {seconds} second{}",
+                if seconds == 1.0 { "" } else { "s" }
+            )
+        } else if was_rigid {
+            format!("mobilized ships {first} and {second}")
+        } else if was_braking {
+            format!("ships {first} and {second} are not to be immobilized any more")
+        } else {
+            debug_assert!(had_a_lock);
+            format!("ships {first} and {second} are not to be locked any more")
+        }
+    }
+
+    /// `/joint unlock`: the lock nearest the player is undone: a locked pair of joint ends of a ship, which is cut into the two cars at them (and at every other pair between the same
+    /// two), or a lock that is wanted of two coupled cars and has not been made, which is taken back. Cars that are unlocked are not set apart: their ends are together, and they are coupled.
+    fn unlock_nearest(
+        &self,
+        world: &mut ServerWorld,
+        level: LevelIndex,
+        eyes: WorldPosition,
+    ) -> String {
+        let wanted = self
+            .joint_desk
+            .couplings_within(level, eyes, NEAR)
+            .into_iter()
+            .find(|(_, pair)| self.joint_desk.is_lock_wanted(*pair));
+        let locked = self.nearest_locked_pair(world, level, eyes);
+        match (wanted, locked) {
+            (Some((wanted, (first, second))), locked)
+                if locked.as_ref().is_none_or(|(locked, ..)| wanted <= *locked) =>
+            {
+                self.joint_desk.cancel_lock((first, second));
+                format!(
+                    "ships {} and {} are not to be locked any more",
+                    number(first),
+                    number(second)
+                )
+            }
+            (_, Some((_, ship, pair))) => match self.docking.unlock(world, ship, pair) {
+                Ok([first, second]) => format!(
+                    "unlocked ship {} into ships {} and {}",
+                    number(ship),
+                    number(first),
+                    number(second)
+                ),
+                Err(UndockError::Welded) => format!(
+                    "ship {} is welded there: solid blocks join the two cars besides their joint ends, and breaking them lets the cars come apart",
+                    number(ship)
+                ),
+                Err(error) => format!("could not unlock ship {}: {error}", number(ship)),
+            },
+            _ => format!("nothing is locked within {NEAR} voxels of you"),
+        }
+    }
+
+    /// The locked pair of joint ends, of any ship in a level, whose middle is nearest to a place, within [`NEAR`]: how far, the ship and the pair.
+    fn nearest_locked_pair(
+        &self,
+        world: &ServerWorld,
+        level: LevelIndex,
+        eyes: WorldPosition,
+    ) -> Option<(f64, GridId, DockedPair)> {
+        let mut nearest: Option<(f64, GridId, DockedPair)> = None;
+        for (id, ship) in world.data().grids().iter() {
+            if ship.level != level || ship.terrain.is_some() {
+                continue;
+            }
+            let (Some(extent), Some(here)) = (Extent::of(ship), ship.pose.world_to_local(eyes))
+            else {
+                continue;
+            };
+            if extent.distance_to(in_voxels(here)) > NEAR {
+                continue;
+            }
+            for pair in self.docking.locked_pairs(ship) {
+                let Some(place) = ship.pose.local_to_world(WorldPosition::new(
+                    BrickCoordinate::ORIGIN,
+                    pair.first.local_centre(),
+                )) else {
+                    continue;
+                };
+                let distance = place
+                    .relative_to(eyes)
+                    .iter()
+                    .map(|component| component * component)
+                    .sum::<f64>()
+                    .sqrt();
+                if distance <= NEAR && nearest.is_none_or(|(best, ..)| distance < best) {
+                    nearest = Some((distance, id, pair));
+                }
+            }
+        }
+        nearest
     }
 
     /// `/ship undock`: the docked pair of ports nearest to the player, on the ship they are aboard or the one nearest, is cut apart: the ship becomes

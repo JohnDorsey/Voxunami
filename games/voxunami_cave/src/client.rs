@@ -11,14 +11,16 @@ use game_shell::client_plugin::{
 };
 use game_shell::session::ViewCommand;
 use game_shell::{GameContent, KeyCode};
+use grid_bodies::{JointBallRigid, joint_ball_kind};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
+use renderer::EntityShape;
 use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_view::{BulkLight, RayHit};
 
-use crate::content::CaveContent;
+use crate::content::{CaveContent, dev_ball_joint_id};
 use crate::items::{GameMode, PLACEABLE, dropped_item_kind, state_for, state_name};
 use crate::messages::{FlightReadoutIs, GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
@@ -274,6 +276,17 @@ fn selected<'a>(placeable: &'a [NamespacedId], selection: &Selection) -> Option<
     placeable.get(selection.block).or_else(|| placeable.first())
 }
 
+/// Moves the selection `step` places along the blocks that can be placed, round the ends (nothing to place: nothing moves). A selection that points past the end, because the
+/// list got shorter, counts from the last.
+fn step_selection(selection: &Mutex<Selection>, context: &ClientContext<'_>, step: i64) {
+    let count = context.blocks_with(&PLACEABLE).len() as i64;
+    if count > 0 {
+        let mut selection = locked(selection);
+        let current = (selection.block as i64).min(count - 1);
+        selection.block = (current + step).rem_euclid(count) as usize;
+    }
+}
+
 /// Asks the server to break the block under the crosshair.
 fn break_target(context: &mut ClientContext<'_>) {
     if let Some(hit) = context.target() {
@@ -328,12 +341,28 @@ impl ClientPlugin for ClientBlockEditing {
         ] {
             let selection = Arc::clone(&self.selection);
             registrar.key(key, ActionSpec::new(name, description), move |context| {
-                let count = context.blocks_with(&PLACEABLE).len() as i64;
-                if count > 0 {
-                    let mut selection = locked(&selection);
-                    let current = (selection.block as i64).min(count - 1);
-                    selection.block = (current + step).rem_euclid(count) as usize;
-                }
+                step_selection(&selection, context, step);
+            });
+        }
+
+        // So does the wheel, a notch at a time: turned up (away from the player) it goes back along the list as the left bracket does, and turned down it goes on as the right one does.
+        for (button, step, name, description) in [
+            (
+                MouseButton::WheelUp,
+                -1_i64,
+                "voxunami_cave:select_previous_block_with_wheel",
+                "selects the block before the selected one in the list of blocks you can place, as the wheel turns up: one for each notch",
+            ),
+            (
+                MouseButton::WheelDown,
+                1,
+                "voxunami_cave:select_next_block_with_wheel",
+                "selects the block after the selected one in the list of blocks you can place, as the wheel turns down: one for each notch",
+            ),
+        ] {
+            let selection = Arc::clone(&self.selection);
+            registrar.mouse(button, ActionSpec::new(name, description), move |context| {
+                step_selection(&selection, context, step);
             });
         }
 
@@ -534,6 +563,53 @@ impl ClientPlugin for ClientItems {
                 size: [4, 4, 4],
                 material: *numbers.get(&stack.item)?,
                 centre_offset: [0.0, -0.25, 0.0],
+                shape: EntityShape::Box,
+            })
+        });
+    }
+}
+
+/// The client half of the ball of a joint, and of the plugin that moves ships, which makes it (`engine:grid_bodies`; the ball is `engine:joint_ball`, an entity of the server's: `engine/grid_bodies/src/plugin/balls.rs`): a ball of half a voxel across, of the colour of the
+/// dev ball joint's block, drawn where the entity is (the middle of the face where two joint ends meet, which the ship the entity is aboard carries with it).
+#[derive(Clone, Copy, Debug)]
+pub struct ClientJointBalls {
+    /// The number of the joint's block in this game's registry (the palette value it is drawn in).
+    material: u32,
+    /// The number of the block the ball of a rigid joint looks like (a lamp's warm light colour, which no other part of a joint has).
+    rigid_material: u32,
+}
+
+impl ClientJointBalls {
+    pub fn new(content: &CaveContent) -> Self {
+        let material = content.registries()[0]
+            .1
+            .raw_id_of(&dev_ball_joint_id())
+            .expect("Cave has the dev ball joint");
+        Self {
+            material,
+            rigid_material: content.blocks.lamp,
+        }
+    }
+}
+
+impl ClientPlugin for ClientJointBalls {
+    fn id(&self) -> NamespacedId {
+        identifier("engine:grid_bodies")
+    }
+
+    fn register(&self, registrar: &mut ClientRegistrar<'_>) {
+        let (material, rigid_material) = (self.material, self.rigid_material);
+        registrar.entity_appearance(joint_ball_kind(), move |entity| {
+            // (A ball whose mark cannot be read is drawn as a ball that turns.)
+            let rigid = matches!(
+                entity.component::<JointBallRigid>(),
+                Ok(Some(JointBallRigid(true)))
+            );
+            Some(Appearance {
+                size: [4, 4, 4],
+                material: if rigid { rigid_material } else { material },
+                centre_offset: [0.0; 3],
+                shape: EntityShape::Ball,
             })
         });
     }

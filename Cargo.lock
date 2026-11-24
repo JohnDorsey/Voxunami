@@ -1159,11 +1159,14 @@ dependencies = [
 name = "grid_bodies"
 version = "0.0.0"
 dependencies = [
+ "binary_codec",
  "block_models",
+ "entities",
  "libm",
  "namespaced_id",
  "physics",
  "plugin_host",
+ "protocol",
  "region_octree",
  "server",
  "thiserror 2.0.21",

@@ -287,7 +287,8 @@ fn an_orbit_that_goes_out_of_the_sphere_of_influence_of_a_planet_that_goes_round
 }
 
 #[test]
-fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_at_half_the_room() {
+fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_and_the_world_says_a_stranger_is_near_at_half_the_room()
+ {
     let (mut world, _) = space();
     let ship = ship_in_a_circle(&mut world, 10_000.0);
     // A ship at rest 12,000 voxels from it. The ship goes round at 8,169 voxels a second, so it closes at that, and a margin of 64 and a second of the closing speed is 8,233
@@ -300,8 +301,13 @@ fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_
     let other = ship_at(&mut world, [10_000.0, 12_000.0, 0.0], [0.0; 3]);
     world.data.set_clock(0);
     world.update_coasting(TICKS);
-    assert_eq!(rail_of(&world, ship), Some(rail), "it stays");
-    // Nearer than once that and it comes off.
+    assert_eq!(rail_of(&world, ship), Some(rail.clone()), "it stays");
+    assert!(
+        !world.has_a_stranger_near_on_its_rail(ship),
+        "and nothing is near it"
+    );
+    // Nearer than once that and **it stays on its rail all the same** (step 4c-5-4c: what is near a ship that rides a rail is the contact ghost's, and a touch takes it off, as for a
+    // group), and the world says that a stranger is near it, for the bodies to give it a frame of its own.
     world
         .data_mut()
         .grids_mut()
@@ -310,7 +316,34 @@ fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_
         .pose
         .position = WorldPosition::from_voxels([10_000.0, 6_000.0, 0.0]);
     world.update_coasting(TICKS);
-    assert_eq!(rail_of(&world, ship), None);
+    assert_eq!(rail_of(&world, ship), Some(rail), "it stays");
+    assert!(
+        world.has_a_stranger_near_on_its_rail(ship),
+        "and a stranger is near it"
+    );
+    // The stranger goes away and the world says so the next time the ships are looked at.
+    world.remove_grid(other);
+    world.update_coasting(TICKS);
+    assert!(!world.has_a_stranger_near_on_its_rail(ship));
+}
+
+#[test]
+fn a_ship_that_is_frozen_comes_off_its_rail_for_a_ship_that_is_near_as_one_that_is_not_does_not() {
+    // (Step 4c-5-4c: a ship that is alone keeps its rail while another ship is near, for the bodies to give it a frame of its own and the contact ghost to kick it. A frozen ship has no
+    // body, so it is no side of a ghost, and a stranger would meet it as a fixed wall that goes round at the speed of the rail: it leaves the rail, as it did.)
+    let (mut world, _) = space();
+    let ship = ship_in_a_circle(&mut world, 10_000.0);
+    let rail = world.coasting_rail(ship, time(0)).unwrap();
+    world.set_grid_rail(ship, Some(rail.clone())).unwrap();
+    let other = ship_at(&mut world, [10_000.0, 6_000.0, 0.0], [0.0; 3]);
+    world.data.set_clock(0);
+    world.update_coasting(TICKS);
+    assert_eq!(rail_of(&world, ship), Some(rail.clone()), "it stays");
+    assert!(world.has_a_stranger_near_on_its_rail(ship));
+    world.data_mut().grids_mut().get_mut(ship).unwrap().frozen = true;
+    world.update_coasting(TICKS);
+    assert_eq!(rail_of(&world, ship), None, "frozen, it comes off");
+    let _ = other;
 }
 
 #[test]
@@ -423,6 +456,206 @@ fn a_push_or_a_move_starts_the_second_again_and_takes_the_ship_off_a_rail_where_
         assert_eq!(rail_of(&world, ship), None, "push {push}: {rail:?}");
         assert_eq!(world.data().grids().get(ship).unwrap().pose, place);
     }
+}
+
+// ---- Step 4c-5-4b: a push does not take a ship alone on its rail off it (the force is the rail's, the torque the bodies'). ----
+
+/// The middle of the mass of the ships of the pushes below, from the origin of the ship.
+const MIDDLE: [f64; 3] = [2.0, 1.0, -3.0];
+const MASS: f64 = 5.0e3;
+
+/// A ship with a mass, on its rail after its second, with the clock at tick 25.
+fn a_ship_with_a_mass_on_its_rail() -> (ServerWorld, GridId) {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    world.set_grid_mass(ship, MASS, MIDDLE).unwrap();
+    run_ticks(&mut world, 1, 25);
+    assert!(rail_of(&world, ship).is_some(), "it is on a rail");
+    (world, ship)
+}
+
+/// What a rail says of the place and the speed of its body, from the planet that is at rest at the origin, at `time`.
+fn place_and_speed_at(rail: &Rail, time: RailTime) -> ([f64; 3], [f64; 3]) {
+    let state = rail.state(time, [0.0; 3], [0.0; 3]);
+    (state.position.unwrap(), state.velocity)
+}
+
+#[test]
+fn a_force_at_the_centre_of_mass_of_a_ship_on_its_rail_makes_the_rail_again_with_the_speed_it_gave_and_asks_nothing_of_the_bodies()
+ {
+    let (mut world, ship) = a_ship_with_a_mass_on_its_rail();
+    let before = rail_of(&world, ship).unwrap();
+    world
+        .apply_grid_force(ship, [0.0, 3.0e3, 5.0e3], None)
+        .unwrap();
+    assert!(world.rail_group_of(ship).is_none());
+    run_ticks(&mut world, 26, 26);
+    assert_eq!(
+        world.take_grid_forces(),
+        [],
+        "the bodies are not asked for the force"
+    );
+    assert_eq!(
+        world.take_grid_torques(),
+        [],
+        "a force at the centre of mass turns nothing"
+    );
+    let after = rail_of(&world, ship).expect("the ship is still on a rail");
+    let since = after.orbit.as_ref().unwrap().since.unwrap();
+    assert_eq!(
+        since,
+        time(26),
+        "the rail is made at the end of the tick of the push"
+    );
+    assert_ne!(Some(since), before.orbit.as_ref().unwrap().since);
+    let ((place_before, speed_before), (place_after, speed_after)) = (
+        place_and_speed_at(&before, since),
+        place_and_speed_at(&after, since),
+    );
+    // (The force over the mass, for a tick: 0.6 and 1 metre a second, over 20.)
+    let change = [0.0, 3.0e3 / MASS / 20.0, 5.0e3 / MASS / 20.0];
+    for axis in 0..3 {
+        assert!(
+            (place_after[axis] - place_before[axis]).abs() < 1e-9,
+            "place {axis}"
+        );
+        assert!(
+            (speed_after[axis] - speed_before[axis] - change[axis]).abs() < 1e-9,
+            "speed {axis}: {speed_before:?}, {speed_after:?}"
+        );
+    }
+    // The push was of one tick: the ship that is put by the rail goes on as the rail says, and is not pushed again.
+    run_ticks(&mut world, 27, 40);
+    assert_eq!(rail_of(&world, ship), Some(after));
+}
+
+#[test]
+fn the_forces_asked_of_a_ship_on_its_rail_in_a_tick_are_one_push_their_sum() {
+    let (mut one_world, one) = a_ship_with_a_mass_on_its_rail();
+    let (mut two_world, two) = a_ship_with_a_mass_on_its_rail();
+    one_world
+        .apply_grid_force(one, [1.0e3, -2.0e3, 5.0e3], None)
+        .unwrap();
+    two_world
+        .apply_grid_force(two, [4.0e2, 0.0, 2.0e3], None)
+        .unwrap();
+    two_world
+        .apply_grid_force(two, [6.0e2, -2.0e3, 3.0e3], None)
+        .unwrap();
+    run_ticks(&mut one_world, 26, 26);
+    run_ticks(&mut two_world, 26, 26);
+    let (together, apart) = (
+        rail_of(&one_world, one).unwrap(),
+        rail_of(&two_world, two).unwrap(),
+    );
+    let since = together.orbit.as_ref().unwrap().since.unwrap();
+    let ((place_together, speed_together), (place_apart, speed_apart)) = (
+        place_and_speed_at(&together, since),
+        place_and_speed_at(&apart, since),
+    );
+    for axis in 0..3 {
+        assert!((place_together[axis] - place_apart[axis]).abs() < 1e-9);
+        assert!((speed_together[axis] - speed_apart[axis]).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn a_force_off_the_centre_of_mass_of_a_ship_on_its_rail_asks_the_bodies_for_the_torque_of_its_lever_and_no_force()
+ {
+    let (mut world, ship) = a_ship_with_a_mass_on_its_rail();
+    // 2 voxels from the centre of mass along x, a force along z: the torque is the lever crossed with the force, 2 x 10 about -y.
+    world
+        .apply_grid_force(ship, [0.0, 0.0, 10.0], Some([4.0, 1.0, -3.0]))
+        .unwrap();
+    assert!(world.has_a_torque_waiting(ship));
+    assert_eq!(
+        world.take_grid_torques(),
+        [GridTorque {
+            grid: ship,
+            torque: [0.0, -20.0, 0.0]
+        }]
+    );
+    assert!(!world.has_a_torque_waiting(ship), "the bodies took it");
+    // A lever along y with a force along x is about z, and one along z with a force along y is about x (the rest of the cross product).
+    world
+        .apply_grid_force(ship, [10.0, 0.0, 0.0], Some([2.0, 4.0, -3.0]))
+        .unwrap();
+    world
+        .apply_grid_force(ship, [0.0, 10.0, 0.0], Some([2.0, 1.0, 0.0]))
+        .unwrap();
+    assert_eq!(
+        world.take_grid_torques(),
+        [
+            GridTorque {
+                grid: ship,
+                torque: [0.0, 0.0, -30.0]
+            },
+            GridTorque {
+                grid: ship,
+                torque: [-30.0, 0.0, 0.0]
+            },
+        ]
+    );
+    assert!(
+        rail_of(&world, ship).is_some(),
+        "no push took the ship off its rail"
+    );
+}
+
+#[test]
+fn a_torque_on_a_ship_on_its_rail_leaves_it_on_the_rail_and_waits_for_the_bodies() {
+    let (mut world, ship) = a_ship_with_a_mass_on_its_rail();
+    let before = rail_of(&world, ship);
+    world.apply_grid_torque(ship, [0.0, 1.0, 0.0]).unwrap();
+    assert!(world.has_a_torque_waiting(ship));
+    run_ticks(&mut world, 26, 26);
+    assert_eq!(
+        rail_of(&world, ship),
+        before,
+        "the rail is the very rail it was"
+    );
+    assert!(
+        world.has_a_torque_waiting(ship),
+        "(nothing took it: it waits for the bodies)"
+    );
+    assert_eq!(world.take_grid_forces(), []);
+}
+
+#[test]
+fn a_force_on_a_ship_whose_rail_has_gone_by_the_end_of_the_tick_is_given_to_the_bodies() {
+    let (mut world, ship) = a_ship_with_a_mass_on_its_rail();
+    world
+        .apply_grid_force(ship, [0.0, 0.0, 5.0e3], None)
+        .unwrap();
+    // (Something else takes it off its rail in the same tick.)
+    world.set_grid_rail(ship, None).unwrap();
+    run_ticks(&mut world, 26, 26);
+    assert_eq!(rail_of(&world, ship), None);
+    assert_eq!(
+        world.take_grid_forces(),
+        [GridForce {
+            grid: ship,
+            force: [0.0, 0.0, 5.0e3],
+            at: None
+        }]
+    );
+}
+
+#[test]
+fn a_force_that_no_orbit_can_take_takes_the_ship_off_its_rail_and_is_given_to_the_bodies() {
+    let (mut world, ship) = a_ship_with_a_mass_on_its_rail();
+    world
+        .apply_grid_force(ship, [0.0, 0.0, 5.0e3], None)
+        .unwrap();
+    // (A planet that pulls nothing now: there is no orbit through the state with a mass of nothing.)
+    world.set_gravity_settings(GravitySettings {
+        base: [0.0; 3],
+        pull_strength: PULL,
+        pull_mass_threshold: None,
+        softening: 1.0,
+    });
+    run_ticks(&mut world, 26, 26);
+    assert_eq!(rail_of(&world, ship), None);
+    assert_eq!(world.take_grid_forces().len(), 1);
 }
 
 #[test]

@@ -306,10 +306,27 @@ fn a_planet_on_a_rail_is_where_the_clock_says_every_tick_and_a_client_sees_it_go
     assert_eq!(home.linear_velocity, [0.0; 3]);
 }
 
+/// **The world is at one instant in each stretch of a tick** (4c-5-4d, 2026-11-22; the rails were put at the start of the tick, a tick ahead of what was free, until then): what runs
+/// before the bodies' step sees the planet where the last tick left it, which is where its rail had it at the tick before, and what runs after the step (the settling phase) sees it
+/// where the rail has it for this tick.
 #[test]
-fn what_runs_in_a_tick_sees_the_planet_where_the_rail_has_it_for_that_tick() {
+fn what_runs_in_a_tick_sees_the_planet_where_the_last_tick_left_it_before_the_bodies_and_where_the_rail_has_it_after_them()
+ {
     let mut scene = a_scene_with_a_wanderer();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let after = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&after);
+    scene.watch(move |world| {
+        let place = world
+            .data()
+            .grids()
+            .get(ship_id(1))
+            .expect("the wanderer")
+            .pose
+            .position
+            .in_voxels();
+        sink.lock().unwrap().push((world.world_tick(), place));
+    });
     for _ in 0..3 {
         let seen = std::sync::Arc::clone(&seen);
         scene.run(move |world| {
@@ -325,14 +342,24 @@ fn what_runs_in_a_tick_sees_the_planet_where_the_rail_has_it_for_that_tick() {
             seen.lock().unwrap().push((tick, place));
         });
     }
-    let seen = seen.lock().unwrap();
+    let (seen, after) = (seen.lock().unwrap(), after.lock().unwrap());
     assert_eq!(seen.len(), 3);
+    assert_eq!(after.len(), 3);
     for (tick, place) in seen.iter() {
+        let expected = the_wanderer_at(*tick - 1);
+        for axis in 0..3 {
+            assert!(
+                (place[axis] - expected[axis]).abs() < 1.0e-3,
+                "before the step, in tick {tick}: {place:?} against {expected:?}"
+            );
+        }
+    }
+    for (tick, place) in after.iter() {
         let expected = the_wanderer_at(*tick);
         for axis in 0..3 {
             assert!(
                 (place[axis] - expected[axis]).abs() < 1.0e-3,
-                "in tick {tick}: {place:?} against {expected:?}"
+                "after the step, in tick {tick}: {place:?} against {expected:?}"
             );
         }
     }

@@ -1,0 +1,360 @@
+regression against handback.rs (hinged chain of 4, hit across by 1000 kg at 5 m/s, after 1 s): stranger exit velocity, chain spin, end car off the converged one (mm)
+old kit: converged (+0.195, -2.118) spin -4.288; game (+0.175, -2.131); whole rigid (+0.001, -1.939); whole impulse (+0.073, -1.949) spin -4.561 end car 109 mm; per car (+0.163, -2.119)
+one world, converged         stranger (+0.195, -2.118)  end car off    0.0 mm  balance 0.0e0
+one world, game (today)      stranger (+0.175, -2.131)  end car off    4.1 mm  balance 0.0e0
+whole, rigid                 stranger (+0.001, -1.941)  end car off  388.1 mm  balance 1.3e-11
+whole, impulse               stranger (+0.094, -1.943)  end car off  107.8 mm  balance 1.6e-15
+per car, impulse             stranger (+0.154, -2.139)  end car off   21.2 mm  balance 1.4e-12
+
+tower of 4 cubes (1000 kg, fixed joints) on a floor, 15 s, game step; sag of the lowest cube (mm, + above its rest), jitter (mm/s), joint gap (um), off axis (mm)
+scheme                             sag mm     jitter     gap um   off axis    balance    us/tick
+one world, converged               -0.276      0.000        0.0       0.04        0.0       2628
+one world, game (today)            -0.276      0.000      504.4       0.41        0.0         47
+ghost world, impulses              -0.276      0.000      397.5       0.50        0.0         77
+ghost worlds, difference           -0.276      0.000      504.4       0.41        0.0         97
+whole, rigid                       -0.004      0.832        0.0       0.13        0.0         57
+whole, impulse                     -0.229      0.220      484.2       1.51        0.0         59
+cluster, impulse                   -0.229      0.220      484.2       1.51        0.0         51
+per car, impulse                   -0.079      0.001     5211.7    3548.26        0.0         68
+per car, impulse, +2 rounds        -0.196      0.350     6290.4    3593.85        0.0        184
+whole, impulse, +2 rounds          -0.436     43.993      468.0       1.03        0.0        178
+
+landing gear: 8.4 t ship on four sprung legs lands at 2 m/s, 8 s. peak g felt, least strut extension (m; 0.05 is bottomed), settled hull height (m), error vs converged (mm), jitter in the last 3 s (mm/s), deepest foot below the floor (mm), rebound (m/s), tilt (mrad), strut gap (mm)
+scheme                             peak g  least ext     height     err mm     jitter foot below    rebound  tilt mrad     gap mm    balance
+one world, converged                 2.49      0.362      1.146        0.0       0.00        4.1       0.25       0.67       0.00        0.0
+one world, game (today)              2.45      0.360      1.146        0.3      65.41        7.1       0.24       5.97       2.00        0.0
+ghost world, impulses                2.52      0.361      1.146        0.1       8.53        9.7       0.25       6.85       0.38        0.0
+ghost worlds, difference             2.45      0.360      1.146        0.3      65.41        7.1       0.24       5.97       2.00        0.0
+whole, rigid                        18.43      0.700      1.385      239.2       1.54       58.2       0.03      27.10       0.00        0.0
+whole, impulse                      13.24      0.161      1.153        6.5    3985.79       30.3       0.10      20.20       2.55        0.0
+cluster, impulse                    20.20      0.525      0.445     -701.6     585.62     1085.3       0.41      66.36       0.13        0.0
+per car, impulse                    20.20      0.525      0.445     -701.6     585.62     1085.3       0.41      66.36       0.13        0.0
+per car, impulse, +2 rounds          1.84      0.351      1.003     -143.1      79.58      219.0       0.32      39.33       0.27        0.0
+whole, impulse, +2 rounds           13.23      0.160      1.153        7.1    3736.48       23.1       0.09      22.80       2.56        0.0
+
+landing gear: 8.4 t ship on four sprung legs lands at 4 m/s, 8 s. peak g felt, least strut extension (m; 0.05 is bottomed), settled hull height (m), error vs converged (mm), jitter in the last 3 s (mm/s), deepest foot below the floor (mm), rebound (m/s), tilt (mrad), strut gap (mm)
+scheme                             peak g  least ext     height     err mm     jitter foot below    rebound  tilt mrad     gap mm    balance
+one world, converged                 3.99      0.255      1.146        0.0       0.00       12.7       0.57       0.45       0.00        0.0
+one world, game (today)              3.81      0.246      1.146        0.3      65.40        7.2       0.56       9.53       2.70        0.0
+ghost world, impulses                3.94      0.250      1.146        0.1       8.31       23.9       0.56      12.28       0.59        0.0
+ghost worlds, difference             3.81      0.246      1.146        0.3      65.40        7.2       0.56       9.53       2.70        0.0
+whole, rigid                        29.18      0.700      1.377      231.2       2.35       83.2       0.12      36.98       0.00        0.0
+whole, impulse                      20.96      0.057      1.154        7.9    3779.01       26.5       0.11      20.15       3.90        0.0
+cluster, impulse                    28.56      0.519      0.447     -698.8     585.22     1084.5       0.41      65.29       0.19        0.0
+per car, impulse                    28.56      0.519      0.447     -698.8     585.22     1084.5       0.41      65.29       0.19        0.0
+per car, impulse, +2 rounds          2.70      0.270      1.003     -143.1      79.75      323.4       0.48      79.37       0.43        0.0
+whole, impulse, +2 rounds           20.97      0.057      1.153        7.3    4130.64       43.6       0.11      14.88       3.91        0.0
+
+door (door, on a spring), stranger 1000 kg at 4 m/s on the door's free end, 3 s: stranger's exit speed (m/s), hull speed, door's peak angle (rad), angle at 1 s, error vs converged, hinge gap (mm), energy kept
+scheme                            exit vz   hull m/s   peak ang    ang 1 s        err     gap mm     energy    balance
+one world, converged               -1.507      0.403      0.288      0.028      0.000       0.00      0.562        0.0
+one world, game (today)            -1.494      0.405      0.305      0.033      0.005       0.45      0.565        0.0
+ghost world, impulses              -1.510      0.402      0.307      0.034      0.006       0.04      0.571        0.0
+ghost worlds, difference           -1.494      0.405      0.305      0.033      0.005       0.45      0.565        0.0
+whole, rigid                       -2.046      0.309      0.000     -0.000     -0.028       0.01      0.512        0.0
+whole, impulse                     -2.049      0.308      1.710      0.027     -0.001       2.94      0.507        0.0
+cluster, impulse                   -2.781      0.188      0.192      0.009     -0.019       0.01      0.600        0.0
+per car, impulse                   -2.781      0.188      0.192      0.009     -0.019       0.01      0.600        0.0
+per car, impulse, +2 rounds        -1.617      0.382      0.283      0.037      0.009       0.03      0.559        0.0
+whole, impulse, +2 rounds          -2.046      0.309      1.714      0.027     -0.001       2.95      0.507        0.0
+
+door (door, on a spring), stranger 100 kg at 4 m/s on the door's free end, 3 s: stranger's exit speed (m/s), hull speed, door's peak angle (rad), angle at 1 s, error vs converged, hinge gap (mm), energy kept
+scheme                            exit vz   hull m/s   peak ang    ang 1 s        err     gap mm     energy    balance
+one world, converged                0.042      0.059      0.075      0.001      0.000       0.00      0.107        0.0
+one world, game (today)             0.089      0.060      0.082      0.002      0.000       0.44      0.110        0.0
+ghost world, impulses               0.116      0.060      0.080      0.002      0.000       0.01      0.112        0.0
+ghost worlds, difference            0.089      0.060      0.082      0.002      0.000       0.44      0.110        0.0
+whole, rigid                       -0.379      0.053      0.000     -0.000     -0.001       0.00      0.095        0.0
+whole, impulse                     -0.379      0.053      0.093      0.001     -0.000       0.06      0.095        0.0
+cluster, impulse                   -0.094      0.057      0.066      0.002      0.001       0.01      0.101        0.0
+per car, impulse                   -0.094      0.057      0.066      0.002      0.001       0.01      0.101        0.0
+per car, impulse, +2 rounds         0.031      0.059      0.077      0.002      0.000       0.01      0.107        0.0
+whole, impulse, +2 rounds          -0.379      0.053      0.093      0.001     -0.000       0.06      0.095        0.0
+
+door (door, locked), stranger 1000 kg at 4 m/s on the door's free end, 3 s: stranger's exit speed (m/s), hull speed, door's peak angle (rad), angle at 1 s, error vs converged, hinge gap (mm), energy kept
+scheme                            exit vz   hull m/s   peak ang    ang 1 s        err     gap mm     energy    balance
+one world, converged               -1.985      0.321      0.006      0.000      0.000       0.00      0.513        0.0
+one world, game (today)            -1.657      0.380      0.056      0.000      0.000       2.44      0.530        0.0
+ghost world, impulses              -1.631      0.384      0.063      0.000      0.000       0.03      0.533        0.0
+ghost worlds, difference           -1.657      0.380      0.056      0.000      0.000       2.44      0.530        0.0
+whole, rigid                       -2.046      0.309      0.000     -0.000     -0.000       0.01      0.512        0.0
+whole, impulse                     -2.045      0.310      0.076      0.000      0.000       0.21      0.512        0.0
+cluster, impulse                   -2.806      0.183      0.022      0.000      0.000       0.00      0.590        0.0
+per car, impulse                   -2.806      0.183      0.022      0.000      0.000       0.00      0.590        0.0
+per car, impulse, +2 rounds        -1.917      0.332      0.041      0.000      0.000       0.01      0.514        0.0
+whole, impulse, +2 rounds          -2.045      0.310      0.076      0.000      0.000       0.21      0.512        0.0
+
+the landing-gear ship with and without a 1 t cube standing on the floor 1.5 m from its hull (touching nothing), 3 s: the greatest difference in any car's place (m) and velocity (m/s), and whether every bit agrees
+scheme                                    place     velocity  same bits
+one world, converged                    0.000e0      0.000e0        yes
+one world, game (today)                 0.000e0      0.000e0        yes
+ghost world, impulses                   0.000e0      0.000e0        yes
+ghost world, impulses (ghost steps x2)      0.000e0      0.000e0        yes
+ghost worlds, difference                0.000e0      0.000e0        yes
+ghost worlds, difference (ghost steps x2)      0.000e0      0.000e0        yes
+whole, impulse                         8.127e-2      6.547e0         no
+per car, impulse                        0.000e0      0.000e0        yes
+whole, rigid                            0.000e0      0.000e0        yes
+
+landing gear at 2 m/s, the ghost worlds with their own number of steps (the truth keeps 3 a tick)
+scheme                             peak g  least ext     err mm     jitter foot below     gap mm
+one world, game (today)              2.45      0.360        0.3      65.41        7.1       2.00
+ghost impulses, ghost steps x1       2.52      0.361        0.1       8.53        9.7       0.38
+ghost impulses, ghost steps x2       2.51      0.363        0.0       6.99        7.2       0.40
+ghost impulses, ghost steps x4       2.36      0.364       -0.0       5.55        4.2       0.34
+ghost difference, ghost steps x1       2.45      0.360        0.3      65.41        7.1       2.00
+ghost difference, ghost steps x2       2.46      0.359       -1.8      63.47        5.8       0.51
+ghost difference, ghost steps x4       2.45      0.360       -3.4      73.90        7.2       0.18
+
+door on a spring, 1000 kg stranger (converged: exit -1.507, hull 0.403, peak angle 0.288)
+scheme                            exit vz   hull m/s   peak ang
+one world, game (today)            -1.494      0.405      0.305
+ghost impulses, ghost steps x1     -1.510      0.402      0.307
+ghost impulses, ghost steps x2     -1.544      0.396      0.296
+ghost impulses, ghost steps x4     -1.544      0.396      0.297
+ghost difference, ghost steps x1     -1.494      0.405      0.305
+ghost difference, ghost steps x2     -1.517      0.401      0.300
+ghost difference, ghost steps x4     -1.507      0.403      0.301
+
+a 1000 kg stranger at 20 m/s onto a stiff chain (converged: both -4.000)
+scheme                         stranger vx   chain vx overlap mm
+one world, game (today)            -2.283     -4.429       -0.0
+ghost impulses, ghost steps x1     -2.283     -4.429       92.9
+ghost impulses, ghost steps x2     -2.381     -4.405       94.2
+ghost impulses, ghost steps x4     -2.112     -4.472       96.4
+ghost difference, ghost steps x1     -2.283     -4.429       -0.0
+ghost difference, ghost steps x2     -2.381     -4.405       -0.0
+ghost difference, ghost steps x4     -2.544     -4.364       -0.0
+
+landing gear at 2 m/s, per-car proxies with extra rounds of block Gauss-Seidel (converged: 2.49 g, 0.362, 0 mm)
+scheme                             peak g  least ext     err mm     jitter foot below    us/tick
+per car, 0 extra rounds             20.20      0.525     -701.6     585.62     1085.3         83
+per car, 1 extra rounds              3.42      0.375     -667.8     246.66     1057.5        165
+per car, 2 extra rounds              1.84      0.351     -143.1      79.58      219.0        211
+per car, 4 extra rounds              2.26      0.360      -42.8      67.22       58.0        381
+per car, 8 extra rounds              2.70      0.364        4.9      16.52        8.1        985
+per car, 16 extra rounds             2.83      0.367        6.6      41.34        6.6       1687
+
+landing gear at 2 m/s with one coupling step of 1/20 s a tick (12 substeps) instead of three of 1/60 s
+scheme                             peak g  least ext     err mm     jitter foot below     gap mm
+one world, game (today)              2.60      0.332        0.3      63.45        5.2       1.11
+ghost world, impulses                2.78      0.346        0.1       9.35       51.1       0.39
+ghost worlds, difference             2.60      0.332        0.3      63.45        5.2       1.11
+whole, rigid                         7.39      0.700      253.6       0.39      126.8       0.00
+whole, impulse                       6.71      0.209       14.9    2715.55       61.9       0.91
+per car, impulse                    10.73      0.636     -723.9     769.51     1097.2       0.08
+
+rover driving: 1.5 t chassis on four 40 kg wheels, friction 1, 8 s. chassis speed at 2, 4 and 8 s (m/s), x at 8 s (m), error vs converged (m), bounce (mm/s), sideways drift (mm), wheel rim speed at 8 s (m/s)
+scheme                              v 2 s      v 4 s      v 8 s      x 8 s      x err     bounce   sideways    rim m/s    balance
+one world, converged                2.903      4.922      4.994      31.21      0.000        2.0        0.0      5.000        0.0
+one world, game (today)             2.867      4.862      4.969      30.92     -0.286      120.5      145.3      5.000        0.0
+ghost world, impulses               2.908      4.896      4.957      31.08     -0.128        3.3        8.3      5.000        0.0
+ghost worlds, difference            2.867      4.862      4.969      30.93     -0.285      120.1      142.9      5.000        0.0
+whole, rigid                        0.028      0.029      0.028       0.28    -30.929       15.0       12.6      2.508        0.0
+whole, impulse                      0.072      0.025      0.055       0.49    -30.720      101.9      151.9      2.679        0.0
+cluster, impulse                    0.011      0.009      0.011       0.19    -31.017        9.8        0.8      2.442        0.0
+per car, impulse                    0.011      0.009      0.011       0.19    -31.017        9.8        0.8      2.442        0.0
+per car, impulse, +2 rounds        -0.001      0.004      0.000       0.85    -30.356       88.5        4.4      2.439        0.0
+whole, impulse, +2 rounds           0.081      0.111      0.080       0.53    -30.682      100.3      189.8      4.887        0.0
+
+rover coasting: 1.5 t chassis on four 40 kg wheels, friction 1, 8 s. chassis speed at 2, 4 and 8 s (m/s), x at 8 s (m), error vs converged (m), bounce (mm/s), sideways drift (mm), wheel rim speed at 8 s (m/s)
+scheme                              v 2 s      v 4 s      v 8 s      x 8 s      x err     bounce   sideways    rim m/s    balance
+one world, converged                5.000      5.000      5.000      40.00      0.000        2.0        0.0      5.005        0.0
+one world, game (today)             4.999      4.999      4.999      39.99     -0.008       46.8      163.4      5.030        0.0
+ghost world, impulses               5.002      5.005      5.013      40.04      0.044        0.0       19.4      5.057        0.0
+ghost worlds, difference            4.999      4.999      4.999      39.99     -0.008       46.8      163.4      5.030        0.0
+whole, rigid                        0.066      0.117      0.131       2.03    -37.969       83.9      183.9      4.927        0.0
+whole, impulse                      0.192     -0.127     -0.040       1.20    -38.794      843.1      852.7      0.168        0.0
+cluster, impulse                   -0.001     -0.002      0.005       3.95    -36.049       14.5       11.7      0.000        0.0
+per car, impulse                   -0.001     -0.002      0.005       3.95    -36.049       14.5       11.7      0.000        0.0
+per car, impulse, +2 rounds         0.046     -0.002     -0.002       7.55    -32.444        9.1        6.1     -0.002        0.0
+whole, impulse, +2 rounds           0.147      0.065      0.001       1.87    -38.125      132.0      263.8     -0.000        0.0
+
+carrier at rest: a 20 t carrier on four sprung legs with a 3 t ship on four sprung legs on its deck. height error of each hull vs converged (mm), carried ship's slide on the deck (mm) and its error, jitter (mm/s, last 2 s), peak g of the carried hull, least strut extension of each
+scheme                         carrier err carried err   slide mm  slide err     jitter     peak g ext carrier ext carried    balance
+one world, converged                  0.0        0.0        0.6        0.0        0.0       1.41      0.447      0.280        0.0
+one world, game (today)              -0.0        2.6        6.1        5.4       70.4       1.44      0.443      0.276        0.0
+ghost world, impulses                -0.2       -0.2        4.9        4.2       11.2       1.40      0.446      0.280        0.0
+ghost worlds, difference             -0.0        2.6        6.1        5.4       70.4       1.44      0.443      0.276        0.0
+whole, rigid                        237.5      421.6      167.2      166.5      315.5       3.18      0.700      0.500        0.0
+whole, impulse                       11.5       26.4       95.8       95.2     4743.1       3.43      0.416      0.225        0.0
+cluster, impulse                   -674.1    -1514.2     1573.6     1573.0      942.7      19.85      0.589      0.315        0.0
+per car, impulse                   -674.1    -1514.2     1573.6     1573.0      942.7      19.85      0.589      0.315        0.0
+per car, impulse, +2 rounds        -714.8     -838.8     1206.5     1205.8      850.7       1.40      0.430      0.262        0.0
+whole, impulse, +2 rounds             9.7       28.9      100.1       99.5     5671.3       3.25      0.396      0.197        0.0
+
+carrier accelerating: a 20 t carrier on four sprung legs with a 3 t ship on four sprung legs on its deck. height error of each hull vs converged (mm), carried ship's slide on the deck (mm) and its error, jitter (mm/s, last 2 s), peak g of the carried hull, least strut extension of each
+scheme                         carrier err carried err   slide mm  slide err     jitter     peak g ext carrier ext carried    balance
+one world, converged                  0.0        0.0        0.7        0.0        0.0       1.41      0.447      0.280        0.0
+one world, game (today)              -0.3        2.1        1.0        0.4       75.3       1.44      0.443      0.276        0.0
+ghost world, impulses                -0.2       -0.2        3.7        3.1       12.0       1.40      0.446      0.280        0.0
+ghost worlds, difference             -0.3        2.1        1.0        0.4       75.3       1.44      0.443      0.276        0.0
+whole, rigid                        232.8      427.0      111.9      111.2      304.4       3.18      0.700      0.500        0.0
+whole, impulse                        8.4       24.5       39.1       38.5     4989.6       3.43      0.417      0.225        0.0
+cluster, impulse                   -729.8    -1228.7      364.0      363.4     1066.6      19.85      0.589      0.315        0.0
+per car, impulse                   -729.8    -1228.7      364.0      363.4     1066.6      19.85      0.589      0.315        0.0
+per car, impulse, +2 rounds        -706.2     -804.1      620.0      619.4      692.6       1.40      0.430      0.262        0.0
+whole, impulse, +2 rounds             9.8       29.1       69.9       69.2     5231.9       3.25      0.409      0.197        0.0
+
+ship landing on the carrier: a 20 t carrier on four sprung legs with a 3 t ship on four sprung legs on its deck. height error of each hull vs converged (mm), carried ship's slide on the deck (mm) and its error, jitter (mm/s, last 2 s), peak g of the carried hull, least strut extension of each
+scheme                         carrier err carried err   slide mm  slide err     jitter     peak g ext carrier ext carried    balance
+one world, converged                  0.0        0.0        0.2        0.0        0.0       2.56      0.438      0.236        0.0
+one world, game (today)               0.3        2.9        4.8        4.6       92.1       2.49      0.436      0.235        0.0
+ghost world, impulses                -0.2       -0.2        0.8        0.6       12.0       2.55      0.437      0.234        0.0
+ghost worlds, difference              0.3        2.9        4.8        4.6       92.1       2.49      0.436      0.235        0.0
+whole, rigid                        238.9      430.4       44.1       43.9      131.1      16.08      0.700      0.500        0.0
+whole, impulse                       11.5       35.9       97.4       97.2     5521.4      10.07      0.390      0.136        0.0
+cluster, impulse                   -705.4    -1315.2      703.7      703.5      778.2      24.10      0.586      0.326        0.0
+per car, impulse                   -705.4    -1315.2      703.7      703.5      778.2      24.10      0.586      0.326        0.0
+per car, impulse, +2 rounds        -704.7     -804.5      634.8      634.6      702.5       1.64      0.425      0.247        0.0
+whole, impulse, +2 rounds             8.6       24.2       68.6       68.4     4719.0      10.61      0.404      0.126        0.0
+
+a 1 t block slides at 4 m/s on a floor with friction 0.5 (it stops after 1.63 m, in 0.82 s): where it stopped (m), when its speed fell under 0.01 (s), speed at 3 s (mm/s)
+scheme                              x end  stopped s     v mm/s    balance
+one world, converged                1.741      0.871      -0.00        0.0
+one world, game (today)             1.733      0.883       0.00        0.0
+ghost world, impulses               1.741      0.883       0.03        0.0
+ghost worlds, difference            1.733      0.883       0.00        0.0
+whole, rigid                        1.733      0.883       0.14        0.0
+whole, impulse                      1.741      0.883       0.01        0.0
+cluster, impulse                    1.741      0.883       0.01        0.0
+per car, impulse                    1.741      0.883       0.01        0.0
+per car, impulse, +2 rounds         1.733      0.900       0.05        0.0
+whole, impulse, +2 rounds           1.733      0.900       0.05        0.0
+
+hinged chain of 8 cars (1000 kg), hit along it by 1000 kg at 5 m/s, 1 s: stranger's exit velocity, last and first car off the converged chain (mm), deepest overlap (mm), joint gap (mm)
+scheme                            exit vx    exit vy   last off  first off    overlap     gap mm    us/tick
+one world, converged               -0.553      0.000        0.0        0.0        1.1       0.00       3158
+one world, game (today)            -0.240      0.000       33.8       33.8        1.9       7.11         41
+ghost world, impulses              -0.211      0.000       34.4       34.4       22.9       5.36         88
+ghost worlds, difference           -0.240      0.000       33.8       33.8        1.9       7.11        124
+whole, rigid                       -0.556      0.000        3.6        3.6       31.3       0.00         69
+whole, impulse                     -0.556      0.000        3.6        3.6       32.8       5.28         92
+cluster, impulse                   -0.556     -0.000       10.8       10.8       96.1       2.97        114
+per car, impulse                   -0.556     -0.000       10.8       10.8       96.1       2.97        114
+per car, impulse, +2 rounds        -0.425     -0.000        9.5        9.5       38.9       4.63        328
+whole, impulse, +2 rounds          -0.556     -0.000        3.6        3.6       32.8       5.28        307
+
+hinged chain of 8 cars (1000 kg), hit across it by 1000 kg at 5 m/s, 1 s: stranger's exit velocity, last and first car off the converged chain (mm), deepest overlap (mm), joint gap (mm)
+scheme                            exit vx    exit vy   last off  first off    overlap     gap mm    us/tick
+one world, converged                0.002     -2.170        0.0        0.0        0.1       0.00       3486
+one world, game (today)             0.000     -2.174        2.6        0.6       -0.0       0.15         47
+ghost world, impulses               0.001     -2.160       25.7        3.2       30.1       0.14         93
+ghost worlds, difference            0.000     -2.174        2.6        0.6       -0.0       0.15        143
+whole, rigid                        0.000     -1.444      833.6      494.2       31.3       0.03         68
+whole, impulse                      0.000     -1.448      428.1       77.6       16.8       0.22         60
+cluster, impulse                    0.002     -2.176       18.7        3.1       42.5       0.14         78
+per car, impulse                    0.002     -2.176       18.7        3.1       42.5       0.14         78
+per car, impulse, +2 rounds         0.003     -2.176       17.0        0.4       31.3       0.14        329
+whole, impulse, +2 rounds           0.000     -1.448      428.1       77.6       16.8       0.22        236
+
+hinged chain of 16 cars (1000 kg), hit along it by 1000 kg at 5 m/s, 1 s: stranger's exit velocity, last and first car off the converged chain (mm), deepest overlap (mm), joint gap (mm)
+scheme                            exit vx    exit vy   last off  first off    overlap     gap mm    us/tick
+one world, converged               -0.232      0.000        0.0        0.0       -0.0       0.00       6134
+one world, game (today)            -0.023      0.000       10.5       10.5        0.8       7.12         77
+ghost world, impulses               0.034      0.000       12.2       12.3       22.8       5.39        162
+ghost worlds, difference           -0.023      0.000       10.5       10.5        0.8       7.12        282
+whole, rigid                       -0.294      0.000        5.3        5.3       31.3       0.00        157
+whole, impulse                     -0.294      0.000        5.3        5.3       36.0       5.60        157
+cluster, impulse                   -0.193     -0.000        4.7        4.7      108.0       2.97        199
+per car, impulse                   -0.193     -0.000        4.7        4.7      108.0       2.97        199
+per car, impulse, +2 rounds        -0.065     -0.000        6.0        6.0       39.7       4.64        574
+whole, impulse, +2 rounds          -0.294      0.000        5.3        5.3       36.0       5.60        435
+
+hinged chain of 16 cars (1000 kg), hit across it by 1000 kg at 5 m/s, 1 s: stranger's exit velocity, last and first car off the converged chain (mm), deepest overlap (mm), joint gap (mm)
+scheme                            exit vx    exit vy   last off  first off    overlap     gap mm    us/tick
+one world, converged                0.002     -2.174        0.0        0.0        0.1       0.00       6181
+one world, game (today)             0.000     -2.174        3.9        0.3       -0.0       0.17        114
+ghost world, impulses               0.001     -2.165       26.1        1.5       30.1       0.18        168
+ghost worlds, difference            0.000     -2.174        3.9        0.3       -0.0       0.17        240
+whole, rigid                        0.000     -0.923     1213.9      374.2       31.3       0.01        111
+whole, impulse                      0.000     -0.924      745.9       65.4        7.0       0.36        103
+cluster, impulse                    0.002     -2.180       19.4        1.5       42.3       0.17        133
+per car, impulse                    0.002     -2.180       19.4        1.5       42.3       0.17        133
+per car, impulse, +2 rounds         0.002     -2.181       16.9        0.2       31.3       0.17        392
+whole, impulse, +2 rounds           0.000     -0.924      745.9       65.4        7.0       0.36        380
+
+Fixed chain of 4 squeezed from both ends by 1000 kg at 5 m/s each, 1 s: exit speeds of the two strangers, the chain's greatest shortening (mm), joint gap (mm), last car off the converged one (mm), energy kept
+scheme                             exit 1     exit 2  shortened     gap mm     off mm     energy
+one world, converged                0.000     -0.000        0.0       0.00        0.0      0.000
+one world, game (today)             0.836     -0.833        1.5       5.55        0.4      0.028
+ghost world, impulses               0.836     -0.833       12.8       6.41        0.5      0.028
+ghost worlds, difference            0.836     -0.833        1.5       5.55        0.4      0.028
+whole, rigid                        0.051     -0.010        0.0       0.00        9.0      0.000
+whole, impulse                      0.051     -0.010       11.0       5.52        9.1      0.000
+cluster, impulse                    0.051     -0.010       11.0       5.52        9.1      0.000
+per car, impulse                   -0.000      0.000        5.5       2.75        0.0      0.000
+per car, impulse, +2 rounds        -0.000      0.000        9.6       4.80        0.0      0.000
+whole, impulse, +2 rounds           0.051     -0.010       11.0       5.52        9.1      0.000
+
+Hinge chain of 4 squeezed from both ends by 1000 kg at 5 m/s each, 1 s: exit speeds of the two strangers, the chain's greatest shortening (mm), joint gap (mm), last car off the converged one (mm), energy kept
+scheme                             exit 1     exit 2  shortened     gap mm     off mm     energy
+one world, converged                0.000     -0.000        0.0       0.00        0.0      0.000
+one world, game (today)             0.836     -0.833        1.5       5.55        0.4      0.028
+ghost world, impulses               0.836     -0.833       12.8       6.41        0.5      0.028
+ghost worlds, difference            0.836     -0.833        1.5       5.55        0.4      0.028
+whole, rigid                        0.051     -0.010        0.0       0.00        9.0      0.000
+whole, impulse                      0.051     -0.010       11.0       5.52        9.1      0.000
+cluster, impulse                   -0.000      0.000        5.5       2.75        0.0      0.000
+per car, impulse                   -0.000      0.000        5.5       2.75        0.0      0.000
+per car, impulse, +2 rounds        -0.000     -0.000        9.6       4.80        0.0      0.000
+whole, impulse, +2 rounds           0.051     -0.010       11.0       5.52        9.1      0.000
+
+a 1000 kg stranger comes at 5 m/s from 5 m away onto a stiff chain of 4 (fixed joints), 1 s after: the stranger's and the chain end's speed, deepest overlap (mm), last car off the converged one (mm), momentum change, 'x4' is the contact world stepped in 4 pieces
+scheme                         stranger vx   chain vx overlap mm     off mm         dP    balance
+one world, converged x1            -1.000     -1.000       -0.0        0.0        0.0        0.0
+one world, game (today) x1         -0.571     -1.107       -0.0      105.8        0.0        0.0
+ghost world, impulses x1           -0.571     -1.107       23.2      100.4        0.0        0.0
+ghost worlds, difference x1        -0.571     -1.107       -0.0      105.8        0.0        0.0
+whole, impulse x1                  -1.000     -1.000       31.4        6.3        0.0        0.0
+per car, impulse x1                -1.000     -1.000       81.3       16.3        0.0        0.0
+whole, rigid x1                    -1.000     -1.000       31.3        6.3        0.0        0.0
+
+a 1000 kg stranger comes at 20 m/s from 5 m away onto a stiff chain of 4 (fixed joints), 1 s after: the stranger's and the chain end's speed, deepest overlap (mm), last car off the converged one (mm), momentum change, 'x4' is the contact world stepped in 4 pieces
+scheme                         stranger vx   chain vx overlap mm     off mm         dP    balance
+one world, converged x1            -4.000     -4.000       -0.0        0.0        0.0        0.0
+one world, game (today) x1         -2.283     -4.429       -0.0      423.2        0.0        0.0
+ghost world, impulses x1           -2.283     -4.429       92.9      401.7        0.0        0.0
+ghost worlds, difference x1        -2.283     -4.429       -0.0      423.2        0.0        0.0
+whole, impulse x1                  -4.000     -4.000      125.5       25.0        0.0        0.0
+per car, impulse x1                -4.000     -4.000      325.0       65.0        0.0        0.0
+whole, rigid x1                    -4.000     -4.000      125.0       25.0        0.0        0.0
+
+a 1000 kg stranger comes at 60 m/s from 5 m away onto a stiff chain of 4 (fixed joints), 1 s after: the stranger's and the chain end's speed, deepest overlap (mm), last car off the converged one (mm), momentum change, 'x4' is the contact world stepped in 4 pieces
+scheme                         stranger vx   chain vx overlap mm     off mm         dP    balance
+one world, converged x1           -11.983    -12.004       12.4        0.0        0.0        0.0
+one world, game (today) x1         -7.047    -13.238        8.9     1235.5        0.0        0.0
+ghost world, impulses x1           -7.047    -13.238      281.4     1173.4        0.0        0.0
+ghost worlds, difference x1        -7.047    -13.238        8.9     1235.5        0.0        0.0
+whole, impulse x1                 -12.000    -12.000      376.4       77.8        0.0        0.0
+per car, impulse x1               -12.000    -12.000      975.0      197.8        0.0        0.0
+whole, rigid x1                   -12.000    -12.000      375.0       77.8        0.0        0.0
+
+cost: hinged chains of N cars hit across, microseconds per tick (3 steps) for the whole step (the one world, or the joint worlds and the contact world)
+scheme                               N=8      N=32     N=128     N=256
+one world, game (today)               47       161       734      1187
+ghost world, impulses                133       444      1260      1827
+ghost worlds, difference             131       461      1656      2762
+whole, rigid                          66       201       666      1525
+whole, impulse                        60       190       661      1218
+cluster, impulse                      76       243       849      1548
+per car, impulse                      75       244       831      1596
+per car, impulse, +2 rounds          225       718      2657      4582
+
+hinged chain of 4 hit across (converged stranger exit: +0.195, -2.118)
+scheme                            exit vx    exit vy end off mm    overlap
+per car, 0 extra rounds             0.154     -2.139       21.2       43.1
+per car, 1 extra rounds             0.197     -2.123       15.7       31.8
+per car, 2 extra rounds             0.213     -2.119       17.4       31.3
+per car, 4 extra rounds             0.221     -2.118       17.8       31.3
+per car, 8 extra rounds             0.222     -2.118       17.8       31.3
+per car, 32 extra rounds            0.222     -2.118       17.9       31.3
+
+hinged chain of 4 hit along (converged stranger exit: -1.000, +0.000)
+scheme                            exit vx    exit vy end off mm    overlap
+per car, 0 extra rounds            -1.000     -0.000       16.3       81.3
+per car, 1 extra rounds            -1.000     -0.000        9.0       44.9
+per car, 2 extra rounds            -1.000     -0.000        7.2       35.9
+per car, 4 extra rounds            -0.995      0.000        5.3       32.0
+per car, 8 extra rounds            -0.995      0.000        5.1       31.4
+per car, 32 extra rounds           -0.995      0.000        5.1       31.4

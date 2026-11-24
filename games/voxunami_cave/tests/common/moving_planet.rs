@@ -39,11 +39,20 @@ pub fn wanderer_pack(motion: &str, extent_bricks: u32, surface_gravity: f64) -> 
 /// The motion of the usual wanderer: it goes round the home planet at 400,000 voxels once in 20,000 seconds (125.7 metres a second, 6.3 voxels a tick), and turns
 /// once in `spin` seconds if it is given one (about its own y axis).
 pub fn orbit_of_the_home_planet(spin: Option<f64>) -> String {
+    rail_round_the_home_planet(20_000.0, spin)
+}
+
+/// The same orbit with another period: 1,257 voxels a second at 2,000 seconds, 125.7 at 20,000, and at 10^15 (thirty million years) so slow that the planet stands still.
+pub fn orbit_with_period(period: f64) -> String {
+    rail_round_the_home_planet(period, None)
+}
+
+fn rail_round_the_home_planet(period: f64, spin: Option<f64>) -> String {
     let spin = spin.map_or(String::new(), |period| {
         format!(r#""spin": {{ "axis": [0, 1, 0], "period": {period} }},"#)
     });
     format!(
-        r#""rail": {{ {spin} "orbit": {{ "around": "voxunami_cave:planet", "radius": 400000, "period": 20000 }} }}"#
+        r#""rail": {{ {spin} "orbit": {{ "around": "voxunami_cave:planet", "radius": 400000, "period": {period} }} }}"#
     )
 }
 
@@ -52,6 +61,16 @@ pub fn scene_with(pack: &[RawPack]) -> Scene {
     content.apply_packs(pack).unwrap();
     let world = content.new_world(SEED);
     Scene::in_this_world(content, world)
+}
+
+/// The same, with a way to ask what the plugin that moves ships has done (`BodiesReport`).
+pub fn reporting_scene_with(
+    pack: &[RawPack],
+) -> (Scene, impl Fn() -> grid_bodies::BodiesReport + use<>) {
+    let mut content = CaveContent::new();
+    content.apply_packs(pack).unwrap();
+    let world = content.new_world(SEED);
+    Scene::reporting_in(content, world)
 }
 
 /// A new world with the usual wanderer in it.

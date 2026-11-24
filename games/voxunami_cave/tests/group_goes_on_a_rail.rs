@@ -147,38 +147,28 @@ fn a_chain_swings_on_its_rail_for_a_simulated_hour_and_its_centre_of_mass_stays_
 }
 
 #[test]
-fn a_push_takes_a_riding_chain_off_its_rail_and_left_alone_again_it_is_put_on_another() {
+fn a_push_leaves_a_riding_chain_on_its_rail_and_the_rail_is_another_the_orbit_of_what_it_is_now() {
     let (mut scene, report, ships, _speed) = a_chain_left_alone();
     scene.ticks(30);
     let first = rail_of(&scene, ships[0]).expect("on a rail");
-    // A force on the middle car for a tick: the rail comes off the anchor in that tick.
+    // A force on the middle car for a tick: the rail is made again at the end of that tick (step 4c-5-4b), through the place the chain has with the speed that the push gives it.
     let middle = ships[1];
     scene.run(move |world| {
         world
             .apply_grid_force(middle, [0.0, 60_000.0, 0.0], None)
             .unwrap()
     });
-    assert_eq!(rail_of(&scene, ships[0]), None);
-    // It is a chain still, and in the second that it is left alone it is on a rail again: another, the orbit of what it is now.
-    let mut worst_gap: f64 = 0.0;
-    let mut second = None;
-    for tick in 1..=40 {
-        scene.ticks(1);
-        worst_gap = worst_gap.max(gaps(&scene, &ships));
-        if second.is_none() && rail_of(&scene, ships[0]).is_some() {
-            second = Some(tick);
-        }
-    }
-    let second = second.expect("it was put on a rail again");
-    assert!((19..=22).contains(&second), "after {second} ticks");
-    assert!(worst_gap < 0.05, "the joints held: {worst_gap} m");
-    let rail = rail_of(&scene, ships[0]).unwrap();
+    let rail = rail_of(&scene, ships[0]).expect("still on a rail");
     assert_ne!(
         rail, first,
         "and the orbit is not the one it had: the push changed it"
     );
-    for _ in 0..100 {
+    // It is a chain still, and rides the new rail, which no second of being left alone has to make: it is not made again.
+    let mut worst_gap: f64 = 0.0;
+    for _ in 0..140 {
         scene.ticks(1);
+        worst_gap = worst_gap.max(gaps(&scene, &ships));
+        assert_eq!(rail_of(&scene, ships[0]), Some(rail.clone()));
         close(
             centre_of(&scene, &ships).0,
             rail_point(&scene, &rail).0,
@@ -186,11 +176,12 @@ fn a_push_takes_a_riding_chain_off_its_rail_and_left_alone_again_it_is_put_on_an
             "it rides the new rail",
         );
     }
+    assert!(worst_gap < 0.05, "the joints held: {worst_gap} m");
     assert_eq!(report().couplings, 2);
 }
 
 #[test]
-fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_one_when_the_ship_has_gone()
+fn a_ship_that_comes_near_a_riding_chain_leaves_it_on_its_rail_and_one_that_is_near_when_it_is_quiet_does_not_put_it_on_one()
  {
     let (mut scene, report, ships, speed) = a_chain_left_alone();
     // A stranger of three blocks in the same orbit, 300 voxels along x from the chain: not near it (the room to go on a rail is 128).
@@ -201,11 +192,9 @@ fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_
     );
     let stranger = ship_id(4);
     scene.ticks(30);
-    assert!(
-        rail_of(&scene, ships[0]).is_some(),
-        "the chain is on a rail, the stranger far off"
-    );
-    // Brought to 20 voxels from the middle of the middle car (and going as it goes): the chain comes off its rail.
+    let rail = rail_of(&scene, ships[0]).expect("the chain is on a rail, the stranger far off");
+    // Brought to 20 voxels from the middle of the middle car (and going as it goes): **the chain keeps its rail** (the rail's kick, 2026-11-17: what is near a group on a rail is the
+    // contact ghost's, and a touch takes the rail: `group_on_a_rail_is_hit.rs`).
     let (place, going) = centre_of(&scene, &ships);
     scene.run(move |world| {
         let near = WorldPosition::from_voxels([place[0], place[1] + 20.0, place[2]]);
@@ -214,10 +203,14 @@ fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_
             .unwrap();
         world.set_grid_velocity(stranger, going, [0.0; 3]).unwrap();
     });
-    scene.ticks(2);
-    assert_eq!(rail_of(&scene, ships[0]), None, "the chain is off its rail");
+    scene.ticks(30);
+    assert_eq!(
+        rail_of(&scene, ships[0]),
+        Some(rail),
+        "the chain is on its rail, the stranger 20 voxels off"
+    );
     assert_eq!(report().couplings, 2, "and it is coupled still");
-    // The stranger goes away; the chain, left alone, is put on a rail again.
+    // The stranger goes away; nothing changes.
     let (place, going) = centre_of(&scene, &ships);
     scene.run(move |world| {
         let far = WorldPosition::from_voxels([place[0] + 5_000.0, place[1], place[2]]);
@@ -229,7 +222,7 @@ fn a_ship_that_comes_near_a_riding_chain_takes_it_off_its_rail_and_it_is_put_on_
     scene.ticks(30);
     assert!(
         rail_of(&scene, ships[0]).is_some(),
-        "the chain is on a rail again"
+        "the chain is on a rail still"
     );
 }
 

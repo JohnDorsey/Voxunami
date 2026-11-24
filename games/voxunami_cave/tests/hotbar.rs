@@ -167,6 +167,54 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert_eq!(chosen_index(&mut player), 10);
 }
 
+/// Which swatch of the hotbar is chosen (one always is).
+fn chosen_swatch(player: &mut Player) -> usize {
+    let panels = overlays(player);
+    let chosen: Vec<bool> = swatches(&panels[0].1.root)
+        .iter()
+        .map(|(_, _, selected)| *selected)
+        .collect();
+    assert_eq!(
+        chosen.iter().filter(|selected| **selected).count(),
+        1,
+        "one is always chosen"
+    );
+    chosen.iter().position(|selected| *selected).unwrap()
+}
+
+#[test]
+fn the_wheel_chooses_the_next_block_turned_down_and_the_one_before_turned_up_round_the_whole_hotbar()
+ {
+    let mut rig = Rig::new();
+    let (mut player, _) = hovering(&mut rig);
+    tick(&mut rig, &mut player, 2);
+    assert_eq!(chosen_swatch(&mut player), 0);
+
+    // Down is on to the next, a notch at a time, past the ninth (where the number keys stop) to the last of the twelve and round to the first.
+    for expected in 1..12 {
+        player.mouse_pressed(MouseButton::WheelDown);
+        assert_eq!(chosen_swatch(&mut player), expected);
+    }
+    player.mouse_pressed(MouseButton::WheelDown);
+    assert_eq!(chosen_swatch(&mut player), 0, "round to the first");
+
+    // Up is back: from the first round to the last, and on to the one before.
+    player.mouse_pressed(MouseButton::WheelUp);
+    assert_eq!(chosen_swatch(&mut player), 11, "round to the last");
+    player.mouse_pressed(MouseButton::WheelUp);
+    assert_eq!(chosen_swatch(&mut player), 10);
+
+    // It goes on from where a number key left it, and the block the HUD says is placed is the chosen one.
+    player.key_pressed(KeyCode::Digit4);
+    player.mouse_pressed(MouseButton::WheelDown);
+    assert_eq!(chosen_swatch(&mut player), 4);
+    assert!(
+        player.hud_text().contains("placing wood"),
+        "{}",
+        player.hud_text()
+    );
+}
+
 #[test]
 fn in_survival_the_hotbar_counts_what_the_player_has_and_the_inventory_panel_lists_it_on_e() {
     let mut rig = Rig::new();

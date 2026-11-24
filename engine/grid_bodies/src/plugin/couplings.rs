@@ -19,16 +19,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use physics::{
-    BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, MassMoments, PivotPair, SolverDials,
-};
+use physics::{BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, PivotPair, SolverDials};
 use server::ServerWorld;
-use voxel_space::GridId;
+use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 use world_storage::MovingGrid;
 
+use super::rail_ports::is_a_rail_pair;
 use super::{Bodies, Frame, FrameKey, Ship};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{JointSettings, effective_mass};
+use crate::joints::{Inertia, JointSettings, effective_mass};
 
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
@@ -36,11 +35,13 @@ pub(super) type CouplingKey = (GridId, GridId);
 /// A coupling the plugin made, and the ends of the two ships that it is made at.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Coupled {
-    id: CouplingId,
+    pub(super) id: CouplingId,
     /// The frame whose body world has the joint.
-    frame: FrameKey,
-    first_end: BlockFace,
-    second_end: BlockFace,
+    pub(super) frame: FrameKey,
+    pub(super) first_end: BlockFace,
+    pub(super) second_end: BlockFace,
+    /// Whether the body world's coupling was made rigid at the turn its bodies had (`stiffness.rs`): what the world says of the pair is made true in the tick after it says it.
+    pub(super) rigid: bool,
 }
 
 /// What became of a coupling since the last tick.
@@ -165,9 +166,55 @@ impl Bodies {
         for frame_key in frame_keys {
             self.couple_and_pull_in(world, &settings, frame_key);
         }
+        self.keep_the_stiffness_true(world);
         self.record_couplings(world);
+        self.tell_the_desk_the_pivots(world);
         let now = self.couplings.len() as u64;
         self.count(|report| report.couplings = now);
+    }
+
+    /// Parts the pairs that `/joint decouple` asked to be parted in this tick (the joint desk has them), **after the step**, when the world has every ship at the place of the end of the tick
+    /// (`Bodies::step`): the cars are stepped as they are coupled, so the tick of the command is one as any other, and a group on a rail is taken off it where it is, as after a hit, and
+    /// not before the rail has put it. The coupling is let go of, and the pair is **held apart**, neither
+    /// drawn together nor coupled again while its ends pull on each other (the ends of two cars that were just parted are together, and are in line: they would be coupled again in
+    /// the next tick otherwise; docking's `released` does as much for ships that were just undocked). A pair that has gone, or is in two frames, is not held any more.
+    pub(super) fn part_the_pairs_asked_to_be_parted(&mut self, world: &mut ServerWorld) {
+        let desk = self.config.joint_desk.clone();
+        for pair in desk.take_requests() {
+            if self.couplings.contains_key(&pair) {
+                // (A group on a rail comes off it where it is, as for a hit: the rail is for the group as a whole, on its anchor, and would put the anchor alone at the group's
+                // centre of mass. The two parts are on rails again when they have been quiet for a while.)
+                world.take_group_off_its_rail(pair.0);
+                self.let_go(pair);
+                desk.hold_apart(pair);
+                self.count(|report| report.couplings_parted += 1);
+            }
+        }
+        if desk.holds_any_apart() {
+            desk.keep_held_apart_only(|(first, second)| {
+                world.data().grids().get(first).is_some()
+                    && world.data().grids().get(second).is_some()
+                    && self.frame_of(first).is_some()
+                    && self.frame_of(first) == self.frame_of(second)
+            });
+        }
+    }
+
+    /// Tells the joint desk where each coupling is, for the command that parts one (the middle of the first car's end, where the ball is to within a quarter of a metre).
+    fn tell_the_desk_the_pivots(&self, world: &ServerWorld) {
+        let pivots = self
+            .couplings
+            .iter()
+            .filter_map(|(key, coupled)| {
+                let ship = world.data().grids().get(key.0)?;
+                let place = ship.pose.local_to_world(WorldPosition::new(
+                    BrickCoordinate::ORIGIN,
+                    coupled.first_end.local_centre(),
+                ))?;
+                Some((*key, (ship.level, place)))
+            })
+            .collect();
+        self.config.joint_desk.set_pivots(pivots);
     }
 
     /// Tells the world which ships are coupled, for whoever keeps ships by how near the players are (`ServerWorld::coupled_ships`): every coupling there is. One that is gone
@@ -252,15 +299,34 @@ impl Bodies {
             if busy.contains(&first_group) || busy.contains(&second_group) {
                 continue;
             }
+            // (Sized by what the end answers a force with, not by the mass of the group: `mass_at_an_end`.)
+            let Some(direction) = settings.pull_direction(pair.how.gap, pair.relative_velocity)
+            else {
+                continue;
+            };
             let Some(mass) = effective_mass(
-                groups.mass_moved_by_a_pull_on(pair.first),
-                groups.mass_moved_by_a_pull_on(pair.second),
+                self.mass_at_the_end_in_a_frame(
+                    world,
+                    frame_key,
+                    &groups,
+                    pair.first,
+                    pair.first_arm,
+                    direction,
+                ),
+                self.mass_at_the_end_in_a_frame(
+                    world,
+                    frame_key,
+                    &groups,
+                    pair.second,
+                    pair.second_arm,
+                    direction,
+                ),
             ) else {
                 continue;
             };
             busy.insert(first_group);
             busy.insert(second_group);
-            self.pull(settings, frame_key, pair, mass, &groups);
+            self.pull(world, settings, frame_key, pair, mass, &groups);
         }
     }
 
@@ -346,6 +412,8 @@ impl Bodies {
         }
         if let Some(record) = self.couplings.get_mut(&key) {
             record.frame = frame_key;
+            // (The joint is made again as a ball; if the world says the pair is rigid, it is made rigid again at the turn the bodies have in the new frame, in this tick.)
+            record.rigid = false;
         }
         self.count(|report| report.couplings_moved += 1);
         true
@@ -430,11 +498,14 @@ impl Bodies {
             .collect();
         for (index, &(first_id, first, first_ship)) in bearers.iter().enumerate() {
             for &(second_id, second, second_ship) in &bearers[index + 1..] {
+                // (A pair of which a ship rides a rail is pulled over the rails, and coupled when it touches: `rail_joints.rs`.)
                 if (first.kind == BodyKind::Fixed && second.kind == BodyKind::Fixed)
                     || self.couplings.contains_key(&(first_id, second_id))
+                    || is_a_rail_pair(world, first_id, second_id)
                 {
                     continue;
                 }
+                let held_apart = self.config.joint_desk.is_held_apart((first_id, second_id));
                 let saved = world.coupled_ships().contains(&(first_id, second_id));
                 let from = first_ship.pose.position;
                 let mut best: Option<(
@@ -459,8 +530,15 @@ impl Bodies {
                     }
                 }
                 let Some((first_end, second_end, first_view, second_view, how)) = best else {
+                    // (A pair that was parted and whose ends no longer pull on each other is let go of: it is drawn together and coupled again if the ends come back.)
+                    if held_apart {
+                        self.config.joint_desk.let_go_of((first_id, second_id));
+                    }
                     continue;
                 };
+                if held_apart {
+                    continue;
+                }
                 let (Some(first_state), Some(second_state)) = (
                     frame.bodies.state(BodyId(first_id.get())),
                     frame.bodies.state(BodyId(second_id.get())),
@@ -519,6 +597,7 @@ impl Bodies {
             frame: frame_key,
             first_end: pair.first_end,
             second_end: pair.second_end,
+            rigid: false,
         };
         let key = (pair.first, pair.second);
         if !self.join_bodies(settings, frame_key, key, &coupled) {
@@ -573,6 +652,22 @@ impl Bodies {
         true
     }
 
+    /// What the end of a ship answers a force along `direction` with, as a mass (`mass_at_an_end`), the ship's own: `None` for a ship whose group a pull cannot move.
+    fn mass_at_the_end_in_a_frame(
+        &self,
+        world: &ServerWorld,
+        frame_key: FrameKey,
+        groups: &Groups,
+        id: GridId,
+        arm: [f64; 3],
+        direction: [f64; 3],
+    ) -> Option<f64> {
+        groups.mass_moved_by_a_pull_on(id)?;
+        let record = self.frames.get(&frame_key)?.ships.get(&id)?;
+        let ship = world.data().grids().get(id)?;
+        record.mass_at_an_end(ship.pose.rotation_matrix(), arm, direction)
+    }
+
     /// Pulls two ends toward each other: each of the two ships whose group can move gets the same force, the other way, at its end (as docking's is, owner, 2026-11-09), whatever
     /// it weighs; the group that weighs less moves more. A pull at an end that is away from the centre of mass swings the ship, and two ends side by side swing the two ships
     /// against each other, so the spin of the ships against each other is slowed by a torque against it (equal and opposite, `damping_torque_limit` at most): without it
@@ -580,6 +675,7 @@ impl Bodies {
     /// `tests/joint_coupling.rs`). Nothing turns the ships into line. A ball turns however it is.
     fn pull(
         &mut self,
+        world: &ServerWorld,
         settings: &JointSettings,
         frame_key: FrameKey,
         pair: &JointPair,
@@ -587,18 +683,18 @@ impl Bodies {
         groups: &Groups,
     ) {
         let on_second = settings.pull_on_second(pair.how.gap, pair.relative_velocity, mass);
-        // The inertia that the spin is slowed against: each ship's own, about its centre of mass, as a number (a third of the trace of the tensor).
-        let inertia_of = |id: GridId| -> Option<f64> {
+        // The inertia that the spin is slowed against: each ship's own tensor, about its centre of mass, in the world's axes.
+        let inertia_of = |id: GridId| -> Option<Inertia> {
             groups.mass_moved_by_a_pull_on(id)?;
             let record = self.frames.get(&frame_key)?.ships.get(&id)?;
-            let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
-            let tensor = properties.inertia;
-            Some((tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0)
+            let ship = world.data().grids().get(id)?;
+            record.inertia_in_the_worlds_axes(ship.pose.rotation_matrix())
         };
-        let damping = effective_mass(inertia_of(pair.first), inertia_of(pair.second))
-            .map_or([0.0; 3], |inertia| {
-                settings.spin_damping_on_second(pair.relative_spin, inertia)
-            });
+        let damping = settings.spin_damping_between(
+            pair.relative_spin,
+            inertia_of(pair.first),
+            inertia_of(pair.second),
+        );
         let Some(frame) = self.frames.get_mut(&frame_key) else {
             return;
         };

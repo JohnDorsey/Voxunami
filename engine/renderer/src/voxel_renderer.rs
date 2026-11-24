@@ -112,6 +112,39 @@ pub struct Avatar {
 /// Radius of a sphere around an entity's box, for culling.
 const ENTITY_BOX_BOUNDING_RADIUS: f32 = 1.0;
 
+/// What an entity that is drawn as a thing without a model is shaped like.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EntityShape {
+    /// A box of the size the [`EntityBox`] says.
+    #[default]
+    Box,
+    /// A ball of half a voxel across (the ball of a joint), made of boxes as the world is: a cross of four, with a flat top and bottom, the size being ignored.
+    Ball,
+}
+
+/// The boxes that a ball is made of, in eighths of a voxel in a cell of eight, about its middle: a plus of two boxes that is four across and two high, and a cap on it and under it that is two across
+/// and one high (so it is four eighths, half a voxel, across and high, and has no corners).
+pub(crate) fn ball_boxes() -> [ShapeBox; 4] {
+    [
+        ShapeBox {
+            min: [2, 3, 3],
+            max: [6, 5, 5],
+        },
+        ShapeBox {
+            min: [3, 3, 2],
+            max: [5, 5, 6],
+        },
+        ShapeBox {
+            min: [3, 2, 3],
+            max: [5, 3, 5],
+        },
+        ShapeBox {
+            min: [3, 5, 3],
+            max: [5, 6, 5],
+        },
+    ]
+}
+
 /// An entity drawn as a box: a thing that is not a player, and has no model yet (an item on the ground).
 /// Boxes are placed like avatars, and made like blocks that do not fill their cell, so their sizes are in
 /// eighths of a voxel.
@@ -120,35 +153,40 @@ pub struct EntityBox {
     /// The middle of the box.
     pub position: WorldPosition,
     /// How big the box is along each axis, in eighths of a voxel. Each is made even and from 2 to 8, so that
-    /// the box can be centred on `position`.
+    /// the box can be centred on `position`. (A ball is of one size, and ignores this.)
     pub size: [u8; 3],
     /// The palette value it is drawn in (the same values the blocks of the world are drawn in); the values
     /// the avatars use are not for boxes.
     pub material: u32,
+    /// What it is shaped like.
+    pub shape: EntityShape,
 }
 
 impl EntityBox {
-    /// What the box is made of, as the renderer remembers its mesh: the size made even and put from 2 to 8,
-    /// and the material put among the game's.
-    pub(crate) fn key(&self) -> (u32, [u8; 3]) {
+    /// What the box is made of, as the renderer remembers its mesh: the size made even and put from 2 to 8 (a ball's is its own), and the material put among the game's.
+    pub(crate) fn key(&self) -> (u32, [u8; 3], EntityShape) {
         let material = self.material.clamp(1, MAXIMUM_GAME_MATERIALS as u32 - 1);
-        (
-            material,
-            self.size.map(|size| size.clamp(1, 8).div_ceil(2) * 2),
-        )
+        let size = match self.shape {
+            EntityShape::Box => self.size.map(|size| size.clamp(1, 8).div_ceil(2) * 2),
+            EntityShape::Ball => [4; 3],
+        };
+        (material, size, self.shape)
     }
 }
 
 /// The mesh of a box of one material and size: a voxel at the middle of a brick whose shape is a box.
-fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
+fn box_mesh(material: u32, size: [u8; 3], shape: EntityShape) -> PackedBrickMesh {
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     let at = LocalVoxelIndex::new(AVATAR_EYE_VOXEL, AVATAR_EYE_VOXEL, AVATAR_EYE_VOXEL);
     values[at.index()] = 1;
     let storage = ChannelStorage::from_values(&values);
-    let shape = Shape::from_boxes(&[ShapeBox {
-        min: size.map(|size| (8 - size) / 2),
-        max: size.map(|size| (8 + size) / 2),
-    }]);
+    let shape = match shape {
+        EntityShape::Box => Shape::from_boxes(&[ShapeBox {
+            min: size.map(|size| (8 - size) / 2),
+            max: size.map(|size| (8 + size) / 2),
+        }]),
+        EntityShape::Ball => Shape::from_boxes(&ball_boxes()),
+    };
     let solid = BlockDefinition::cube([0.5; 3]).with_shapes(vec![shape]);
     let air = BlockDefinition::air();
     let definitions: Vec<Option<&BlockDefinition>> = vec![Some(&air), Some(&solid)];
@@ -708,7 +746,7 @@ struct VolumeFrame {
 enum MeshKey {
     Held(HeldMesh),
     Avatar(usize),
-    Box((u32, [u8; 3])),
+    Box((u32, [u8; 3], EntityShape)),
 }
 
 /// What a map is a picture of: everything that casts a shadow seen from the sun (it keeps what is nearest the sun, the backs of things), or the terrain seen from straight above
@@ -980,7 +1018,7 @@ pub struct VoxelRenderer {
     avatars: Vec<Avatar>,
     entity_boxes: Vec<EntityBox>,
     /// The meshes of the boxes there have been, by material and size, made when first asked for.
-    box_meshes: HashMap<(u32, [u8; 3]), GpuBrick>,
+    box_meshes: HashMap<(u32, [u8; 3], EntityShape), GpuBrick>,
     atmosphere: Atmosphere,
     sun_occluders: Vec<SunOccluder>,
     /// How many times the terrain held changed (a brick or node came, went or was replaced), and the things that move (ships, avatars, boxes): what a kept map is held
@@ -1665,10 +1703,11 @@ impl VoxelRenderer {
     /// Sets which boxes are drawn from now on, replacing the previous ones.
     pub fn set_entity_boxes(&mut self, boxes: &[EntityBox]) {
         for entity_box in boxes {
-            let (material, size) = entity_box.key();
-            if !self.box_meshes.contains_key(&(material, size)) {
-                let mesh = self.gpu_brick(&box_mesh(material, size));
-                self.box_meshes.insert((material, size), mesh);
+            let key = entity_box.key();
+            if !self.box_meshes.contains_key(&key) {
+                let (material, size, shape) = key;
+                let mesh = self.gpu_brick(&box_mesh(material, size, shape));
+                self.box_meshes.insert(key, mesh);
             }
         }
         if self.entity_boxes != boxes {
@@ -4241,6 +4280,86 @@ mod tests {
         assert!(
             (MAXIMUM_GAME_MATERIALS as u32) <= AVATAR_MATERIAL_BASE,
             "no game material is an avatar colour"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ball_tests {
+    use super::*;
+
+    /// The eighths of the cell that boxes fill.
+    fn filled(boxes: &[ShapeBox]) -> std::collections::BTreeSet<[u8; 3]> {
+        let mut cells = std::collections::BTreeSet::new();
+        for shape_box in boxes {
+            for x in shape_box.min[0]..shape_box.max[0] {
+                for y in shape_box.min[1]..shape_box.max[1] {
+                    for z in shape_box.min[2]..shape_box.max[2] {
+                        cells.insert([x, y, z]);
+                    }
+                }
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn the_ball_is_half_a_voxel_across_and_the_same_from_every_side_with_no_corners() {
+        let cells = filled(&ball_boxes());
+        // Centred in the cell of eight: from 2 to 6 along each axis, and each of the six ways it is turned (swapping two axes) is the same.
+        for axis in 0..3 {
+            assert_eq!(cells.iter().map(|cell| cell[axis]).min(), Some(2));
+            assert_eq!(cells.iter().map(|cell| cell[axis]).max(), Some(5));
+        }
+        for (first, second) in [(0, 1), (0, 2), (1, 2)] {
+            let swapped: std::collections::BTreeSet<[u8; 3]> = cells
+                .iter()
+                .map(|cell| {
+                    let mut cell = *cell;
+                    cell.swap(first, second);
+                    cell
+                })
+                .collect();
+            assert_eq!(swapped, cells, "axes {first} and {second}");
+        }
+        // And as to mirror images: each axis is the same about the middle (2..6 is mirrored by 7 - n).
+        for axis in 0..3 {
+            let mirrored: std::collections::BTreeSet<[u8; 3]> = cells
+                .iter()
+                .map(|cell| {
+                    let mut cell = *cell;
+                    cell[axis] = 7 - cell[axis];
+                    cell
+                })
+                .collect();
+            assert_eq!(mirrored, cells, "axis {axis}");
+        }
+        // No corner of the four-by-four-by-four is in it (it is round, to the eighth), and it is the volume of a sphere of two eighths' radius to a cell or two: the plus is 16 + 16 - 8 where its
+        // two boxes meet, the caps 4 + 4, so 32 of the 64 (a sphere of that radius is 33.5).
+        for corner in [[2, 2, 2], [5, 5, 5], [2, 2, 5], [5, 2, 5], [2, 5, 2]] {
+            assert!(!cells.contains(&corner), "{corner:?}");
+        }
+        assert_eq!(cells.len(), 32);
+    }
+
+    #[test]
+    fn a_ball_is_of_one_size_whatever_size_is_asked_and_has_a_mesh_of_its_own() {
+        let ball = |size| EntityBox {
+            position: WorldPosition::from_voxels([0.0; 3]),
+            size,
+            material: 3,
+            shape: EntityShape::Ball,
+        };
+        assert_eq!(ball([8, 8, 8]).key(), ball([2, 2, 2]).key());
+        assert_eq!(ball([8, 2, 6]).key(), (3, [4, 4, 4], EntityShape::Ball));
+        let plain = EntityBox {
+            shape: EntityShape::Box,
+            ..ball([4, 4, 4])
+        };
+        assert_ne!(
+            plain.key(),
+            ball([4, 4, 4]).key(),
+            "a box of the size of a ball is not its mesh"
         );
     }
 }

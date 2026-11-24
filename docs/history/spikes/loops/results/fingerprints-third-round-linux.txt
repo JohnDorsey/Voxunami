@@ -1,0 +1,180 @@
+fingerprint stiff chain, stranger at 20 m/s    converged (12 steps, 16, 32)                             c87226964775f4a0
+fingerprint stiff chain, stranger at 20 m/s    today: one world, 3 steps                                355c491f298f56b1
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, (0, 15)                              82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, (0, 15), cut                         82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    one world, 12 steps, (0, 15)                             66ce995f22883a4a
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, x1                                           1b8c97f2c5a48821
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, x1, (0, 15), truth (0, 15), cut              82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, x4, (0, 15), truth (0, 15)                   3ea700a9efd58368
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, x4, (0, 15), truth today's                   a83cf9b39f33fa08
+fingerprint stiff chain, stranger at 20 m/s    ghost impulses, x1, (0, 15), truth (0, 15), cut          22baa7ff6e7d8f0f
+fingerprint stiff chain, stranger at 20 m/s    own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    own-ground ghost impulses, (0, 15), truth (0, 15), cut   22baa7ff6e7d8f0f
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, (0, 15), cut at touch                82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    one world, 6 steps, (0, 15)                              af8b1af26caf34fc
+fingerprint stiff chain, stranger at 20 m/s    one world, 12 steps, (4, 15)                             2b6280a75af266ce
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, x4, (0, 15)                                  a83cf9b39f33fa08
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, cut, (0, 15), truth (0, 15)                  82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    welded ghost diff, cut, (0,15), truth (0,15)             907f5a0bda81a0c6
+fingerprint stiff chain, stranger at 20 m/s    ghost impulses, cut, (0, 15), truth (0, 15)              22baa7ff6e7d8f0f
+fingerprint stiff chain, stranger at 20 m/s    ghost diff, adaptive 2%, cut, truth (0, 15)              54b69d28c325d4da
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 3                             9c2219146cca57d2
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 7                             ea09c70674a57626
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 15                            82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 31                            699c5cc147c63da2
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 3, cut                        9c2219146cca57d2
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 7, cut                        ea09c70674a57626
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 15, cut                       82a77fbcbc510a5f
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, passes 31, cut                       699c5cc147c63da2
+fingerprint stiff chain, stranger at 20 m/s    one world, 3 steps, substeps 4, passes 15, cut           841f104d03c6fcf8
+fingerprint stiff chain, stranger at 20 m/s    one world, 6 steps, passes 15, cut                       af8b1af26caf34fc
+fingerprint hinged chain of 6 across           converged (12 steps, 16, 32)                             4fb82fac8646c33e
+fingerprint hinged chain of 6 across           today: one world, 3 steps                                b4d41dd41ee30fac
+fingerprint hinged chain of 6 across           one world, 3 steps, (0, 15)                              89471c37d1dbbcec
+fingerprint hinged chain of 6 across           one world, 3 steps, (0, 15), cut                         89471c37d1dbbcec
+fingerprint hinged chain of 6 across           one world, 12 steps, (0, 15)                             cb3a24a9cc9e668f
+fingerprint hinged chain of 6 across           ghost diff, x1                                           ed4207aff01f02fa
+fingerprint hinged chain of 6 across           ghost diff, x1, (0, 15), truth (0, 15), cut              41680c1a8d2ef761
+fingerprint hinged chain of 6 across           ghost diff, x4, (0, 15), truth (0, 15)                   84b15dc8427f7510
+fingerprint hinged chain of 6 across           ghost diff, x4, (0, 15), truth today's                   95f4c1876f9e0476
+fingerprint hinged chain of 6 across           ghost impulses, x1, (0, 15), truth (0, 15), cut          7c6829375b49db18
+fingerprint hinged chain of 6 across           own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   41680c1a8d2ef761
+fingerprint hinged chain of 6 across           own-ground ghost impulses, (0, 15), truth (0, 15), cut   7c6829375b49db18
+fingerprint hinged chain of 6 across           one world, 3 steps, (0, 15), cut at touch                89471c37d1dbbcec
+fingerprint hinged chain of 6 across           one world, 6 steps, (0, 15)                              9e7d912399ea039e
+fingerprint hinged chain of 6 across           one world, 12 steps, (4, 15)                             4d9ebfc932bdce35
+fingerprint hinged chain of 6 across           ghost diff, x4, (0, 15)                                  95f4c1876f9e0476
+fingerprint hinged chain of 6 across           ghost diff, cut, (0, 15), truth (0, 15)                  41680c1a8d2ef761
+fingerprint hinged chain of 6 across           welded ghost diff, cut, (0,15), truth (0,15)             d8d5307b9907ac08
+fingerprint hinged chain of 6 across           ghost impulses, cut, (0, 15), truth (0, 15)              7c6829375b49db18
+fingerprint hinged chain of 6 across           ghost diff, adaptive 2%, cut, truth (0, 15)              c09a121fb58286ee
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 3                             9154dc2860154176
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 7                             d9ee4bb8c24974d9
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 15                            89471c37d1dbbcec
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 31                            740a6f7106094421
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 3, cut                        9154dc2860154176
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 7, cut                        d9ee4bb8c24974d9
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 15, cut                       89471c37d1dbbcec
+fingerprint hinged chain of 6 across           one world, 3 steps, passes 31, cut                       740a6f7106094421
+fingerprint hinged chain of 6 across           one world, 3 steps, substeps 4, passes 15, cut           b052a03bb1619647
+fingerprint hinged chain of 6 across           one world, 6 steps, passes 15, cut                       9e7d912399ea039e
+fingerprint spring door                        converged (12 steps, 16, 32)                             d68a00e78aed8a37
+fingerprint spring door                        today: one world, 3 steps                                575c03134372ec9b
+fingerprint spring door                        one world, 3 steps, (0, 15)                              791ffaaed771665c
+fingerprint spring door                        one world, 3 steps, (0, 15), cut                         fa71b6cb096db3ac
+fingerprint spring door                        one world, 12 steps, (0, 15)                             aad4679c130e9637
+fingerprint spring door                        ghost diff, x1                                           f5e16d933d525b66
+fingerprint spring door                        ghost diff, x1, (0, 15), truth (0, 15), cut              66f52e98d0cb5864
+fingerprint spring door                        ghost diff, x4, (0, 15), truth (0, 15)                   a3d4b510ed036dae
+fingerprint spring door                        ghost diff, x4, (0, 15), truth today's                   a0474ef539132add
+fingerprint spring door                        ghost impulses, x1, (0, 15), truth (0, 15), cut          6289abb87d49382c
+fingerprint spring door                        own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   66f52e98d0cb5864
+fingerprint spring door                        own-ground ghost impulses, (0, 15), truth (0, 15), cut   6289abb87d49382c
+fingerprint spring door                        one world, 3 steps, (0, 15), cut at touch                fa71b6cb096db3ac
+fingerprint spring door                        one world, 6 steps, (0, 15)                              39e98273d4e39bde
+fingerprint spring door                        one world, 12 steps, (4, 15)                             8c2c92d0d78652a1
+fingerprint spring door                        ghost diff, x4, (0, 15)                                  a0474ef539132add
+fingerprint spring door                        ghost diff, cut, (0, 15), truth (0, 15)                  66f52e98d0cb5864
+fingerprint spring door                        welded ghost diff, cut, (0,15), truth (0,15)             c721f8ce93a787cb
+fingerprint spring door                        ghost impulses, cut, (0, 15), truth (0, 15)              6289abb87d49382c
+fingerprint spring door                        ghost diff, adaptive 2%, cut, truth (0, 15)              cb7325738721a2d5
+fingerprint spring door                        one world, 3 steps, passes 3                             45690d26b4affadb
+fingerprint spring door                        one world, 3 steps, passes 7                             05e594515d8ae177
+fingerprint spring door                        one world, 3 steps, passes 15                            791ffaaed771665c
+fingerprint spring door                        one world, 3 steps, passes 31                            e7746d2598e0e990
+fingerprint spring door                        one world, 3 steps, passes 3, cut                        d9e291fe4502cec5
+fingerprint spring door                        one world, 3 steps, passes 7, cut                        d699f429f9812ee5
+fingerprint spring door                        one world, 3 steps, passes 15, cut                       fa71b6cb096db3ac
+fingerprint spring door                        one world, 3 steps, passes 31, cut                       130dab2b3a76cdf2
+fingerprint spring door                        one world, 3 steps, substeps 4, passes 15, cut           e30ac304030e3642
+fingerprint spring door                        one world, 6 steps, passes 15, cut                       39e98273d4e39bde
+fingerprint gear lands at 2 m/s, 3 s           converged (12 steps, 16, 32)                             0a3704af3f6a98f8
+fingerprint gear lands at 2 m/s, 3 s           today: one world, 3 steps                                bacde8933676fe1a
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, (0, 15)                              51c596745f9769f8
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, (0, 15), cut                         51c596745f9769f8
+fingerprint gear lands at 2 m/s, 3 s           one world, 12 steps, (0, 15)                             7097d7f25e94fe73
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, x1                                           1c567c013e56299d
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, x1, (0, 15), truth (0, 15), cut              78bb526e3bf65c24
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, x4, (0, 15), truth (0, 15)                   cce8961d77fa1679
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, x4, (0, 15), truth today's                   5933c979f5e61b65
+fingerprint gear lands at 2 m/s, 3 s           ghost impulses, x1, (0, 15), truth (0, 15), cut          49a73c4e02538a65
+fingerprint gear lands at 2 m/s, 3 s           own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   5d286cf9910703c4
+fingerprint gear lands at 2 m/s, 3 s           own-ground ghost impulses, (0, 15), truth (0, 15), cut   51c596745f9769f8
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, (0, 15), cut at touch                51c596745f9769f8
+fingerprint gear lands at 2 m/s, 3 s           one world, 6 steps, (0, 15)                              5400e3c26219b1b1
+fingerprint gear lands at 2 m/s, 3 s           one world, 12 steps, (4, 15)                             ec650a8aee722969
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, x4, (0, 15)                                  5933c979f5e61b65
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, cut, (0, 15), truth (0, 15)                  78bb526e3bf65c24
+fingerprint gear lands at 2 m/s, 3 s           welded ghost diff, cut, (0,15), truth (0,15)             e13cb77041a2c41b
+fingerprint gear lands at 2 m/s, 3 s           ghost impulses, cut, (0, 15), truth (0, 15)              49a73c4e02538a65
+fingerprint gear lands at 2 m/s, 3 s           ghost diff, adaptive 2%, cut, truth (0, 15)              32f2874043895b5b
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 3                             c2a0e3a3bc63ca26
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 7                             0372151c89b71e95
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 15                            51c596745f9769f8
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 31                            b9b3a6b723bcced5
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 3, cut                        c2a0e3a3bc63ca26
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 7, cut                        0372151c89b71e95
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 15, cut                       51c596745f9769f8
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, passes 31, cut                       b9b3a6b723bcced5
+fingerprint gear lands at 2 m/s, 3 s           one world, 3 steps, substeps 4, passes 15, cut           340a61bd1c99a664
+fingerprint gear lands at 2 m/s, 3 s           one world, 6 steps, passes 15, cut                       525bd93fb180e14d
+fingerprint ship lands on a carrier, 3 s       converged (12 steps, 16, 32)                             de41da0e27cc910e
+fingerprint ship lands on a carrier, 3 s       today: one world, 3 steps                                352f1734c998a911
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, (0, 15)                              acee613fcd46c2f9
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, (0, 15), cut                         6fb544a964a55662
+fingerprint ship lands on a carrier, 3 s       one world, 12 steps, (0, 15)                             77203f41c0c9f9eb
+fingerprint ship lands on a carrier, 3 s       ghost diff, x1                                           e988867041a99217
+fingerprint ship lands on a carrier, 3 s       ghost diff, x1, (0, 15), truth (0, 15), cut              cb8ad84f228302f3
+fingerprint ship lands on a carrier, 3 s       ghost diff, x4, (0, 15), truth (0, 15)                   c731b6fc8eb5b82f
+fingerprint ship lands on a carrier, 3 s       ghost diff, x4, (0, 15), truth today's                   d35613018928812a
+fingerprint ship lands on a carrier, 3 s       ghost impulses, x1, (0, 15), truth (0, 15), cut          710cefabe05ee71d
+fingerprint ship lands on a carrier, 3 s       own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   41541eb3de36c90b
+fingerprint ship lands on a carrier, 3 s       own-ground ghost impulses, (0, 15), truth (0, 15), cut   57dd5defa910f0dc
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, (0, 15), cut at touch                6fb544a964a55662
+fingerprint ship lands on a carrier, 3 s       one world, 6 steps, (0, 15)                              dc0e55d3c19c39cb
+fingerprint ship lands on a carrier, 3 s       one world, 12 steps, (4, 15)                             3364f2a852bf45e9
+fingerprint ship lands on a carrier, 3 s       ghost diff, x4, (0, 15)                                  d35613018928812a
+fingerprint ship lands on a carrier, 3 s       ghost diff, cut, (0, 15), truth (0, 15)                  cb8ad84f228302f3
+fingerprint ship lands on a carrier, 3 s       welded ghost diff, cut, (0,15), truth (0,15)             1141f7951779c091
+fingerprint ship lands on a carrier, 3 s       ghost impulses, cut, (0, 15), truth (0, 15)              710cefabe05ee71d
+fingerprint ship lands on a carrier, 3 s       ghost diff, adaptive 2%, cut, truth (0, 15)              9b62b34e96bd8a9a
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 3                             3c122835ec9fa37d
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 7                             4821f7058e5823de
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 15                            acee613fcd46c2f9
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 31                            d2dc910c783a132a
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 3, cut                        7b76fa4ae016bfad
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 7, cut                        9edd855feb1a85bf
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 15, cut                       6fb544a964a55662
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, passes 31, cut                       588022891eb2adba
+fingerprint ship lands on a carrier, 3 s       one world, 3 steps, substeps 4, passes 15, cut           32371190158dc644
+fingerprint ship lands on a carrier, 3 s       one world, 6 steps, passes 15, cut                       48284be7528f744b
+fingerprint landed ship hit from the side      converged (12 steps, 16, 32)                             d0a2578928d96c19
+fingerprint landed ship hit from the side      today: one world, 3 steps                                c0783ef6d460a5f8
+fingerprint landed ship hit from the side      one world, 3 steps, (0, 15)                              68b6ee303e9f47af
+fingerprint landed ship hit from the side      one world, 3 steps, (0, 15), cut                         e2500adb7b5beffb
+fingerprint landed ship hit from the side      one world, 12 steps, (0, 15)                             ed334a7dc99264c6
+fingerprint landed ship hit from the side      ghost diff, x1                                           124904961d5ddf74
+fingerprint landed ship hit from the side      ghost diff, x1, (0, 15), truth (0, 15), cut              0aaac983d47551de
+fingerprint landed ship hit from the side      ghost diff, x4, (0, 15), truth (0, 15)                   7a6efb9d61ddecb3
+fingerprint landed ship hit from the side      ghost diff, x4, (0, 15), truth today's                   7f6d2bc1a60818ce
+fingerprint landed ship hit from the side      ghost impulses, x1, (0, 15), truth (0, 15), cut          43b20313d578abe8
+fingerprint landed ship hit from the side      own-ground ghost diff, x1, (0, 15), truth (0, 15), cut   feaa248d07455984
+fingerprint landed ship hit from the side      own-ground ghost impulses, (0, 15), truth (0, 15), cut   d3ed0d1e7e9cc585
+fingerprint landed ship hit from the side      one world, 3 steps, (0, 15), cut at touch                e2500adb7b5beffb
+fingerprint landed ship hit from the side      one world, 6 steps, (0, 15)                              7bbbbd6b6a561ae4
+fingerprint landed ship hit from the side      one world, 12 steps, (4, 15)                             363ea4aaa9153f29
+fingerprint landed ship hit from the side      ghost diff, x4, (0, 15)                                  7f6d2bc1a60818ce
+fingerprint landed ship hit from the side      ghost diff, cut, (0, 15), truth (0, 15)                  0aaac983d47551de
+fingerprint landed ship hit from the side      welded ghost diff, cut, (0,15), truth (0,15)             e5d72fcfb31da013
+fingerprint landed ship hit from the side      ghost impulses, cut, (0, 15), truth (0, 15)              43b20313d578abe8
+fingerprint landed ship hit from the side      ghost diff, adaptive 2%, cut, truth (0, 15)              6f06812b7d98277a
+fingerprint landed ship hit from the side      one world, 3 steps, passes 3                             94a44db44085f350
+fingerprint landed ship hit from the side      one world, 3 steps, passes 7                             34d522148c4108eb
+fingerprint landed ship hit from the side      one world, 3 steps, passes 15                            68b6ee303e9f47af
+fingerprint landed ship hit from the side      one world, 3 steps, passes 31                            b2b093c64b66e087
+fingerprint landed ship hit from the side      one world, 3 steps, passes 3, cut                        424356379bfb5e92
+fingerprint landed ship hit from the side      one world, 3 steps, passes 7, cut                        19d983a0a5aa74ac
+fingerprint landed ship hit from the side      one world, 3 steps, passes 15, cut                       e2500adb7b5beffb
+fingerprint landed ship hit from the side      one world, 3 steps, passes 31, cut                       d26054bfad54f4b9
+fingerprint landed ship hit from the side      one world, 3 steps, substeps 4, passes 15, cut           efee086dbae1dc1b
+fingerprint landed ship hit from the side      one world, 6 steps, passes 15, cut                       c2e4fb3bf61952e1

@@ -1,5 +1,7 @@
 use voxel_space::{BrickCoordinate, WorldPosition};
 
+use crate::EntityShape;
+
 use super::*;
 
 fn at(x: f64, y: f64, z: f64) -> WorldPosition {
@@ -11,6 +13,7 @@ fn item(position: WorldPosition, size: [u8; 3]) -> EntityBox {
         position,
         size,
         material: 1,
+        shape: EntityShape::Box,
     }
 }
 

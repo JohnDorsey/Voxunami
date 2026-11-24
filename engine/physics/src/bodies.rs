@@ -12,10 +12,14 @@ use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 use region_octree::BrickCube;
 
 mod couplings;
+mod first_touch;
+mod ghost_support;
 mod sleeping;
 
 use couplings::Coupling;
 pub use couplings::{CouplingError, CouplingId, CouplingOptions, PivotPair, SolverDials};
+use ghost_support::Piece;
+pub use ghost_support::{Correction, StepPlan};
 
 const EDGE: usize = BRICK_EDGE_LENGTH;
 
@@ -51,6 +55,42 @@ const MOST_A_STEP_MOVES: Real = 0.8;
 /// (at 20 ticks a second); faster, a step is longer than that.
 const MOST_STEPS: u32 = 24;
 
+/// The passes over its constraints that the solver makes for every body in a piece that is solved as a hit, beyond its own: what makes a hit come out as momentum says and not as a chain of joints gives way. A
+/// stranger on a rigid chain of four keeps 0.04 to 0.14 of its speed with none, where 0.2 is true; the 15 that this is were found by the study of `docs/history/loop-probe.md`,
+/// section 18 (the rest noise of landing gear on a carrier, 113 mm/s, goes to nothing with them). The settling passes ([`SETTLING_PASSES`], section 20) do most of the same work
+/// since: with them alone the chain keeps 0.1985 to 0.1994 and with these as well 0.1988 to 0.2000, and the turn of a head-on hit is theirs (two cubes that meet squarely turned at
+/// 0.01 radians a second at 60 voxels a second with these and one settling pass, and under 5e-15 with the settling passes and none of these). Rapier runs the largest request of a
+/// connected set of bodies (the contacts and the joints between them) on all of it, so what touches a chain is solved with it, and a body that touches nothing has no constraint to
+/// make passes over. What they cost is paid by a body that is awake and touching (a ship at rest on the ground, awake, went from 15 to 35 microseconds a tick with them,
+/// measured): a body that is asleep costs nothing, and they are made in a piece that is solved as a hit (the settling passes are), and in none between hits
+/// (`BodySettings::solver_between_hits`; `docs/history/loop-probe.md`, section 22: an awake ship at rest costs what it cost before step 4c-5-A).
+const HIT_PASSES: usize = 15;
+
+/// How many settling passes the solver makes ([`BodySettings::settling_passes`]). Rapier solves each part of a step with a bias that pushes bodies out of each other, moves them,
+/// and then takes that speed away again with a second solve, whose passes these are; its own is one. A contact is soft, so in a short piece of a step it lets a large part of the
+/// speed through (0.09 of it in a piece of 5 milliseconds against terrain, 0.56 in one of 0.4), and one pass over the four points of a cube that lands leaves 0.04 of that as speed
+/// up and as a turn: a cube that landed squarely at 150 voxels a second went up at up to 3.3 voxels a second and turned at up to 4.8 radians a second, by the moment of the step.
+/// Each further pass leaves about 0.6 of what the one before left. With 16 the same landing leaves under 0.001 of each, two cubes that meet squarely turn by under 5e-15 radians a second,
+/// and a ship on four legs does not bounce or turn at any speed from 5 to 150 voxels a second (`docs/history/loop-probe.md`, section 20; `engine_probe landing|landinggear|pairspin`
+/// with `SETTLING=n`). A pass costs about two and a half times what one of the extra passes above does, for it solves friction as well, and it is paid in every piece of every tick by a
+/// body that is awake and touching something: so they are made in the pieces that are solved as a hit ([`HIT_DURATION`]), and between hits the world makes
+/// [`SETTLING_PASSES_BETWEEN_HITS`] (`docs/history/loop-probe.md`, section 21).
+const SETTLING_PASSES: usize = 16;
+
+/// How many settling passes the solver makes in a piece that is not solved as a hit ([`BodySettings::settling_passes_between_hits`]): Rapier's own, one. A body at rest has no speed of
+/// approach for the solve after each part of a step to take away: a cube of 1 to 32 voxels, a ship on four legs and a stack of five cubes, at rest on terrain, go at under 1e-13
+/// voxels a second and turn at under 1e-14 radians a second with one pass, as with sixteen (`engine_probe restnoise`); a stack of ten wobbles at 2.5e-3 voxels a second with one pass
+/// everywhere and 3e-4 with sixteen, and is solved as a hit all the time (its wobble is over the floor of a hit, `HIT_SPEED_FLOOR` in `first_touch.rs`), so it has sixteen.
+const SETTLING_PASSES_BETWEEN_HITS: usize = 1;
+
+/// How long, in seconds, after a touch is found, or two shapes that touch are found going against each other, the pieces of a step are solved as a hit
+/// ([`BodySettings::hit_duration`]): with [`SETTLING_PASSES`], and not the one pass between hits. A touch pushes the shapes into each other and the soft contact pushes them out again, with a time constant of about 0.1 seconds between two bodies and 0.05 against terrain
+/// (30 and 60 hertz, damped ten times over: *read* in Rapier's solver, and the decay that `engine_probe pairspin` measured agrees), and the solve after each part of a step that
+/// takes the push out speed away leaves 0.04 of it with one pass, as a bounce and a turn that add up over the whole push out. So the passes of a hit are needed until the push out is
+/// gone, which is a time and not a number of steps. Two lone cubes that meet squarely turned at 1.5e-4 of their speed afterwards when the passes were made for 0.05 seconds, 4e-5
+/// for 0.2, 1e-5 for 0.4, 3.5e-6 for 0.5 and 1.5e-6 for 0.6 (the largest over speeds of 2 to 60 voxels a second: `docs/history/loop-probe.md`, section 21).
+const HIT_DURATION: f64 = 0.5;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
     /// How long one call to [`BodyWorld::step`] is, in seconds: a tick of the server.
@@ -59,15 +99,56 @@ pub struct BodySettings {
     pub substeps: u32,
     /// The acceleration of gravity, in voxels per second per second.
     pub gravity: [f64; 3],
+    /// How hard the solver works on every body at the least, in a piece that is solved as a hit (see `settling_passes`): a body that is given more with
+    /// [`BodyWorld::set_solver_dials`] gets that. Nothing extra is the solver's own work.
+    pub solver: SolverDials,
+    /// How hard the solver works on every body at the least in a piece that is not solved as a hit (the default is nothing extra, the solver's own work: the extra passes of a hit are
+    /// what an impact needs, and a body at rest has none, while they are paid for in every piece by every body that is awake and touching). A world that has a coupling in it is
+    /// solved as a hit all the time, so a coupling has them always. With `solver` here as well the world is what it was before this setting (`docs/history/loop-probe.md`, section 22).
+    pub solver_between_hits: SolverDials,
+    /// How many passes the solver makes over all the constraints, after each part of a step, to take away the speed it gave bodies to push them out of each other (Rapier's "solve
+    /// without bias" and its `num_internal_stabilization_iterations`; at least 1, which is Rapier's own), in a piece that is solved as a hit: from when a touch is found, or two
+    /// shapes that touch are found going against each other (see `cut_at_first_touch`), for `hit_duration`. A body that lands meets the ground at several points at once, and one pass leaves part of what the soft contact let through as a
+    /// bounce and a turn, more in a shorter piece of a step; each further pass leaves about 0.6 of what the one before left (the default is 16: the comment of `SETTLING_PASSES` in
+    /// `bodies.rs` says what that does). Without the cut the world is not told when a touch is found, and every piece is solved as a hit.
+    pub settling_passes: usize,
+    /// The settling passes of a piece that is not solved as a hit, which is all of the time that nothing has touched or moved against what it touches for `hit_duration` (at least 1; the default is Rapier's own,
+    /// one: a body at rest has no speed of approach to take away, and the passes are paid for in every piece by every body that is awake and touching, whatever it does). A world
+    /// that has a coupling in it is solved as a hit all the time: the hits of a mechanism are chaotic, and a chain swung at 70 and at 140 kilometres came to swings that differ by
+    /// 0.018 (promise (a) of the joint plan, which holds to 5e-10) when the passes were the passes of a hit only some of the time. With as many passes between hits as in a hit the
+    /// world is what it was before the cost was cut, to the bit (`docs/history/loop-probe.md`, section 21).
+    pub settling_passes_between_hits: usize,
+    /// How long, in seconds, after a touch is found, or shapes that touch are found going against each other, the pieces of a step are solved as a hit, with `settling_passes`: the soft contact pushes the shapes out of each other for as long
+    /// as that takes (a time constant of about 0.1 seconds between two bodies and 0.05 against terrain), and what one pass leaves of it is a turn and a bounce that add up over the
+    /// push out (two cubes that meet squarely turned at 1.5e-4 of their speed after 0.05 seconds, 1e-5 after 0.4 and 3.5e-6 after 0.5, the default: the comment of `HIT_DURATION` in
+    /// `bodies.rs` has them). Each touch that is found begins the time again. It has no effect without the cut.
+    pub hit_duration: f64,
+    /// Whether a step of the solver is cut where two bodies, or a body and the terrain, first touch, so that a hit begins at the start of a piece whatever moment of the step it
+    /// falls at, and no body goes a whole step's way into another before the solver sees the touch (0.7 voxels into terrain at 60 voxels a second without the cut, 0.013 with
+    /// it: `docs/history/loop-probe.md`, sections 18 to 20). It costs a question to the broad phase for each body that moves, and a step in which nothing is about to touch is
+    /// the same bit for bit. The question is also what tells the world that a hit has begun: the settling passes of a hit are made from the moment a touch is found, or shapes
+    /// that touch are found going against each other.
+    pub cut_at_first_touch: bool,
 }
 
 impl Default for BodySettings {
-    /// A tick of a twentieth of a second solved at 60 steps a second, and the gravity characters fall in.
+    /// A tick of a twentieth of a second solved at 60 steps a second, the gravity characters fall in, the passes that make a hit come out right (15 extra and 16 settling passes, for
+    /// half a second after a touch is found and all the time in a world with a coupling; none extra and one settling pass between hits), and the cut of a step where two bodies first
+    /// touch.
     fn default() -> Self {
         Self {
             time_step: 1.0 / 20.0,
             substeps: 3,
             gravity: [0.0, -5.0, 0.0],
+            solver: SolverDials {
+                extra_substeps: 0,
+                extra_passes: HIT_PASSES,
+            },
+            solver_between_hits: SolverDials::default(),
+            settling_passes: SETTLING_PASSES,
+            settling_passes_between_hits: SETTLING_PASSES_BETWEEN_HITS,
+            hit_duration: HIT_DURATION,
+            cut_at_first_touch: true,
         }
     }
 }
@@ -111,6 +192,14 @@ struct Body {
     kept_awake: bool,
     /// Whether Rapier is let put it to sleep now (see `sleeping.rs`): it is while the body touches something and is not kept awake.
     may_sleep: bool,
+    /// How hard the solver was asked to work on it ([`BodyWorld::set_solver_dials`]); the solver is told the larger of this and the world's.
+    dials: SolverDials,
+    /// What the body was last given as a mass, if it was given one.
+    mass: Option<BodyMass>,
+    /// A number that goes up each time something about the body that a copy of it must follow changes (its colliders, its mass, its kind, its dials): see `ghost_support.rs`.
+    version: u64,
+    /// Which side of a contact ghost the body is on, if it is in one (see `ghost.rs`).
+    side: Option<u32>,
 }
 
 /// The colliders of a body, taken out of its world with [`BodyWorld::take_colliders`] to be given to the same body in another with [`BodyWorld::give_colliders`]: what a ship
@@ -163,6 +252,22 @@ pub struct BodyWorld {
     terrain: HashMap<BrickCoordinate, ColliderHandle>,
     /// The bodies held together at pivots, in order of number (see `couplings.rs`).
     couplings: BTreeMap<CouplingId, Coupling>,
+    /// How many steps were cut where two bodies first touched (see `first_touch.rs`).
+    cuts: u64,
+    /// How much longer, in seconds, the pieces of a step are solved as a hit: set to `BodySettings::hit_duration` when a touch is found and run down by each piece (see `first_touch.rs`).
+    hit_time_left: Real,
+    /// Whether the solver is told the world's `solver` (the last piece was solved as a hit) or its `solver_between_hits` for every body.
+    dials_of_a_hit: bool,
+    /// How many pieces of a step were solved as a hit.
+    hit_pieces: u64,
+    /// How many solver steps [`BodyWorld::step`] has cut its ticks into.
+    steps: u64,
+    /// The pieces that the step now being made is solved in, if it is being recorded (see [`BodyWorld::step_recording`]).
+    recorder: Option<Vec<Piece>>,
+    /// Whether any piece of the step being recorded had a contact between bodies on different sides.
+    crossed: bool,
+    /// Whether the piece being solved is a hit, when a step is being replayed: what the recorded step's piece was.
+    forced_hit: Option<bool>,
 }
 
 impl std::fmt::Debug for BodyWorld {
@@ -184,6 +289,7 @@ impl BodyWorld {
             // No speed limit (the default is 400 metres a second). Past what `MOST_STEPS` can cut a tick for, a body may go through thin ground, and the
             // result is not promised to be the same on every machine; below it, it is.
             normalized_max_linear_velocity: Real::MAX,
+            num_internal_stabilization_iterations: settings.settling_passes.max(1),
             ..IntegrationParameters::default()
         };
         Self {
@@ -203,6 +309,14 @@ impl BodyWorld {
             by_id: BTreeMap::new(),
             terrain: HashMap::new(),
             couplings: BTreeMap::new(),
+            cuts: 0,
+            hit_time_left: 0.0,
+            dials_of_a_hit: false,
+            hit_pieces: 0,
+            steps: 0,
+            recorder: None,
+            crossed: false,
+            forced_hit: None,
         }
     }
 
@@ -275,8 +389,13 @@ impl BodyWorld {
                 partial: HashMap::new(),
                 kept_awake: false,
                 may_sleep: true,
+                dials: SolverDials::default(),
+                mass: None,
+                version: 0,
+                side: None,
             },
         );
+        self.apply_solver_dials(id);
         Ok(())
     }
 
@@ -306,6 +425,7 @@ impl BodyWorld {
             return Ok(());
         }
         body.kind = kind;
+        body.version += 1;
         let rapier = &mut self.bodies[body.handle];
         match kind {
             BodyKind::Fixed => rapier.set_body_type(RigidBodyType::Fixed, true),
@@ -343,6 +463,10 @@ impl BodyWorld {
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
         let tensor = matrix(&mass.inertia);
+        if let Some(found) = self.by_id.get_mut(&id) {
+            found.mass = Some(mass);
+            found.version += 1;
+        }
         let body = &mut self.bodies[handle];
         body.set_additional_mass_properties(
             MassProperties::with_inertia_matrix(vector(mass.centre_of_mass), mass.mass, tensor),
@@ -363,6 +487,32 @@ impl BodyWorld {
             orientation: Orientation::from_components(body.rotation().normalize().to_array())?,
             linear_velocity: array(body.linvel()),
             angular_velocity: array(body.angvel()),
+        })
+    }
+
+    /// How fast the body goes at a place, in voxels a second: its speed and its turn about its centre of mass (a planet's ground goes faster the farther the place is from
+    /// its axis). `None` if the body is not there.
+    pub fn velocity_at(&self, id: BodyId, place: WorldPosition) -> Option<[f64; 3]> {
+        let body = self.bodies.get(self.by_id.get(&id)?.handle)?;
+        Some(array(body.velocity_at_point(self.local(place))))
+    }
+
+    /// Whether two bodies touch, as the last step found them: a contact between a collider of the one and a collider of the other that the solver works on. `false` if either
+    /// is not there.
+    pub fn touches(&self, first: BodyId, second: BodyId) -> bool {
+        let (Some(first), Some(second)) = (self.by_id.get(&first), self.by_id.get(&second)) else {
+            return false;
+        };
+        let Some(body) = self.bodies.get(first.handle) else {
+            return false;
+        };
+        body.colliders().iter().any(|&collider| {
+            self.narrow_phase.contact_pairs_with(collider).any(|pair| {
+                pair.has_any_active_contact()
+                    && [pair.collider1, pair.collider2].into_iter().any(|other| {
+                        self.colliders.get(other).and_then(Collider::parent) == Some(second.handle)
+                    })
+            })
         })
     }
 
@@ -501,8 +651,24 @@ impl BodyWorld {
                 }
             }
         }
+        body.version += 1;
         if wanted.iter().any(|row| *row != 0) {
             body.filled.insert(brick, wanted);
+        }
+        // A voxel collider with no voxel left has no bounds (its box is not a number), which Rapier takes for a fault: it puts the collider out of play for good (`quarantine`),
+        // and a collider that is out of play keeps the place in the broad phase it had, so the voxels that are put in it later are not met where they are far from where
+        // the old ones were (a thing thrown at the ground of a planet, thrown off it and let go of by the ground round it, came down through the ground made again: 5 of 9
+        // throws in the game; `tests/emptied_ground.rs`). So the collider goes with its last voxel, and the next brick that has a voxel makes it again.
+        if body.filled.is_empty()
+            && let Some(handle) = body.voxels.take()
+        {
+            self.colliders.remove(
+                handle,
+                &mut self.islands,
+                &mut self.bodies,
+                &mut self.soft_bodies,
+                true,
+            );
         }
         // The boxes: the brick's one compound is made again.
         if let Some(old) = body.partial.remove(&brick) {
@@ -541,6 +707,7 @@ impl BodyWorld {
     /// [`BodyWorld::give_colliders`]. The body stays, with none.
     pub fn take_colliders(&mut self, id: BodyId) -> Result<BodyColliders, BodyError> {
         let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
+        body.version += 1;
         let (voxels, partial) = (body.voxels.take(), std::mem::take(&mut body.partial));
         let mut taken = BodyColliders {
             filled: std::mem::take(&mut body.filled),
@@ -858,36 +1025,91 @@ impl BodyWorld {
     /// Moves everything one tick: gravity and the forces applied since the last call, then collisions, in
     /// [`BodySettings::substeps`] steps. The forces are then forgotten.
     pub fn step(&mut self) {
-        let gravity = vector(self.settings.gravity);
         self.apply_sleep_rule();
         let steps = self.steps_for_this_tick();
-        self.parameters.dt = self.settings.time_step / Real::from(steps);
+        self.steps += u64::from(steps);
+        let length = self.settings.time_step / Real::from(steps);
         for _ in 0..steps {
-            self.pipeline.step(
-                gravity,
-                &self.parameters,
-                &mut self.islands,
-                &mut self.broad_phase,
-                &mut self.narrow_phase,
-                &mut self.bodies,
-                &mut self.colliders,
-                &mut self.impulse_joints,
-                &mut self.multibody_joints,
-                &mut self.soft_bodies,
-                &mut self.ccd,
-                &(),
-                &(),
-            );
+            // (A step is cut in pieces where two bodies first touch: `first_touch.rs`.)
+            self.solve_in_pieces(length);
         }
-        for (_, body) in self.bodies.iter_mut() {
-            body.reset_forces(false);
-            body.reset_torques(false);
+        self.forget_forces();
+    }
+
+    /// How many solver steps the ticks of [`BodyWorld::step`] have been cut into, since this world was made (a world that was stepped by a recording or a replay of another's
+    /// is not counted: they are steps of a ghost). It counts what a tick costs and not the time it took, so that what is simulated, and what is asked of it, does not depend on how
+    /// fast a machine is.
+    pub fn steps_taken(&self) -> u64 {
+        self.steps
+    }
+
+    /// One step of the solver, `time` seconds long.
+    fn solve(&mut self, time: Real) {
+        self.parameters.dt = time;
+        // Without the cut the world is not told when a touch is met, so any piece may be a hit; and a mechanism, whose hits are chaotic, is solved as a hit all the time (the
+        // comment of `BodySettings::settling_passes_between_hits` says why).
+        let as_a_hit = self.forced_hit.unwrap_or(
+            self.hit_time_left > 0.0
+                || !self.settings.cut_at_first_touch
+                || !self.couplings.is_empty(),
+        );
+        if as_a_hit != self.dials_of_a_hit {
+            self.dials_of_a_hit = as_a_hit;
+            self.apply_all_solver_dials();
         }
+        let passes = if as_a_hit {
+            self.hit_pieces += 1;
+            self.settings.settling_passes
+        } else {
+            self.settings.settling_passes_between_hits
+        };
+        self.parameters.num_internal_stabilization_iterations = passes.max(1);
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.push(Piece {
+                length: time,
+                without_margin: self.parameters.normalized_prediction_distance == 0.0,
+                as_a_hit,
+            });
+        }
+        self.pipeline.step(
+            vector(self.settings.gravity),
+            &self.parameters,
+            &mut self.islands,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.bodies,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            &mut self.soft_bodies,
+            &mut self.ccd,
+            &(),
+            &(),
+        );
+        self.hit_time_left = (self.hit_time_left - time).max(0.0);
+        if self.recorder.is_some() && self.contact_across_sides() {
+            self.crossed = true;
+        }
+    }
+
+    /// How many times a step has been cut where two bodies first touched, since this world was made.
+    pub fn cuts_made(&self) -> u64 {
+        self.cuts
+    }
+
+    /// How many pieces of a step have been solved as a hit, with [`BodySettings::settling_passes`] and not [`BodySettings::settling_passes_between_hits`], since this world was
+    /// made. A touch is found by the question that the cut asks, so a world in which nothing touches, and that has no coupling in it, has made none.
+    pub fn hit_pieces_made(&self) -> u64 {
+        self.hit_pieces
     }
 
     /// How many solver steps this tick is cut into: the settings' number, or more when a body is fast enough to cross [`MOST_A_STEP_MOVES`] voxels in
     /// one of them, since a body that moves farther than the ground is thick goes through it. (Rapier's own continuous detection leaves out the voxel
     /// colliders that ships are made of.) At most [`MOST_STEPS`]. A tick in which nothing is fast is cut as the settings say, bit for bit.
+    ///
+    /// **A body that moves counts at the speed it closes on another, not only at its own:** a kinematic body that has ground made (a planet in the frame of a group that
+    /// is in free fall, whose ground comes at the group at the speed it closes on it, step 4c-5-3) is as fast as the dynamic bodies it comes at are against it. (Ran, before:
+    /// a slab of stone that came at a cube at rest from 300 voxels a second on went through it.) A kinematic body with no ground made can touch nothing and counts for nothing.
     fn steps_for_this_tick(&self) -> u32 {
         let base = self.settings.substeps.max(1);
         let mut fastest: Real = 0.0;
@@ -898,22 +1120,37 @@ impl BodyWorld {
             let mut speed = body.linvel().length();
             let turn = body.angvel().length();
             if turn > 0.0 {
-                // The farthest point of the body from its middle, by the boxes of its colliders.
-                let middle = body.translation();
-                let reach = body
-                    .colliders()
-                    .iter()
-                    .map(|&handle| {
-                        let aabb = self.colliders[handle].compute_aabb();
-                        (aabb.center() - middle).length() + aabb.half_extents().length()
-                    })
-                    .fold(0.0, Real::max);
-                speed += turn * reach;
+                speed += turn * self.reach_of(body);
             }
             fastest = fastest.max(speed);
         }
+        fastest = fastest.max(self.fastest_ground_closing_on_a_body());
         let needed = (fastest * self.settings.time_step / MOST_A_STEP_MOVES).ceil();
         (needed as u32).clamp(base, MOST_STEPS.max(base))
+    }
+
+    /// The fastest that a kinematic body that has colliders goes against a dynamic body: its speed at the place of the body less the body's own, and the body's turn times its
+    /// reach. Nothing if there is no such pair.
+    fn fastest_ground_closing_on_a_body(&self) -> Real {
+        let mut fastest: Real = 0.0;
+        for (_, ground) in self.bodies.iter() {
+            if !ground.is_kinematic() || ground.colliders().is_empty() {
+                continue;
+            }
+            for (_, body) in self.bodies.iter() {
+                if !body.is_dynamic() {
+                    continue;
+                }
+                let mut speed =
+                    (ground.velocity_at_point(body.translation()) - body.linvel()).length();
+                let turn = body.angvel().length();
+                if turn > 0.0 {
+                    speed += turn * self.reach_of(body);
+                }
+                fastest = fastest.max(speed);
+            }
+        }
+        fastest
     }
 
     /// Moves the frame's origin to the corner of another brick, keeping everything where it is in the world. Positions near the new origin
@@ -2297,7 +2534,11 @@ mod tests {
 
     /// A scene that uses most of what there is: ground, ships of different shapes (one turned), a fixed one, forces, an edit.
     fn busy_scene() -> BodyWorld {
-        let mut world = world_with_ground();
+        busy_scene_under(heavy_planet())
+    }
+
+    fn busy_scene_under(settings: BodySettings) -> BodyWorld {
+        let mut world = world_with_ground_and(settings);
         let mut ell = Hull::cube(3);
         ell.0.remove(&VoxelCoordinate::new(2, 2, 2));
         ell.0.remove(&VoxelCoordinate::new(2, 2, 1));
@@ -2359,6 +2600,56 @@ mod tests {
         // (Moved on purpose, 2026-11-07: 5_759_799_545_177_561_133 before. `set_mass` brings the centre of mass in the world up to date at once, and a force at a point is turned about it; the
         // scene pushes a ship at a point in the tick its mass is set, which Rapier then turned about the ship's origin. Control: the same scene with the first force one tick later, so that no
         // force is in the tick the mass is set, hashes to 1_492_678_265_670_795_158 with and without the change.)
-        assert_eq!(first.state_hash(), 4_420_298_351_144_519_277);
+        // (Moved on purpose, 2026-11-14: 4_420_298_351_144_519_277 before. Every body is given 15 extra solver passes, and a step is cut where two bodies first touch (the ships
+        // here land on the ground): step 4c-5-A of `docs/decisions/joints-and-cars.md`. Control: with `solver` set to nothing and the cut off the old value comes
+        // back bit for bit, in the test next to this one; so those two are the only things that moved it.)
+        // (Moved on purpose, 2026-11-14, the second time: 13_453_006_163_523_410_624 before. The solver makes 16 settling passes after each part of a step where Rapier makes one, and the
+        // piece after a cut is what is left of the step, no longer a twelfth of a tick at most: `docs/history/loop-probe.md`, section 20. Control: with the one pass and the piece
+        // of a twelfth of a tick put back, and nothing else changed, the old value came back bit for bit; so those two are the only things that moved it. The test next to this one
+        // is the control of both: with `settling_passes` 1, no passes and no cut it is still what it was before step 4c-5-A.)
+        // (Moved on purpose, 2026-11-14, the third time: 3_459_255_983_539_198_170 before. The 16 settling passes are made while a touch is found, or shapes that touch go against
+        // each other, and for half a second after, and the world makes Rapier's one pass in between: `docs/history/loop-probe.md`, section 21. A touch is found at a closing speed
+        // that is a speed (a millimetre a second), no longer what a step can take across the margin. Control, in the test after this one: with the 16 made between hits as well the old
+        // value comes back bit for bit.)
+        // (Moved on purpose, 2026-11-14, the fourth time: 8_652_255_924_237_869_372 before. The 15 extra passes are made in the pieces that are solved as a hit, as the settling
+        // passes are, and no longer in every piece: `docs/history/loop-probe.md`, section 22. Control, in the test after this one: with them made between hits as well the old value
+        // comes back bit for bit; ran at 367fa6b, as a test of its own that was removed when the next move made it no longer the world before.)
+        // (Moved on purpose, 2026-11-14, the fifth time: 16_015_789_674_459_971_760 before. Whether two shapes that have a contact go against each other, which makes the pieces a hit,
+        // is judged by the speeds of their bodies at the points of the contact, and no longer by a bound that has the whole reach of a turning body in it: the ground of a planet that
+        // turns made a ship at rest on it a hit in every piece (`docs/history/loop-probe.md`, section 23). Control: with the rule as it was, and nothing else changed, the old value
+        // comes back bit for bit (ran, with the file put back from a copy). The control of the third move, in the test after this one, makes every piece a hit and is not moved.)
+        assert!(
+            first.cuts_made() > 0,
+            "no step was cut in the busy scene: the pin below is not about the cut"
+        );
+        assert_eq!(first.state_hash(), 7_979_597_850_111_435_684);
+    }
+
+    #[test]
+    fn with_the_passes_of_a_hit_between_hits_as_well_the_busy_scene_is_what_it_was_bit_for_bit() {
+        // The control of the move of 2026-11-14, the third time: the world as it was before the cost of the settling passes was cut (and the extra passes made for every body).
+        let settings = BodySettings {
+            solver_between_hits: BodySettings::default().solver,
+            settling_passes_between_hits: BodySettings::default().settling_passes,
+            ..heavy_planet()
+        };
+        assert_eq!(
+            busy_scene_under(settings).state_hash(),
+            3_459_255_983_539_198_170
+        );
+    }
+
+    #[test]
+    fn with_the_passes_and_the_cut_off_the_busy_scene_is_what_it_was_before_them_bit_for_bit() {
+        let settings = BodySettings {
+            solver: SolverDials::default(),
+            settling_passes: 1,
+            cut_at_first_touch: false,
+            ..heavy_planet()
+        };
+        assert_eq!(
+            busy_scene_under(settings).state_hash(),
+            4_420_298_351_144_519_277
+        );
     }
 }

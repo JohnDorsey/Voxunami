@@ -182,6 +182,7 @@ impl ServerWorld {
             }
         }
         let merged = MovingGrid {
+            hull: None,
             level: base.level,
             pose: GridPose::new(base.pose.position, base.pose.orientation),
             linear_velocity: plan.linear_velocity,

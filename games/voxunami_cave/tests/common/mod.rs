@@ -750,6 +750,31 @@ pub fn ship_voxels(scene: &Scene, number: u64) -> [f64; 3] {
     ship_pose(scene, number).position.in_voxels()
 }
 
+/// The highest voxel of the ground of ship `planet` (a body with terrain) in the column (`x`, `z`) of its own voxels, looked for from the top of `heights` down: the ground is where
+/// its generator puts it (a planet of radius 10,000 with hills 20 high has it between 9,980 and 10,020 over its pole).
+pub fn top_of_the_ground(
+    scene: &mut Scene,
+    planet: u64,
+    x: i128,
+    z: i128,
+    heights: std::ops::Range<i128>,
+) -> i128 {
+    let found = Arc::new(Mutex::new(0i128));
+    let slot = Arc::clone(&found);
+    let channel = CaveContent::new().block_channel();
+    scene.run(move |world| {
+        let mut grid = world.grid(ship_id(planet)).unwrap();
+        for y in heights.rev() {
+            if grid.get(channel, VoxelCoordinate::new(x, y, z)).unwrap() != 0 {
+                *slot.lock().unwrap() = y;
+                return;
+            }
+        }
+    });
+    scene.ticks(1);
+    std::mem::take(&mut *found.lock().unwrap())
+}
+
 /// A raft of stone, 6 by 1 by 6, made `offset` voxels (in the world's axes) from the middle of ship `planet`, free or held, going `against` the ground there: at
 /// rest on it for no `against`, as a ship made by someone who stands on it would be. (It is put there in the tick after it is made, from the planet where the
 /// planet is in that tick, so that it is where it is said to be from the planet however far the planet has gone since the test looked.) Its number.
@@ -853,6 +878,8 @@ pub struct Scene {
     pub rig: Rig,
     actions: Arc<Mutex<VecDeque<Action>>>,
     watchers: Arc<Mutex<Vec<Watcher>>>,
+    /// What the plugin that moves ships reports, for a scene that was made to report (`reporting`, `reporting_in`): the scene itself can then tell whether a ship is still being made.
+    bodies_report: Option<Arc<dyn Fn() -> grid_bodies::BodiesReport + Send + Sync>>,
 }
 
 impl Scene {
@@ -888,14 +915,25 @@ impl Scene {
         let files = MemoryShipFiles::new();
         let disk = Box::new(files.clone());
         let rig = Rig::with_plugins_on_disk(content, world, plugins, files, disk);
+        let shared: Arc<dyn Fn() -> grid_bodies::BodiesReport + Send + Sync> = Arc::new(report);
+        let asked = Arc::clone(&shared);
         (
             Self {
                 rig,
                 actions,
                 watchers,
+                bodies_report: Some(shared),
             },
-            report,
+            move || asked(),
         )
+    }
+
+    /// How many ships are being made now, if the scene reports (a ship that comes into memory with more bricks than a tick's budget is held while its bricks are made:
+    /// `grid_bodies::SHIP_BRICKS_PER_TICK`, all the ships together), and `None` if it does not.
+    pub fn ships_being_made(&self) -> Option<u64> {
+        self.bodies_report
+            .as_ref()
+            .map(|report| report().ships_being_made)
     }
 
     /// A scene in the world a new game starts in: space with the planet in it, and the overworld second.
@@ -935,6 +973,7 @@ impl Scene {
             rig: Rig::with_plugins_on_disk(content, world, plugins, files, disk),
             actions,
             watchers,
+            bodies_report: None,
         }
     }
 
@@ -1002,6 +1041,7 @@ impl Scene {
                 rig: Rig::with_plugins_and_files(content, world, plugins, files),
                 actions,
                 watchers,
+                bodies_report: None,
             },
             extra,
         )

@@ -19,6 +19,7 @@
 
 mod bodies;
 mod character;
+mod ghost;
 mod mass;
 mod motion;
 mod real;
@@ -26,10 +27,11 @@ mod sweep;
 mod terrain;
 
 pub use bodies::{
-    BodyColliders, BodyError, BodyId, BodyKind, BodySettings, BodyState, BodyWorld, CouplingError,
-    CouplingId, CouplingOptions, PivotPair, SolverDials,
+    BodyColliders, BodyError, BodyId, BodyKind, BodySettings, BodyState, BodyWorld, Correction,
+    CouplingError, CouplingId, CouplingOptions, PivotPair, SolverDials, StepPlan,
 };
 pub use character::{CharacterBody, CharacterSettings, ForeignGrid, MoveInput};
+pub use ghost::{ContactGhost, GhostError, Side};
 pub use mass::{BodyMass, MassMoments};
 pub use motion::BodyMotion;
 pub use sweep::{Reach, SweptBricks, TERRAIN_EVERY_WAY_VOXELS};

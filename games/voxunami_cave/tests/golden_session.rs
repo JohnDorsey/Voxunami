@@ -397,8 +397,13 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// changed). With the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
 /// Free regions in an interest (2026-11-23; protocol 13): the stream is 5 bytes longer (7,222,141 to 7,222,146: the count of free regions in each of its 5 `InterestChanged`), its hash moved to 15_858_216_659_142_805_030 for that and for the
 /// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 139_190_248_021_624_789, and the old length came back.
+/// The command `/joint` (2026-11-23, `decouple`): the script sends `/nonsense`, whose answer lists every command, and the list has ", /joint ACTION" more: 15 bytes, 7,222,141 to 7,222,156, predicted from
+/// the cause before the new numbers were taken. The saved world's hash did not move. **Control:** with the command's registration taken out, the old hash, length and saved world come back. Windows only.
+/// `/joint` got an optional argument (2026-11-24, `immobilize [SECONDS]`): the list has " [SECONDS]" more, 10 bytes, 7,222,156 to 7,222,166, predicted from the cause; the saved world's hash did not move. **Control:** with the optional
+/// argument left out of the registration, the old hash and length came back (checked).
+/// Both together (the merge of 2026-11-24): the lengths add, 7,222,146 + 25 = 7,222,171; the hash is measured.
 const PINNED: (u64, usize, u64) = (
-    15_858_216_659_142_805_030,
-    7_222_146,
+    1_686_849_014_710_146_169,
+    7_222_171,
     15_594_210_036_057_493_535,
 );

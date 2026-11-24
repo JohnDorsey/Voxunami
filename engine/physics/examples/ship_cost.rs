@@ -1,12 +1,19 @@
 //! What it costs to simulate ships: stepping, and making the colliders of a brick again after an edit, for ships of 10,000 and 100,000 blocks,
 //! and for a hundred ships. Run with `cargo run --release -p physics --example ship_cost`; the numbers are for the machine they are run on.
+//! Every row is given five times, in one run, so that they are measured under the same load: for the world as it was before step 4c-5-A (no extra solver passes, no cut of a step at
+//! the first touch, Rapier's one settling pass), as it was at a605b4f (the extra passes and the cut, one settling pass), as it was at 5b36264 (the 16 settling passes made at every step),
+//! as it was at 0e5c9bb (the 16 settling passes made for half a second after a touch is found, Rapier's one in between, and the 15 extra passes in every piece),
+//! and as it is now (`BodySettings::default()`: the 15 extra passes as well only in a piece that is solved as a hit).
+//! `SETTLING=n` in the environment changes the settling passes of a hit in the last three rows (the default is 16), and `BETWEEN=n` the settling passes between hits in the last two (1).
+//! A ship is let fall half a voxel onto the ground, so its first ticks are a landing; the average is given over all 200 ticks (as the tables of `docs/history/loop-probe.md` before
+//! section 21 were) and over the last 100, which is a ship at rest.
 
 use std::collections::HashSet;
 use std::time::Instant;
 
 use physics::{
     BodyId, BodyKind, BodySettings, BodyState, BodyWorld, BrickHint, Collision, CollisionSource,
-    MassMoments,
+    MassMoments, SolverDials,
 };
 use voxel_space::{BrickCoordinate, Orientation, VoxelCoordinate, WorldPosition};
 
@@ -83,8 +90,8 @@ fn start(x: f64, y: f64, z: f64) -> BodyState {
     }
 }
 
-fn world_with_ground(radius: i128) -> BodyWorld {
-    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+fn world_with_ground(radius: i128, settings: BodySettings) -> BodyWorld {
+    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
     for x in -radius..=radius {
         for z in -radius..=radius {
             world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Ground);
@@ -97,8 +104,8 @@ fn milliseconds(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-fn one_ship(label: &str, x: i128, y: i128, z: i128) {
-    let mut world = world_with_ground(4);
+fn one_ship(label: &str, x: i128, y: i128, z: i128, settings: BodySettings) {
+    let mut world = world_with_ground(4, settings);
     let hull = cube(x, y, z);
     let blocks = hull.0.len();
     world
@@ -114,18 +121,23 @@ fn one_ship(label: &str, x: i128, y: i128, z: i128) {
     // A ship that is moved every tick is awake: a force too small to see keeps it so.
     let mut worst: f64 = 0.0;
     let mut total = 0.0;
-    for _ in 0..200 {
+    let mut at_rest = 0.0;
+    for tick in 0..200 {
         world.apply_force(BodyId(1), [1.0, 0.0, 0.0], None).unwrap();
         let started = Instant::now();
         world.step();
         let took = milliseconds(started);
         worst = worst.max(took);
         total += took;
+        if tick >= 100 {
+            at_rest += took;
+        }
     }
     println!(
-        "{label}: {blocks} blocks in {} bricks: colliders made in {build:.1} ms; awake, a tick of 3 steps takes {:.3} ms on average, {worst:.3} ms at worst",
+        "{label}: {blocks} blocks in {} bricks: colliders made in {build:.1} ms; awake, a tick of 3 steps takes {:.3} ms on average over 200 ticks, {:.3} ms over the last 100 (at rest), {worst:.3} ms at worst",
         bricks.len(),
-        total / 200.0
+        total / 200.0,
+        at_rest / 100.0
     );
     // One block changes in each tick, as a ship that is being built or shot at: the brick it is in is made again.
     let mut hull = hull;
@@ -154,8 +166,8 @@ fn one_ship(label: &str, x: i128, y: i128, z: i128) {
     );
 }
 
-fn many_ships() {
-    let mut world = world_with_ground(8);
+fn many_ships(settings: BodySettings) {
+    let mut world = world_with_ground(8, settings);
     let hull = cube(12, 12, 16);
     let mass = mass_of(&hull);
     let brick = BrickCoordinate::ORIGIN;
@@ -178,6 +190,7 @@ fn many_ships() {
     let mut worst: f64 = 0.0;
     let mut total = 0.0;
     let mut worst_settled: f64 = 0.0;
+    let mut at_rest = 0.0;
     for tick in 0..300 {
         let started = Instant::now();
         world.step();
@@ -186,18 +199,79 @@ fn many_ships() {
             worst = worst.max(took);
         } else {
             worst_settled = worst_settled.max(took);
+            at_rest += took;
         }
         total += took;
     }
     println!(
-        "100 ships of {} blocks dropped on the ground: {:.3} ms a tick on average over 300 ticks, {worst:.3} ms at worst while landing, {worst_settled:.3} ms at worst afterwards",
+        "100 ships of {} blocks dropped on the ground: {:.3} ms a tick on average over 300 ticks, {:.3} over the last 200 (at rest), {worst:.3} ms at worst while landing, {worst_settled:.3} ms at worst afterwards",
         hull.0.len(),
-        total / 300.0
+        total / 300.0,
+        at_rest / 200.0
     );
 }
 
 fn main() {
-    one_ship("a ship of about 10,000 blocks", 22, 22, 21);
-    one_ship("a ship of about 100,000 blocks", 47, 47, 46);
-    many_ships();
+    let from_environment = |name: &str, default: usize| -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(default)
+    };
+    // `SETTLING=n` and `BETWEEN=n` in the environment set the settling passes of a hit and between hits in the last row (and `SETTLING` in the one before it).
+    let now = BodySettings {
+        settling_passes: from_environment("SETTLING", BodySettings::default().settling_passes),
+        settling_passes_between_hits: from_environment(
+            "BETWEEN",
+            BodySettings::default().settling_passes_between_hits,
+        ),
+        ..BodySettings::default()
+    };
+    // The solver's own work only (no extra passes, no cut, Rapier's one settling pass) is what a world was before step 4c-5-A.
+    let before = BodySettings {
+        solver: SolverDials::default(),
+        cut_at_first_touch: false,
+        settling_passes: 1,
+        settling_passes_between_hits: 1,
+        ..now
+    };
+    for (name, settings) in [
+        (
+            "before step 4c-5-A (no passes, no cut, one settling pass)",
+            before,
+        ),
+        (
+            "a605b4f (the passes and the cut, one settling pass)",
+            BodySettings {
+                solver: now.solver,
+                solver_between_hits: now.solver,
+                cut_at_first_touch: true,
+                ..before
+            },
+        ),
+        (
+            "5b36264 (the settling passes made at every step)",
+            BodySettings {
+                settling_passes_between_hits: now.settling_passes,
+                solver_between_hits: now.solver,
+                ..now
+            },
+        ),
+        (
+            "0e5c9bb (the settling passes for half a second after a touch, the extra passes in every piece)",
+            BodySettings {
+                solver_between_hits: now.solver,
+                ..now
+            },
+        ),
+        (
+            "now (the settling passes and the extra passes for half a second after a touch)",
+            now,
+        ),
+    ] {
+        println!("== {name}");
+        one_ship("a ship of about 10,000 blocks", 22, 22, 21, settings);
+        one_ship("a ship of about 100,000 blocks", 47, 47, 46, settings);
+        many_ships(settings);
+    }
 }

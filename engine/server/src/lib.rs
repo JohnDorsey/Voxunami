@@ -37,9 +37,9 @@ pub use merge::{MergeError, MergePlan, TurnValues};
 pub use rail_settings::{RailSettings, RailSettingsError};
 pub use server::{LeaveReason, Server, ServerError, StepReport};
 pub use server_world::{
-    AccessError, Audience, ChannelChange, DetachError, FlightState, GridForce, GridTorque,
-    NotCoasting, PredictedRail, Prediction, PredictionEnd, RailGroup, RailWork, ServerWorld,
-    ShipStorageError, SplitError, SplitPart,
+    AccessError, Audience, ChannelChange, ContactRoom, DetachError, FlightState, GridForce,
+    GridTorque, NotCoasting, PredictedRail, Prediction, PredictionEnd, RailGroup, RailWork,
+    ServerWorld, ShipStorageError, SplitError, SplitPart,
 };
 pub use ship_settings::{LogoutPolicy, ShipSettings, ShipSettingsError};
 pub use structure_change::{StructureChange, VoxelsCarried};

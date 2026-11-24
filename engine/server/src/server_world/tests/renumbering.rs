@@ -41,14 +41,14 @@ fn a_renumbered_ship_is_coupled_to_its_partners_and_a_group_that_is_alone_is_alo
     }
     world.set_ships_coupled(ships[0], ships[1], true);
     world.set_ships_coupled(ships[1], ships[2], true);
-    assert!(world.group_is_alone(ships[0], 1.0));
+    assert!(world.group_is_alone_but_for_the_ground(ships[0]));
     let renumbered = world.renumber_ship(ships[1]).unwrap();
     assert_eq!(
         world.data().grids().group_of(ships[0]),
         [ships[0], ships[2], renumbered]
     );
     // (The lowest number is still the anchor, so the group is the group it was.)
-    assert!(world.group_is_alone(ships[0], 1.0));
+    assert!(world.group_is_alone_but_for_the_ground(ships[0]));
 }
 
 #[test]

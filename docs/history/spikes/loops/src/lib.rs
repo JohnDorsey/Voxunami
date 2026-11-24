@@ -4,7 +4,10 @@
 //! cars (the loop) with an optional chain of cars hanging off it (the tree), built in one of several ways. `totals` measures what must be
 //! conserved when nothing pushes the rig from outside: linear momentum, angular momentum and kinetic energy.
 
+pub mod contraption;
 pub mod harness;
+pub mod scenes;
+pub mod study;
 
 use std::time::{Duration, Instant};
 

@@ -40,6 +40,7 @@ mod sun_view_tests;
 mod test_support;
 pub mod view;
 pub mod view_rig;
+mod wheel;
 mod windowed;
 
 pub use data_packs::{BodySupport, GameTexture, PackErrors, RawFile, RawPack, RawTexture};

@@ -104,6 +104,7 @@ fn planet(world: &world_storage::WorldData, block: ChannelIndex, stone: u32) -> 
     let mut voxels = Grid::new(layout);
     voxels.set(block, VoxelCoordinate::new(95, 5, 5), stone);
     MovingGrid {
+        hull: None,
         level: LevelIndex::MAIN,
         pose: GridPose::new(
             WorldPosition::new(BrickCoordinate::new(0, 20, 0), [0.0; 3]),

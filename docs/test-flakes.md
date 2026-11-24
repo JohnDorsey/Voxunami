@@ -44,6 +44,7 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   `left: Ok(Some([2]))`, `right: Ok(Some([1]))` (`tcp.rs:260`): **the first connection the listener handed out held the second client's frame**, no error, no deadline (2.01 s, the other tests'). That settles the first of
   the three possibilities of occurrence 1. **Reruns: it failed again on the third of 5 whole-binary runs** (`cargo test --release -p transport --test tcp`, with nothing else of the session running), with the same `left` and `right`;
   3 runs alone passed. So it is about 1 in 5 to 1 in 10 here, not the 0 in 35 of occurrence 1.
+- **Occurrence 3: 2026-11-15**, the full gate of the step count that counts the speed of ground that comes at a body (`physics`; `transport` depends on none of it), `cargo test --workspace --exclude renderer --no-fail-fast`, dev profile, Windows: **the same message** as occurrence 2, `left: Ok(Some([2]))` (`tcp.rs:260`), 2.01 s. **Reruns: 3 alone and 2 as the whole binary (16 tests), 0 failures in 5.**
 - **What it depends on [read].** The order in which the listener hands out connections (`TcpServerListener::accept`) against the order in which the clients connected. `TcpConnection::connect` returns when the
   client side is connected, but whether the **server side** of the first connection is queued in the listener before the second's is up to the operating system's accept queue and to how the
   listener collects connections (if it has a thread of its own, up to its scheduling). The test asserts an order that nothing in its setup forces between the two accepts.
@@ -52,6 +53,39 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 - **What would settle it.** Print what `next` returned on failure (both frames and both errors) in the assertion messages, then run the binary in a loop under artificial load (several copies at once, or a busy
   CPU thread per core) until it fails, and look at the listener's `accept`. If the order is not guaranteed by the listener, the test should send a value that says which client it is and not
   depend on the order (`accept` twice, and match frames to clients by what they carry).
+
+### `engine/renderer/tests/gpu_rendering/shader_packs.rs`: `giving_a_pack_and_taking_it_away_leaves_the_pictures_as_they_were_and_the_default_text_draws_as_the_default_does`
+
+- **The test.** For each adapter, renders a block scene, gives a pack that paints green, renders, takes the pack away and asserts that the render is **byte for byte the one from before the pack** (line 194,
+  `the default is not what it was`).
+- **Occurrence 1: 2026-11-19**, the full gate (`cargo test --workspace --no-fail-fast`, dev profile, Windows) on the working tree of the ports on rails (`grid_bodies`, `server`, tests and docs; `renderer` depends on
+  none of what was changed, `cargo tree -p renderer` names only `world_storage`, which was unchanged in that tree). The renderer binary reported `155 passed; 1 failed ... finished in 528.27s`; the full gate before
+  the last tidying had passed it (3,707 tests, none failed). **The message was kept**, and the two images were compared: the adapter was **AMD Radeon(TM) Graphics (IntegratedGpu, Vulkan)**; of 64 x 64 pixels
+  **two differ**: pixel (39, 28) is `[3, 68, 3]` after the pack is taken away and `[23, 192, 23]` before it (a pixel of the ground's green that came out dark), and pixel (45, 30) differs by 1 in green (191 against
+  192). Every other pixel is the same.
+- **Reruns.** 5 times alone (`cargo test -p renderer --test gpu_rendering giving_a_pack_and_taking_it_away`) and once as the whole binary (`cargo test -p renderer --test gpu_rendering`, 156 tests, 462 s): **0 failures in 6**.
+- **What it depends on [read].** The GPU, and nothing of the engine's simulation: two renders of one scene by one renderer, the pack set and taken away between them; the integrated AMD adapter is the one the shadow
+  tests of 2026-11-07 failed on (see *Explained and fixed*).
+- **Beliefs about the cause.** **Believed, not tested**: the same kind of fault as the shadow tests' on this adapter, a pixel at an edge that the GPU does not render the same way twice (a depth or shadow-map edge,
+  or a pipeline that was made again when the pack was taken away). **Checked**: it is two pixels of 4,096, not a changed picture. **Not known**: whether the other adapters would have failed: the test loops over the adapters and stops at the first that fails,
+  so the ones after the AMD one in the loop were not run in that test in that run.
+- **What would settle it.** Run the test in a loop (alone and as the binary) with nothing else running and with the machine loaded, and save both images when it fails, to see whether the pixels are on an edge of the
+  ground's block and whether the dark pixel is a shadow value; compare with the shadow tests' explanation.
+
+### `engine/renderer/tests/gpu_rendering/shader_packs.rs`: `the_example_packs_are_taken_by_every_graphics_card_and_do_what_they_say`
+
+- **The test.** For each adapter and each example pack, renders a scene, sets the pack, renders, takes the pack away (`set_shader_pack(None)`) and asserts that the render is **byte for byte the one from before** (line 447,
+  `the default again`).
+- **Occurrence 1: 2026-11-19**, the full gate (`cargo test --workspace --no-fail-fast`, dev profile, Windows) on the working tree of the free joint pull (`grid_bodies`, its tests and the Cave test of joints on a rail;
+  `renderer` depends on none of it). The renderer binary reported `155 passed; 1 failed ... finished in 571.41 s`. **The message was kept and the two images compared**: the adapter was **AMD Radeon(TM) Graphics (IntegratedGpu, Dx12)**;
+  of 64 x 64 pixels **38 differ**, all in one staircase-shaped patch that starts at (26, 27): the green channel is 188 in one render and 23 in the other (the ground's colour against a dark value), red and blue the same. The other
+  4,058 pixels are the same.
+- **Reruns.** 5 times alone (`cargo test -p renderer --test gpu_rendering the_example_packs_are_taken`) and once as the whole binary (156 tests, 494.55 s): **0 failures in 6**.
+- **What it depends on [read].** The GPU, and nothing of the engine's simulation: two renders of one scene by one renderer with a pack set and taken away between them. It is the same file, the same integrated AMD adapter and the
+  same kind of fault (a patch of pixels at a shadow-like edge that comes out dark in one of two renders of one picture) as the entry above, from the same day; the two tests are two sites of one cause, if it is one.
+- **Beliefs about the cause.** **Believed, not tested**: as the entry above, a shadow edge that this adapter does not render the same way twice. **Checked**: a patch of 38 pixels of 4,096 with a straight edge, not a changed picture.
+- **What would settle it.** As the entry above (a loop of both tests, alone and as the binary, saving the images); note that two tests of this file have now failed on this adapter within one day, which a single
+  occurrence did not show.
 
 ### `games/voxunami_cave/tests/screen.rs`: `a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_closed`
 
@@ -71,8 +105,12 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   `adapter 1: 1 pixels differ, such as [(157, 68)]` (screen.rs:386), the same pixel as 3, 4 and 5. **Reruns: 5 alone and 5 as the whole binary, 0 failures in 10.** Nothing the branch changed is on this test's path, which is why it is recorded here as this entry's and not as the branch's.
 - **Occurrence 7: 2026-11-11**, the full gate of step 4c-4 (a frame of its own for a group that is alone: `server`, `grid_bodies`, new Cave tests; nothing that draws a form), `cargo test --workspace --no-fail-fast`
   on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel again**. **Reruns: 3 as the whole binary (5 tests), 0 failures in 3.**
-- **Occurrence 8: 2026-11-17**, the full gate of phase 3 of smooth lighting (`voxel_meshing`: a quad carries corner shade; `world_view` meshers; a packed quad is unchanged, so nothing that draws a form),
-  `cargo test --workspace --no-fail-fast` on **Windows**: `adapter 3: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel, on a different adapter** (all before were adapter 1 or unrecorded). **Reruns: 1 alone and
+- **Occurrence 8: 2026-11-15**, the full gate of the velocity Verlet step of the frame of a group that is alone (`grid_bodies/src/plugin.rs`, two Cave test files; nothing that draws a form),
+  `cargo test --workspace --exclude renderer --no-fail-fast` on **Windows**: `adapter 3: 1 pixels differ, such as [(105, 107)]` (`screen.rs:386`): **a different adapter and a different pixel
+  from occurrences 3 to 7**. **Reruns: 3 alone and 2 as the whole binary (5 tests), 0 failures in 5.** (It is one more instance of a single pixel differing, which is what the "pixel left out by a first
+  frame" belief below predicts and "always (157, 68) on adapter 1" does not; nothing here was looked into further.)
+- **Occurrence 9: 2026-11-17** (numbered on the merge of `main` and `worktree-physics` on 2026-11-21: both had called theirs 8), the full gate of phase 3 of smooth lighting (`voxel_meshing`: a quad carries corner shade; `world_view` meshers; a packed quad is unchanged, so nothing that draws a form),
+  `cargo test --workspace --no-fail-fast` on **Windows**: `adapter 3: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), **the same pixel as occurrences 3 to 7, on adapter 3 as occurrence 8 was** (occurrences 1 to 7 were adapter 1 or unrecorded). **Reruns: 1 alone and
   1 as the whole binary (5 tests), 0 failures in 2.** The same gate's first run (without `--no-fail-fast`) also had one unrelated GPU timeout in `renderer/tests/gpu_rendering.rs`
   (`the_pictures_of_coarse_nodes_are_the_same_to_the_pixel_...`, "the picture never settled", in a 1013 s binary with many tests over 60 s): it passed alone in 4 s and in the next whole run; not entered separately, noted here as load.
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
@@ -89,6 +127,9 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   **Windows**, run in the background. The binary reported `5 passed; 1 failed ... finished in 0.17s`. The message was not kept by the gate's filter.
 - **Occurrence 2: 2026-11-03**, the same working tree, in the reruns: **1 failure in 25** whole-binary runs (`cargo test --release -p world_view --test ship_terrain`; the 3 runs before them alone passed). **The message was kept:** `left` (what was shown) was
   **one brick, `(0, 0, 0)`**, against the 18 expected: `settle` returned when most of the bricks had not been meshed (or loaded) yet; it did not time out and did not show a wrong brick.
+- **Occurrence 3: 2026-11-16**, the full gate (`cargo test --workspace --exclude renderer --no-fail-fast`, dev profile) on **Windows**, run in the background, of the step in which the world keeps carrying a group and its frame goes with the planet (changes in `server`,
+  `grid_bodies` and the Cave tests; **`cargo tree -p world_view -e normal,dev` names none of `server`, `grid_bodies` or `physics`**, so the change cannot reach it). The identical gate before the last edits (a signature of one function in `grid_bodies`, two comments) had passed all of it: 3,375 tests, none failed. **The message was kept:** `left` was
+  **one brick, `(0, 0, 0)`** again, against the 18 expected, the same as occurrence 2. **Reruns: 8 of the test alone and 5 of the whole binary (`cargo test -p world_view --test ship_terrain`, dev profile): all passed.** One failure in the 2 gates of the day, the third in all. (3b33aa0, the same day, changed places that called a mesher settled one update early; I did not check whether it touched `settle`.)
 - **What it depends on [read].** `WorldMesher::settle` (`mesher.rs`) loops on `update` until `pending_jobs() == 0 && scheduled_last_update == 0`, sleeping 200 us between; the bricks of a planet come from the generator through
   `ShipTerrainSource`. A `settle` that ends because **nothing was pending at one look** ends the test's wait, whatever the workers or the source have not delivered yet.
 - **Beliefs about the cause.** **Believed, not tested**: an `update` that found no work scheduled and none pending while the first bricks were still on their way (a worker holding a finished job that `update` had not collected counts as pending, but the
@@ -126,6 +167,8 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 - **The test.** For each GPU adapter, a block scene and a roof scene held as the nodes of a grid told to be ground (as a planet's is), at levels 1, 4, 9 and 15, with the sun over the east: each probe that should be in shadow must be dark (`shadow_failures`), as the terrain of a level's are (read from the code, `gpu_rendering.rs:3022` to `3040`). The failure was the roof at level 15.
 - **Occurrence 1: 2026-11-18**, the full gate of the work on edits to far ships and big ships (commit after `a137ede`; nothing in `engine/renderer` was changed, `git diff` of it was empty), `cargo test --workspace --no-fail-fast`: `AMD Radeon(TM) Graphics (IntegratedGpu, Dx12) roof level 15: [16.0, 1.0, 12.0] at pixel (52, 41) is lit but is 20.783 of the light`. The binary took 841 s in that run (783 s on the rerun).
   **Reruns:** the test alone, 3 of 3 passed; the whole `gpu_rendering` binary passed (203 tests, 0 failed, 783.57 s).
+- **Occurrence 2: 2026-11-23**, the full gate of the ball of the dev ball joint (this change added `EntityShape` to `EntityBox`, so the renderer's source did change, but only in what a box entity is made of: this test draws no entity), `cargo test --workspace --no-fail-fast`: `AMD Radeon(TM) Graphics (IntegratedGpu, Dx12) roof level 9: [16.0, 1.0, 12.0] at pixel (52, 41) is lit but is 20.783 of the light` (the first time it was level 15; the pixel and the number are the same). The binary took 964 s in that run.
+  **Reruns:** the test alone, 3 of 3 passed; the whole `gpu_rendering` binary passed (204 tests, 0 failed, 793.66 s). Two occurrences in the gates since the test was written, the same probe and the same number each time; **still believed, not checked** (the entry's *What would settle it* is not done).
 - **Beliefs.** **Believed, not checked for this test:** the family of the two shadow tests under *Explained and fixed* (the same adapter, DX12, the same probe `[16, 1, 12]` at pixel (52, 41), the same 20.783 as the failure of 2026-11-14): the integrated AMD GPU leaves pixels out in the first frames of a fresh renderer, and these tests take the picture once. Another test of the family, not another cause, as far as the signature says.
 - **What would settle it.** The same as for the family: take the probe once two frames agree, and count failures in a loop of runs on that adapter.
 
@@ -176,3 +219,5 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 - `a_jump_on_a_deck_that_spins_steadily_is_pulled_up_by_the_centrifugal_pull` (`games/voxunami_cave/tests/aboard_frame_terms.rs`, 2026-11-11): a walker lands on a floor that goes at two metres a second under them and takes a
   variable number of ticks to be still on it (the landing tick depends on when the terrain worker has made the ground), so the jump began from a walker not yet at rest, which the replica assumed. Failed 3 of about 10 runs,
   as the whole binary; fixed by waiting until the walker has not moved for ten ticks (a condition, not a count); 13 whole-file runs clean since. `docs/history/build-log.md`, "Suit thrusters, part 2b".
+
+- `properties::a_character_put_into_the_top_of_hills_is_moved_out_of_them` (`engine/physics/tests/walking.rs:1586`, 2026-11-24, found by the whole-workspace run while merging `worktree-physics` into `main`): **not a flake, a real failing case of a property.** It failed once in a whole run, passed alone with persistence off (a new random input), and the saved case then failed again every time: `at = (18.69831752097148, 19.308805067005416), depth = 1.7` on a hills field of 1x(about 250) heights that is mostly 0 with a few 1s, 2s and one 3 (the case file's `heights`): the character put 1.7 deep is carried off to y = 13.63 instead of moved out of the hill. The character and walking code is the same on `main` and on the branch (`git diff main worktree-physics` has nothing in them), so the bug was on `main` before the merge. **Not fixed, not investigated.** The case file was not committed (it would make the gate red); to replay it, run the test with the `cc` line from the file the failure writes.

@@ -148,6 +148,7 @@ fn ship(
         angular_velocity: [0.0; 3],
         mass: 1.0e5,
         centre_of_mass: [0.0; 3],
+        hull: None,
         held: true,
         frozen: false,
         on_pilot_logout: PilotLogout::Stay,

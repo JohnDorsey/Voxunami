@@ -14,8 +14,8 @@ use voxel_space::{
 };
 use world_storage::rail::{Centre, Rail, RailMemo, RailTime};
 use world_storage::{
-    GridTerrain, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError,
-    WorldData,
+    GridTerrain, HullBox, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError,
+    ShipParkError, WorldData,
 };
 
 use crate::GridView;
@@ -148,12 +148,24 @@ const GREATEST_INFLUENCE: f64 = 120_000.0;
 const INFLUENCE_LEAVING: f64 = 1.25;
 
 /// A planet on a rail, for the choice of which one carries a place.
+#[derive(Debug)]
 struct Carrier {
     id: GridId,
     level: LevelIndex,
     position: WorldPosition,
+    /// How fast it went before it moved.
+    velocity: [f64; 3],
     /// How far it carries, in voxels.
     radius: f64,
+}
+
+/// Who a planet carries in a tick, by the places the planets had before they moved: the carriers, and the ships each carries (the entities are asked when the planet is put:
+/// one that was put in the level in this tick, as one whose ship was taken from under it, goes with the planet like the others). A planet that waits for the bodies'
+/// step carries them after it (see [`ServerWorld::place_the_rails_that_waited`]).
+#[derive(Debug)]
+struct Carriage {
+    carriers: Vec<Carrier>,
+    ships: Vec<(GridId, GridId)>,
 }
 
 /// The planet among `carriers` that carries a place of a level: the one whose sphere the place is in, and if it is in several, the smallest (a moon's before its
@@ -213,6 +225,10 @@ pub struct ServerWorld {
     /// The forces asked of ships and not yet taken.
     grid_forces: Vec<GridForce>,
     grid_torques: Vec<GridTorque>,
+    /// The forces asked of ships that ride a rail alone, at their centres of mass (what is off the centre is a torque, in `grid_torques`): not for the bodies, for the rail, which
+    /// is kicked by them in `update_coasting` (step 4c-5-4b of `docs/decisions/joints-and-cars.md`). **Or of a ship of a group that rides a rail**: the key is then the group's anchor, which
+    /// holds the rail, and the force is also in `grid_forces` (`true`: the bodies have been given it, whatever the rail does with it).
+    rail_forces: Vec<(GridId, [f64; 3], bool)>,
     gravity: GravitySettings,
     /// The pull of the levels whose own is not `gravity.base`.
     level_gravity: BTreeMap<LevelIndex, [f64; 3]>,
@@ -236,6 +252,16 @@ pub struct ServerWorld {
     carried_entities: BTreeMap<EntityId, Displacement>,
     /// The tick of the clock at which each free ship that could coast began to be left alone (see [`coasting`]).
     quiet_since: BTreeMap<GridId, u64>,
+    /// The ships that are alone, ride a rail, and have another ship in the way of them as of the last `update_coasting` (see [`ServerWorld::has_a_stranger_near_on_its_rail`]).
+    railed_with_a_stranger_near: BTreeSet<GridId>,
+    /// The ships whose rails the start of this tick placed, between that and the end of the bodies' step (see [`ServerWorld::apply_rails_before_the_step`]); `None` when every
+    /// ship on a rail is placed. The others (a ship alone with no frame, and a ship that was given a rail or a new number since) are where the last tick left them, as the free
+    /// ships are, until the bodies have stepped, and are placed after the step.
+    rails_placed_at_the_start: Option<BTreeSet<GridId>>,
+    /// What the planets that were not placed at the start carry, to be moved by their displacements when they are (`Some` only while `rails_placed_at_the_start` is).
+    pending_carriage: Option<Carriage>,
+    /// The ticks of a second of the clock that the last placing of the rails was made with, for the placing after the step.
+    rail_ticks_per_second: u32,
     /// What the orbits of the rails said at the time of the last putting of ships on them, so that the second putting of a tick works out nothing twice.
     rail_memo: RailMemo,
     /// How many orbits were made from a state (see [`ServerWorld::rail_work`]).
@@ -292,6 +318,7 @@ impl ServerWorld {
             changes: Vec::new(),
             grid_forces: Vec::new(),
             grid_torques: Vec::new(),
+            rail_forces: Vec::new(),
             gravity: GravitySettings::default(),
             level_gravity: BTreeMap::new(),
             ships: None,
@@ -304,6 +331,10 @@ impl ServerWorld {
             carried_ships: BTreeMap::new(),
             carried_entities: BTreeMap::new(),
             quiet_since: BTreeMap::new(),
+            railed_with_a_stranger_near: BTreeSet::new(),
+            rails_placed_at_the_start: None,
+            pending_carriage: None,
+            rail_ticks_per_second: 20,
             rail_memo: RailMemo::default(),
             orbit_fits: Cell::new(0),
             ship_pairs_asked: Cell::new(0),
@@ -364,6 +395,25 @@ impl ServerWorld {
                 }
             }
         }
+    }
+
+    /// The coupled pairs that are rigid (`/joint immobilize`), the lower id first: a part of [`ServerWorld::coupled_ships`], saved with it ([`world_storage::GridStore::immobilized`]),
+    /// so that a mechanism that was made stiff is stiff when it is brought back from files or loaded.
+    pub fn immobilized_ships(&self) -> &BTreeSet<(GridId, GridId)> {
+        self.data.grids().immobilized()
+    }
+
+    /// Records that a coupled pair is rigid, or is not (in either order). Nothing is recorded of a pair that is not coupled, and a pair that is let go of is not stiff when it
+    /// is coupled again. It changes no one's group, so no ship loses its rail or waits. Whether it changed.
+    pub fn set_ships_immobilized(
+        &mut self,
+        first: GridId,
+        second: GridId,
+        immobilized: bool,
+    ) -> bool {
+        self.data
+            .grids_mut()
+            .set_immobilized(first, second, immobilized)
     }
 
     /// How the paths of ships on rails are kept.
@@ -1179,6 +1229,14 @@ impl ServerWorld {
 
     /// Pushes a ship with a force (kilograms times voxels per second per second) for the next step of the bodies only: as if applied at
     /// a place on the ship in its own coordinates, or at its centre of mass if none is given. A force off the centre turns it too.
+    ///
+    /// **A ship that rides a rail alone is not taken off it** (step 4c-5-4b of `docs/decisions/joints-and-cars.md`): the force is split. What it does to the centre of mass is the rail's
+    /// (the rail is made again at the end of the tick with the speed changed by the force over the mass and the tick, see `ServerWorld::update_coasting`), and what it does by its
+    /// lever, the torque of the force about the centre of mass, is the bodies', as a torque asked of the ship is. **Nor is a ship of a group that rides a rail** (see
+    /// [`ServerWorld::rides_a_rail_in_a_group`]): the rail is the centre of mass of all the ships, so the force on the group is the rail's, over the mass of all of them, and the bodies have
+    /// the force as well, because the turn of the group about its centre and the swing of its joints are theirs (they hold the centre of mass at the rail's point, so what the force does to
+    /// it in their world is not kept). A ship that is on no rail, a group of which a ship weighs nothing, and anything else is disturbed as it was: it comes off its rail where it is, and
+    /// the bodies have the force.
     pub fn apply_grid_force(
         &mut self,
         grid: GridId,
@@ -1189,21 +1247,43 @@ impl ServerWorld {
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
+        if self.rides_a_rail_alone(grid) {
+            if let Some(torque) = at.and_then(|at| self.torque_of_a_force_at(grid, force, at)) {
+                self.grid_torques.push(GridTorque { grid, torque });
+            }
+            self.rail_forces.push((grid, force, false));
+            return Ok(());
+        }
+        if let Some(anchor) = self.rides_a_rail_in_a_group(grid) {
+            self.rail_forces.push((anchor, force, true));
+            self.grid_forces.push(GridForce { grid, force, at });
+            return Ok(());
+        }
         self.disturb(grid);
         self.grid_forces.push(GridForce { grid, force, at });
         Ok(())
     }
 
     /// Turns a ship with a torque (kilograms times voxels squared per second per second, an axis in the world's directions) about its centre of
-    /// mass, for the next step of the bodies only. A torque does not push the ship's centre.
+    /// mass, for the next step of the bodies only. A torque does not push the ship's centre, so **a ship that rides a rail alone keeps it** (the bodies give it a frame of its own
+    /// while the torque waits, see [`ServerWorld::has_a_torque_waiting`]), **and so does a ship of a group that rides a rail** (its bodies are in a frame of their own already, and
+    /// turn the ship and what is coupled to it); any other ship is disturbed as it was.
     pub fn apply_grid_torque(&mut self, grid: GridId, torque: [f64; 3]) -> Result<(), AccessError> {
         self.data
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
-        self.disturb(grid);
+        if !self.rides_a_rail_alone(grid) && self.rides_a_rail_in_a_group(grid).is_none() {
+            self.disturb(grid);
+        }
         self.grid_torques.push(GridTorque { grid, torque });
         Ok(())
+    }
+
+    /// Whether a torque has been asked of a ship and the bodies have not taken it yet. A ship alone on a rail has a body of its own only while it turns or has a stranger near,
+    /// so the bodies give it one for this too: the torque would have nothing to turn.
+    pub fn has_a_torque_waiting(&self, grid: GridId) -> bool {
+        self.grid_torques.iter().any(|waiting| waiting.grid == grid)
     }
 
     /// The torques asked of ships since the last call, in the order asked. The bodies take them when they move the ships.
@@ -1355,6 +1435,21 @@ impl ServerWorld {
         Ok(())
     }
 
+    /// Says what box the blocks of a ship fill (the bodies do this as they weigh it, from the voxels: `None` where it has none).
+    pub fn set_grid_hull(
+        &mut self,
+        grid: GridId,
+        hull: Option<HullBox>,
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.hull = hull;
+        Ok(())
+    }
+
     /// Whether the rules of a grid run and its bodies move: the terrain of a level always, and a ship unless it is frozen. A grid that is not
     /// there is not.
     pub fn grid_is_simulated(&self, grid: GridId) -> bool {
@@ -1467,65 +1562,83 @@ impl ServerWorld {
     /// What is in a level near a planet on a rail goes with the planet: a player or an item (in the level's own coordinates) and a ship, whether it is free or
     /// held, are moved by the planet's displacement, so that each stays where it is from the planet, and a player there falls to it and stands on it however
     /// fast the planet goes. (A ship's body is the plugin's: it simulates the ships a planet carries in a frame that goes with the planet, and puts them where
-    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) **Speeds are not
-    /// the same for the two kinds**: a ship's `linear_velocity` is left as it is and is the world's (the plugin writes the planet's speed and the ship's own against it),
+    /// they are against it.) **When the planet is put is in the second part of a tick since 4c-5-4d (2026-11-22)**: the start of the tick leaves the planets, what they carry and the
+    /// ships on rails where the last tick left them (as the free ships are), the bodies step, and [`ServerWorld::place_the_rails_that_waited`] puts them and carries what they carry
+    /// by their displacements; the players' bodies (which run after the bodies of the ships) see the planet and what it carries as they did. **Speeds are not
+    /// the same for the two kinds**: a ship's `linear_velocity` is the world's and **goes with the planet's change of speed in the tick as well as its displacement** (the plugin
+    /// writes the planet's speed of the start of the tick and the ship's own against it, and the planet's speed of the end of it is put with the planet),
     /// while the speed of whatever keeps a state for an entity (the body of a player) is against the planet that carries it, so that it is carried by the displacement and
     /// not twice (see [`ServerWorld::carrier_of_entity`]). See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
-        let time = RailTime::of_tick(self.data.clock(), ticks_per_second);
-        self.carried_entities.clear();
-        if !self
-            .data
-            .grids()
-            .iter()
-            .any(|(_, ship)| ship.rail.is_some())
-        {
-            self.carried_by.clear();
-            self.carried_ships.clear();
-            self.rail_memo.keep_only(|_| false);
-            return;
-        }
-        // (A ship that has left the sphere of influence of its planet is on the orbit round what the planet goes round before anything puts it, or looks at it.)
-        self.hand_over_what_has_left_its_sphere(time);
-        // Who is carried by which planet, by where the planets are before they move.
-        let carriers = self.carriers();
-        let mut carried_entities: Vec<(EntityId, GridId)> = Vec::new();
-        let mut now_carried: BTreeMap<EntityId, GridId> = BTreeMap::new();
-        for entity in self.data.entities().iter() {
-            let Some(level) = entity.pose.grid.root_level() else {
+        self.rails_placed_at_the_start = None;
+        self.place_rails(ticks_per_second);
+    }
+
+    /// The placing of the rails at the start of a tick: **every ship on a rail that is placed by it, but the ships that wait for the bodies' step** (a ship alone on a rail that has no
+    /// frame to turn or to be hit in: see `waits_for_the_step`), which stay at the place of the end of the last tick, as the free ships are, so that what runs before the step sees every
+    /// ship at one instant. They are placed after it ([`ServerWorld::place_the_rails_that_waited`], by the bodies, or at the end of the tick by `apply_rails`).
+    pub(crate) fn apply_rails_before_the_step(&mut self, ticks_per_second: u32) {
+        self.rail_ticks_per_second = ticks_per_second;
+        self.rails_placed_at_the_start = Some(
+            self.data
+                .grids()
+                .iter()
+                .filter(|(id, ship)| ship.rail.is_some() && !self.waits_for_the_step(*id))
+                .map(|(id, _)| id)
+                .collect(),
+        );
+        self.place_rails(ticks_per_second);
+    }
+
+    /// Whether a ship's rail is left to be placed after the bodies' step: **every rail is**, a planet's as well, **alone or as the anchor of a group** (a ship of a group that is not
+    /// its anchor has no rail of its own, and a group that is not whole is not asked: those are placed at the start, as before). What the planet carries is carried then too.
+    fn waits_for_the_step(&self, id: GridId) -> bool {
+        let grids = self.data.grids();
+        grids.get(id).is_some_and(|ship| ship.rail.is_some())
+            && (!grids.has_partners(id)
+                || self
+                    .rail_group_of(id)
+                    .is_some_and(|group| group.anchor == id))
+    }
+
+    /// Gives a group (a ship alone is one) what the bodies did to it as a whole in this tick besides going along its rail, **after the rail has put it** (see
+    /// [`ServerWorld::place_the_rails_that_waited`]): every ship of it is moved by `moved` voxels and goes `sped` faster. It is the kick of a hit on a ship or a group that rides a
+    /// rail, which the rail's own place and speed do not have.
+    pub fn give_a_group_what_a_hit_did(&mut self, anchor: GridId, moved: [f64; 3], sped: [f64; 3]) {
+        for member in self.data.grids().group_of(anchor) {
+            let Some(ship) = self.data.grids_mut().get_mut(member) else {
                 continue;
             };
-            if let Some(planet) = pick_carrier(
-                &carriers,
-                level,
-                entity.pose.position,
-                self.carried_by.get(&entity.id).copied(),
-            ) {
-                carried_entities.push((entity.id, planet));
-                now_carried.insert(entity.id, planet);
+            if let Some(position) = ship.pose.position.translated_by_voxels(moved) {
+                ship.pose.position = position;
             }
+            ship.linear_velocity = [0, 1, 2].map(|axis| ship.linear_velocity[axis] + sped[axis]);
         }
-        self.carried_by = now_carried;
-        let mut carried_ships: Vec<(GridId, GridId)> = Vec::new();
-        for (id, ship) in self.data.grids().iter() {
-            if ship.terrain.is_some() || ship.rail.is_some() || self.rail_group_of(id).is_some() {
-                continue;
-            }
-            if let Some(planet) = pick_carrier(
-                &carriers,
-                ship.level,
-                ship.pose.position,
-                self.carried_ships.get(&id).copied(),
-            ) {
-                carried_ships.push((id, planet));
-            }
-        }
-        self.carried_ships = carried_ships.iter().copied().collect();
+    }
+
+    /// Puts the ships on rails that the start of the tick left for the step where their rails say, now that the bodies have stepped: after it every ship is at the place of the end of
+    /// the tick. A ship that lost its rail in between (it was disturbed) is where the bodies put it.
+    pub fn place_the_rails_that_waited(&mut self) {
+        let Some(placed) = self.rails_placed_at_the_start.take() else {
+            return;
+        };
+        let time = RailTime::of_tick(self.data.clock(), self.rail_ticks_per_second);
         let _ = self
             .data
-            .put_ships_on_their_rails_remembering(time, &mut self.rail_memo);
+            .put_ships_on_their_rails_selected(time, &mut self.rail_memo, |id| {
+                !placed.contains(&id)
+            });
+        // (And what the planets that were put now carry goes by their displacements, which are from where they were at the start of the tick.)
+        if let Some(carriage) = self.pending_carriage.take() {
+            self.carry(&carriage, |planet| !placed.contains(&planet));
+        }
+    }
+
+    /// Moves what the planets for which `placed` says yes carry by their displacements since `carriage` was made (the places they had before they moved), as entities and as ships.
+    fn carry(&mut self, carriage: &Carriage, placed: impl Fn(GridId) -> bool) {
         let displacement_of = |world: &Self, planet: GridId| {
-            let from = carriers
+            let from = carriage
+                .carriers
                 .iter()
                 .find(|carrier| carrier.id == planet)?
                 .position;
@@ -1533,7 +1646,23 @@ impl ServerWorld {
             Some(from.displacement_to(to))
                 .filter(|displacement| *displacement != Displacement::NONE)
         };
-        for (entity, planet) in carried_entities {
+        let entities: Vec<(EntityId, GridId)> = self
+            .data
+            .entities()
+            .iter()
+            .filter_map(|entity| {
+                let level = entity.pose.grid.root_level()?;
+                let planet = pick_carrier(
+                    &carriage.carriers,
+                    level,
+                    entity.pose.position,
+                    self.carried_by.get(&entity.id).copied(),
+                )?;
+                Some((entity.id, planet))
+            })
+            .filter(|(_, planet)| placed(*planet))
+            .collect();
+        for (entity, planet) in entities {
             let Some(displacement) = displacement_of(self, planet) else {
                 continue;
             };
@@ -1547,17 +1676,112 @@ impl ServerWorld {
                 }
             }
         }
-        for (ship, planet) in carried_ships {
+        for (ship, planet) in carriage.ships.iter().copied().filter(|(_, p)| placed(*p)) {
             let Some(displacement) = displacement_of(self, planet) else {
                 continue;
             };
+            // (Its speed is the world's: what it goes at against the planet and the planet's, which has changed with the planet's place in the tick.)
+            let change = carriage
+                .carriers
+                .iter()
+                .find(|carrier| carrier.id == planet)
+                .zip(self.data.grids().get(planet))
+                .map(|(carrier, now)| {
+                    [0, 1, 2].map(|axis| now.linear_velocity[axis] - carrier.velocity[axis])
+                })
+                .unwrap_or([0.0; 3]);
             let Some(grid) = self.data.grids_mut().get_mut(ship) else {
                 continue;
             };
             if let Some(position) = grid.pose.position.displaced(displacement) {
                 grid.pose.position = position;
             }
+            grid.linear_velocity = [0, 1, 2].map(|axis| grid.linear_velocity[axis] + change[axis]);
         }
+    }
+
+    fn place_rails(&mut self, ticks_per_second: u32) {
+        let time = RailTime::of_tick(self.data.clock(), ticks_per_second);
+        self.carried_entities.clear();
+        if !self
+            .data
+            .grids()
+            .iter()
+            .any(|(_, ship)| ship.rail.is_some())
+        {
+            self.carried_by.clear();
+            self.carried_ships.clear();
+            self.pending_carriage = None;
+            self.rail_memo.keep_only(|_| false);
+            return;
+        }
+        // (A ship that has left the sphere of influence of its planet is on the orbit round what the planet goes round before anything puts it, or looks at it.)
+        self.hand_over_what_has_left_its_sphere(time);
+        // Who is carried by which planet, by where the planets are before they move.
+        let carriers = self.carriers();
+        let mut now_carried: BTreeMap<EntityId, GridId> = BTreeMap::new();
+        for entity in self.data.entities().iter() {
+            let Some(level) = entity.pose.grid.root_level() else {
+                continue;
+            };
+            if let Some(planet) = pick_carrier(
+                &carriers,
+                level,
+                entity.pose.position,
+                self.carried_by.get(&entity.id).copied(),
+            ) {
+                now_carried.insert(entity.id, planet);
+            }
+        }
+        self.carried_by = now_carried;
+        let mut carried_ships: Vec<(GridId, GridId)> = Vec::new();
+        for (id, ship) in self.data.grids().iter() {
+            if ship.terrain.is_some() || ship.rail.is_some() || self.rail_group_of(id).is_some() {
+                continue;
+            }
+            // A group of ships coupled by their joint ends goes **whole, by its anchor** (the ship of it with the lowest number): ship by ship a planet would carry the ships of a
+            // group that are within its reach and leave the others, and tear the group in two by its displacement of a tick. (A ship that is no group is its own anchor.)
+            let speaker = if self.data.grids().has_partners(id) {
+                self.data
+                    .grids()
+                    .group_of(id)
+                    .first()
+                    .copied()
+                    .unwrap_or(id)
+            } else {
+                id
+            };
+            let Some(spoken_for) = self.data.grids().get(speaker) else {
+                continue;
+            };
+            if let Some(planet) = pick_carrier(
+                &carriers,
+                spoken_for.level,
+                spoken_for.pose.position,
+                self.carried_ships.get(&speaker).copied(),
+            ) {
+                carried_ships.push((id, planet));
+            }
+        }
+        self.carried_ships = carried_ships.iter().copied().collect();
+        let carriage = Carriage {
+            carriers,
+            ships: carried_ships,
+        };
+        let placed = self.rails_placed_at_the_start.take();
+        let _ = self
+            .data
+            .put_ships_on_their_rails_selected(time, &mut self.rail_memo, |id| {
+                placed.as_ref().is_none_or(|placed| placed.contains(&id))
+            });
+        // (What the planets put now carry goes with them now; what the others carry waits for them: `place_the_rails_that_waited`.)
+        self.carry(&carriage, |planet| {
+            placed
+                .as_ref()
+                .is_none_or(|placed| placed.contains(&planet))
+        });
+        self.pending_carriage = placed.is_some().then_some(carriage);
+        self.rails_placed_at_the_start = placed;
     }
 
     /// The planet that carried a ship in the last tick, if one did: the planet on a rail whose sphere of influence the ship was in (see
@@ -1593,6 +1817,7 @@ impl ServerWorld {
                     id,
                     level: ship.level,
                     position: ship.pose.position,
+                    velocity: ship.linear_velocity,
                     radius: self.influence_radius(id)?,
                 })
             })
@@ -1701,6 +1926,7 @@ impl ServerWorld {
                     .local_to_world(centre)
                     .map_or(old.linear_velocity, |place| old.velocity_at(place));
                 MovingGrid {
+                    hull: None,
                     level: old.level,
                     pose: old.pose,
                     linear_velocity,
@@ -1834,6 +2060,7 @@ impl ServerWorld {
                 .layout(),
         );
         Ok(self.data.grids_mut().create(MovingGrid {
+            hull: None,
             level,
             pose,
             linear_velocity: [0.0; 3],
@@ -1968,6 +2195,9 @@ impl ServerWorld {
         Ok(brick)
     }
 }
+
+pub(super) mod contact_room;
+pub use contact_room::ContactRoom;
 
 mod coasting;
 pub use coasting::{FlightState, NotCoasting, PredictedRail, Prediction, PredictionEnd, RailGroup};

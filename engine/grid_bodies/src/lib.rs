@@ -8,12 +8,15 @@
 pub mod collision;
 pub mod connectivity;
 pub mod docking;
+pub mod joint_desk;
 pub mod joints;
 mod plugin;
 
 pub use docking::{BlockFace, DockedPair, Docking, DockingSettings, UndockError};
+pub use joint_desk::JointDesk;
 pub use joints::JointSettings;
 pub use plugin::{
     BodiesReport, FRAME_RADIUS_BRICKS, GridBodiesConfig, GridBodiesPlugin,
     SETTLING_TERRAIN_BRICKS_PER_TICK, SHIP_BRICKS_PER_TICK,
 };
+pub use plugin::{JointBallRigid, joint_ball_kind};
