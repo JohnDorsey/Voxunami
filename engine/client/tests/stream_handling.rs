@@ -6,8 +6,8 @@ use std::sync::Arc;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use identity::Identity;
 use protocol::{
-    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, ServerMessage, Tick,
-    VoxelChange, Welcome,
+    ClientId, ClientMessage, GeneratorAssignment, Nickname, PROTOCOL_VERSION, PlayerKey,
+    ServerMessage, Speaker, Tick, VoxelChange, Welcome,
 };
 use region_octree::BrickCube;
 use transport::Connection;
@@ -33,6 +33,7 @@ fn welcome(game: &Game, tick: u64) -> ServerMessage {
         protocol_version: PROTOCOL_VERSION,
         game: game_id(),
         client: ClientId::new(7),
+        nickname: Nickname::parse("Alex_Smith").unwrap(),
         ticks_per_second: 20,
         tick: Tick::new(tick),
         world_clock: 1_000 + tick,
@@ -63,7 +64,7 @@ impl Rig {
         // The server side always runs the full game; the client may have fewer plugins.
         let server_game = Game::new(&ALL_PLUGINS);
         let (client_end, mut server) = loopback_pair();
-        let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+        let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
         let hello = ClientMessage::decode(&server.receive().unwrap().unwrap()).unwrap();
         assert_eq!(
             hello,
@@ -71,6 +72,7 @@ impl Rig {
                 protocol_version: PROTOCOL_VERSION,
                 game: game_id(),
                 player_key: identity().player_key(),
+                nickname: "Alex Smith".to_owned(),
             }
         );
         server.send(welcome(&server_game, 4).encode()).unwrap();
@@ -148,7 +150,7 @@ fn the_client_knows_the_clock_of_the_world_from_the_welcome_and_counts_it_a_tick
 fn connecting_sends_hello_waits_for_the_welcome_and_loads_the_world() {
     let game = Game::new(&ALL_PLUGINS);
     let (client_end, mut server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
     // Nothing from the server yet: still waiting.
     let handshake = match handshake.poll().unwrap() {
         HandshakeProgress::Waiting(handshake) => handshake,
@@ -169,6 +171,11 @@ fn connecting_sends_hello_waits_for_the_welcome_and_loads_the_world() {
     assert_eq!(world.watched(), None);
     assert_eq!(world.server_info().game, game_id());
     assert_eq!(world.server_info().client, ClientId::new(7));
+    assert_eq!(
+        world.server_info().nickname.as_str(),
+        "Alex_Smith",
+        "what the server made of the name asked for, not what was asked for"
+    );
     assert_eq!(world.server_info().ticks_per_second, 20);
     assert!(world.verifies_edit_digests());
     assert_eq!(world.world().world_seed, 0xFEED_FACE);
@@ -179,7 +186,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
     let game = Game::new(&ALL_PLUGINS);
     let outcome = |frame: Vec<u8>| {
         let (client_end, mut server) = loopback_pair();
-        let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+        let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
         server.send(frame).unwrap();
         handshake.poll().expect_err("the handshake fails")
     };
@@ -199,7 +206,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
     };
     stale.protocol_version = PROTOCOL_VERSION + 1;
     let (client_end, mut server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
     server.send(ServerMessage::Welcome(stale).encode()).unwrap();
     let HandshakeProgress::Welcomed(welcomed) = handshake.poll().unwrap() else {
         panic!("welcomed")
@@ -218,7 +225,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
     };
     broken.world_description = vec![1, 2, 3];
     let (client_end, mut server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
     server
         .send(ServerMessage::Welcome(broken).encode())
         .unwrap();
@@ -229,7 +236,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
 
     // The server vanishing mid-handshake.
     let (client_end, server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
     drop(server);
     assert!(matches!(
         handshake.poll().err().unwrap(),
@@ -950,7 +957,7 @@ impl Rig {
             )
             .unwrap();
         let (client_end, mut server) = loopback_pair();
-        let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
+        let handshake = Handshake::start(client_end, game_id(), &identity(), "Alex Smith").unwrap();
         server.receive().unwrap().unwrap();
         server
             .send(
@@ -958,6 +965,7 @@ impl Rig {
                     protocol_version: PROTOCOL_VERSION,
                     game: game_id(),
                     client: ClientId::new(7),
+                    nickname: Nickname::parse("Alex_Smith").unwrap(),
                     ticks_per_second: 20,
                     tick: Tick::new(4),
                     world_clock: 1_004,
@@ -1213,6 +1221,51 @@ fn watching_names_the_level_and_commands_go_out_as_text_and_replies_come_in_as_e
                 text: "have fun".to_owned()
             }
         ]
+    );
+}
+
+#[test]
+fn lines_of_chat_arrive_as_events_in_order_from_players_and_from_the_server() {
+    let mut rig = Rig::new();
+    let speaker = Speaker {
+        key: PlayerKey::new([4; 32]),
+        nickname: Nickname::parse("Bo").unwrap(),
+    };
+    rig.send(ServerMessage::Chat {
+        speaker: Some(speaker.clone()),
+        text: "hello {>1+1}".to_owned(),
+    });
+    rig.send(ServerMessage::Chat {
+        speaker: None,
+        text: "you are chatting too fast".to_owned(),
+    });
+    rig.tick(5);
+    let update = rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        update.events,
+        [
+            ClientEvent::Chat {
+                speaker: Some(speaker),
+                text: "hello {>1+1}".to_owned()
+            },
+            ClientEvent::Chat {
+                speaker: None,
+                text: "you are chatting too fast".to_owned()
+            }
+        ]
+    );
+}
+
+#[test]
+fn a_line_of_chat_the_player_types_goes_to_the_server_as_chat_and_not_as_a_command() {
+    let mut rig = Rig::new();
+    rig.client.send_chat("good morning").unwrap();
+    let sent = ClientMessage::decode(&rig.server.receive().unwrap().unwrap()).unwrap();
+    assert_eq!(
+        sent,
+        ClientMessage::Chat {
+            text: "good morning".to_owned()
+        }
     );
 }
 

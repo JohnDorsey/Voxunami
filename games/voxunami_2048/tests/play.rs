@@ -173,6 +173,7 @@ impl Rig {
         Session::<_, Game2048>::connect(
             connection,
             &identity,
+            "player",
             Mode::Playing,
             VIEW_RADIUS,
             start,
@@ -669,6 +670,7 @@ fn a_recording_of_a_game_replays_the_blocks_and_the_score() {
     let mut replay = Session::<_, Game2048>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

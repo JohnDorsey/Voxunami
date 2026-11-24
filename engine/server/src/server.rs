@@ -5,8 +5,8 @@ use content_registry::IdentifierRegistry;
 use identity::ChallengeSource;
 use namespaced_id::NamespacedId;
 use protocol::{
-    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, PlayerKey, ServerMessage, Tick,
-    Welcome,
+    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, PlayerKey, ServerMessage,
+    Speaker, Tick, Welcome,
 };
 use region_octree::BrickCube;
 use transport::{Connection, ConnectionClosed, Listener};
@@ -18,8 +18,9 @@ use crate::config::ServerConfig;
 use crate::game_logic::GameLogic;
 use crate::grid_replication::{self, EditedBrick, KnownGrids};
 use crate::interest::{Watch, newly_covered};
+use crate::nicknames::unique_nickname;
 use crate::replication::{KnownEntities, ViewCache, entity_messages};
-use crate::server_world::{Audience, OutgoingGameMessage, ServerWorld};
+use crate::server_world::{Audience, ChatLine, OutgoingGameMessage, ServerWorld};
 use crate::ship_settings::ShipSettings;
 use crate::structure_change::StructureChange;
 
@@ -63,8 +64,12 @@ enum Phase {
         ticks_waited: u32,
         key: PlayerKey,
         challenge: [u8; 32],
+        /// What the player asked to be called, before the server has made a nickname of it.
+        asked_nickname: String,
     },
     Joined {
+        /// Chat is limited by when a player may next speak (the theoretical arrival time of a leaky bucket), in ticks.
+        chat_arrival: u64,
         /// What the client has been told it watches.
         watched: Option<Watch>,
         /// The latest it asked for, not yet answered. (Boxed: it is mostly none, and a region is two coordinates of 128 bits each, which would make this variant
@@ -287,6 +292,7 @@ impl Server {
         self.world.edits.clear();
         self.world.outgoing.clear();
         self.world.replies.clear();
+        self.world.chat.clear();
         report
     }
 
@@ -369,8 +375,9 @@ impl Server {
                     protocol_version,
                     game,
                     player_key,
+                    nickname,
                 },
-            ) => self.challenge(id, protocol_version, &game, player_key),
+            ) => self.challenge(id, protocol_version, &game, player_key, nickname),
             (Stage::Hello, _) => {
                 Some(self.refuse(id, "the first message must be hello".to_owned()))
             }
@@ -450,6 +457,10 @@ impl Server {
                 self.logic.command_received(id, &text, &mut self.world);
                 None
             }
+            (Stage::Joined, ClientMessage::Chat { text }) => {
+                self.chat(id, &text);
+                None
+            }
         }
     }
 
@@ -461,6 +472,7 @@ impl Server {
         protocol_version: u32,
         game: &NamespacedId,
         key: PlayerKey,
+        asked_nickname: String,
     ) -> Option<LeaveReason> {
         if protocol_version != PROTOCOL_VERSION {
             return Some(self.refuse(
@@ -500,8 +512,60 @@ impl Server {
             ticks_waited: 0,
             key,
             challenge,
+            asked_nickname,
         };
         None
+    }
+
+    /// A line of chat from a joined client: made plain (no control characters, no space at either end), dropped if nothing is left,
+    /// and told to every client in this tick's updates unless the speaker has spoken too fast, who is told so instead.
+    fn chat(&mut self, id: ClientId, text: &str) {
+        let text: String = text
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let now = self.world.tick().get();
+        let interval = u64::from(self.config.chat_ticks_between_lines);
+        let latest_burst = (u64::from(self.config.chat_burst) - 1) * interval;
+        let Some(Phase::Joined { chat_arrival, .. }) =
+            self.sessions.get_mut(&id).map(|session| &mut session.phase)
+        else {
+            return;
+        };
+        let arrival = (*chat_arrival).max(now);
+        if arrival - now > latest_burst {
+            let told_already = self
+                .world
+                .chat
+                .iter()
+                .any(|line| line.only_for == Some(id) && line.speaker.is_none());
+            if !told_already {
+                self.world.chat.push(ChatLine {
+                    only_for: Some(id),
+                    speaker: None,
+                    text: "you are chatting too fast".to_owned(),
+                });
+            }
+            return;
+        }
+        *chat_arrival = arrival + interval;
+        let (Some(key), Some(nickname)) = (self.world.player_key(id), self.world.nickname(id))
+        else {
+            return;
+        };
+        let speaker = Speaker {
+            key,
+            nickname: nickname.clone(),
+        };
+        self.world.chat.push(ChatLine {
+            only_for: None,
+            speaker: Some(speaker),
+            text: text.to_owned(),
+        });
     }
 
     /// The proof has arrived: if it is good, welcomes the client and lets the game know it has joined.
@@ -511,18 +575,25 @@ impl Server {
         signature: &[u8; 64],
         report: &mut StepReport,
     ) -> Option<LeaveReason> {
-        let Phase::AwaitingProof { key, challenge, .. } =
-            self.sessions.get(&id).expect("the session exists").phase
+        let Phase::AwaitingProof {
+            key,
+            challenge,
+            asked_nickname,
+            ..
+        } = &self.sessions.get(&id).expect("the session exists").phase
         else {
             unreachable!("only a client that was challenged is asked for its proof");
         };
+        let (key, challenge, asked_nickname) = (*key, *challenge, asked_nickname.clone());
         if !identity::verify(&key, &self.config.game, &challenge, signature) {
             return Some(self.refuse(id, "the proof of identity was not good".to_owned()));
         }
+        let nickname = unique_nickname(&asked_nickname, self.world.nicknames_in_use());
         let welcome = ServerMessage::Welcome(Welcome {
             protocol_version: PROTOCOL_VERSION,
             game: self.config.game.clone(),
             client: id,
+            nickname: nickname.clone(),
             ticks_per_second: self.config.ticks_per_second,
             tick: Tick::new(self.world.tick().get() - 1),
             // (The clock went on at the start of this tick, which has not completed: it was one less at the last that did.)
@@ -535,12 +606,13 @@ impl Server {
             return Some(LeaveReason::ConnectionClosed);
         }
         session.phase = Phase::Joined {
+            chat_arrival: 0,
             watched: None,
             requested: None,
             known_entities: KnownEntities::new(),
             known_grids: KnownGrids::new(),
         };
-        self.world.add_client(id, key);
+        self.world.add_client(id, key, nickname);
         report.joined.push(id);
         self.logic.client_joined(id, &mut self.world);
         None
@@ -778,6 +850,14 @@ impl Server {
         for (client, text) in &self.world.replies {
             if *client == id {
                 messages.push(ServerMessage::CommandReply { text: text.clone() });
+            }
+        }
+        for line in &self.world.chat {
+            if line.only_for.is_none() || line.only_for == Some(id) {
+                messages.push(ServerMessage::Chat {
+                    speaker: line.speaker.clone(),
+                    text: line.text.clone(),
+                });
             }
         }
         messages.push(ServerMessage::TickCompleted { tick });

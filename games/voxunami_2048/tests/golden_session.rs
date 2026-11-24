@@ -151,6 +151,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let mut player = Session::<_, Game2048>::connect(
         recorded,
         &Identity::from_secret([1; 32]),
+        "player",
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -311,8 +312,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// changed). With the version put back to 11 the old hash, 3_770_636_189_421_880_079, came back.
 /// Free regions in an interest (2026-11-23; protocol 13): the stream is 1 byte longer (58,968 to 58,969: the count of free regions in each of its 1 `InterestChanged`), its hash moved to 13_621_063_276_189_007_546 for that and for the
 /// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 1_716_639_404_753_635_118, and the old length came back.
+/// Chat and nicknames (2026-11-24; protocol 14): the welcome says what the server made of the player's name ("player": a length byte and six letters), 7 bytes more (58_969 to 58_976, predicted), and says version 14, so the stream's hash moved to 4_973_066_925_433_376_532; the saved world's did not. Checked by taking the stream apart (`docs/history/spikes/scripting/take_apart_recording.py`: the welcome with its version put back to 13 and its nickname taken out, the records' lengths and checksums made again): the old length and the old hash, 13_621_063_276_189_007_546, came back.
 const PINNED: (u64, usize, u64) = (
-    13_621_063_276_189_007_546,
-    58_969,
+    4_973_066_925_433_376_532,
+    58_976,
     15_563_235_043_056_448_435,
 );

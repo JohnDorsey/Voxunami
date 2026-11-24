@@ -68,7 +68,8 @@ fn play_to_the_end<R: std::io::Read + Send>(player: &mut Player<ReplayConnection
 fn player_from<R: std::io::Read + Send>(
     connection: ReplayConnection<R>,
 ) -> Player<ReplayConnection<R>> {
-    let mut handshake = Handshake::start(connection, game_id(), &Identity::generate()).unwrap();
+    let mut handshake =
+        Handshake::start(connection, game_id(), &Identity::generate(), "player").unwrap();
     // The recording starts with the challenge, which the handshake answers to nobody, then the welcome.
     let welcomed = loop {
         handshake = match handshake.poll().unwrap() {
@@ -236,6 +237,7 @@ fn the_scenario_exercises_every_kind_of_message() {
             ServerMessage::TickCompleted { .. } => ticks += 1,
             ServerMessage::Disconnected { .. } => panic!("nobody was disconnected"),
             ServerMessage::CommandReply { .. } => panic!("nobody sent a command"),
+            ServerMessage::Chat { .. } => panic!("nobody chatted"),
             ServerMessage::EntitiesSpawned(_)
             | ServerMessage::EntitiesChanged(_)
             | ServerMessage::EntitiesDespawned(_) => panic!("this scenario has no entities"),
@@ -269,6 +271,58 @@ fn the_scenario_exercises_every_kind_of_message() {
     assert_eq!(session.bob.updates.len(), 61);
 }
 
+/// Who said what, in the order the player was told.
+fn chat_events<C: transport::Connection>(player: &Player<C>) -> Vec<(Option<String>, String)> {
+    player
+        .updates
+        .iter()
+        .flat_map(|update| &update.events)
+        .filter_map(|event| match event {
+            ClientEvent::Chat { speaker, text } => Some((
+                speaker.as_ref().map(|speaker| speaker.nickname.to_string()),
+                text.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Chat is in the stream like everything else, so a recording shows it: what each player was told of it live is what a replay tells.
+#[test]
+fn chat_is_in_the_recording_and_a_replay_tells_it_as_the_live_player_was_told() {
+    let (mut fixture, (mut alice, recording)) = {
+        let mut fixture = Fixture::new();
+        let joined = fixture.join_recorded(&ALL_PLUGINS);
+        (fixture, joined)
+    };
+    let mut bob = fixture.join(&ALL_PLUGINS);
+    for step in 0..12 {
+        match step {
+            3 => bob
+                .client
+                .send_chat(r"hello from bob {>1+1} \ /tp")
+                .unwrap(),
+            6 => alice.client.send_chat("hello bob").unwrap(),
+            _ => {}
+        }
+        fixture.step();
+        alice.catch_up().unwrap();
+        bob.catch_up().unwrap();
+    }
+    let expected = vec![
+        (
+            Some("player_2".to_owned()),
+            r"hello from bob {>1+1} \ /tp".to_owned(),
+        ),
+        (Some("player".to_owned()), "hello bob".to_owned()),
+    ];
+    assert_eq!(chat_events(&alice), expected);
+    assert_eq!(chat_events(&bob), expected);
+    let mut replayed = replay_player(recording.contents(), &ALL_PLUGINS).unwrap();
+    play_to_the_end(&mut replayed);
+    assert_eq!(chat_events(&replayed), expected);
+}
+
 #[test]
 fn replaying_one_tick_at_a_time_gives_the_same_ticks_in_order() {
     let session = play_session(Fixture::new(), 30);
@@ -297,7 +351,7 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_925;
+const PINNED_RECORDING_LENGTH: usize = 84_932;
 // Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
 // setting the version back to 2 gave the old checksum.
 // Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
@@ -317,7 +371,10 @@ const PINNED_RECORDING_LENGTH: usize = 84_925;
 // Free regions in an interest (2026-11-23; protocol 13): the length moved by two bytes (84,923 to 84,925), the count of free regions that each of the two `InterestChanged` of this recording
 // has, and the checksum for that and for the version in the welcome (13, was 12). Checked by taking the recording apart: with the count taken out of those two frames and the version put back to 12,
 // the old length and the old checksum, 3_889_045_335, came back.
-const PINNED_RECORDING_CHECKSUM: u32 = 74_998_034;
+// Chat and nicknames (2026-11-24; protocol 14): the welcome says what the server made of the player's name ("player": a length byte and six letters), 7 bytes more (84,925 to 84,932, predicted),
+// and says version 14, so the checksum moved to 3_343_312_725. Checked by taking the recording apart (`docs/history/spikes/scripting/take_apart_recording.py`: the welcome frame with its version put back to 13 and the nickname taken out,
+// the records' lengths and checksums made again): the old length and the old checksum, 74_998_034, came back.
+const PINNED_RECORDING_CHECKSUM: u32 = 3_343_312_725;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

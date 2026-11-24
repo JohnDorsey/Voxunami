@@ -263,6 +263,7 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -389,6 +390,7 @@ fn only_entities_of_the_player_kind_are_players_to_a_session() {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -434,6 +436,7 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
     let mut watcher = Session::<_, Cave>::connect(
         Box::new(spy) as Box<dyn Connection>,
         &Identity::from_secret([50; 32]),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         player.camera,
@@ -484,6 +487,7 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     let mut player = Session::<_, Cave>::connect(
         Box::new(connection) as Box<dyn transport::Connection>,
         &Identity::from_secret([60; 32]),
+        "player",
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -621,6 +625,7 @@ fn a_recording_follows_the_recorded_player_into_another_level() {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

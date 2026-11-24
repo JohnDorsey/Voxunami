@@ -181,6 +181,7 @@ fn a_replay_shows_a_form_while_it_was_shown_and_not_after_and_answers_nothing() 
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

@@ -46,17 +46,20 @@ pub use error::ProtocolError;
 pub use message::{Message, check_message};
 pub use server_message::{
     EntityChange, EntityState, GeneratorAssignment, GridChange, GridContent, GridState,
-    GridTerrainState, ServerMessage, VoxelChange, Welcome, is_tick_boundary,
+    GridTerrainState, ServerMessage, Speaker, VoxelChange, Welcome, is_tick_boundary,
 };
-pub use types::{ClientId, EntityId, PlayerKey, Tick};
+pub use types::{ClientId, EntityId, MAXIMUM_NICKNAME_LENGTH, Nickname, PlayerKey, Tick};
 
 /// The most free regions (regions of viewpoints that have no body) one interest may hold, whatever a server allows: a message with more is malformed.
 pub const MAXIMUM_FREE_REGIONS: usize = 8;
 
 /// Bumped whenever a message changes. A recording stores the version it was made with, and a program
 /// plays only recordings of its own version (nothing is kept to read older ones before a first release).
-/// (13: an interest may hold free regions besides the region round the body, and `InterestChanged` says them; 12: a ship may be told of as far, with its box and no bricks; 11: the offset of a position in its brick is three `f64`, not `f32`; 10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
-pub const PROTOCOL_VERSION: u32 = 13;
+/// (14: the hello says what the player would like to be called and the welcome what the server made of it, and chat is a message each way; 13: an interest may hold free regions besides the region round the body, and `InterestChanged` says them; 12: a ship may be told of as far, with its box and no bricks; 11: the offset of a position in its brick is three `f64`, not `f32`; 10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The most bytes of text a command may have; a longer one is a protocol violation.
 pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;
+
+/// The most bytes of text a line of chat may have; a longer one is a protocol violation.
+pub const MAXIMUM_CHAT_LENGTH: usize = 1024;

@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use entities::{ComponentBag, Entity, EntityCatalog, EntityError, EntityStore};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, Tick, VoxelChange};
+use protocol::{
+    ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, Nickname, PlayerKey, Speaker, Tick,
+    VoxelChange,
+};
 use terrain::GenerationOutcome;
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
@@ -180,6 +183,16 @@ fn pick_carrier(
     best.map(|(_, id)| id)
 }
 
+/// A line of chat that this tick's updates carry.
+#[derive(Clone, Debug)]
+pub(crate) struct ChatLine {
+    /// The one client it is for, or everyone.
+    pub(crate) only_for: Option<ClientId>,
+    /// Who said it, or `None` for the server.
+    pub(crate) speaker: Option<Speaker>,
+    pub(crate) text: String,
+}
+
 /// The world as game logic sees it during a tick: the terrain and edits of every level, and the way to
 /// change them and to talk to clients. Everything done here is replicated to the clients that watch it.
 #[derive(Debug)]
@@ -189,6 +202,8 @@ pub struct ServerWorld {
     catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
+    /// What each client is called, made when it joined and kept until it leaves: valid, and never the name of another client here.
+    nicknames: BTreeMap<ClientId, Nickname>,
     /// The ships each client was told of as far away in the latest tick it was sent updates, for the plugins that send what a far ship is drawn from (see
     /// [`ServerWorld::far_ships_of`]).
     far_ships: BTreeMap<ClientId, BTreeSet<GridId>>,
@@ -207,6 +222,8 @@ pub struct ServerWorld {
     pub(crate) edits: BTreeMap<(GridId, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
     pub(crate) replies: Vec<(ClientId, String)>,
+    /// The lines of chat of this tick, in the order they were said.
+    pub(crate) chat: Vec<ChatLine>,
     /// The channels whose changes are logged for whoever asks (see [`ServerWorld::take_changes`]).
     watched: BTreeSet<ChannelIndex>,
     changes: Vec<ChannelChange>,
@@ -279,6 +296,7 @@ impl ServerWorld {
             catalog,
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
+            nicknames: BTreeMap::new(),
             far_ships: BTreeMap::new(),
             focus: BTreeMap::new(),
             generated: RefCell::new(GeneratedBrickCache::default()),
@@ -288,6 +306,7 @@ impl ServerWorld {
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
             replies: Vec::new(),
+            chat: Vec::new(),
             watched: BTreeSet::new(),
             changes: Vec::new(),
             grid_forces: Vec::new(),
@@ -624,8 +643,20 @@ impl ServerWorld {
         self.clients.keys().copied()
     }
 
-    pub(crate) fn add_client(&mut self, client: ClientId, key: PlayerKey) {
+    pub(crate) fn add_client(&mut self, client: ClientId, key: PlayerKey, nickname: Nickname) {
         self.clients.insert(client, key);
+        self.nicknames.insert(client, nickname);
+    }
+
+    /// What a connected client is called. A label that a stranger chose, unique among the clients here while they are here
+    /// and never a reason to trust anyone: a player is their key ([`ServerWorld::player_key`]).
+    pub fn nickname(&self, client: ClientId) -> Option<&Nickname> {
+        self.nicknames.get(&client)
+    }
+
+    /// The nicknames in use now.
+    pub(crate) fn nicknames_in_use(&self) -> impl Iterator<Item = &Nickname> + Clone {
+        self.nicknames.values()
     }
 
     /// The ships a client has been told of as far away, as of the updates the latest tick sent it (the tick before this one, to a system that runs in it): their bricks
@@ -641,6 +672,7 @@ impl ServerWorld {
 
     pub(crate) fn remove_client(&mut self, client: ClientId) {
         self.clients.remove(&client);
+        self.nicknames.remove(&client);
         self.far_ships.remove(&client);
         self.focus.remove(&client);
     }

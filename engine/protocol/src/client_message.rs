@@ -2,12 +2,12 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use voxel_space::{BrickBox, LevelIndex};
 
-use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
 use crate::types::PlayerKey;
 use crate::wire::{
     read_brick_box, read_free_regions, read_level, write_brick_box, write_free_regions, write_level,
 };
+use crate::{MAXIMUM_CHAT_LENGTH, MAXIMUM_COMMAND_LENGTH};
 
 const KIND_HELLO: u8 = 1;
 const KIND_SET_INTEREST: u8 = 2;
@@ -15,6 +15,10 @@ const KIND_GAME_MESSAGE: u8 = 3;
 const KIND_GOODBYE: u8 = 4;
 const KIND_COMMAND: u8 = 5;
 const KIND_PROVE: u8 = 6;
+const KIND_CHAT: u8 = 7;
+
+/// The most bytes of a name a player may ask for. (The server makes a valid nickname of it; this only bounds what it reads.)
+const MAXIMUM_ASKED_NICKNAME_BYTES: usize = 256;
 
 /// Sent from a client to the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +32,9 @@ pub enum ClientMessage {
         /// Who the player is. The server answers with a [`ServerMessage::Challenge`](crate::ServerMessage::Challenge)
         /// and does not go on until the player has proved they hold the private key.
         player_key: PlayerKey,
+        /// What the player would like to be called. The server makes a valid, unused nickname of it and says which in the
+        /// welcome; nothing is ever decided by it.
+        nickname: String,
     },
     /// The answer to a challenge: the signature, by the key in the `Hello`, of the login the challenge
     /// names (see the `identity` crate for what is signed).
@@ -54,6 +61,8 @@ pub enum ClientMessage {
     /// [`MAXIMUM_COMMAND_LENGTH`] bytes. The game's server logic decides what it means and answers
     /// with a `CommandReply`.
     Command { text: String },
+    /// A line of chat for every player: at most [`MAXIMUM_CHAT_LENGTH`] bytes.
+    Chat { text: String },
 }
 
 impl ClientMessage {
@@ -64,11 +73,13 @@ impl ClientMessage {
                 protocol_version,
                 game,
                 player_key,
+                nickname,
             } => {
                 writer.write_u8(KIND_HELLO);
                 writer.write_u32(*protocol_version);
                 writer.write_identifier(game);
                 writer.write_raw(player_key.bytes());
+                writer.write_string(nickname);
             }
             Self::Prove { signature } => {
                 writer.write_u8(KIND_PROVE);
@@ -94,6 +105,10 @@ impl ClientMessage {
                 writer.write_u8(KIND_COMMAND);
                 writer.write_string(text);
             }
+            Self::Chat { text } => {
+                writer.write_u8(KIND_CHAT);
+                writer.write_string(text);
+            }
         }
         writer.into_bytes()
     }
@@ -107,6 +122,13 @@ impl ClientMessage {
                 player_key: PlayerKey::new(
                     reader.read_raw(32)?.try_into().expect("32 bytes were read"),
                 ),
+                nickname: {
+                    let nickname = reader.read_string()?;
+                    if nickname.len() > MAXIMUM_ASKED_NICKNAME_BYTES {
+                        return Err(DecodeError::Invalid("a nickname asked for is too long").into());
+                    }
+                    nickname.to_owned()
+                },
             },
             KIND_PROVE => Self::Prove {
                 signature: reader.read_raw(64)?.try_into().expect("64 bytes were read"),
@@ -127,6 +149,15 @@ impl ClientMessage {
                     return Err(DecodeError::Invalid("a command is too long").into());
                 }
                 Self::Command {
+                    text: text.to_owned(),
+                }
+            }
+            KIND_CHAT => {
+                let text = reader.read_string()?;
+                if text.len() > MAXIMUM_CHAT_LENGTH {
+                    return Err(DecodeError::Invalid("a line of chat is too long").into());
+                }
+                Self::Chat {
                     text: text.to_owned(),
                 }
             }
@@ -154,6 +185,16 @@ mod tests {
                 protocol_version: 7,
                 game: id("voxunami_cave:game"),
                 player_key: PlayerKey::new([9; 32]),
+                nickname: "Alex".to_owned(),
+            },
+            ClientMessage::Hello {
+                protocol_version: 7,
+                game: id("voxunami_cave:game"),
+                player_key: PlayerKey::new([9; 32]),
+                nickname: "a name with spaces, {braces} and é".to_owned(),
+            },
+            ClientMessage::Chat {
+                text: "hello everyone".to_owned(),
             },
             ClientMessage::Prove {
                 signature: [200; 64],
@@ -202,11 +243,13 @@ mod tests {
         assert_eq!(ClientMessage::Goodbye.encode(), [4]);
         let mut hello = vec![1, 1, 0, 0, 0, 3, b'a', b':', b'b'];
         hello.extend([7; 32]);
+        hello.extend([2, b'A', b'l']);
         assert_eq!(
             ClientMessage::Hello {
                 protocol_version: 1,
                 game: id("a:b"),
                 player_key: PlayerKey::new([7; 32]),
+                nickname: "Al".to_owned(),
             }
             .encode(),
             hello
@@ -251,6 +294,41 @@ mod tests {
             }
             .encode(),
             [3, 3, b'a', b':', b'b', 1, 9]
+        );
+        assert_eq!(
+            ClientMessage::Chat {
+                text: "hi".to_owned()
+            }
+            .encode(),
+            [7, 2, b'h', b'i']
+        );
+    }
+
+    #[test]
+    fn a_line_of_chat_may_be_as_long_as_the_limit_and_no_longer() {
+        let longest = ClientMessage::Chat {
+            text: "a".repeat(MAXIMUM_CHAT_LENGTH),
+        };
+        assert_eq!(ClientMessage::decode(&longest.encode()), Ok(longest));
+        let too_long = ClientMessage::Chat {
+            text: "a".repeat(MAXIMUM_CHAT_LENGTH + 1),
+        };
+        assert!(ClientMessage::decode(&too_long.encode()).is_err());
+    }
+
+    #[test]
+    fn a_nickname_asked_for_is_read_up_to_a_bound_and_no_further() {
+        let hello = |nickname: String| ClientMessage::Hello {
+            protocol_version: 1,
+            game: id("a:b"),
+            player_key: PlayerKey::new([7; 32]),
+            nickname,
+        };
+        let longest = hello("é".repeat(MAXIMUM_ASKED_NICKNAME_BYTES / 2));
+        assert_eq!(ClientMessage::decode(&longest.encode()), Ok(longest));
+        assert!(
+            ClientMessage::decode(&hello("a".repeat(MAXIMUM_ASKED_NICKNAME_BYTES + 1)).encode())
+                .is_err()
         );
     }
 

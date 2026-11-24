@@ -1,7 +1,7 @@
 //! The interactive game: a window, a fly camera, and whatever the game's inputs do; or the same
 //! window playing a recording back in real time.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,9 +19,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::client_commands::is_client_command;
 use crate::client_plugin::MouseButton as GameButton;
-use crate::command_entry::{CommandEntry, opens_a_command};
+use crate::command_entry::{CommandEntry, Line, classify, opens_a_command};
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turned_toward};
@@ -45,8 +44,10 @@ const POSE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often what the keys ask is sent again when it has not changed.
 const MOVEMENT_REPEAT: Duration = Duration::from_millis(100);
-/// How long the answer to a command stays in the window title.
+/// How long a line of chat or the answer to a command stays on the screen.
 const REPLY_SHOWN_FOR: Duration = Duration::from_secs(8);
+/// How many such lines the screen holds at once.
+const MESSAGES_SHOWN: usize = 6;
 type GameSession<G> = Session<Box<dyn Connection>, G>;
 
 /// Plays: starts a server in this process (open to the network if asked) and joins it, or joins a
@@ -85,6 +86,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     let mut session = Session::<_, G>::connect(
         connection,
         &identity,
+        options.nickname(),
         Mode::Playing,
         view.view_radius,
         start,
@@ -135,6 +137,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     let mut session = Session::<_, G>::connect(
         connection,
         &crate::player_identity::for_replay(),
+        crate::player_identity::REPLAY_NICKNAME,
         Mode::Replaying,
         view.view_radius,
         start,
@@ -208,8 +211,8 @@ struct Viewer<G: GameDefinition> {
     focus: Option<u32>,
     /// The command being typed, if one is.
     entry: CommandEntry,
-    /// The latest answer to a command, and when it came.
-    reply: Option<(String, Instant)>,
+    /// The latest lines of chat and answers to commands, and when each came.
+    messages: VecDeque<(String, Instant)>,
     started: Instant,
     last_frame: Instant,
     last_pose_sent: Instant,
@@ -311,7 +314,7 @@ impl<G: GameDefinition> Viewer<G> {
             modal_source: None,
             focus: None,
             entry: CommandEntry::default(),
-            reply: None,
+            messages: VecDeque::new(),
             started: now,
             last_frame: now,
             last_pose_sent: now,
@@ -332,15 +335,29 @@ impl<G: GameDefinition> Viewer<G> {
         })
     }
 
-    /// Runs what was typed on the command line: a line that starts with a period is the window's own
-    /// command and goes no further; any other is the server's.
-    fn run_command(&mut self, text: &str, now: Instant) {
-        if is_client_command(text) {
-            let reply = self.session.client_command(text);
-            println!("{reply}");
-            self.reply = Some((reply, now));
-        } else {
-            self.session.send_command(text);
+    /// Shows a line of chat or an answer for a while, after the ones before it.
+    fn say(&mut self, text: String, now: Instant) {
+        println!("{text}");
+        self.messages.push_back((text, now));
+        while self.messages.len() > MESSAGES_SHOWN {
+            self.messages.pop_front();
+        }
+    }
+
+    /// Runs what was typed on the command line, by what its first character says it is ([`classify`]): a command for the
+    /// window goes no further; a command for the server, and chat, go to the server.
+    fn run_line(&mut self, text: &str, now: Instant) {
+        match classify(text) {
+            Line::ClientCommand(text) => {
+                let reply = self.session.client_command(text);
+                self.say(reply, now);
+            }
+            Line::ServerCommand(text) => self.session.send_command(text),
+            Line::Chat(text) => self.session.send_chat(text),
+            Line::Script(_) => self.say(
+                "code after > cannot be run yet: scripts are not built".to_owned(),
+                now,
+            ),
         }
     }
 
@@ -367,15 +384,16 @@ impl<G: GameDefinition> Viewer<G> {
                 if self.recording_ended { " (ended)" } else { "" }
             )),
         }
-        let reply = self
-            .reply
-            .as_ref()
+        let messages = self
+            .messages
+            .iter()
             .filter(|(_, when)| when.elapsed() < REPLY_SHOWN_FOR)
-            .map(|(text, _)| text.clone());
+            .map(|(text, _)| text.clone())
+            .collect();
         let text = ScreenText {
             status,
             typing: self.entry.display(),
-            reply,
+            messages,
         };
         self.session.screen(&text)
     }
@@ -638,8 +656,10 @@ impl<G: GameDefinition> Viewer<G> {
         self.follow_server(now, seconds)
             .map_err(|error| error.to_string())?;
         for text in self.session.take_command_replies() {
-            println!("{text}");
-            self.reply = Some((text, now));
+            self.say(text, now);
+        }
+        for text in self.session.take_chat_lines() {
+            self.say(text, now);
         }
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
@@ -656,7 +676,7 @@ impl<G: GameDefinition> Viewer<G> {
         ) {
             self.session.reject_shader_pack();
             eprintln!("{error}");
-            self.reply = Some((error, now));
+            self.say(error, now);
         }
         // What the player chose of the settings, kept in the files next to the packs (only what changed is written; a failure is said once).
         for warning in self
@@ -665,7 +685,7 @@ impl<G: GameDefinition> Viewer<G> {
             .save_changes(&self.session.settings().pack_settings)
         {
             eprintln!("warning: shader settings: {warning}");
-            self.reply = Some((warning, now));
+            self.say(warning, now);
         }
         self.show_other_players_carried_on(now);
         show_entity_boxes(&mut self.renderer, &self.session);
@@ -808,7 +828,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                             KeyCode::Escape => viewer.entry.cancel(),
                             KeyCode::Enter | KeyCode::NumpadEnter => {
                                 if let Some(text) = viewer.entry.submit() {
-                                    viewer.run_command(&text, Instant::now());
+                                    viewer.run_line(&text, Instant::now());
                                 }
                             }
                             KeyCode::Backspace => viewer.entry.backspace(),
@@ -833,7 +853,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                                 // Typing is not moving: let go of every key.
                                 viewer.keys.clear();
                                 viewer.entry.begin(first);
-                                println!("command line open: Enter sends it, Esc drops it");
+                                println!("typing: Enter sends the line, Esc drops it");
                             } else if code == KeyCode::Escape {
                                 viewer.set_mouse_captured(false);
                                 viewer.keys.insert(code);

@@ -347,6 +347,7 @@ fn a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_cl
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -437,7 +438,7 @@ fn a_screen_with_everything_on_it_is_drawn_where_the_layout_says_and_can_be_look
                 "placing stone (whole)".to_owned(),
             ],
             typing: Some("> /gamemode survival_".to_owned()),
-            reply: Some("this world is now in survival mode".to_owned()),
+            messages: vec!["this world is now in survival mode".to_owned()],
         };
         let screen = without_overlays(player.screen(&text));
         assert_eq!(screen.sources.len(), 5, "{:?}", screen.sources);

@@ -44,6 +44,7 @@ impl Rig {
         Session::<_, ExampleSunGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
+            "player",
             Mode::Playing,
             2,
             camera_at([8.0, 40.0, 8.0], 0.0, 0.0),
@@ -135,6 +136,7 @@ fn a_recording_has_the_same_day_as_the_player_it_recorded() {
     let mut replay = Session::<_, ExampleSunGame>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         2,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -209,6 +211,7 @@ fn a_game_with_no_sun_in_the_level_is_lit_as_it_was() {
     let player = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::from_secret([1; 32]),
+        "player",
         Mode::Playing,
         2,
         camera_at([8.0, 40.0, 8.0], 0.0, 0.0),
@@ -240,6 +243,7 @@ fn a_game_with_no_sun_in_the_level_has_no_view_of_one() {
     let player = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::from_secret([1; 32]),
+        "player",
         Mode::Playing,
         2,
         camera_at([8.0, 40.0, 8.0], 0.0, 0.0),

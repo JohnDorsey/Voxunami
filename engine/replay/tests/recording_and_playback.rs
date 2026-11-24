@@ -216,12 +216,13 @@ fn something_that_is_not_a_replay_does_not_open() {
 
 #[test]
 fn a_recording_names_its_game_in_the_welcome_it_starts_with() {
-    use protocol::{ClientId, PROTOCOL_VERSION, Welcome};
+    use protocol::{ClientId, Nickname, PROTOCOL_VERSION, Welcome};
 
     let welcome = ServerMessage::Welcome(Welcome {
         protocol_version: PROTOCOL_VERSION,
         game: "some_game:game".parse().unwrap(),
         client: ClientId::new(1),
+        nickname: Nickname::sanitized("player"),
         ticks_per_second: 20,
         tick: Tick::ZERO,
         world_clock: 0,

@@ -18,6 +18,7 @@ mod grid_replication;
 mod grid_view;
 mod interest;
 mod merge;
+mod nicknames;
 mod prefetch;
 mod rail_settings;
 mod replication;

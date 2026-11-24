@@ -81,6 +81,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let mut first = Session::<_, Eels>::connect(
         recorded,
         &Identity::from_secret([1; 32]),
+        "player",
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -93,6 +94,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let mut second = Session::<_, Eels>::connect(
         second_connection,
         &Identity::from_secret([2; 32]),
+        "player",
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -225,8 +227,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// changed). With the version put back to 11 the old hash, 3_053_214_642_131_070_801, came back.
 /// Free regions in an interest (2026-11-23; protocol 13): the stream is 6 bytes longer (89,148 to 89,154: the count of free regions in each of its 6 `InterestChanged`), its hash moved to 13_366_224_951_903_892_245 for that and for the
 /// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 14_850_974_223_715_851_973, and the old length came back.
+/// Chat and nicknames (2026-11-24; protocol 14): the welcome says what the server made of the player's name ("player": a length byte and six letters), 7 bytes more (89_154 to 89_161, predicted), and says version 14, so the stream's hash moved to 14_000_659_265_247_381_773; the saved world's did not. Checked by taking the stream apart (`docs/history/spikes/scripting/take_apart_recording.py`: the welcome with its version put back to 13 and its nickname taken out, the records' lengths and checksums made again): the old length and the old hash, 13_366_224_951_903_892_245, came back.
 const PINNED: (u64, usize, u64) = (
-    13_366_224_951_903_892_245,
-    89_154,
+    14_000_659_265_247_381_773,
+    89_161,
     9_505_268_344_403_703_823,
 );

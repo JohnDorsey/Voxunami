@@ -61,7 +61,8 @@ Each sigil picks its own scanner for where the hole ends. **[decided]**
 
 - **`/` and `.` text:** the hole ends at the first unescaped `}` that does not belong to a nested hole. Only sigil-started holes nest; a bare `{hi` inside the text is plain, so a following `}` ends the hole. To say `{hi}` there, write `\{hi\}`. **[proposed]**
 - **`>` code:** the hole ends at the `}` that closes it as Python's lexical rules see it: brackets nest, and strings, f-strings (with their own fields and format specs), triple quotes and escapes hide their braces, so dictionary and set literals work (`{>{"a": 1}["a"]}`). **[decided: the owner approved "sigil picks the sub-language and its scanner"]** **Measured (spike S2, 2026-11-24):** a hand-written scanner of about 100 lines and a scanner driven by ruff's token stream (ruff's lexer is the tokenizer Monty itself uses) agree on all 4,000 generated expressions full of braces, quotes and backslashes, with random tails after the hole; Monty compiled all 3,000 generated expressions it was given; four deliberate breakages of the hand-written scanner (a backslash skipping one byte, no `{{` literal, no triple quotes, an f-string field not entered) were each caught; a brace counter was wrong on 1,560 of 2,000. On 60,000 random strings of brace-and-quote soup the two agree on 57,989 and differ only on `#` and on newlines. **Proposed:** use the hand-written scanner (the game need not link a parser to find an end), and keep the differential test against ruff's tokens in the game's own tests, so that a change in Monty's lexer is a failing test, not a silent drift. **`#` is an ordinary character in a hole** (ruff would read it as a comment that hides the closing brace; a line holds no newline), and **blanks right after `{>` are stripped** before Monty sees the code, because Monty reads a leading blank as indentation (`SyntaxError: Unexpected indentation`, checked).
-- **No holes inside `>` code in the first version.** A script reaches commands by typed calls (S6), not by `{/...}` inside Python. This closes an ambiguity that the spike found: `{.5}` and `{...}` are valid Python sets, so `{.` cannot always mean a client-command hole. Inside `>` code a `{` followed by `/` or `>` (never valid Python: no valid snippet in 19,729 random ones had it) and `{.` followed by a letter are **reserved and an error** for now, so that allowing nested holes later changes no line that works today. **[proposed, S10]**
+- **`{.}` holes are allowed inside `>` code; `{/` and `{>` are not, yet** **[decided 2026-11-24 for `{.}`; the rest proposed]**. Inside `>` code, outside string literals, a `{.` followed by a letter starts a client-command hole, and anything else after `{.` is Python: `{.5}` and `{...}` are valid sets (found by spike S2), so a set whose first item starts with a dot is written as it is, or `\{.5\}`, or `set([.5])`. Because the client runs a `{.}` hole before the line is sent, **its result enters the code as a literal, never as code**: a string becomes a Python string literal (quotes and backslashes escaped), a number a number. To use it as a number write `float({.x})`. `{/` and `{>` followed by anything inside code (never valid Python: no valid snippet in 19,729 random ones had them) stay reserved and are an error; scripts call server commands by typed calls (S6). **[proposed]**
+- **Escapes inside `>` code** are decoded only outside string literals, where a backslash is never valid Python; inside a string literal a backslash is Python's own, so `"a\\b"` means what Python says. **[proposed]**
 - **Depth** is limited (eight levels, **[proposed]**, a number to measure, not a principle) and a deeper line is an error.
 - A hole may not stand in the name of a command or subcommand. Holes are for arguments only. **[proposed]**
 
@@ -121,6 +122,10 @@ The owner asked for **a real chat first** (Q1). **[decided]**
 - **Proposed:** a key (Enter or T) opens the box; a line with no sigil is chat; `/`, `.`, `>` are commands as today. A new server-to-client message `chat` (sender key, nickname, text, tick) is in the stream, so a replay shows it. Client-side rate limit and a server-side one. The text is plain: no holes run unless S3 says so; control characters are stripped; the length stays 1,024 bytes.
 - Chat is itself a permission, `engine:chat.say`, class `change` (anyone speaks by default). Muting is a **guardrail deny** (7.4), not a special case.
 - The box today has no multi-line and no text fields. The font is ASCII 8x8, so nicknames and chat are ASCII until the font changes. **[read]**
+
+### As built (phase 1, 2026-11-24)
+
+Chat and nicknames are built as 5 and 6.1 say, with these details: the protocol is version 14 (`Hello` carries the name asked for, `Welcome` the nickname made, `Chat` goes each way); the server makes the nickname when the proof is accepted, from the nicknames of the players joined at that moment (so two players who join in one tick get `Alex` and `Alex_2` in client-id order); chat is limited to a burst of 5 lines and then one line every 10 ticks (`ServerConfig::chat_burst`, `chat_ticks_between_lines`), and a player over it is told once a tick; `T` opens the chat line, `/` and `.` open it for a command, and a sent line is classified by its first character alone, so a line that used to be run as a server command because the slash was optional is now chat; `>` answers that scripts are not built. The key is `T`, not Enter, because Enter is what a player presses to confirm. Not built: holes (phase 2), the permission `engine:chat.say` and muting (phase 4), and the nickname in `/players`-style listings (there are none). Results: `docs/history/build-log.md` "Phase S1".
 
 ## 6. Who is acting
 
@@ -342,7 +347,7 @@ Tests first in each phase, the safest piece next, verify, continue (the project'
 
 ## 13. Questions this draft raised
 
-**The owner answered yes to S1 to S9 on 2026-11-24** (and renamed the setup command, 7.8). S10 came from the spike and is open. None blocks phase 1 or 2.
+**The owner answered yes to S1 to S9 on 2026-11-24** (and renamed the setup command, 7.8). S10 came from the spike and was answered the same day (4.2). None blocks phase 1 or 2.
 
 - **S1. Which narrower?** What first, then who (7.3). *Recommend yes; confidence medium; playtest it.*
 - **S2. Who may type `>` on a server?** Ops only by default, a permission any admin may grant. *Recommend yes.*
@@ -353,7 +358,7 @@ Tests first in each phase, the safest piece next, verify, continue (the project'
 - **S7. Shared variable grants** as in 9.5. *Recommend yes; medium confidence.*
 - **S8. Singleplayer:** the local player is op **and** root. *Recommend yes.*
 - **S9. Setup code details** as in 7.8 (a new code each start while no root exists, rate-limited attempts). *Recommend yes.*
-- **S10. Holes inside `>` code?** None in the first version; a script calls commands by typed calls (S6), and `{/` and `{>` inside code stay reserved (4.2). *Recommend yes. Open.*
+- **S10. Holes inside `>` code?** *Answered 2026-11-24:* `{.}` holes are allowed inside `>` code (4.2); `{/` and `{>` stay reserved for now (proposal, not yet put to the owner).
 
 ## 14. What nobody has measured
 

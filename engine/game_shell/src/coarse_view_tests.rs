@@ -197,6 +197,7 @@ impl Rig {
         let mut player = Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
+            "player",
             Mode::Playing,
             3,
             camera_at(position, 0.0, 0.0),
@@ -220,6 +221,7 @@ impl Rig {
         let mut player = Session::<_, G>::connect(
             connection,
             &Identity::from_secret([who; 32]),
+            "player",
             Mode::Playing,
             3,
             camera_at(position, 0.0, 0.0),
@@ -505,6 +507,7 @@ fn the_places_the_server_is_asked_the_nodes_of_are_those_kept_ready_in_terrain_t
     let mut bricks = Session::<_, ExampleGame>::connect(
         Box::new(rig.connector.connect().unwrap()) as Box<dyn Connection>,
         &Identity::from_secret([2; 32]),
+        "player",
         Mode::Playing,
         3,
         camera_at(FAR_FROM_THE_CRATER, 0.0, 0.0),
@@ -567,6 +570,7 @@ fn a_recording_of_the_watcher_shows_what_the_watcher_saw() {
     let mut replay = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         3,
         camera_at([0.0; 3], 0.0, 0.0),

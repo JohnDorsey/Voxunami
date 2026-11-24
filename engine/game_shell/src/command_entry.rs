@@ -1,12 +1,35 @@
-//! The line a player types a command on: opened with `/` (a command for the server) or `.` (one for the
-//! window, see [`crate::client_commands`]), edited with the keyboard, sent with Enter, dropped with
-//! Escape. It only holds the text; the window decides when keys go to it.
+//! The line a player types on: opened with `/` (a command for the server), `.` (one for the window, see
+//! [`crate::client_commands`]) or `T` (chat), edited with the keyboard, sent with Enter, dropped with
+//! Escape. It only holds the text; the window decides when keys go to it. What a line is, once it is sent, is
+//! decided by its first character alone ([`classify`]).
 
 use protocol::MAXIMUM_COMMAND_LENGTH;
 
-/// What a key press opens the command line with: `/` or `.` if the key types that, and nothing for
-/// any other key, so a player who presses Enter (as one does when a game starts, or to confirm) does
-/// not find every key typing into the title bar. Only a press the player makes counts: not one the
+/// What a line typed on the command line is, from its first character (after any blanks): `/` a command
+/// for the server, `.` a command for the window, `>` code for the server's interpreter (not built yet),
+/// and anything else, even `{` or a lone `\`, chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Line<'text> {
+    Chat(&'text str),
+    ServerCommand(&'text str),
+    ClientCommand(&'text str),
+    Script(&'text str),
+}
+
+/// Reads what a sent line is. (The text kept is the line without the blanks at its start.)
+pub fn classify(line: &str) -> Line<'_> {
+    let line = line.trim_start();
+    match line.chars().next() {
+        Some('/') => Line::ServerCommand(line),
+        Some('.') => Line::ClientCommand(line),
+        Some('>') => Line::Script(line),
+        _ => Line::Chat(line),
+    }
+}
+
+/// What a key press opens the command line with: `/` or `.` if the key types that, nothing typed yet for
+/// `T` (which opens a line for chat), and no line for any other key, so a player who presses Enter (as one
+/// does when a game starts, or to confirm) does not find every key typing into the title bar. Only a press the player makes counts: not one the
 /// system repeats for a key held down, not one it makes up on gaining focus, and not one of a key
 /// the window already knows is down.
 pub fn opens_a_command(
@@ -21,6 +44,7 @@ pub fn opens_a_command(
     match text {
         Some("/") => Some("/"),
         Some(".") => Some("."),
+        Some("t" | "T") => Some(""),
         _ => None,
     }
 }
@@ -96,11 +120,34 @@ mod tests {
         assert_eq!(opens_a_command(Some("1"), false, false, false), None);
         assert_eq!(opens_a_command(Some(","), false, false, false), None);
         assert_eq!(opens_a_command(Some("./"), false, false, false), None);
+        // T opens a line with nothing typed in it, for chat; the letter itself is not typed.
+        assert_eq!(opens_a_command(Some("t"), false, false, false), Some(""));
+        assert_eq!(opens_a_command(Some("T"), false, false, false), Some(""));
+        assert_eq!(opens_a_command(Some("tt"), false, false, false), None);
         // A held key repeating, a press made up on gaining focus, and a key already down do not.
-        for first in ["/", "."] {
+        for first in ["/", ".", "t"] {
             assert_eq!(opens_a_command(Some(first), true, false, false), None);
             assert_eq!(opens_a_command(Some(first), false, true, false), None);
             assert_eq!(opens_a_command(Some(first), false, false, true), None);
+        }
+    }
+
+    #[test]
+    fn a_line_is_what_its_first_character_says_and_otherwise_chat() {
+        assert_eq!(classify("/tp 1 2 3"), Line::ServerCommand("/tp 1 2 3"));
+        assert_eq!(
+            classify(".shadows off"),
+            Line::ClientCommand(".shadows off")
+        );
+        assert_eq!(classify(">1 + 1"), Line::Script(">1 + 1"));
+        assert_eq!(classify("hello there"), Line::Chat("hello there"));
+        // Blanks before the first character do not hide it.
+        assert_eq!(classify("   /tp"), Line::ServerCommand("/tp"));
+        assert_eq!(classify("  hello "), Line::Chat("hello "));
+        // A line that used to be run as a command because the slash was optional is chat now, and braces and backslashes are no sigil.
+        assert_eq!(classify("level go nether"), Line::Chat("level go nether"));
+        for chat in ["{>1+1}", "{/tp}", "\\{", "1/2", "a > b", "hello {.x}"] {
+            assert_eq!(classify(chat), Line::Chat(chat), "{chat}");
         }
     }
 

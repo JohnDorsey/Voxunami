@@ -18,6 +18,9 @@ pub(crate) fn load(file: Option<&Path>) -> Result<Identity, String> {
         .map_err(|error| format!("the identity file {}: {error}", path.display()))
 }
 
+/// What a player watching a recording is called: it is told to no server.
+pub(crate) const REPLAY_NICKNAME: &str = "player";
+
 /// An identity for watching a recording, which proves nothing to anyone and is not kept.
 pub(crate) fn for_replay() -> Identity {
     Identity::generate()

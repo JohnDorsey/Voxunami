@@ -8,7 +8,8 @@ use entities::{ComponentBag, EntityCatalog, EntityKindSpec, Hidden};
 use identity::{ChallengeSource, Identity};
 use namespaced_id::NamespacedId;
 use protocol::{
-    ClientId, ClientMessage, EntityChange, EntityId, Message, PROTOCOL_VERSION, ServerMessage, Tick,
+    ClientId, ClientMessage, EntityChange, EntityId, MAXIMUM_CHAT_LENGTH, Message, Nickname,
+    PROTOCOL_VERSION, ServerMessage, Speaker, Tick,
 };
 use server::GridView;
 use server::test_support::{LogicEvent, ScriptedLogic};
@@ -33,6 +34,8 @@ fn game_id() -> NamespacedId {
 struct TestClient {
     connection: LoopbackConnection,
     identity: Identity,
+    /// What this client asks to be called in its hello.
+    nickname: String,
 }
 
 impl TestClient {
@@ -41,7 +44,7 @@ impl TestClient {
     }
 
     fn hello(&mut self) {
-        self.send(&self.identity.hello(&game_id()));
+        self.send(&self.identity.hello(&game_id(), &self.nickname));
     }
 
     /// Answers the server's challenge, which is the only thing it has sent since the hello. The server
@@ -183,6 +186,7 @@ impl Harness {
         TestClient {
             connection: self.connector.connect().unwrap(),
             identity,
+            nickname: "player".to_owned(),
         }
     }
 
@@ -191,7 +195,15 @@ impl Harness {
         TestClient {
             connection: self.connector.connect().unwrap(),
             identity: Identity::from_secret([self.connected.get(); 32]),
+            nickname: "player".to_owned(),
         }
+    }
+
+    /// A client that asks to be called `nickname`.
+    fn connect_named(&self, nickname: &str) -> TestClient {
+        let mut client = self.connect();
+        client.nickname = nickname.to_owned();
+        client
     }
 
     fn logic_events(&self) -> Vec<LogicEvent> {
@@ -362,6 +374,7 @@ fn refusal_cases() -> Vec<(&'static str, Vec<Vec<u8>>, &'static str)> {
             protocol_version,
             game: id(game),
             player_key: Identity::from_secret([200; 32]).player_key(),
+            nickname: String::new(),
         }
         .encode()
     };
@@ -3727,4 +3740,339 @@ fn what_reaches_a_place_reaches_the_body_of_a_client_and_not_its_free_regions() 
     };
     assert!(heard(body_there.received()));
     assert!(!heard(free_there.received()));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Nicknames and chat (scripting-spec.md phase 1)
+// ---------------------------------------------------------------------------------------------------------------------
+
+impl TestClient {
+    fn chat(&mut self, text: &str) {
+        self.send(&ClientMessage::Chat {
+            text: text.to_owned(),
+        });
+    }
+
+    /// The nickname the server's welcome gave this client, from what it has received (the welcome must be in it).
+    fn welcomed_as(messages: &[ServerMessage]) -> String {
+        messages
+            .iter()
+            .find_map(|message| match message {
+                ServerMessage::Welcome(welcome) => Some(welcome.nickname.to_string()),
+                _ => None,
+            })
+            .expect("the welcome is among the messages")
+    }
+}
+
+/// The lines of chat among `messages`, as (who, what): `None` for the server.
+fn chat_lines(messages: &[ServerMessage]) -> Vec<(Option<String>, String)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::Chat { speaker, text } => Some((
+                speaker.as_ref().map(|speaker| speaker.nickname.to_string()),
+                text.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A server whose clients are logged in with the welcome read and thrown away, and the first tick's stream too.
+fn logged_in(names: &[&str], config: ServerConfig) -> (Harness, Vec<TestClient>) {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut harness = Harness::new(&game, game.new_world(), config);
+    let mut clients: Vec<TestClient> = names
+        .iter()
+        .map(|name| harness.connect_named(name))
+        .collect();
+    harness.log_in(&mut clients.iter_mut().collect::<Vec<_>>());
+    for client in &mut clients {
+        client.received();
+    }
+    (harness, clients)
+}
+
+#[test]
+fn a_nickname_that_is_valid_is_welcomed_as_it_is_and_one_that_is_not_is_made_safe() {
+    let game = Game::new(&ALL_PLUGINS);
+    for (asked, made) in [
+        ("Alex", "Alex"),
+        ("Alex Smith {>1}", "Alex_Smith___1_"),
+        ("", "player"),
+        ("/tp 1 2 3", "_tp_1_2_3"),
+        (&"x".repeat(60), &"x".repeat(32)),
+    ] {
+        let mut harness = Harness::new(&game, game.new_world(), ServerConfig::new(game_id()));
+        let mut client = harness.connect_named(asked);
+        harness.log_in(&mut [&mut client]);
+        assert_eq!(
+            TestClient::welcomed_as(&client.received()),
+            made,
+            "asked for {asked:?}"
+        );
+    }
+}
+
+#[test]
+fn players_who_ask_for_the_same_name_in_any_case_get_different_names_in_the_order_they_joined() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut harness = Harness::new(&game, game.new_world(), ServerConfig::new(game_id()));
+    let mut clients: Vec<TestClient> = ["Alex", "alex", "ALEX", "Alex", "Bo"]
+        .iter()
+        .map(|name| harness.connect_named(name))
+        .collect();
+    harness.log_in(&mut clients.iter_mut().collect::<Vec<_>>());
+    let names: Vec<String> = clients
+        .iter_mut()
+        .map(|client| TestClient::welcomed_as(&client.received()))
+        .collect();
+    assert_eq!(names, ["Alex", "alex_2", "ALEX_3", "Alex_4", "Bo"]);
+}
+
+#[test]
+fn a_name_is_free_again_when_its_player_has_gone() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut harness = Harness::new(&game, game.new_world(), ServerConfig::new(game_id()));
+    let mut first = harness.connect_named("Alex");
+    harness.log_in(&mut [&mut first]);
+    first.received();
+    first.send(&ClientMessage::Goodbye);
+    harness.server.step();
+    let mut second = harness.connect_named("Alex");
+    harness.log_in(&mut [&mut second]);
+    assert_eq!(TestClient::welcomed_as(&second.received()), "Alex");
+}
+
+#[test]
+fn a_line_of_chat_reaches_every_player_with_who_said_it_the_speaker_included() {
+    let (mut harness, mut clients) = logged_in(&["Alex", "Bo", "Cy"], ServerConfig::new(game_id()));
+    let key_of_alex = Identity::from_secret([1; 32]).player_key();
+    clients[0].chat("hello everyone");
+    harness.server.step();
+    for client in &mut clients {
+        let messages = client.received();
+        assert_eq!(
+            messages
+                .iter()
+                .filter_map(|message| match message {
+                    ServerMessage::Chat { speaker, text } => Some((speaker.clone(), text.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [(
+                Some(Speaker {
+                    key: key_of_alex,
+                    nickname: Nickname::parse("Alex").unwrap(),
+                }),
+                "hello everyone".to_owned()
+            )]
+        );
+        assert!(
+            matches!(messages.last(), Some(ServerMessage::TickCompleted { .. })),
+            "the chat is part of the tick it was said in"
+        );
+    }
+    // It is said once: not again on the next tick.
+    harness.server.step();
+    for client in &mut clients {
+        assert!(chat_lines(&client.received()).is_empty());
+    }
+}
+
+#[test]
+fn chat_is_told_in_the_order_it_was_sent_and_after_the_games_replies() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_command(|client, _, world| world.reply(client, "ok"));
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let (mut alex, mut bo) = (harness.connect_named("Alex"), harness.connect_named("Bo"));
+    harness.log_in(&mut [&mut alex, &mut bo]);
+    alex.received();
+    bo.received();
+    alex.chat("one");
+    bo.chat("two");
+    alex.command("/anything");
+    alex.chat("three");
+    harness.server.step();
+    let heard = alex.received();
+    assert_eq!(
+        chat_lines(&heard),
+        [
+            (Some("Alex".to_owned()), "one".to_owned()),
+            (Some("Alex".to_owned()), "three".to_owned()),
+            (Some("Bo".to_owned()), "two".to_owned()),
+        ],
+        "clients are handled in id order, each client's messages in the order it sent them"
+    );
+    let reply = heard
+        .iter()
+        .position(|m| matches!(m, ServerMessage::CommandReply { .. }))
+        .unwrap();
+    let first_chat = heard
+        .iter()
+        .position(|m| matches!(m, ServerMessage::Chat { .. }))
+        .unwrap();
+    assert!(reply < first_chat);
+}
+
+#[test]
+fn the_server_cleans_a_line_of_chat_and_ignores_one_with_nothing_in_it() {
+    let (mut harness, mut clients) = logged_in(&["Alex", "Bo"], ServerConfig::new(game_id()));
+    clients[0].chat("  tidy\u{7} up\u{0}\n now  ");
+    clients[0].chat("   ");
+    clients[0].chat("\u{1}\t\r");
+    clients[0].chat("");
+    harness.server.step();
+    assert_eq!(
+        chat_lines(&clients[1].received()),
+        [(Some("Alex".to_owned()), "tidy up now".to_owned())]
+    );
+}
+
+#[test]
+fn text_with_braces_slashes_and_backslashes_is_chat_as_it_is_and_nothing_runs() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new();
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let (mut alex, mut bo) = (harness.connect_named("Alex"), harness.connect_named("Bo"));
+    harness.log_in(&mut [&mut alex, &mut bo]);
+    alex.received();
+    bo.received();
+    for line in ["/tp 1 2 3", "{>1+1}", "a \\{ b \\\\ c", ".shadows off"] {
+        alex.chat(line);
+    }
+    harness.server.step();
+    assert_eq!(
+        chat_lines(&bo.received())
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        ["/tp 1 2 3", "{>1+1}", "a \\{ b \\\\ c", ".shadows off"],
+        "the server does not read what a client says in chat (the client decides what is a command)"
+    );
+    assert!(
+        !harness
+            .logic_events()
+            .iter()
+            .any(|event| matches!(event, LogicEvent::Command { .. })),
+        "chat is not a command"
+    );
+}
+
+#[test]
+fn a_line_of_chat_that_is_too_long_is_a_protocol_violation() {
+    let (mut harness, mut clients) = logged_in(&["Alex"], ServerConfig::new(game_id()));
+    let mut writer = binary_codec::ByteWriter::new();
+    writer.write_u8(7);
+    writer.write_string(&"a".repeat(MAXIMUM_CHAT_LENGTH + 1));
+    clients[0].connection.send(writer.into_bytes()).unwrap();
+    let report = harness.server.step();
+    assert!(
+        matches!(report.left.as_slice(), [(_, LeaveReason::Refused(reason))] if reason.contains("too long")),
+        "{:?}",
+        report.left
+    );
+}
+
+#[test]
+fn chat_is_limited_by_ticks_a_burst_and_then_one_line_every_so_many_ticks() {
+    let config = ServerConfig::new(game_id()).with_chat_limit(3, 10);
+    let (mut harness, mut clients) = logged_in(&["Alex", "Bo"], config);
+    for number in 1..=5 {
+        clients[0].chat(&format!("line {number}"));
+    }
+    harness.server.step();
+    let heard = chat_lines(&clients[1].received());
+    assert_eq!(
+        heard
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["line 1", "line 2", "line 3"],
+        "a burst of three"
+    );
+    let told_off = chat_lines(&clients[0].received());
+    assert_eq!(
+        told_off.iter().filter(|(who, _)| who.is_none()).count(),
+        1,
+        "the speaker is told once in a tick, not once for each line dropped: {told_off:?}"
+    );
+    assert!(
+        told_off
+            .iter()
+            .any(|(who, text)| who.is_none() && text.contains("too fast"))
+    );
+    // The bucket gives one line back after ten ticks, and not before.
+    for _ in 0..8 {
+        harness.server.step();
+    }
+    clients[0].chat("too soon");
+    harness.server.step();
+    assert!(
+        chat_lines(&clients[1].received()).is_empty(),
+        "nine ticks after the burst is too soon"
+    );
+    clients[0].received();
+    harness.server.step();
+    clients[0].chat("now");
+    harness.server.step();
+    assert_eq!(
+        chat_lines(&clients[1].received()),
+        [(Some("Alex".to_owned()), "now".to_owned())]
+    );
+    // Nobody else was limited by what Alex said.
+    clients[1].chat("my line");
+    harness.server.step();
+    assert!(
+        chat_lines(&clients[0].received())
+            .iter()
+            .any(|(_, text)| text == "my line")
+    );
+}
+
+#[test]
+fn what_the_server_tells_a_player_off_with_goes_to_that_player_only() {
+    let config = ServerConfig::new(game_id()).with_chat_limit(1, 100);
+    let (mut harness, mut clients) = logged_in(&["Alex", "Bo"], config);
+    clients[0].chat("one");
+    clients[0].chat("two");
+    harness.server.step();
+    assert!(
+        chat_lines(&clients[1].received())
+            .iter()
+            .all(|(who, _)| who.is_some())
+    );
+    assert!(
+        chat_lines(&clients[0].received())
+            .iter()
+            .any(|(who, _)| who.is_none())
+    );
+}
+
+#[test]
+fn a_game_can_read_the_nickname_of_a_client_it_has() {
+    let game = Game::new(&ALL_PLUGINS);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let logic = ScriptedLogic::new().on_join({
+        let seen = Arc::clone(&seen);
+        move |client, world| {
+            seen.lock()
+                .unwrap()
+                .push((client, world.nickname(client).map(|name| name.to_string())));
+        }
+    });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let (mut alex, mut other) = (harness.connect_named("Alex"), harness.connect_named("Alex"));
+    harness.log_in(&mut [&mut alex, &mut other]);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            (ClientId::new(1), Some("Alex".to_owned())),
+            (ClientId::new(2), Some("Alex_2".to_owned()))
+        ]
+    );
 }

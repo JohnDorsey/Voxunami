@@ -397,8 +397,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// changed). With the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
 /// Free regions in an interest (2026-11-23; protocol 13): the stream is 5 bytes longer (7,222,141 to 7,222,146: the count of free regions in each of its 5 `InterestChanged`), its hash moved to 15_858_216_659_142_805_030 for that and for the
 /// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 139_190_248_021_624_789, and the old length came back.
+/// Chat and nicknames (2026-11-24; protocol 14): the welcome says what the server made of the player's name ("player": a length byte and six letters), 7 bytes more (7_222_146 to 7_222_153, predicted), and says version 14, so the stream's hash moved to 5_683_406_848_498_704_113; the saved world's did not. Checked by taking the stream apart (`docs/history/spikes/scripting/take_apart_recording.py`: the welcome with its version put back to 13 and its nickname taken out, the records' lengths and checksums made again): the old length and the old hash, 15_858_216_659_142_805_030, came back.
 const PINNED: (u64, usize, u64) = (
-    15_858_216_659_142_805_030,
-    7_222_146,
+    5_683_406_848_498_704_113,
+    7_222_153,
     15_594_210_036_057_493_535,
 );

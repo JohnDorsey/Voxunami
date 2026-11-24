@@ -165,11 +165,6 @@ fn settings_listed(settings: &ClientSettings) -> String {
     )
 }
 
-/// Whether a line typed in the window is a client command rather than the server's.
-pub fn is_client_command(line: &str) -> bool {
-    line.starts_with('.')
-}
-
 use plugin_host::{Argument, CommandSpec};
 
 use crate::client_plugin::ClientRegistrar;
@@ -821,16 +816,6 @@ mod tests {
         let (reply, sent) = run_with_questions(".choose", &mut settings, &asked());
         assert_eq!(reply, "usage: .choose OPTION");
         assert!(sent.is_empty());
-    }
-
-    #[test]
-    fn a_line_is_the_clients_if_it_starts_with_a_period_and_the_servers_otherwise() {
-        assert!(is_client_command(".ambient 20"));
-        assert!(is_client_command("."));
-        assert!(!is_client_command("/ambient 20"));
-        assert!(!is_client_command("ambient"));
-        assert!(!is_client_command(" .ambient"));
-        assert!(!is_client_command(""));
     }
 
     #[test]

@@ -125,6 +125,7 @@ fn a_replay_shows_the_question_while_it_was_asked_and_not_after() {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

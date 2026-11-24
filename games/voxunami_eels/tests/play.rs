@@ -58,6 +58,7 @@ impl Rig {
         Session::<_, Eels>::connect(
             connection,
             &identity,
+            "player",
             Mode::Playing,
             VIEW_RADIUS,
             start,
@@ -479,6 +480,7 @@ fn a_recording_replays_the_match_from_the_recorded_players_eel() {
     let mut replay = Session::<_, Eels>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

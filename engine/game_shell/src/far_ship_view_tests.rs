@@ -306,6 +306,7 @@ impl Rig {
         let mut player = Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
+            "player",
             Mode::Playing,
             3,
             camera_at(position, 0.0, 0.0),
@@ -465,6 +466,7 @@ fn a_recording_of_a_player_who_saw_a_ship_far_away_shows_the_same_nodes() {
     let mut player = Session::<_, ExampleGame>::connect(
         recorded,
         &Identity::from_secret([1; 32]),
+        "player",
         Mode::Playing,
         3,
         camera_at(FAR_FROM_THE_SHIP, 0.0, 0.0),
@@ -483,6 +485,7 @@ fn a_recording_of_a_player_who_saw_a_ship_far_away_shows_the_same_nodes() {
     let mut replay = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         3,
         camera_at(FAR_FROM_THE_SHIP, 0.0, 0.0),
