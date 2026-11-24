@@ -295,6 +295,10 @@ fn the_commands_say_so_when_nothing_is_coupled_near_and_the_time_must_be_a_numbe
         "/joint immobilize -1",
         "/joint immobilize soon",
         "/joint immobilize 1 2",
+        "/joint mobilize -1",
+        "/joint mobilize soon",
+        "/joint mobilize 1 2",
+        "/joint lock 1",
     ] {
         let reply = say(&mut scene, &mut player, command);
         assert!(reply.contains("usage: /joint"), "{command}: {reply}");
@@ -302,7 +306,7 @@ fn the_commands_say_so_when_nothing_is_coupled_near_and_the_time_must_be_a_numbe
     assert!(pairs_that_are_rigid(&scene).is_empty());
     assert!(
         say(&mut scene, &mut player, "/joint frobnicate")
-            .contains("usage: /joint lock|unlock|mobilize|immobilize [SECONDS]|decouple")
+            .contains("usage: /joint lock|unlock|mobilize [SECONDS]|immobilize [SECONDS]|decouple")
     );
 }
 
@@ -453,4 +457,83 @@ fn a_brake_asked_of_a_coupling_that_is_gone_is_not_kept_for_the_cars_when_they_a
     tick_and_follow(&mut scene, &mut player, 120);
     assert!(pairs_that_are_rigid(&scene).is_empty());
     assert!(say(&mut scene, &mut player, "/joint mobilize").contains("nothing is immobilized"));
+}
+
+#[test]
+fn a_pair_that_is_mobilized_after_a_time_stays_rigid_for_it_and_is_let_go_then() {
+    let (mut scene, _report, mut player) = two_cars_swinging();
+    say(&mut scene, &mut player, "/joint immobilize 0");
+    tick_and_follow(&mut scene, &mut player, 3);
+    assert_eq!(pairs_that_are_rigid(&scene).len(), 1);
+    let reply = say(&mut scene, &mut player, "/joint mobilize 1");
+    assert!(
+        reply.contains("mobilizing ships 0 and 1 in 1 second"),
+        "{reply}"
+    );
+    // The wait is a second (the same as the second a brake takes in the test above): not over at 8 ticks, over by 30.
+    tick_and_follow(&mut scene, &mut player, 8);
+    assert_eq!(
+        pairs_that_are_rigid(&scene).len(),
+        1,
+        "still rigid after 8 ticks"
+    );
+    tick_and_follow(&mut scene, &mut player, 22);
+    assert!(
+        pairs_that_are_rigid(&scene).is_empty(),
+        "let go by 30 ticks"
+    );
+    // And it turns again, as a ball does.
+    let let_go = the_second_in_the_first(&scene, ship_id(0), ship_id(1));
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(1), [0.0; 3], [0.0, 0.6, 0.0])
+            .unwrap();
+    });
+    tick_and_follow(&mut scene, &mut player, 40);
+    assert!(
+        most_different(
+            the_second_in_the_first(&scene, ship_id(0), ship_id(1)),
+            let_go
+        ) > 0.05
+    );
+}
+
+#[test]
+fn mobilizing_with_no_word_of_time_is_at_once() {
+    let (mut scene, _report, mut player) = two_cars_swinging();
+    say(&mut scene, &mut player, "/joint immobilize 0");
+    tick_and_follow(&mut scene, &mut player, 3);
+    let reply = say(&mut scene, &mut player, "/joint mobilize");
+    assert!(reply.contains("mobilized ships 0 and 1"), "{reply}");
+    tick_and_follow(&mut scene, &mut player, 3);
+    assert!(pairs_that_are_rigid(&scene).is_empty());
+}
+
+#[test]
+fn a_wait_to_mobilize_is_taken_back_by_immobilizing_again_and_a_brake_is_taken_back_at_once_whatever_the_wait()
+ {
+    let (mut scene, _report, mut player) = two_cars_swinging();
+    say(&mut scene, &mut player, "/joint immobilize 0");
+    tick_and_follow(&mut scene, &mut player, 3);
+    say(&mut scene, &mut player, "/joint mobilize 1");
+    let reply = say(&mut scene, &mut player, "/joint immobilize");
+    assert!(
+        reply.contains("already immobilized, and stay so"),
+        "{reply}"
+    );
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(pairs_that_are_rigid(&scene).len(), 1, "it stayed rigid");
+    // A brake that is not done is taken back now, not after the wait: the pair never becomes rigid.
+    say(&mut scene, &mut player, "/joint mobilize");
+    tick_and_follow(&mut scene, &mut player, 3);
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(1), [0.0; 3], [0.0, 0.6, 0.0])
+            .unwrap();
+    });
+    say(&mut scene, &mut player, "/joint immobilize 5");
+    let reply = say(&mut scene, &mut player, "/joint mobilize 30");
+    assert!(reply.contains("not to be immobilized any more"), "{reply}");
+    tick_and_follow(&mut scene, &mut player, 150);
+    assert!(pairs_that_are_rigid(&scene).is_empty());
 }

@@ -23,7 +23,8 @@ struct Desk {
     locks_wanted: BTreeSet<CoupledPair>,
     /// The pairs whose swing is being braked before they are made rigid, with the seconds left to brake over.
     brakes: BTreeMap<CoupledPair, f64>,
-    mobilizations: BTreeSet<CoupledPair>,
+    /// The pairs that wait to be let turn again, with the seconds left to wait.
+    mobilizations: BTreeMap<CoupledPair, f64>,
 }
 
 /// The record that a command for joints and the plugin that couples cars share (see the module).
@@ -76,6 +77,7 @@ impl JointDesk {
         let mut desk = self.desk();
         desk.locks_wanted.remove(&pair);
         desk.brakes.remove(&pair);
+        desk.mobilizations.remove(&pair);
         desk.requests.insert(pair);
     }
 
@@ -106,6 +108,7 @@ impl JointDesk {
     pub fn immobilize(&self, pair: CoupledPair, seconds: f64) {
         let mut desk = self.desk();
         desk.locks_wanted.remove(&pair);
+        desk.mobilizations.remove(&pair);
         desk.brakes.insert(pair, seconds);
     }
 
@@ -136,17 +139,42 @@ impl JointDesk {
         self.desk().brakes.retain(|pair, _| still_there(*pair));
     }
 
-    /// Asks for a pair to be let turn again: a brake it had and a lock that was wanted of it are taken back at once, and the plugin lets the pair go in its next tick if it is rigid.
-    pub fn mobilize(&self, pair: CoupledPair) {
+    /// Asks for a pair to be let turn again after `seconds` (none: at once): a brake it had and a lock that was wanted of it are taken back now, and the plugin lets the pair go when
+    /// the time is up if it is rigid by then. Asking again for a pair that waits says the new time.
+    pub fn mobilize(&self, pair: CoupledPair, seconds: f64) {
         let mut desk = self.desk();
         desk.locks_wanted.remove(&pair);
         desk.brakes.remove(&pair);
-        desk.mobilizations.insert(pair);
+        desk.mobilizations.insert(pair, seconds);
     }
 
-    /// The pairs that were asked to be let turn again since they were last taken, in order of pair; they are not asked for again.
-    pub fn take_mobilizations(&self) -> BTreeSet<CoupledPair> {
-        std::mem::take(&mut self.desk().mobilizations)
+    /// Whether a pair waits to be let turn again.
+    pub fn is_mobilizing(&self, pair: CoupledPair) -> bool {
+        self.desk().mobilizations.contains_key(&pair)
+    }
+
+    /// The pairs that wait to be let turn again, in order of pair, with the seconds left (asking does not take them).
+    pub fn mobilizations(&self) -> BTreeMap<CoupledPair, f64> {
+        self.desk().mobilizations.clone()
+    }
+
+    /// Sets the seconds left of a pair that waits to be let turn again (nothing for a pair that does not).
+    pub fn set_mobilization_left(&self, pair: CoupledPair, seconds: f64) {
+        if let Some(left) = self.desk().mobilizations.get_mut(&pair) {
+            *left = seconds;
+        }
+    }
+
+    /// Ends the waiting of a pair, if it waits.
+    pub fn end_mobilization(&self, pair: CoupledPair) {
+        self.desk().mobilizations.remove(&pair);
+    }
+
+    /// Keeps the waiting of the pairs that `still_there` says are, and ends the rest.
+    pub fn keep_mobilizations_only(&self, still_there: impl Fn(CoupledPair) -> bool) {
+        self.desk()
+            .mobilizations
+            .retain(|pair, _| still_there(*pair));
     }
 
     /// Keeps the locks wanted of the pairs that `still_there` says are, and takes back the rest.

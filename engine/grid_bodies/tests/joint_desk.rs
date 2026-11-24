@@ -217,25 +217,57 @@ fn a_time_to_brake_over_lasts_until_it_is_ended_and_is_not_taken_as_a_request_is
         desk.brakes().into_iter().collect::<Vec<_>>(),
         vec![((ship(2), ship(3)), 0.5)]
     );
-    assert!(desk.take_requests().is_empty() && desk.take_mobilizations().is_empty());
+    assert!(desk.take_requests().is_empty() && desk.mobilizations().is_empty());
 }
 
 #[test]
-fn mobilizing_a_pair_takes_back_its_brake_and_the_lock_wanted_of_it_and_is_a_request_taken_once() {
+fn mobilizing_a_pair_takes_back_its_brake_and_the_lock_wanted_of_it_and_waits_the_time_it_is_given()
+{
     let desk = a_chain();
     desk.immobilize((ship(0), ship(1)), 1.0);
     desk.lock((ship(0), ship(1)));
     desk.immobilize((ship(2), ship(3)), 1.0);
-    desk.mobilize((ship(0), ship(1)));
-    desk.mobilize((ship(0), ship(1)));
+    desk.mobilize((ship(0), ship(1)), 0.0);
+    // Asking again says the new time.
+    desk.mobilize((ship(0), ship(1)), 2.5);
     assert!(!desk.is_braking((ship(0), ship(1))));
     assert!(!desk.is_lock_wanted((ship(0), ship(1))));
     assert!(desk.is_braking((ship(2), ship(3))));
+    assert!(desk.is_mobilizing((ship(0), ship(1))));
+    assert!(!desk.is_mobilizing((ship(2), ship(3))));
     assert_eq!(
-        desk.take_mobilizations().into_iter().collect::<Vec<_>>(),
+        desk.mobilizations().into_iter().collect::<Vec<_>>(),
+        vec![((ship(0), ship(1)), 2.5)]
+    );
+    // The time left is set as it runs down; it cannot be set for a pair that does not wait.
+    desk.set_mobilization_left((ship(0), ship(1)), 1.0);
+    desk.set_mobilization_left((ship(2), ship(3)), 1.0);
+    assert_eq!(
+        desk.mobilizations().into_iter().collect::<Vec<_>>(),
+        vec![((ship(0), ship(1)), 1.0)]
+    );
+    desk.end_mobilization((ship(0), ship(1)));
+    assert!(desk.mobilizations().is_empty());
+}
+
+#[test]
+fn a_wait_to_mobilize_is_taken_back_by_immobilizing_or_parting_and_is_let_go_with_a_pair_that_is_gone()
+ {
+    let desk = a_chain();
+    desk.mobilize((ship(0), ship(1)), 3.0);
+    desk.mobilize((ship(1), ship(2)), 3.0);
+    desk.mobilize((ship(2), ship(3)), 3.0);
+    desk.immobilize((ship(0), ship(1)), 1.0);
+    desk.decouple((ship(1), ship(2)));
+    assert!(!desk.is_mobilizing((ship(0), ship(1))));
+    assert!(!desk.is_mobilizing((ship(1), ship(2))));
+    assert!(desk.is_mobilizing((ship(2), ship(3))));
+    desk.mobilize((ship(0), ship(1)), 3.0);
+    desk.keep_mobilizations_only(|pair| pair == (ship(0), ship(1)));
+    assert_eq!(
+        desk.mobilizations().into_keys().collect::<Vec<_>>(),
         vec![(ship(0), ship(1))]
     );
-    assert!(desk.take_mobilizations().is_empty());
 }
 
 #[test]

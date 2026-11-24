@@ -34,7 +34,8 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const JOINT_USAGE: &str = "usage: /joint lock|unlock|mobilize|immobilize [SECONDS]|decouple";
+const JOINT_USAGE: &str =
+    "usage: /joint lock|unlock|mobilize [SECONDS]|immobilize [SECONDS]|decouple";
 /// How long a joint is braked over before it is made rigid, when the player does not say (owner, 2026-11-24).
 const DEFAULT_BRAKING_SECONDS: f64 = 1.0;
 const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | buckle | unbuckle | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
@@ -510,14 +511,20 @@ impl Ships {
         if !["lock", "unlock", "mobilize", "immobilize", "decouple"].contains(&action) {
             return JOINT_USAGE.to_owned();
         }
-        // The time to brake over is for `immobilize` alone, a number that is not below zero.
+        // A time is for `immobilize` (to brake over; one second if none is said) and `mobilize` (to wait before the joint is let go; none if none is said): a number that is not below zero.
         let seconds = if arguments.present(1) {
             match arguments.word(1).parse::<f64>() {
-                Ok(seconds) if action == "immobilize" && seconds.is_finite() && seconds >= 0.0 => {
+                Ok(seconds)
+                    if ["immobilize", "mobilize"].contains(&action)
+                        && seconds.is_finite()
+                        && seconds >= 0.0 =>
+                {
                     seconds
                 }
                 _ => return JOINT_USAGE.to_owned(),
             }
+        } else if action == "mobilize" {
+            0.0
         } else {
             DEFAULT_BRAKING_SECONDS
         };
@@ -531,7 +538,7 @@ impl Ships {
         match action {
             "decouple" => self.decouple_nearest(level, eyes),
             "lock" => self.lock_nearest(world, level, eyes),
-            "mobilize" => self.mobilize_nearest(world, level, eyes),
+            "mobilize" => self.mobilize_nearest(world, level, eyes, seconds),
             "immobilize" => self.immobilize_nearest(world, level, eyes, seconds),
             _ => self.unlock_nearest(world, level, eyes),
         }
@@ -609,6 +616,15 @@ impl Ships {
             return format!("nothing is coupled within {NEAR} voxels of you");
         };
         if world.immobilized_ships().contains(&(first, second)) {
+            // (A wait to let it go is taken back: asked to be immobile, it stays so.)
+            if self.joint_desk.is_mobilizing((first, second)) {
+                self.joint_desk.end_mobilization((first, second));
+                return format!(
+                    "ships {} and {} are already immobilized, and stay so",
+                    number(first),
+                    number(second)
+                );
+            }
             return format!(
                 "ships {} and {} are already immobilized",
                 number(first),
@@ -640,6 +656,7 @@ impl Ships {
         world: &ServerWorld,
         level: LevelIndex,
         eyes: WorldPosition,
+        seconds: f64,
     ) -> String {
         let found = self
             .joint_desk
@@ -665,9 +682,14 @@ impl Ships {
             self.joint_desk.is_braking(pair),
             self.joint_desk.is_lock_wanted(pair),
         );
-        self.joint_desk.mobilize(pair);
+        self.joint_desk.mobilize(pair, seconds);
         let (first, second) = (number(first), number(second));
-        if was_rigid {
+        if was_rigid && seconds > 0.0 {
+            format!(
+                "mobilizing ships {first} and {second} in {seconds} second{}",
+                if seconds == 1.0 { "" } else { "s" }
+            )
+        } else if was_rigid {
             format!("mobilized ships {first} and {second}")
         } else if was_braking {
             format!("ships {first} and {second} are not to be immobilized any more")

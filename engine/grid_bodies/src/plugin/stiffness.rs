@@ -108,10 +108,14 @@ impl Bodies {
         let desk = self.config.joint_desk.clone();
         let time_step = self.config.settings.time_step;
         let mut off_the_rail = Vec::new();
-        for pair in desk.take_mobilizations() {
-            if self.couplings.contains_key(&pair) {
+        desk.keep_mobilizations_only(|pair| self.couplings.contains_key(&pair));
+        for (pair, left) in desk.mobilizations() {
+            if left <= time_step * (1.0 + 1e-9) {
                 world.set_ships_immobilized(pair.0, pair.1, false);
+                desk.end_mobilization(pair);
                 off_the_rail.push(pair);
+            } else {
+                desk.set_mobilization_left(pair, left - time_step);
             }
         }
         desk.keep_brakes_only(|pair| self.couplings.contains_key(&pair));
