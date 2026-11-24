@@ -191,3 +191,78 @@ fn a_clone_shares_the_locks_wanted_too() {
     other.lock((ship(1), ship(2)));
     assert!(desk.is_lock_wanted((ship(1), ship(2))));
 }
+
+#[test]
+fn a_time_to_brake_over_lasts_until_it_is_ended_and_is_not_taken_as_a_request_is() {
+    let desk = a_chain();
+    desk.immobilize((ship(2), ship(3)), 0.5);
+    desk.immobilize((ship(0), ship(1)), 2.0);
+    assert!(desk.is_braking((ship(0), ship(1))));
+    assert!(!desk.is_braking((ship(1), ship(2))));
+    // In order of pair, with the time left; asking does not take them.
+    let braking = vec![((ship(0), ship(1)), 2.0), ((ship(2), ship(3)), 0.5)];
+    assert_eq!(desk.brakes().into_iter().collect::<Vec<_>>(), braking);
+    assert_eq!(desk.brakes().into_iter().collect::<Vec<_>>(), braking);
+    // The time left is set as it runs down, and asking again for a pair that is braking says the new time.
+    desk.set_brake_left((ship(0), ship(1)), 1.5);
+    assert_eq!(desk.brakes()[&(ship(0), ship(1))], 1.5);
+    desk.immobilize((ship(0), ship(1)), 4.0);
+    assert_eq!(desk.brakes()[&(ship(0), ship(1))], 4.0);
+    // A time left cannot be set for a pair that is not braking.
+    desk.set_brake_left((ship(1), ship(2)), 3.0);
+    assert!(!desk.is_braking((ship(1), ship(2))));
+    desk.end_brake((ship(0), ship(1)));
+    desk.end_brake((ship(5), ship(6)));
+    assert_eq!(
+        desk.brakes().into_iter().collect::<Vec<_>>(),
+        vec![((ship(2), ship(3)), 0.5)]
+    );
+    assert!(desk.take_requests().is_empty() && desk.take_mobilizations().is_empty());
+}
+
+#[test]
+fn mobilizing_a_pair_takes_back_its_brake_and_the_lock_wanted_of_it_and_is_a_request_taken_once() {
+    let desk = a_chain();
+    desk.immobilize((ship(0), ship(1)), 1.0);
+    desk.lock((ship(0), ship(1)));
+    desk.immobilize((ship(2), ship(3)), 1.0);
+    desk.mobilize((ship(0), ship(1)));
+    desk.mobilize((ship(0), ship(1)));
+    assert!(!desk.is_braking((ship(0), ship(1))));
+    assert!(!desk.is_lock_wanted((ship(0), ship(1))));
+    assert!(desk.is_braking((ship(2), ship(3))));
+    assert_eq!(
+        desk.take_mobilizations().into_iter().collect::<Vec<_>>(),
+        vec![(ship(0), ship(1))]
+    );
+    assert!(desk.take_mobilizations().is_empty());
+}
+
+#[test]
+fn immobilizing_takes_the_lock_wanted_back_and_parting_takes_the_brake_back() {
+    let desk = a_chain();
+    desk.lock((ship(0), ship(1)));
+    desk.lock((ship(2), ship(3)));
+    desk.immobilize((ship(0), ship(1)), 1.0);
+    assert!(!desk.is_lock_wanted((ship(0), ship(1))));
+    assert!(desk.is_lock_wanted((ship(2), ship(3))));
+    desk.immobilize((ship(2), ship(3)), 1.0);
+    desk.decouple((ship(0), ship(1)));
+    assert!(!desk.is_braking((ship(0), ship(1))));
+    assert!(desk.is_braking((ship(2), ship(3))));
+}
+
+#[test]
+fn the_brakes_of_pairs_that_are_gone_are_let_go_and_the_rest_are_kept() {
+    let desk = a_chain();
+    desk.immobilize((ship(0), ship(1)), 1.0);
+    desk.immobilize((ship(2), ship(3)), 1.0);
+    desk.keep_brakes_only(|pair| pair == (ship(2), ship(3)));
+    assert_eq!(
+        desk.brakes().into_keys().collect::<Vec<_>>(),
+        vec![(ship(2), ship(3))]
+    );
+    let other = desk.clone();
+    other.end_brake((ship(2), ship(3)));
+    assert!(desk.brakes().is_empty(), "a clone is the same desk");
+}

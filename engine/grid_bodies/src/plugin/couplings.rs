@@ -40,6 +40,8 @@ pub(super) struct Coupled {
     pub(super) frame: FrameKey,
     pub(super) first_end: BlockFace,
     pub(super) second_end: BlockFace,
+    /// Whether the body world's coupling was made rigid at the turn its bodies had (`stiffness.rs`): what the world says of the pair is made true in the tick after it says it.
+    pub(super) rigid: bool,
 }
 
 /// What became of a coupling since the last tick.
@@ -164,6 +166,7 @@ impl Bodies {
         for frame_key in frame_keys {
             self.couple_and_pull_in(world, &settings, frame_key);
         }
+        self.keep_the_stiffness_true(world);
         self.record_couplings(world);
         self.tell_the_desk_the_pivots(world);
         let now = self.couplings.len() as u64;
@@ -409,6 +412,8 @@ impl Bodies {
         }
         if let Some(record) = self.couplings.get_mut(&key) {
             record.frame = frame_key;
+            // (The joint is made again as a ball; if the world says the pair is rigid, it is made rigid again at the turn the bodies have in the new frame, in this tick.)
+            record.rigid = false;
         }
         self.count(|report| report.couplings_moved += 1);
         true
@@ -592,6 +597,7 @@ impl Bodies {
             frame: frame_key,
             first_end: pair.first_end,
             second_end: pair.second_end,
+            rigid: false,
         };
         let key = (pair.first, pair.second);
         if !self.join_bodies(settings, frame_key, key, &coupled) {

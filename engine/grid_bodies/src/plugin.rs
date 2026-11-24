@@ -31,6 +31,7 @@ mod ghosts;
 mod locks;
 mod rail_joints;
 mod rail_ports;
+mod stiffness;
 
 pub use balls::joint_ball_kind;
 use rail_ports::is_a_rail_pair;
@@ -1736,6 +1737,8 @@ impl Bodies {
         self.attract(world);
         // (And the cars that a player asked to have locked are turned toward being in line.)
         self.turn_the_cars_wanted_locked(world);
+        // (And the pairs that are to be made rigid are braked.)
+        self.brake_the_pairs_to_be_made_rigid(world);
         for force in world.take_grid_forces() {
             let Some(frame) = self
                 .frame_of(force.grid)
@@ -1829,6 +1832,8 @@ impl Bodies {
         self.take_railed_groups_off_for_ends_that_pull(world);
         // (And the pairs that a player parted in this tick, from where they are.)
         self.part_the_pairs_asked_to_be_parted(world);
+        // (And the pairs asked to be made rigid or mobile: braked, counted down, told to the world.)
+        self.handle_the_stiffness_asked_for(world);
         // (And the cars that a player asked to have locked, and that are in line: made one ship, from where they are.)
         self.lock_the_cars_that_are_in_line(world);
         // (And the balls of the joints that are coupled or locked now, which clients are told of as of entities.)

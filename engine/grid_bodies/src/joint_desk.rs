@@ -21,6 +21,9 @@ struct Desk {
     requests: BTreeSet<CoupledPair>,
     held_apart: BTreeSet<CoupledPair>,
     locks_wanted: BTreeSet<CoupledPair>,
+    /// The pairs whose swing is being braked before they are made rigid, with the seconds left to brake over.
+    brakes: BTreeMap<CoupledPair, f64>,
+    mobilizations: BTreeSet<CoupledPair>,
 }
 
 /// The record that a command for joints and the plugin that couples cars share (see the module).
@@ -72,6 +75,7 @@ impl JointDesk {
     pub fn decouple(&self, pair: CoupledPair) {
         let mut desk = self.desk();
         desk.locks_wanted.remove(&pair);
+        desk.brakes.remove(&pair);
         desk.requests.insert(pair);
     }
 
@@ -94,6 +98,55 @@ impl JointDesk {
     /// Takes back the lock that is wanted of a pair, if one is.
     pub fn cancel_lock(&self, pair: CoupledPair) {
         self.desk().locks_wanted.remove(&pair);
+    }
+
+    /// Asks for a pair to be made rigid at the turn it has, after its swing has been braked over `seconds` (none: at once): the plugin slows the cars' turn against each other, and
+    /// makes the pair rigid when it has stopped or the time is up. A lock that was wanted of the pair is not wanted any more (a lock turns the cars, and this holds them); asking
+    /// again for a pair that is braking says the new time.
+    pub fn immobilize(&self, pair: CoupledPair, seconds: f64) {
+        let mut desk = self.desk();
+        desk.locks_wanted.remove(&pair);
+        desk.brakes.insert(pair, seconds);
+    }
+
+    /// Whether a pair is being braked to be made rigid.
+    pub fn is_braking(&self, pair: CoupledPair) -> bool {
+        self.desk().brakes.contains_key(&pair)
+    }
+
+    /// The pairs that are being braked, in order of pair, with the seconds left (asking does not take them).
+    pub fn brakes(&self) -> BTreeMap<CoupledPair, f64> {
+        self.desk().brakes.clone()
+    }
+
+    /// Sets the seconds left of a pair that is braking (nothing for a pair that is not).
+    pub fn set_brake_left(&self, pair: CoupledPair, seconds: f64) {
+        if let Some(left) = self.desk().brakes.get_mut(&pair) {
+            *left = seconds;
+        }
+    }
+
+    /// Ends the braking of a pair, if it is braking.
+    pub fn end_brake(&self, pair: CoupledPair) {
+        self.desk().brakes.remove(&pair);
+    }
+
+    /// Keeps the brakes of the pairs that `still_there` says are, and ends the rest.
+    pub fn keep_brakes_only(&self, still_there: impl Fn(CoupledPair) -> bool) {
+        self.desk().brakes.retain(|pair, _| still_there(*pair));
+    }
+
+    /// Asks for a pair to be let turn again: a brake it had and a lock that was wanted of it are taken back at once, and the plugin lets the pair go in its next tick if it is rigid.
+    pub fn mobilize(&self, pair: CoupledPair) {
+        let mut desk = self.desk();
+        desk.locks_wanted.remove(&pair);
+        desk.brakes.remove(&pair);
+        desk.mobilizations.insert(pair);
+    }
+
+    /// The pairs that were asked to be let turn again since they were last taken, in order of pair; they are not asked for again.
+    pub fn take_mobilizations(&self) -> BTreeSet<CoupledPair> {
+        std::mem::take(&mut self.desk().mobilizations)
     }
 
     /// Keeps the locks wanted of the pairs that `still_there` says are, and takes back the rest.

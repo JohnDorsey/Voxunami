@@ -397,8 +397,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// changed). With the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
 /// The command `/joint` (2026-11-23, `decouple`): the script sends `/nonsense`, whose answer lists every command, and the list has ", /joint ACTION" more: 15 bytes, 7,222,141 to 7,222,156, predicted from
 /// the cause before the new numbers were taken. The saved world's hash did not move. **Control:** with the command's registration taken out, the old hash, length and saved world come back. Windows only.
+/// `/joint` got an optional argument (2026-11-24, `immobilize [SECONDS]`): the list has " [SECONDS]" more, 10 bytes, 7,222,156 to 7,222,166, predicted from the cause; the saved world's hash did not move. **Control:** with the optional
+/// argument left out of the registration, the old hash and length came back (checked).
 const PINNED: (u64, usize, u64) = (
-    5_982_540_807_899_295_497,
-    7_222_156,
+    10_448_497_973_270_601_598,
+    7_222_166,
     15_594_210_036_057_493_535,
 );

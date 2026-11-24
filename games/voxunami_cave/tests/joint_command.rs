@@ -136,7 +136,7 @@ fn a_usage_is_given_for_a_word_the_command_does_not_have() {
     let (mut scene, _report, mut player) = two_cars();
     let reply = say(&mut scene, &mut player, "/joint frobnicate");
     assert!(
-        reply.contains("usage: /joint lock|unlock|decouple"),
+        reply.contains("usage: /joint lock|unlock|mobilize|immobilize [SECONDS]|decouple"),
         "{reply}"
     );
 }
