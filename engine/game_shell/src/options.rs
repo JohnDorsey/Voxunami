@@ -34,6 +34,9 @@ Usage: voxunami {command} [options]
                                   .pixelshadows changes it while playing
   --map-release on|off            let go at once of the pictures made for a map that is taken away
                                   (default on); .maprelease changes it while playing
+  --map                           draw the map (a camera that goes round the player) in a screenshot or a
+                                  benchmark; --map-distance VOXELS, --map-azimuth DEGREES and
+                                  --map-elevation DEGREES place it (each implies --map)
   --shader-pack NAME              start with this shader pack (its id or name, or the beginning of one);
                                   .shader changes it while playing
   --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
@@ -176,6 +179,8 @@ pub struct ViewOptions {
     pub pixelated_shadows: bool,
     /// Whether the pictures made for a map that is kept ready are let go of when it is taken away (`--map-release`); on by default.
     pub release_map_pictures: bool,
+    /// The map to draw instead of the player's eyes in a screenshot or a benchmark (`--map` and the options that place it).
+    pub map: Option<MapStart>,
     /// A folder of shader packs besides the one in the game data folder (`--shader-packs`).
     pub shader_packs: Option<PathBuf>,
     /// The shader pack to start with (`--shader-pack`): an id or a name, or the beginning of one.
@@ -196,8 +201,31 @@ impl Default for ViewOptions {
             shadows: true,
             pixelated_shadows: false,
             release_map_pictures: true,
+            map: None,
             shader_packs: None,
             shader_pack: None,
+        }
+    }
+}
+
+/// Where the map starts in a screenshot or a benchmark (`--map`): round the player, as far as the distance says, at these angles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapStart {
+    /// How far from the player's body, in voxels; `None` is the distance the map starts at.
+    pub distance: Option<f64>,
+    /// Degrees round the player's up axis, from straight back (`Orbit::azimuth`).
+    pub azimuth_degrees: f64,
+    /// Degrees above the level (`Orbit::elevation`).
+    pub elevation_degrees: f64,
+}
+
+impl Default for MapStart {
+    /// The map as `Session::show_map` starts it.
+    fn default() -> Self {
+        Self {
+            distance: None,
+            azimuth_degrees: 0.0,
+            elevation_degrees: 0.5_f64.to_degrees(),
         }
     }
 }
@@ -326,6 +354,28 @@ fn parse_view_flag(
                 "off" => false,
                 other => return Err(format!("--pixel-shadows: {other:?} should be on or off")),
             };
+        }
+        "--map" => {
+            view.map.get_or_insert_with(MapStart::default);
+        }
+        "--map-distance" => {
+            let distance: f64 = parse_number(flag, &value(flag)?)?;
+            if !(distance.is_finite() && distance > 0.0) {
+                return Err("--map-distance must be a number of voxels over nothing".to_owned());
+            }
+            view.map.get_or_insert_with(MapStart::default).distance = Some(distance);
+        }
+        "--map-azimuth" => {
+            let degrees = parse_number(flag, &value(flag)?)?;
+            view.map
+                .get_or_insert_with(MapStart::default)
+                .azimuth_degrees = degrees;
+        }
+        "--map-elevation" => {
+            let degrees = parse_number(flag, &value(flag)?)?;
+            view.map
+                .get_or_insert_with(MapStart::default)
+                .elevation_degrees = degrees;
         }
         "--map-release" => {
             view.release_map_pictures = match value(flag)?.as_str() {
@@ -570,7 +620,7 @@ mod tests {
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
              --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off \
-             --map-release off --shader-pack cel --shader-packs my_shaders",
+             --map-release off --map-distance 100 --shader-pack cel --shader-packs my_shaders",
         );
         assert_eq!(
             parsed,
@@ -587,6 +637,10 @@ mod tests {
                     shadows: false,
                     pixelated_shadows: false,
                     release_map_pictures: false,
+                    map: Some(MapStart {
+                        distance: Some(100.0),
+                        ..MapStart::default()
+                    }),
                     shader_packs: Some(PathBuf::from("my_shaders")),
                     shader_pack: Some("cel".to_owned()),
                 },
@@ -616,6 +670,45 @@ mod tests {
                 .unwrap_err();
             assert!(error.contains("--pixel-shadows"), "{bad:?}: {error}");
         }
+    }
+
+    #[test]
+    fn the_map_is_drawn_only_if_asked_for_and_any_of_the_options_that_place_it_asks() {
+        assert_eq!(play("").view.map, None);
+        assert_eq!(play("--map").view.map, Some(MapStart::default()));
+        let placed = play("--map-distance 250.5 --map-azimuth -30 --map-elevation 60")
+            .view
+            .map
+            .unwrap();
+        assert_eq!(
+            placed,
+            MapStart {
+                distance: Some(250.5),
+                azimuth_degrees: -30.0,
+                elevation_degrees: 60.0
+            }
+        );
+        // One of them alone is the map, with the rest as the map starts.
+        assert_eq!(
+            play("--map-elevation 10").view.map,
+            Some(MapStart {
+                elevation_degrees: 10.0,
+                ..MapStart::default()
+            })
+        );
+        for bad in [
+            "--map-distance 0",
+            "--map-distance -5",
+            "--map-distance x",
+            "--map-distance inf",
+        ] {
+            assert!(parse_play::<ExampleGame>(arguments(bad)).is_err(), "{bad}");
+        }
+        // A recording can be watched from the map too.
+        let Parsed::Run(options) = parse_replay(arguments("r.voxreplay --map")).unwrap() else {
+            panic!("a recording to watch");
+        };
+        assert_eq!(options.view.map, Some(MapStart::default()));
     }
 
     #[test]

@@ -843,3 +843,71 @@ fn nothing_is_aimed_at_from_the_map_and_the_player_is_not_walked_by_it() {
     player.show_body();
     assert!(player.target().is_some());
 }
+
+#[test]
+fn a_camera_that_goes_round_the_map_keeps_its_cut_and_the_server_is_asked_the_nodes_round_the_place_the_cut_was_chosen_for_and_the_players_eyes_choose_in_every_brick()
+ {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, WATCHER);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+
+    player.show_map();
+    // (The example game draws terrain 700 voxels out: the map is near enough to draw some.)
+    player.orbit_zoom(50.0);
+    rig.settle(&mut player, &mut screen);
+    let selections = player.coarse_selections();
+    let chosen_for = player.drawn_camera().position.brick();
+    let asked = |player: &Player, brick| {
+        player.detail_places().contains(&DetailPlace {
+            grid: GridId::MAIN,
+            brick,
+        })
+    };
+    assert!(asked(&player, chosen_for));
+
+    // A few small turns: the camera is in other bricks, the cut is the one it was, and the server is asked about the place it was chosen for.
+    let mut other_bricks = 0;
+    for _ in 0..10 {
+        player.orbit_by(0.012, 0.0);
+        let _ = player.update_view();
+        other_bricks += usize::from(player.drawn_camera().position.brick() != chosen_for);
+        assert_eq!(player.coarse_selections(), selections, "the cut is kept");
+        assert!(
+            asked(&player, chosen_for),
+            "the server is asked about the place the cut was chosen for"
+        );
+    }
+    assert!(
+        other_bricks > 0,
+        "the camera did not leave its brick: the turns test nothing"
+    );
+
+    // A long way round, and the cut is chosen again, for where the camera is, and the server is asked about that.
+    player.orbit_by(1.5, 0.0);
+    let _ = player.update_view();
+    assert!(player.coarse_selections() > selections);
+    let now = player.drawn_camera().position.brick();
+    assert!(asked(&player, now));
+    assert!(!asked(&player, chosen_for));
+
+    // The player's own eyes have no tolerance: a move to another brick chooses the cut again, and for that brick, high over the ground where a tolerance would have
+    // kept it (the ground is 390 voxels down: a quarter of that is a good deal more than the 40 voxels).
+    player.show_body();
+    player.camera = camera_at([358.5, 400.0, 8.5], 0.0, 0.0);
+    let _ = player.update_view();
+    let before = player.coarse_selections();
+    let live = player.camera.position.brick();
+    assert_eq!(player.nodes_chosen_for(GridId::MAIN), Some(live));
+    player
+        .camera
+        .move_in_world(glam::DVec3::new(40.0, 0.0, 0.0));
+    assert_ne!(player.camera.position.brick(), live);
+    let _ = player.update_view();
+    assert_eq!(player.coarse_selections(), before + 1);
+    assert_eq!(
+        player.nodes_chosen_for(GridId::MAIN),
+        Some(player.camera.position.brick())
+    );
+}

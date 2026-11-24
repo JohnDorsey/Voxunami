@@ -11,9 +11,9 @@ use transport::Connection;
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::host::{build_server_with_ship_files, connect_to};
-use crate::options::{PlayOptions, ReplayOptions};
+use crate::options::{MapStart, PlayOptions, ReplayOptions};
 use crate::screen::ScreenText;
-use crate::session::{Mode, Session};
+use crate::session::{Mode, Session, ViewMode};
 use crate::view::{
     apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
     light_the_scene, prepare_shader_packs, show_entity_boxes, show_other_players, show_screen,
@@ -114,12 +114,16 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     if reports_occupancy {
         report_occupancy(&renderer, &session);
     }
+    if let Some(map) = &options.view.map {
+        start_the_map(&mut renderer, &mut session, map, &mut step_server)?;
+    }
 
     render_outputs(
         &mut renderer,
         &mut session,
         &options.view,
         options.benchmark,
+        &mut step_server,
     )?;
 
     session.say_goodbye();
@@ -203,7 +207,47 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
     apply_occupancy(&mut renderer, &mut session);
-    render_outputs(&mut renderer, &mut session, view, false)
+    if let Some(map) = &view.map {
+        start_the_map(&mut renderer, &mut session, map, &mut || {})?;
+    }
+    render_outputs(&mut renderer, &mut session, view, false, &mut || {})
+}
+
+/// Draws the map where the options say, and lets what it needs be made.
+fn start_the_map<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &mut Session<C, G>,
+    map: &MapStart,
+    step_server: &mut impl FnMut(),
+) -> Result<(), String> {
+    session.show_map();
+    if let Some(orbit) = session.orbit() {
+        if let Some(distance) = map.distance {
+            session.orbit_zoom(distance / orbit.distance);
+        }
+        session.orbit_by(
+            map.azimuth_degrees.to_radians() - orbit.azimuth,
+            map.elevation_degrees.to_radians() - orbit.elevation,
+        );
+    }
+    let updates = session
+        .settle(step_server)
+        .map_err(|error| error.to_string())?;
+    apply_updates(renderer, updates);
+    apply_occupancy(renderer, session);
+    // (Where the map is, in the words of the options, to put a player's eyes there and compare the pictures.)
+    let camera = session.drawn_camera();
+    let (brick, offset) = (camera.position.brick(), camera.position.offset());
+    let edge = voxel_space::BRICK_EDGE_LENGTH as f64;
+    println!(
+        "the map is at --camera {:.3},{:.3},{:.3} --yaw {:.3} --pitch {:.3}",
+        brick.x() as f64 * edge + offset[0],
+        brick.y() as f64 * edge + offset[1],
+        brick.z() as f64 * edge + offset[2],
+        camera.yaw.to_degrees(),
+        camera.pitch.to_degrees()
+    );
+    Ok(())
 }
 
 /// The environment variable that makes a screenshot run count the bricks by what the sun's ray is told of them (empty, full, mixed), and say what that costs.
@@ -272,6 +316,7 @@ fn render_outputs<C: Connection, G: GameDefinition>(
     session: &mut Session<C, G>,
     view: &crate::options::ViewOptions,
     benchmark: bool,
+    step_server: &mut impl FnMut(),
 ) -> Result<(), String> {
     light_the_scene(renderer, session);
     show_other_players(renderer, session);
@@ -284,7 +329,7 @@ fn render_outputs<C: Connection, G: GameDefinition>(
         (view.width, view.height),
         None,
     );
-    let mut camera = session.camera;
+    let mut camera = session.drawn_camera();
     if let Some(path) = &view.screenshot {
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let (pixels, statistics) = renderer.render_to_rgba(&camera, view.width, view.height);
@@ -298,6 +343,9 @@ fn render_outputs<C: Connection, G: GameDefinition>(
             statistics.bricks_drawn + statistics.bricks_culled,
             statistics.quads_drawn
         );
+    }
+    if benchmark && session.view_mode() == ViewMode::Map {
+        return map_benchmark(renderer, session, view, step_server);
     }
     if benchmark {
         // Each wait is for a batch of frames, and a frame's time is its batch's over their number: a wait for one frame comes back in whole milliseconds on the
@@ -331,6 +379,74 @@ fn render_outputs<C: Connection, G: GameDefinition>(
         );
     }
     Ok(())
+}
+
+/// The benchmark of the map: a camera that goes round its focus all the time, as a player's hand on the mouse or the keys does, and everything a window does in a frame (the
+/// view is updated, what it made is given to the renderer, the picture is drawn), each frame waited for, with the time of the update and the time of the picture told apart.
+fn map_benchmark<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &mut Session<C, G>,
+    view: &crate::options::ViewOptions,
+    step_server: &mut impl FnMut(),
+) -> Result<(), String> {
+    /// How many frames are timed (after a few that are not).
+    const FRAMES: usize = 300;
+    const WARM_UP_FRAMES: usize = 20;
+    /// What the camera goes round by in a frame: about a radian a second at 60 frames a second (the keys turn it at 1.5).
+    const TURN_PER_FRAME: f64 = 0.02;
+    let (mut updates_ms, mut pictures_ms, mut frames_ms) = (Vec::new(), Vec::new(), Vec::new());
+    let selections_before = session.coarse_selections();
+    let mut most_updates_in_a_frame = 0;
+    for frame in 0..WARM_UP_FRAMES + FRAMES {
+        let started = Instant::now();
+        session.orbit_by(TURN_PER_FRAME, 0.0);
+        // (The server's ticks come between frames, as in a window: one in three.)
+        if frame % 3 == 0 {
+            step_server();
+            session.advance().map_err(|error| error.to_string())?;
+        }
+        let updates = session.update_view();
+        most_updates_in_a_frame = most_updates_in_a_frame.max(updates.len());
+        apply_updates(renderer, updates);
+        apply_occupancy(renderer, session);
+        light_the_scene(renderer, session);
+        let update_took = started.elapsed();
+        let drawn = session.drawn_camera();
+        renderer.render_offscreen(&drawn, view.width, view.height);
+        renderer.wait_for_gpu();
+        if frame >= WARM_UP_FRAMES {
+            let total = started.elapsed();
+            updates_ms.push(update_took.as_secs_f64() * 1000.0);
+            pictures_ms.push((total - update_took).as_secs_f64() * 1000.0);
+            frames_ms.push(total.as_secs_f64() * 1000.0);
+        }
+    }
+    println!(
+        "the map goes round, {FRAMES} frames at {}x{}: the cubes were chosen again {} times, at most {most_updates_in_a_frame} changes for the renderer in a frame",
+        view.width,
+        view.height,
+        session.coarse_selections() - selections_before,
+    );
+    println!("{}", milliseconds_report("a frame", &mut frames_ms));
+    println!(
+        "{}",
+        milliseconds_report("the update of the view", &mut updates_ms)
+    );
+    println!("{}", milliseconds_report("the picture", &mut pictures_ms));
+    Ok(())
+}
+
+/// The average, median, 95th percentile and worst of times in milliseconds, in a line.
+fn milliseconds_report(label: &str, times: &mut [f64]) -> String {
+    times.sort_by(f64::total_cmp);
+    let average = times.iter().sum::<f64>() / times.len() as f64;
+    let percentile = |fraction: f64| times[((times.len() - 1) as f64 * fraction) as usize];
+    format!(
+        "  {label}: average {average:.2} ms, median {:.2} ms, 95th percentile {:.2} ms, worst {:.2} ms",
+        percentile(0.5),
+        percentile(0.95),
+        times.last().expect("times were measured"),
+    )
 }
 
 /// How many frames the benchmark gives the GPU between one wait and the next.
@@ -379,6 +495,16 @@ mod tests {
         assert_eq!(
             frame_time_report(1280, 720, &mut times),
             "1280x720 frame time over 20 batches of 10 frames: average 10.50 ms (95 fps), median 10.00 ms, 95th percentile 19.00 ms, worst batch 20.00 ms"
+        );
+    }
+
+    #[test]
+    fn the_times_of_a_map_are_reported_as_the_average_the_median_the_95th_percentile_and_the_worst()
+    {
+        let mut times: Vec<f64> = (1..=20).rev().map(f64::from).collect();
+        assert_eq!(
+            milliseconds_report("a frame", &mut times),
+            "  a frame: average 10.50 ms, median 10.00 ms, 95th percentile 19.00 ms, worst 20.00 ms"
         );
     }
 

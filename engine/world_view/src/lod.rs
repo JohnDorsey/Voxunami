@@ -196,6 +196,11 @@ pub struct LodView {
     /// worked out for.
     cubes: CubeStates,
     wanted_for: Option<(BrickCoordinate, LodSettings)>,
+    /// How far the viewer may go from where the cubes were last chosen, as a share of the distance from it to the nearest thing drawn, before they are chosen again ([`LodView::set_reselect_tolerance`]); 0, the
+    /// default, is to choose them again whenever the viewer is in another brick. Where the viewer was when they were last chosen, and how many voxels that share came to then.
+    reselect_tolerance: f64,
+    selected_viewer: Option<WorldPosition>,
+    reselect_slack: f64,
     /// How many times the edits have changed what the cubes are worked out from ([`LodView::set_override`]), and the number they were last worked out at.
     edit_generation: u64,
     selected_edits: u64,
@@ -314,6 +319,9 @@ impl LodView {
             may_show: MayShowMemo::default(),
             cubes: CubeStates::new(),
             wanted_for: None,
+            reselect_tolerance: 0.0,
+            selected_viewer: None,
+            reselect_slack: 0.0,
             edit_generation: 0,
             selected_edits: 0,
             warm_wanted: None,
@@ -435,6 +443,55 @@ impl LodView {
     /// (which may be a little behind a place that moves). `None`, the default, keeps nothing warm and lets the pictures that were kept for it go to the budget.
     pub fn set_warm_viewpoint(&mut self, viewpoint: Option<Viewpoint>) {
         self.warm_wanted = viewpoint;
+    }
+
+    /// How far the viewer may go from where the cubes were chosen before they are chosen again, as a share of the distance from the viewer to the nearest cube that is
+    /// drawn (0.1 is a tenth): a camera that goes round a map, far from the ground, crosses a brick every frame and chose its cut again every frame, which cost more than a
+    /// frame's share (the cut of 8,000 cubes took 13 ms to choose, `docs/specs/viewpoints-spec.md`, 9n). A viewer near what it draws has a share of nothing, and so has the cut of the brick
+    /// it is in. 0, the default, is to choose them again whenever the viewer is in another brick, as a player's eyes do. A negative or not a number is 0.
+    pub fn set_reselect_tolerance(&mut self, tolerance: f64) {
+        self.reselect_tolerance = if tolerance.is_finite() && tolerance > 0.0 {
+            tolerance
+        } else {
+            0.0
+        };
+        if self.reselect_tolerance == 0.0 {
+            self.reselect_slack = 0.0;
+        }
+    }
+
+    /// The brick the cubes that are wanted were chosen for: the viewer's, or (with a tolerance) the one the viewer was in when they were chosen. `None` before the first.
+    /// The server is told this place and not the viewer's, so that both ends choose from the same one (`coarse_cells::select_around_brick`).
+    pub fn wanted_centre(&self) -> Option<BrickCoordinate> {
+        self.wanted_for.map(|(centre, _)| centre)
+    }
+
+    /// The brick to choose and make the cubes for: the one the viewer is in, unless the cubes were chosen for another and the viewer has not gone farther from where they
+    /// were than the tolerance allows.
+    fn centre_for(
+        &self,
+        viewer: WorldPosition,
+        settings: &LodSettings,
+        version: u64,
+    ) -> BrickCoordinate {
+        let live = viewer.brick();
+        if self.reselect_slack > 0.0
+            && let Some((centre, chosen_with)) = self.wanted_for
+            && let Some(at) = self.selected_viewer
+            && chosen_with == *settings
+            && self.selected_version == Some(version)
+        {
+            let moved = viewer.relative_to(at);
+            let distance = moved
+                .iter()
+                .map(|component| component * component)
+                .sum::<f64>()
+                .sqrt();
+            if distance <= self.reselect_slack {
+                return centre;
+            }
+        }
+        live
     }
 
     /// Whether the cubes of the warm viewpoint are being worked out on the thread that does it, and are not given back yet.
@@ -581,7 +638,9 @@ impl LodView {
         settings: &LodSettings,
     ) -> Vec<MeshUpdate> {
         self.grid = grid;
-        let centre = viewer.brick();
+        // (The place the cubes were chosen for, while the viewer has not gone far enough from it to be worth choosing them again: the bricks that are made, the cubes that
+        // are wanted and the place the server is told are all of that one place.)
+        let centre = self.centre_for(viewer, settings, source.version());
         // The bricks round the warm viewpoint are made after those round the viewer, whenever it is somewhere else.
         let warm_centre = self
             .warm_wanted
@@ -869,6 +928,12 @@ impl LodView {
                 hurried,
             )
         };
+        self.reselect_slack = if self.reselect_tolerance > 0.0 {
+            self.reselect_tolerance * distance_to_the_nearest(&cubes, centre)
+        } else {
+            0.0
+        };
+        self.selected_viewer = Some(viewer);
         self.cubes.want_with_steps(&cubes, &steps);
         self.wanted_for = Some((centre, *settings));
         self.selected_version = Some(source.version());
@@ -1285,6 +1350,35 @@ fn describe(cube: BrickCube) -> String {
         origin.y(),
         origin.z()
     )
+}
+
+/// How far, in voxels, the brick `centre` is from the nearest of the nodes among the cubes (the gap between it and the box of the cube, in whole bricks: 0 if it is in or
+/// beside one). For a viewer that is far from everything that is drawn this is the distance to the nearest of it; 0 where there is no node.
+fn distance_to_the_nearest(cubes: &[BrickCube], centre: BrickCoordinate) -> f64 {
+    let edge = voxel_space::BRICK_EDGE_LENGTH as f64;
+    let gap = |origin: i128, size: i128, at: i128| {
+        let (low, high) = (origin, origin + size - 1);
+        (low - at).max(at - high).max(0) as f64
+    };
+    let nearest = cubes
+        .iter()
+        // (The bricks of the fine ball round the viewer are in the cut though they are empty: it is the nodes that say how far the viewer is from what it draws.)
+        .filter(|cube| cube.level() >= 1)
+        .map(|cube| {
+            let (origin, size) = (cube.origin(), cube.edge_length() as i128);
+            let gaps = [
+                gap(origin.x(), size, centre.x()),
+                gap(origin.y(), size, centre.y()),
+                gap(origin.z(), size, centre.z()),
+            ];
+            gaps.iter().map(|gap| gap * gap).sum::<f64>().sqrt()
+        })
+        .fold(f64::INFINITY, f64::min);
+    if nearest.is_finite() {
+        nearest * edge
+    } else {
+        0.0
+    }
 }
 
 /// The square of the distance in bricks from `centre` to the middle of `cube` (the order in which cubes are made: nearest first). It saturates, since the square

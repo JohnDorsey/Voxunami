@@ -22,6 +22,11 @@ use crate::view_rig::{Focus, FocusFrame, Orbit, next_focus};
 /// first design has the map tracked for this long, and then let go of; the lazy window after it is not built). Counted in ticks, never timed.
 pub const MAP_WARM_TICKS: u64 = 600;
 
+/// How far the map's camera, or a camera that flies, may go from where the terrain's cubes were chosen before they are chosen again, as a share of the distance to the
+/// nearest thing drawn: a tenth (`LodView::set_reselect_tolerance`; a camera that goes round the map crossed a brick every frame, and choosing the cubes again took 13 ms of
+/// the frame, `docs/specs/viewpoints-spec.md`, 9n). The player's own eyes have none: they choose them again in every brick, as they always did.
+pub const MAP_RESELECT_TOLERANCE: f64 = 0.25;
+
 /// About how far a player's parts are from their eyes, in voxels, for the size of the focus that is the body.
 const BODY_RADIUS: f64 = 2.0;
 
@@ -240,11 +245,44 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         places
     }
 
-    /// The places the drawn camera is in, by grid, when it is not the player's own (the server is asked for the edits and the nodes round them as round the player).
+    /// The places the drawn camera is in, by grid, when it is not the player's own (the server is asked for the edits round them as round the player).
     pub(super) fn drawn_places_besides_the_body(&self) -> BTreeMap<GridId, WorldPosition> {
         match self.rig.state {
             State::Body => BTreeMap::new(),
             _ => self.places_in_grids(self.drawn_camera().position),
+        }
+    }
+
+    /// The bricks, by grid, that the nodes drawn from the drawn camera were chosen for when it is not the player's own: where the views last chose them, which is not the
+    /// camera's own brick while the camera is within [`MAP_RESELECT_TOLERANCE`] of it. **This is what the server is asked the nodes round**, so that both ends choose from
+    /// the same place (`docs/specs/viewpoints-spec.md`, test 5).
+    pub(super) fn drawn_nodes_were_chosen_for(
+        &self,
+    ) -> BTreeMap<GridId, voxel_space::BrickCoordinate> {
+        let mut chosen = BTreeMap::new();
+        if matches!(self.rig.state, State::Body) {
+            return chosen;
+        }
+        for (grid, place) in self.drawn_places_besides_the_body() {
+            chosen.insert(
+                grid,
+                self.nodes_chosen_for(grid).unwrap_or_else(|| place.brick()),
+            );
+        }
+        chosen
+    }
+
+    /// The brick, in the coordinates of the grid (the root grid of the level, or a planet), that the nodes drawn of it were last chosen for: the one the camera was in then.
+    /// `None` for a grid whose terrain is not drawn in nodes, and before the first.
+    pub(crate) fn nodes_chosen_for(&self, grid: GridId) -> Option<voxel_space::BrickCoordinate> {
+        match &self.terrain {
+            super::TerrainView::Coarse(coarse) if grid == GridId::root(self.level) => {
+                coarse.view.wanted_centre()
+            }
+            _ => self
+                .planets
+                .get(&grid)
+                .and_then(|planet| planet.selected_centre()),
         }
     }
 

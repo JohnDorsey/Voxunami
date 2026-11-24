@@ -4539,3 +4539,171 @@ fn a_warm_job_that_waits_when_its_place_is_the_one_that_is_drawn_is_made_as_a_dr
     assert_eq!(view.warm_nodes_being_made(), 0);
     assert_eq!(view.nodes_being_made(), 0);
 }
+
+// ---- A camera that moves a long way a frame keeps its cut while it is far from what it draws (docs/specs/viewpoints-spec.md, phase 5b) ----
+
+/// How many bricks a viewer at `sky()` moves along x, to go from one place to another.
+fn at_the_sky_along(bricks: i128) -> WorldPosition {
+    viewer_in(brick(bricks, 100, 0))
+}
+
+#[test]
+fn a_view_that_is_told_a_tolerance_keeps_its_cut_while_the_viewer_stays_a_share_of_the_distance_to_what_it_draws_from_the_place_the_cut_was_chosen_for()
+ {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.set_reselect_tolerance(0.1);
+    let first = at_the_sky_along(0);
+    view.update(GridId::MAIN, terrain, first, &far());
+    let first_cut = view.wanted().clone();
+    let selections = view.selections();
+    assert!(!first_cut.is_empty());
+    assert_eq!(view.wanted_centre(), Some(first.brick()));
+
+    // The ground is 100 bricks below: a tenth of that is about 10 bricks. A few bricks along keep the cut, and the place it was chosen for.
+    for bricks in [1, 3, 5] {
+        view.update(GridId::MAIN, terrain, at_the_sky_along(bricks), &far());
+        assert_eq!(view.selections(), selections, "{bricks} bricks along");
+        assert_eq!(view.wanted(), &first_cut);
+        assert_eq!(view.wanted_centre(), Some(first.brick()));
+    }
+    // Coming back is no change either.
+    view.update(GridId::MAIN, terrain, first, &far());
+    assert_eq!(view.selections(), selections);
+
+    // Past it the cut is chosen again, for where the viewer is, and what is drawn goes on being what the cut says.
+    let far_along = at_the_sky_along(30);
+    view.update(GridId::MAIN, terrain, far_along, &far());
+    assert_eq!(view.selections(), selections + 1);
+    assert_eq!(view.wanted_centre(), Some(far_along.brick()));
+    // Then a few bricks from there keep that cut.
+    view.update(GridId::MAIN, terrain, at_the_sky_along(33), &far());
+    assert_eq!(view.selections(), selections + 1);
+}
+
+#[test]
+fn without_a_tolerance_a_view_chooses_its_cut_again_whenever_the_viewer_is_in_another_brick() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.update(GridId::MAIN, terrain, at_the_sky_along(0), &far());
+    let selections = view.selections();
+    for bricks in 1..=4 {
+        view.update(GridId::MAIN, terrain, at_the_sky_along(bricks), &far());
+        assert_eq!(view.selections(), selections + bricks as u64);
+        assert_eq!(view.wanted_centre(), Some(at_the_sky_along(bricks).brick()));
+    }
+}
+
+#[test]
+fn a_viewer_next_to_what_it_draws_gets_the_cut_of_the_brick_it_is_in_whatever_the_tolerance() {
+    // On the ground the nearest thing drawn is the ground under the feet: a tenth of nothing is nothing.
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    let mut view = view_of(&trip.scene, 3);
+    view.set_reselect_tolerance(0.1);
+    view.update(GridId::MAIN, terrain, viewer_in(brick(0, 0, 0)), &far());
+    let selections = view.selections();
+    view.update(GridId::MAIN, terrain, viewer_in(brick(1, 0, 0)), &far());
+    assert_eq!(view.selections(), selections + 1);
+    assert_eq!(view.wanted_centre(), Some(brick(1, 0, 0)));
+}
+
+#[test]
+fn a_view_that_keeps_its_cut_for_a_viewer_that_moves_settles_to_what_it_wants_and_draws_what_a_fresh_view_at_the_place_of_the_cut_draws()
+ {
+    let trip = Trip::new();
+    let fresh = what_a_fresh_view_draws(&trip.scene, brick(0, 100, 0), &far());
+    let mut view = view_of(&trip.scene, 3);
+    view.set_reselect_tolerance(0.1);
+    let mut screen = Screen::default();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        at_the_sky_along(0),
+        &far(),
+        "the sky",
+    );
+    // The viewer goes a few bricks along: the picture is the one of the place the cut was chosen for, whole.
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        trip.scene.world.main(),
+        at_the_sky_along(4),
+        &far(),
+        "a few bricks along",
+    );
+    // (The empty bricks of the fine ball are wanted and not drawn at the sky, with a tolerance or without; the nodes are what the picture is.)
+    assert_eq!(view.wanted_centre(), Some(at_the_sky_along(0).brick()));
+    assert_eq!(screen.nodes, fresh.nodes);
+}
+
+#[test]
+fn a_change_of_what_is_asked_of_the_picture_or_of_the_terrain_chooses_the_cut_again_whatever_the_tolerance_and_a_view_with_no_node_to_measure_by_stays_exact()
+ {
+    let trip = Trip::new();
+    let terrain = Dimmable {
+        level: trip.scene.world.main(),
+        dark: Cell::new(false),
+        version: Cell::new(0),
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.set_reselect_tolerance(0.1);
+    view.update(GridId::MAIN, &terrain, at_the_sky_along(0), &far());
+    let selections = view.selections();
+
+    // A finer picture is asked for from the same place: the cut is chosen again.
+    let finer = LodSettings {
+        detail: DetailSettings {
+            cell_pixels: 1.5,
+            ..far().detail
+        },
+        ..far()
+    };
+    view.update(GridId::MAIN, &terrain, at_the_sky_along(1), &finer);
+    assert_eq!(view.selections(), selections + 1, "another setting");
+    // And it is chosen for the place the viewer is at then, and kept from there.
+    assert_eq!(view.wanted_centre(), Some(at_the_sky_along(1).brick()));
+    view.update(GridId::MAIN, &terrain, at_the_sky_along(2), &finer);
+    assert_eq!(view.selections(), selections + 1);
+
+    // The terrain says it is another one: chosen again though the viewer is where it was.
+    terrain.version.set(1);
+    view.update(GridId::MAIN, &terrain, at_the_sky_along(2), &finer);
+    assert_eq!(
+        view.selections(),
+        selections + 2,
+        "another version of the terrain"
+    );
+    // (For the brick the viewer is in now, and not the one it was in when the cut was last chosen, which it is within the share of.)
+    assert_eq!(view.wanted_centre(), Some(at_the_sky_along(2).brick()));
+
+    // Nothing is drawn within reach: there is nothing to measure the distance to, so a tolerance is no tolerance.
+    let near = LodSettings {
+        maximum_distance: 100.0,
+        ..far()
+    };
+    let mut view = view_of(&trip.scene, 3);
+    view.set_reselect_tolerance(0.1);
+    view.update(GridId::MAIN, &terrain, at_the_sky_along(0), &near);
+    let selections = view.selections();
+    view.update(GridId::MAIN, &terrain, at_the_sky_along(1), &near);
+    assert_eq!(view.selections(), selections + 1);
+    assert_eq!(view.wanted_centre(), Some(at_the_sky_along(1).brick()));
+}
+
+#[test]
+fn a_negative_or_unreal_tolerance_is_none() {
+    let trip = Trip::new();
+    let terrain = trip.scene.world.main();
+    for bad in [-1.0, f64::NAN, f64::INFINITY, 0.0] {
+        let mut view = view_of(&trip.scene, 3);
+        view.set_reselect_tolerance(bad);
+        view.update(GridId::MAIN, terrain, at_the_sky_along(0), &far());
+        let selections = view.selections();
+        view.update(GridId::MAIN, terrain, at_the_sky_along(1), &far());
+        assert_eq!(view.selections(), selections + 1, "{bad}");
+    }
+}

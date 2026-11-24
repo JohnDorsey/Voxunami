@@ -963,3 +963,85 @@ fn the_map_can_be_locked_on_a_planet_and_goes_round_the_middle_of_it_and_the_nex
     player.show_map();
     assert_eq!(player.focus(), Focus::Grid(rig.planet));
 }
+
+#[test]
+fn the_nodes_of_a_planet_are_chosen_again_only_when_the_map_has_gone_a_share_of_its_distance_and_the_server_is_asked_about_the_place_they_were_chosen_for()
+ {
+    let mut rig = Rig::with_coarse_streaming();
+    let planet = rig.planet;
+    let connection = rig.connection();
+    let mut player = rig.join_seeing_planets_in_detail(
+        connection,
+        1,
+        OVER_THE_PLANET,
+        0.0,
+        planet_detail(3000.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+
+    // The player's own eyes choose the nodes of the planet for the brick they are in, in every brick, high over it as well (where a tolerance would keep them).
+    let local_brick = |player: &Player| {
+        let grid = player.client().world().grids().get(planet).unwrap();
+        grid.pose
+            .world_to_local(player.drawn_camera().position)
+            .unwrap()
+            .brick()
+    };
+    player.camera = camera_at([5.5, 20.0 * 32.0 + 400.0, 5.5], 0.0, 0.0);
+    let _ = player.update_view();
+    assert_eq!(player.nodes_chosen_for(planet), Some(local_brick(&player)));
+    player
+        .camera
+        .move_in_world(glam::DVec3::new(40.0, 0.0, 0.0));
+    let _ = player.update_view();
+    assert_eq!(player.nodes_chosen_for(planet), Some(local_brick(&player)));
+    player.camera = camera_at(OVER_THE_PLANET, 0.0, 0.0);
+    rig.settle(&mut player, &mut screen);
+
+    // (High over the planet, so that its ground is far and a quarter of that is a good way.)
+    player.show_map();
+    player.orbit_zoom(80.0);
+    player.orbit_by(0.0, 0.9);
+    rig.settle(&mut player, &mut screen);
+    let chosen = player
+        .nodes_chosen_for(planet)
+        .expect("the planet's nodes were chosen");
+    assert_eq!(chosen, local_brick(&player));
+    // The places the server is asked the planet's nodes round: the player's, kept ready, and the map's, where the nodes were chosen.
+    let asked = |player: &Player| -> Vec<BrickCoordinate> {
+        let mut bricks: Vec<BrickCoordinate> = player
+            .detail_places()
+            .into_iter()
+            .filter(|place| place.grid == planet)
+            .map(|place| place.brick)
+            .collect();
+        bricks.sort();
+        bricks
+    };
+    let first = asked(&player);
+    assert_eq!(first.len(), 2, "the player's and the map's: {first:?}");
+    assert!(first.contains(&chosen));
+
+    // Turns that take the camera into other bricks do not move the place the server is asked about, or the place the nodes were chosen for; a long way round does.
+    let mut other_bricks = 0;
+    for _ in 0..12 {
+        player.orbit_by(0.05, 0.0);
+        let _ = player.update_view();
+        other_bricks += usize::from(local_brick(&player) != chosen);
+        assert_eq!(
+            player.nodes_chosen_for(planet),
+            Some(chosen),
+            "the nodes of the planet are kept"
+        );
+        assert_eq!(asked(&player), first);
+    }
+    assert!(
+        other_bricks > 0,
+        "the camera did not leave its brick: the turns test nothing"
+    );
+    player.orbit_by(2.5, 0.0);
+    let _ = player.update_view();
+    assert_eq!(player.nodes_chosen_for(planet), Some(local_brick(&player)));
+    assert_ne!(asked(&player), first, "chosen again for where the map went");
+}

@@ -42,7 +42,7 @@ use crate::sun::{SunView, position_of_voxels, sun_view};
 
 mod view_modes;
 use view_modes::ViewRig;
-pub use view_modes::{MAP_WARM_TICKS, ViewCommand, ViewMode};
+pub use view_modes::{MAP_RESELECT_TOLERANCE, MAP_WARM_TICKS, ViewCommand, ViewMode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -661,6 +661,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
+    /// How many times the cubes the level's terrain is drawn from were chosen again, since the session began (0 where the level is drawn in bricks only): a measure of how
+    /// much a moving camera asks of the view.
+    pub fn coarse_selections(&self) -> u64 {
+        match &self.terrain {
+            TerrainView::Coarse(coarse) => coarse.view.selections(),
+            TerrainView::Bricks(_) => 0,
+        }
+    }
+
     /// What the server is asked for, and what the terrain is drawn with: how fine, as far as the camera sees and the picture is high.
     fn coarse_request(&self, detail: &CoarseDetail) -> SetDetail {
         let tangent = libm::tanf(self.camera.vertical_field_of_view * 0.5);
@@ -681,10 +690,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let ships = self.client.world().grids();
         let draws_the_terrain_of_the_level = matches!(self.terrain, TerrainView::Coarse(_));
         let mut places: Vec<DetailPlace> = Vec::new();
-        for (grid, place) in self
+        // (The places kept ready, and where the nodes drawn from the camera that is not the player's own were chosen: the server chooses from those bricks, as the views did.)
+        for (grid, brick) in self
             .warm_places_now()
             .into_iter()
-            .chain(self.drawn_places_besides_the_body())
+            .map(|(grid, place)| (grid, place.brick()))
+            .chain(self.drawn_nodes_were_chosen_for())
         {
             let wanted = if grid.root_level().is_some() {
                 draws_the_terrain_of_the_level && grid == GridId::root(self.level)
@@ -693,10 +704,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     .get(grid)
                     .is_some_and(|ship| ship.terrain.is_some() || ship.far.is_some())
             };
-            let place = DetailPlace {
-                grid,
-                brick: place.brick(),
-            };
+            let place = DetailPlace { grid, brick };
             if wanted && !places.contains(&place) {
                 places.push(place);
             }
@@ -958,8 +966,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// Keeps the watched region around the camera, and the meshes around it up to date. Returns what
     /// the renderer must change.
     pub fn update_view(&mut self) -> Vec<MeshUpdate> {
-        // What the picture is made from is the drawn camera's; what the server is told of is the player's body.
+        // What the picture is made from is the drawn camera's; what the server is told of is the player's body. A camera that is not the player's eyes may go a way from where
+        // the cubes were chosen before they are chosen again (it crosses a brick every frame when it goes round a map).
         let drawn = self.drawn_camera();
+        let tolerance = if self.view_mode() == ViewMode::Body {
+            0.0
+        } else {
+            MAP_RESELECT_TOLERANCE
+        };
         let center = self.camera.position.brick();
         let warm = self.warm_places_now();
         // The places that are not the body's but are drawn or kept ready, in the level's own terrain, are watched as well, as free regions (a planet's bricks are all known of
@@ -1014,6 +1028,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 coarse
                     .view
                     .set_release_warm_pictures(self.settings.release_map_pictures);
+                coarse.view.set_reselect_tolerance(tolerance);
                 coarse.view.set_warm_viewpoint(
                     warm.get(&GridId::root(level))
                         .map(|&viewer| Viewpoint { viewer, settings }),
@@ -1055,6 +1070,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// What the renderer must change for the ships: the ones that are gone, the ones that moved, and the bricks that were meshed.
     fn ship_updates(&mut self) -> Vec<MeshUpdate> {
         let drawn = self.drawn_camera();
+        let tolerance = if self.view_mode() == ViewMode::Body {
+            0.0
+        } else {
+            MAP_RESELECT_TOLERANCE
+        };
         let warm = self.warm_places_now();
         let ships = self.client.world().grids();
         let mut updates = Vec::new();
@@ -1157,6 +1177,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 planet.set_detail(settings);
             }
             planet.set_release_warm_pictures(self.settings.release_map_pictures);
+            planet.set_reselect_tolerance(tolerance);
             planet.keep_ready(warm.get(&id).copied());
             let source = match (ship.terrain, ship.far) {
                 (Some(terrain), _) => {

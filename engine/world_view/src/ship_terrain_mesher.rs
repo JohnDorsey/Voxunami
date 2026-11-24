@@ -275,6 +275,21 @@ impl ShipTerrainMesher {
     }
 
     /// Changes how fine and how far the planet is drawn, from the next update. A mesher of the bricks alone has no detail to change.
+    /// How far the viewer may go from where the nodes were chosen before they are chosen again ([`LodView::set_reselect_tolerance`]); nothing for a ship drawn in bricks only.
+    pub fn set_reselect_tolerance(&mut self, tolerance: f64) {
+        if let Drawn::Detailed { view, .. } = &mut self.drawn {
+            view.set_reselect_tolerance(tolerance);
+        }
+    }
+
+    /// The brick, in the ship's own coordinates, that the nodes drawn were chosen for ([`LodView::wanted_centre`]); `None` for a ship drawn in bricks only, or before the first.
+    pub fn selected_centre(&self) -> Option<BrickCoordinate> {
+        match &self.drawn {
+            Drawn::Detailed { view, .. } => view.wanted_centre(),
+            Drawn::Bricks(_) => None,
+        }
+    }
+
     pub fn set_detail(&mut self, detail: LodSettings) {
         if let Drawn::Detailed { settings, .. } = &mut self.drawn {
             *settings = detail;
