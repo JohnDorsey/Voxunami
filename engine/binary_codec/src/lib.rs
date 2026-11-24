@@ -146,6 +146,8 @@ impl<'a> ByteReader<'a> {
         ))
     }
 
+    /// A number has one encoding (saves and replays are compared byte for byte, as at [`ByteReader::read_wide_signed`]): the shortest, which [`ByteWriter::write_varint`] writes.
+    /// A longer form of the same value, whose last byte is a group of zeros that adds nothing, is an error.
     pub fn read_varint(&mut self) -> Result<u64, DecodeError> {
         let mut value = 0u64;
         for position in 0..10 {
@@ -157,7 +159,7 @@ impl<'a> ByteReader<'a> {
             }
             value |= payload << (7 * position);
             if byte & 0x80 == 0 {
-                // A last byte of zero after another byte adds nothing: the writer would not have written it, and a value has one encoding.
+                // (A last byte of zero after another byte says nothing the byte before it did not.)
                 if position > 0 && payload == 0 {
                     return Err(DecodeError::InvalidVarint);
                 }
@@ -264,29 +266,38 @@ mod tests {
     }
 
     #[test]
-    fn a_varint_with_a_needless_last_byte_of_zero_is_rejected_so_a_number_has_one_encoding() {
-        // Regression (found 2026-11-22 by the proptest `a_number_has_one_encoding` of wide_float, minimal input a flip that made the exponent `0x81 0x00`): the
-        // reader took `0x81 0x00` for 1, which is written as `0x01`, so a second spelling of one number was accepted and a save was not byte for byte.
-        for bytes in [
-            &[0x80, 0x00][..],
-            &[0x81, 0x00],
+    fn a_varint_has_one_encoding_and_a_longer_form_with_a_zero_group_on_top_is_refused() {
+        // The same value in a longer form: one, with a group of zeros after it; zero, as two bytes; a tenth byte of zero.
+        for overlong in [
+            &[0x81, 0x00][..],
+            &[0x80, 0x00],
             &[0xFF, 0x80, 0x00],
             &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00],
         ] {
             assert_eq!(
-                ByteReader::new(bytes).read_varint(),
+                ByteReader::new(overlong).read_varint(),
                 Err(DecodeError::InvalidVarint),
-                "{bytes:?}"
+                "{overlong:?}"
             );
-        }
-        // Every value the writer writes is still read, and a zero is the one byte.
-        for value in [0, 1, 127, 128, 300, 16_384, u64::from(u32::MAX), u64::MAX] {
             assert_eq!(
-                ByteReader::new(&varint_bytes(value)).read_varint(),
-                Ok(value)
+                ByteReader::new(overlong).read_signed_varint(),
+                Err(DecodeError::InvalidVarint),
+                "{overlong:?}"
             );
         }
+        // The shortest forms of the same values are read, and a zero group in the middle is a value.
+        assert_eq!(ByteReader::new(&[0x01]).read_varint(), Ok(1));
         assert_eq!(ByteReader::new(&[0x00]).read_varint(), Ok(0));
+        assert_eq!(ByteReader::new(&[0x80, 0x01]).read_varint(), Ok(128));
+        assert_eq!(
+            ByteReader::new(&[0x80, 0x80, 0x01]).read_varint(),
+            Ok(1 << 14)
+        );
+        // A length is a varint too: a byte run whose length is written in two bytes is refused.
+        assert_eq!(
+            ByteReader::new(&[0x81, 0x00, 0xAA]).read_bytes(),
+            Err(DecodeError::InvalidVarint)
+        );
     }
 
     fn wide_bytes(value: i128) -> Vec<u8> {
@@ -408,6 +419,15 @@ mod tests {
             prop_assert_eq!(reader.read_u32(), Ok(small));
             prop_assert_eq!(reader.read_u64(), Ok(unsigned));
             prop_assert_eq!(reader.finish(), Ok(()));
+        }
+
+        #[test]
+        fn whatever_a_varint_reads_as_is_what_would_be_written_for_it(bytes in proptest::collection::vec(prop_oneof![Just(0x80u8), Just(0x00u8), 0x80u8..=0xFF, any::<u8>()], 0..12)) {
+            let mut reader = ByteReader::new(&bytes);
+            if let Ok(value) = reader.read_varint() {
+                let used = bytes.len() - reader.remaining().len();
+                prop_assert_eq!(varint_bytes(value), bytes[..used].to_vec());
+            }
         }
 
         #[test]
