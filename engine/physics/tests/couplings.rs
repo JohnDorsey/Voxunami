@@ -1067,3 +1067,220 @@ fn shifting_the_bodies_leaves_a_body_that_does_not_move_where_it_is() {
     );
     assert_eq!(after[2].linear_velocity, [4.0, 5.0, 6.0]);
 }
+
+// ---- a coupling made rigid at the angle it has, and made mobile again (`/joint immobilize` and `/joint mobilize`) ----
+
+/// The turn of the second car in the first car's own axes, as the nine numbers a turn is (the second's axes seen from the first): what a rigid coupling keeps and a ball does
+/// not. (Worked out from the cars' own axes, with no angle function.)
+fn the_second_in_the_first(world: &BodyWorld) -> [[f64; 3]; 3] {
+    let axes = |id: BodyId| {
+        let quaternion = world.state(id).unwrap().orientation.components();
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|axis| turned(quaternion, axis))
+    };
+    let (first, second) = (axes(FIRST), axes(SECOND));
+    [0, 1, 2].map(|row| [0, 1, 2].map(|column| dot(first[row], second[column])))
+}
+
+fn most_different(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> f64 {
+    (0..3)
+        .flat_map(|row| (0..3).map(move |column| (row, column)))
+        .map(|(row, column)| (a[row][column] - b[row][column]).abs())
+        .fold(0.0, f64::max)
+}
+
+/// Two cars of 4 voxels on a ball that swing (one goes up and spins, the other down and the other way), stepped for a second, so that the turn between them is not the one they
+/// began with.
+fn two_cars_swinging_on_a_ball() -> BodyWorld {
+    let mut world = free_space();
+    two_cars_on_a_ball(
+        &mut world,
+        4,
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.5, 0.0, -1.0],
+    );
+    for _ in 0..20 {
+        world.step();
+    }
+    world
+}
+
+#[test]
+fn a_coupling_made_rigid_keeps_the_turn_between_its_cars_that_a_ball_would_have_let_go_of() {
+    let mut control = two_cars_swinging_on_a_ball();
+    let mut world = two_cars_swinging_on_a_ball();
+    assert_eq!(world.is_rigid(JOINT), Some(false));
+    let made_rigid_at = the_second_in_the_first(&world);
+    world.make_rigid(JOINT).unwrap();
+    assert_eq!(world.is_rigid(JOINT), Some(true));
+    for _ in 0..200 {
+        world.step();
+        control.step();
+    }
+    // The ball swung on (this is what the test is a test of: a ball does not keep the turn).
+    assert!(
+        most_different(the_second_in_the_first(&control), made_rigid_at) > 0.1,
+        "the control did not swing"
+    );
+    // The rigid one kept it: to what the solver holds a joint to (measured, see the entry).
+    let kept = most_different(the_second_in_the_first(&world), made_rigid_at);
+    assert!(
+        kept < RIGID_TURN_KEPT,
+        "the turn between the cars moved by {kept}"
+    );
+    let worst = worst_gap(&mut world, 20);
+    assert!(
+        worst < GAP_AT_GAME_SETTINGS,
+        "the pivots were {worst} apart"
+    );
+}
+
+/// How far the entries of the turn between two cars may move from what a rigid coupling was made at. Measured: 1e-15 over ten seconds after the swing, and 6e-14 under a torque
+/// of 3,000 N m on one car for two seconds (which turns a ball by whole radians); the bound is four orders above that and eight below what a ball moves.
+const RIGID_TURN_KEPT: f64 = 1e-9;
+
+#[test]
+fn making_a_coupling_rigid_keeps_the_momentum_and_the_angular_momentum_of_its_cars_and_loses_only_energy()
+ {
+    let mut world = two_cars_swinging_on_a_ball();
+    let before = motion_of(&world, &[(FIRST, 4), (SECOND, 4)]);
+    world.make_rigid(JOINT).unwrap();
+    for _ in 0..100 {
+        world.step();
+    }
+    let after = motion_of(&world, &[(FIRST, 4), (SECOND, 4)]);
+    assert!(
+        difference(before.0, after.0) < 1e-6 * length(before.0).max(1.0),
+        "momentum {:?} became {:?}",
+        before.0,
+        after.0
+    );
+    assert!(
+        difference(before.1, after.1) < 1e-6 * length(before.1).max(1.0),
+        "angular momentum {:?} became {:?}",
+        before.1,
+        after.1
+    );
+    assert!(
+        after.2 <= before.2 + 1e-9,
+        "energy {} became {}",
+        before.2,
+        after.2
+    );
+}
+
+#[test]
+fn a_rigid_coupling_holds_its_turn_against_a_torque_on_one_car() {
+    let mut world = two_cars_swinging_on_a_ball();
+    world.make_rigid(JOINT).unwrap();
+    let held = the_second_in_the_first(&world);
+    for _ in 0..40 {
+        world.apply_torque(SECOND, [0.0, 3000.0, 0.0]).unwrap();
+        world.step();
+    }
+    let moved = most_different(the_second_in_the_first(&world), held);
+    assert!(
+        moved < RIGID_TURN_KEPT,
+        "the torque turned the second car against the first by {moved}"
+    );
+}
+
+#[test]
+fn a_coupling_made_mobile_again_swings_as_a_ball_from_where_it_is() {
+    let mut world = two_cars_swinging_on_a_ball();
+    world.make_rigid(JOINT).unwrap();
+    for _ in 0..20 {
+        world.step();
+    }
+    let held = the_second_in_the_first(&world);
+    world.make_mobile(JOINT).unwrap();
+    assert_eq!(world.is_rigid(JOINT), Some(false));
+    for _ in 0..40 {
+        world.apply_torque(SECOND, [0.0, 3000.0, 0.0]).unwrap();
+        world.step();
+    }
+    assert!(
+        most_different(the_second_in_the_first(&world), held) > 0.1,
+        "a ball turns under the torque"
+    );
+    let worst = worst_gap(&mut world, 20);
+    assert!(
+        worst < GAP_AT_GAME_SETTINGS,
+        "the pivots were {worst} apart"
+    );
+}
+
+#[test]
+fn a_rigid_coupling_that_is_let_go_of_frees_its_cars_and_nothing_is_left_of_it() {
+    let mut world = two_cars_swinging_on_a_ball();
+    world.make_rigid(JOINT).unwrap();
+    world.decouple(JOINT).unwrap();
+    assert!(world.couplings_of(FIRST).is_empty());
+    assert_eq!(world.is_rigid(JOINT), None);
+    let held = the_second_in_the_first(&world);
+    for _ in 0..40 {
+        world.apply_torque(SECOND, [0.0, 3000.0, 0.0]).unwrap();
+        world.step();
+    }
+    assert!(most_different(the_second_in_the_first(&world), held) > 0.1);
+}
+
+#[test]
+fn making_rigid_or_mobile_a_coupling_that_is_not_there_says_so_and_asking_twice_changes_nothing() {
+    let mut world = two_cars_swinging_on_a_ball();
+    let unknown = Err(CouplingError::UnknownCoupling(CouplingId(99)));
+    assert_eq!(world.make_rigid(CouplingId(99)), unknown);
+    assert_eq!(world.make_mobile(CouplingId(99)), unknown);
+    assert_eq!(world.is_rigid(CouplingId(99)), None);
+    world.make_mobile(JOINT).unwrap();
+    assert_eq!(world.is_rigid(JOINT), Some(false));
+    world.make_rigid(JOINT).unwrap();
+    let held = the_second_in_the_first(&world);
+    world.make_rigid(JOINT).unwrap();
+    assert_eq!(world.is_rigid(JOINT), Some(true));
+    for _ in 0..20 {
+        world.step();
+    }
+    assert!(most_different(the_second_in_the_first(&world), held) < RIGID_TURN_KEPT);
+}
+
+#[test]
+fn a_coupling_whose_pivots_hold_it_rigid_already_is_rigid_again_when_it_is_made_mobile() {
+    let mut world = free_space();
+    add_car(
+        &mut world,
+        FIRST,
+        BodyKind::Dynamic,
+        4,
+        [100.0; 3],
+        [0.0; 3],
+        [0.0; 3],
+    );
+    add_car(
+        &mut world,
+        SECOND,
+        BodyKind::Dynamic,
+        4,
+        [104.0, 100.0, 100.0],
+        [0.0; 3],
+        [0.0; 3],
+    );
+    // Three pivots that are not on a line, the same on both cars: one fixed joint, by the shape of the pivots.
+    let pivots: Vec<PivotPair> = [[4.0, 0.5, 0.5], [4.0, 3.5, 0.5], [4.0, 0.5, 3.5]]
+        .into_iter()
+        .map(|first| PivotPair {
+            first,
+            second: [0.0, first[1], first[2]],
+        })
+        .collect();
+    world
+        .couple(JOINT, FIRST, SECOND, &pivots, CouplingOptions::default())
+        .unwrap();
+    let held = the_second_in_the_first(&world);
+    world.make_mobile(JOINT).unwrap();
+    for _ in 0..40 {
+        world.apply_torque(SECOND, [0.0, 3000.0, 0.0]).unwrap();
+        world.step();
+    }
+    assert!(most_different(the_second_in_the_first(&world), held) < RIGID_TURN_KEPT);
+}

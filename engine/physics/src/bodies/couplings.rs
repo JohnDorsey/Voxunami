@@ -135,6 +135,8 @@ pub(super) struct Coupling {
     pub(super) pivots: Vec<PivotPair>,
     pub(super) options: CouplingOptions,
     joints: Vec<ImpulseJointHandle>,
+    /// Whether the coupling was made rigid at the turn its bodies had (`make_rigid`), whatever its pivots hold.
+    rigid_at_the_turn_it_had: bool,
 }
 
 impl BodyWorld {
@@ -174,7 +176,30 @@ impl BodyWorld {
         }) {
             return Err(CouplingError::PivotNotANumber);
         }
-        let joints = match rigid_frames(pivots) {
+        let joints = self.joints_of(first_handle, second_handle, pivots, options);
+        self.couplings.insert(
+            id,
+            Coupling {
+                first,
+                second,
+                pivots: pivots.to_vec(),
+                options,
+                joints,
+                rigid_at_the_turn_it_had: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// The joints that hold two bodies at some pivots (see the top of the file).
+    fn joints_of(
+        &mut self,
+        first_handle: RigidBodyHandle,
+        second_handle: RigidBodyHandle,
+        pivots: &[PivotPair],
+        options: CouplingOptions,
+    ) -> Vec<ImpulseJointHandle> {
+        match rigid_frames(pivots) {
             // Three pivots that are not on a line hold the pair as one body: one joint that locks the whole frame, which the solver converges on far better than three balls on
             // the same points (three balls ask nine things of six degrees of freedom, and a hit through a chain of them gave way: `tests/settled_hit.rs`).
             Some((first_frame, second_frame)) => {
@@ -200,18 +225,90 @@ impl BodyWorld {
                         .insert(first_handle, second_handle, joint, true)
                 })
                 .collect(),
-        };
-        self.couplings.insert(
-            id,
-            Coupling {
-                first,
-                second,
-                pivots: pivots.to_vec(),
-                options,
-                joints,
-            },
+        }
+    }
+
+    /// Makes a coupling rigid at the turn its bodies have now: one fixed joint, at the first pivot, whose frames are the bodies' own as they are turned to each other (the pivots
+    /// are brought together by the solver as for a ball; the turn between the bodies is what is held, whatever else acts on them). A spin of one body against the other is taken away by
+    /// the joint, which keeps the momentum and the angular momentum of the two and loses the energy of that spin. Asking again holds the turn they have now.
+    pub fn make_rigid(&mut self, id: CouplingId) -> Result<(), CouplingError> {
+        let coupling = self
+            .couplings
+            .get(&id)
+            .ok_or(CouplingError::UnknownCoupling(id))?;
+        let (first, second, options, pivot) = (
+            coupling.first,
+            coupling.second,
+            coupling.options,
+            coupling.pivots[0],
         );
+        let handle = |world: &Self, body: BodyId| {
+            world
+                .by_id
+                .get(&body)
+                .map(|found| found.handle)
+                .ok_or(BodyError::UnknownBody(body))
+        };
+        let (first_handle, second_handle) = (handle(self, first)?, handle(self, second)?);
+        let turn_of_the_first = self.bodies[first_handle].position().rotation;
+        let turn_of_the_second = self.bodies[second_handle].position().rotation;
+        let joint = FixedJointBuilder::new()
+            .local_frame1(Pose::from_parts(vector(pivot.first), Rotation::IDENTITY))
+            .local_frame2(Pose::from_parts(
+                vector(pivot.second),
+                turn_of_the_second.inverse() * turn_of_the_first,
+            ))
+            .contacts_enabled(options.contacts_between_bodies)
+            .build();
+        let new = self
+            .impulse_joints
+            .insert(first_handle, second_handle, joint, true);
+        let coupling = self.couplings.get_mut(&id).expect("checked above");
+        for old in std::mem::replace(&mut coupling.joints, vec![new]) {
+            self.impulse_joints.remove(old, true);
+        }
+        coupling.rigid_at_the_turn_it_had = true;
         Ok(())
+    }
+
+    /// Lets a coupling that was made rigid turn again as its pivots allow (a ball for one pivot, a hinge for two on a line, rigid for three that hold it).
+    pub fn make_mobile(&mut self, id: CouplingId) -> Result<(), CouplingError> {
+        let coupling = self
+            .couplings
+            .get(&id)
+            .ok_or(CouplingError::UnknownCoupling(id))?;
+        if !coupling.rigid_at_the_turn_it_had {
+            return Ok(());
+        }
+        let (first, second, options, pivots) = (
+            coupling.first,
+            coupling.second,
+            coupling.options,
+            coupling.pivots.clone(),
+        );
+        let handle = |world: &Self, body: BodyId| {
+            world
+                .by_id
+                .get(&body)
+                .map(|found| found.handle)
+                .ok_or(BodyError::UnknownBody(body))
+        };
+        let (first_handle, second_handle) = (handle(self, first)?, handle(self, second)?);
+        let new = self.joints_of(first_handle, second_handle, &pivots, options);
+        let coupling = self.couplings.get_mut(&id).expect("checked above");
+        for old in std::mem::replace(&mut coupling.joints, new) {
+            self.impulse_joints.remove(old, true);
+        }
+        coupling.rigid_at_the_turn_it_had = false;
+        Ok(())
+    }
+
+    /// Whether a coupling was made rigid at the turn its bodies had and has not been made mobile since; `None` if there is no such coupling. (A coupling whose pivots hold it
+    /// rigid is not what this says.)
+    pub fn is_rigid(&self, id: CouplingId) -> Option<bool> {
+        self.couplings
+            .get(&id)
+            .map(|coupling| coupling.rigid_at_the_turn_it_had)
     }
 
     /// Lets two bodies go. They keep the velocities they have.
