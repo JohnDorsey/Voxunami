@@ -1031,6 +1031,43 @@ fn a_character_teleported_into_the_ground_is_lifted_onto_it_not_left_in_it() {
     }
 }
 
+/// A character that stands still within a skin of two walls, one on each side of a corner, stays where it stands. Found by the property
+/// `a_character_put_into_the_top_of_hills_is_moved_out_of_them` (2026-11-24, a case it kept failing): the controller's own stepping, which is
+/// meant for a move across, ran in the move along up too (a move straight down onto the floor, with two walls a hair from the body), and lifted
+/// the character a whole voxel, to the top of the lower wall, where it floated with nothing under it but the hair of that wall's corner.
+#[test]
+fn a_character_standing_a_hair_from_two_walls_is_not_lifted_onto_the_top_of_one() {
+    // The columns round where the property found it (heights of whole cubes, x = 14 to 21 along, z = 14 to 19 down), over the floor at 10.
+    const HILLS: [[i128; 8]; 6] = [
+        [0, 1, 0, 0, 2, 1, 0, 0],
+        [0, 1, 0, 0, 2, 1, 0, 0],
+        [0, 0, 1, 0, 2, 1, 0, 0],
+        [0, 0, 0, 1, 2, 1, 0, 0],
+        [0, 0, 0, 0, 3, 0, 0, 0],
+        [0, 0, 0, 0, 1, 2, 0, 0],
+    ];
+    let mut scene = Scene::with_floor(9);
+    for (row, heights) in HILLS.iter().enumerate() {
+        for (column, height) in heights.iter().enumerate() {
+            for y in 10..10 + height {
+                scene.cube(14 + column as i128, y, 14 + row as i128);
+            }
+        }
+    }
+    // The body, put 1.7 into the one-high column at (18, 19), is 0.002 from the wall of two at x = 19 and 0.009 from the wall of three at z < 19
+    // (the controller's skin is 0.01).
+    let mut body = spawn(8.5, 12.0, 8.5);
+    run(&mut body, &mut scene, STILL, 5);
+    teleport_feet(&mut body, 18.69831752097148, 11.0 - 1.7, 19.308805067005416);
+    run(&mut body, &mut scene, STILL, 120);
+    assert!(
+        (feet_of(&body) - 11.0).abs() < 0.03,
+        "the feet are at {}, not on the column at 11",
+        feet_of(&body)
+    );
+    assert!(body.is_grounded());
+}
+
 #[test]
 fn a_character_spawned_inside_the_ground_is_lifted_onto_it_too() {
     // Deep in the ground, where nothing could push the character out by itself.

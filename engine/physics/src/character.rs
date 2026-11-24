@@ -1105,7 +1105,21 @@ impl CharacterBody {
             }
         }
         self.center += sideways;
-        let (vertical, _) = self.move_through_terrain(dt, self.join(Vector::ZERO, desired_along));
+        // (The controller's stepping is for the move across and is left out of this one: with the body a skin from two walls at a corner, a move straight
+        // down onto the floor was made a climb of a whole voxel onto the top of the lower wall, where the body floated on the hair of its corner. A move along
+        // up has nothing to step onto.)
+        let no_stepping = KinematicCharacterController {
+            autostep: None,
+            ..self.controller
+        };
+        let vertical = self
+            .move_from(
+                &no_stepping,
+                self.center,
+                dt,
+                self.join(Vector::ZERO, desired_along),
+            )
+            .movement;
         self.center += vertical.translation;
         self.grounded = vertical.grounded;
         let moved = sideways + vertical.translation;
