@@ -1534,6 +1534,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.with_client_context(|host, context| host.command(line, context))
     }
 
+    /// Sends the server a line typed with a slash (`/tp 1 2 {.where}`), after running the `{.}` holes in it, which only this window
+    /// can run (see [`line_language`]). If one fails nothing is sent and the error is what to tell the player.
+    pub fn send_command_line(&mut self, line: &str) -> Result<(), String> {
+        let ready =
+            self.with_client_context(|host, context| host.line_for_the_server(line, context))?;
+        self.send_command(&ready);
+        Ok(())
+    }
+
     /// The HUD lines of the client plugins, one each (the question the server is waiting on is not among them: it is on the
     /// screen as a panel).
     pub fn hud_lines(&mut self) -> Vec<String> {

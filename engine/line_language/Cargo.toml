@@ -1,0 +1,16 @@
+[package]
+name = "line_language"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The language of a typed line: holes `{/server}`, `{.client}` and `{>code}` inside text, how they are found, escaped and evaluated (scripting-spec.md section 4)."
+
+[dependencies]
+protocol.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

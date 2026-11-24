@@ -34,6 +34,11 @@ The plugin host, property bags on block definitions, declared messages and comma
 - A command is a `CommandSpec` with a name, a summary and typed arguments (word, number, integer, identifier, rest). The host checks a call,
   answers a malformed one (`usage: /tp X Y Z; Z must be a number`), generates the usage line, and provides `/help` itself. No permission level
   until a command needs one.
+- A typed line may hold holes (`{/server command}`, `{.window command}`, `{>code}`, nested; `docs/specs/scripting-spec.md` section 4, built in
+  `engine/line_language`, phase 2 of scripting). A hole that is a whole argument fills a typed one with the value the hole gave, of the kind
+  the argument is and never converted by guessing; one joined to text is text, in the last (`Rest`) argument only. A handler gives a value with
+  `Context::give` (none by default, so none changed) and says it failed with `Context::fail`, which stops the line. The window runs the `{.}`
+  holes of a line before it sends it and puts the answers in as text the server cannot read as holes.
 
 ## Decided (the client interface; built in Phase 26)
 - The client half of a plugin is a separate `ClientPlugin` (same identifier as its server plugin) registering `on_message::<M>` (a server

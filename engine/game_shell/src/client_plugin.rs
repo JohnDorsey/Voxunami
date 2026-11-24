@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use block_models::BlockTable;
 use client::{ClientEntities, ClientEntity};
+use line_language::{Call, CommandValue, Runner, Sigil};
 use namespaced_id::NamespacedId;
 use player_presence::PlayerState;
 use plugin_host::{Arguments, CommandSpec, Prompt};
@@ -473,6 +474,54 @@ impl ClientRegistrar<'_> {
     }
 }
 
+/// Runs the commands of the window that a line reaches: the line's own, if it is one, and its `{.}` holes. A server command or
+/// code is not run here: the window cannot wait for the server's answer in the middle of a line.
+struct WindowRunner<'host, 'view> {
+    host: &'host mut ClientHost,
+    context: &'host mut ClientContext<'view>,
+}
+
+impl Runner for WindowRunner<'_, '_> {
+    fn command(&mut self, sigil: Sigil, call: &Call) -> Result<CommandValue, String> {
+        if sigil != Sigil::Client {
+            return Err(WAITING_FOR_THE_SERVER.to_owned());
+        }
+        let name = call.name.as_str();
+        if name.is_empty() {
+            return Ok(CommandValue::Text(self.host.usages()));
+        }
+        let parsed = match self.host.commands.get(name) {
+            Some(entry) => entry.spec.parse_items(&call.items),
+            None => {
+                return Err(format!(
+                    "unknown client command .{name}; {}",
+                    self.host.usages()
+                ));
+            }
+        };
+        let arguments = parsed?;
+        if name == "help" {
+            let wanted = arguments.present(0).then(|| arguments.word(0));
+            return Ok(CommandValue::Text(self.host.help(wanted)));
+        }
+        if name == "keys" {
+            return Ok(CommandValue::Text(self.host.bindings()));
+        }
+        let entry = self
+            .host
+            .commands
+            .get_mut(name)
+            .expect("the command was just found");
+        Ok(CommandValue::Text((entry.run)(self.context, &arguments)))
+    }
+
+    fn code(&mut self, _: &str) -> Result<CommandValue, String> {
+        Err(WAITING_FOR_THE_SERVER.to_owned())
+    }
+}
+
+const WAITING_FOR_THE_SERVER: &str = "the window cannot wait for the server: a command for the server, or code, cannot be run inside a command of the window";
+
 impl ClientHost {
     /// Registers the shell's own client commands, then every plugin's, in order of plugin identifier.
     pub(crate) fn new(plugins: &[Box<dyn ClientPlugin>]) -> Result<Self, ClientRegistrationError> {
@@ -598,33 +647,46 @@ impl ClientHost {
         }
     }
 
-    /// Runs a typed line that starts with a period and returns what to tell the player.
+    /// Runs a typed line that starts with a period and returns what to tell the player. The line may hold holes (`{.command}`:
+    /// another command of the window, whose answer takes the place of the hole); a failure comes back as the text to tell the
+    /// player too.
     pub(crate) fn command(&mut self, line: &str, context: &mut ClientContext<'_>) -> String {
         let text = line.trim().trim_start_matches('.');
-        let mut words = text.split_whitespace();
-        let Some(name) = words.next() else {
-            return self.usages();
+        let scanned = match line_language::scan(Sigil::Client, text) {
+            Ok(scanned) => scanned,
+            Err(error) => return error.to_string(),
         };
-        let words: Vec<&str> = words.collect();
-        let parsed = match self.commands.get(name) {
-            Some(entry) => entry.spec.parse(&words),
-            None => return format!("unknown client command .{name}; {}", self.usages()),
+        let mut runner = WindowRunner {
+            host: self,
+            context,
         };
-        let arguments = match parsed {
-            Ok(arguments) => arguments,
-            Err(reply) => return reply,
-        };
-        if name == "help" {
-            return self.help(arguments.present(0).then(|| arguments.word(0)));
+        match line_language::evaluate(&scanned, &mut runner) {
+            Ok(value) => value.to_text(),
+            Err(failure) => failure.to_string(),
         }
-        if name == "keys" {
-            return self.bindings();
-        }
-        let entry = self
-            .commands
-            .get_mut(name)
-            .expect("the command was just found");
-        (entry.run)(context, &arguments)
+    }
+
+    /// Makes a line for the server (one that starts with `/` or `>`) ready to send: runs the `{.}` holes in it, which only the
+    /// window can run, and puts their answers in as text the server reads as it is (or, in code, as literals). The rest of the
+    /// line goes as it was typed. The error is what to tell the player; nothing is sent then.
+    pub(crate) fn line_for_the_server(
+        &mut self,
+        line: &str,
+        context: &mut ClientContext<'_>,
+    ) -> Result<String, String> {
+        let line = line.trim_start();
+        let Some(sigil) = line.chars().next().and_then(Sigil::from_character) else {
+            return Ok(line.to_owned());
+        };
+        let text = &line[sigil.character().len_utf8()..];
+        let scanned = line_language::scan(sigil, text).map_err(|error| error.to_string())?;
+        let mut runner = WindowRunner {
+            host: self,
+            context,
+        };
+        let resolved = line_language::resolve_client_holes(&scanned, text, &mut runner)
+            .map_err(|failure| failure.to_string())?;
+        Ok(format!("{}{resolved}", sigil.character()))
     }
 
     /// `client commands: .ambient [LEVEL], .help [COMMAND]`.
@@ -1162,6 +1224,197 @@ mod tests {
                 "usage: .pick SLOT",
                 "picked 4"
             ]
+        );
+    }
+
+    /// Commands of the window for the tests of holes: `.name` says Alex, `.pair` says two words, `.say` joins its words with
+    /// a plus, `.pick` takes a whole number, `.mark` writes down that it ran.
+    fn plugin_with_window_commands(log: &Log) -> Vec<Box<dyn ClientPlugin>> {
+        let log = Arc::clone(log);
+        vec![plugin("test:p", move |registrar| {
+            registrar.command(
+                CommandSpec::new("name", "says a name").with_prefix('.'),
+                |_, _| "Alex".to_owned(),
+            );
+            registrar.command(
+                CommandSpec::new("pair", "says two words").with_prefix('.'),
+                |_, _| "1 2".to_owned(),
+            );
+            registrar.command(
+                CommandSpec::new("say", "says words")
+                    .with_prefix('.')
+                    .argument(Argument::rest("words")),
+                |_, arguments| arguments.rest(0).join("+"),
+            );
+            registrar.command(
+                CommandSpec::new("pick", "picks a slot")
+                    .with_prefix('.')
+                    .argument(Argument::integer("slot")),
+                |_, arguments| format!("picked {}", arguments.integer(0)),
+            );
+            let log = Arc::clone(&log);
+            registrar.command(
+                CommandSpec::new("mark", "writes down that it ran").with_prefix('.'),
+                move |_, _| {
+                    log.lock().unwrap().push("mark".to_owned());
+                    "marked".to_owned()
+                },
+            );
+        })]
+    }
+
+    #[test]
+    fn a_command_of_the_window_may_hold_commands_of_the_window_in_holes() {
+        let log: Log = Arc::default();
+        let (replies, _) = with_host(plugin_with_window_commands(&log), |host, context| {
+            [
+                ".say hi {.name}",
+                ".say {.say {.name} {.pair}} x",
+                ".say a{.name}b {.pair}",
+                r".say \{.name\} {.name}",
+                "say {.name}",
+            ]
+            .map(|line| host.command(line, context))
+        });
+        assert_eq!(
+            replies,
+            [
+                "hi+Alex",
+                "Alex+1+2+x",
+                "aAlexb+1+2",
+                "{.name}+Alex",
+                "Alex"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hole_that_fails_in_a_window_command_is_named_and_what_ran_before_is_said() {
+        let log: Log = Arc::default();
+        let (replies, _) = with_host(plugin_with_window_commands(&log), |host, context| {
+            [
+                ".pick {.name}",
+                ".say {.mark} {.nonsense}",
+                ".say {/tp 1 2 3}",
+                ".say {>1+1}",
+                ".say {.name",
+                ".{.name} x",
+            ]
+            .map(|line| host.command(line, context))
+        });
+        assert_eq!(
+            replies[0],
+            "usage: .pick SLOT; SLOT must be a whole number, and hole 1 (at character 7) gave text (1 hole before it already ran and is not undone)",
+            "a command of the window gives text, which is not a whole number, and nothing is converted by guessing"
+        );
+        assert!(
+            replies[1].starts_with(
+                "hole 2 (at character 14): unknown client command .nonsense; client commands: "
+            ) && replies[1].ends_with("(1 hole before it already ran and is not undone)"),
+            "{}",
+            replies[1]
+        );
+        assert_eq!(lines(&log), ["mark"]);
+        assert_eq!(
+            replies[2],
+            format!("hole 1 (at character 6): {WAITING_FOR_THE_SERVER}")
+        );
+        assert_eq!(
+            replies[3],
+            format!("hole 1 (at character 6): {WAITING_FOR_THE_SERVER}")
+        );
+        assert!(
+            replies[4].starts_with("the hole that opens at character 6 is never closed"),
+            "{}",
+            replies[4]
+        );
+        assert!(replies[5].starts_with("a hole cannot be the name of a command"));
+    }
+
+    #[test]
+    fn a_line_for_the_server_has_its_holes_of_the_window_run_and_nothing_else_changed() {
+        let log: Log = Arc::default();
+        let (lines_made, _) = with_host(plugin_with_window_commands(&log), |host, context| {
+            [
+                "/tp 1 2 3",
+                "/say {.name} {/other {.name}} \\{.name\\}",
+                "/say {.pair}",
+                "  /say {.name}",
+                ">x = {.name} + {.pair}; y = \"{.name}\"",
+                "/say {>f({.name})}",
+                "hello {.name}",
+            ]
+            .map(|line| host.line_for_the_server(line, context))
+        });
+        let made: Vec<&str> = lines_made
+            .iter()
+            .map(|made| made.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            made,
+            [
+                "/tp 1 2 3",
+                "/say Alex {/other Alex} \\{.name\\}",
+                "/say 1 2",
+                "/say Alex",
+                ">x = 'Alex' + '1 2'; y = \"{.name}\"",
+                "/say {>f('Alex')}",
+                "hello {.name}",
+            ],
+            "text goes in as text, code gets literals, what is not a window hole is as it was typed, and chat is not read at all"
+        );
+    }
+
+    #[test]
+    fn a_line_for_the_server_that_cannot_be_made_ready_says_why_and_a_result_that_is_a_brace_is_escaped()
+     {
+        let log: Log = Arc::default();
+        let plugins = {
+            let mut plugins = plugin_with_window_commands(&log);
+            plugins.push(plugin("test:q", |registrar| {
+                registrar.command(
+                    CommandSpec::new("braces", "says braces").with_prefix('.'),
+                    |_, _| "{/x} \\ }".to_owned(),
+                );
+                registrar.command(
+                    CommandSpec::new("long", "says a lot").with_prefix('.'),
+                    |_, _| "a".repeat(1000),
+                );
+            }));
+            plugins
+        };
+        let (made, _) = with_host(plugins, |host, context| {
+            (
+                host.line_for_the_server("/say {.braces}", context),
+                host.line_for_the_server("/say {.nope}", context),
+                host.line_for_the_server("/say {.long} {.long}", context),
+                host.line_for_the_server("/say {.name", context),
+                host.line_for_the_server(&format!("/say {}", "a".repeat(1010)), context),
+                host.line_for_the_server(&format!("/{}{{.long}}", "a".repeat(23)), context),
+                host.line_for_the_server(&format!("/{}{{.long}}", "a".repeat(24)), context),
+            )
+        });
+        assert_eq!(made.0.unwrap(), r"/say \{/x\} \\ \}");
+        assert!(
+            made.1
+                .unwrap_err()
+                .starts_with("hole 1 (at character 6): unknown client command .nope")
+        );
+        assert!(made.2.unwrap_err().contains("longer than 1024"));
+        assert!(made.3.unwrap_err().contains("never closed"));
+        assert_eq!(
+            made.4.unwrap().len(),
+            1015,
+            "a line with no hole is not touched"
+        );
+        assert_eq!(
+            made.5.unwrap().len(),
+            1024,
+            "the longest line there may be is allowed"
+        );
+        assert!(
+            made.6.unwrap_err().contains("1025 bytes"),
+            "and one byte more is not"
         );
     }
 

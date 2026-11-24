@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::VecDeque;
 
 use entities::{ComponentBag, Entity, EntityError};
+use line_language::CommandValue;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, Message, Tick};
 use server::{AccessError, Audience, GridView, ServerGrid, ServerWorld};
@@ -48,9 +49,32 @@ pub struct Context<'a> {
     pub(crate) client: Option<ClientId>,
     /// The system running, if one is: what it declared is checked in tests and debug builds.
     pub(crate) declared: Option<&'a SystemSpec>,
+    /// What a command handler gave back or failed with; empty for anything else.
+    pub(crate) outcome: CommandOutcome,
+}
+
+/// What a command handler says about how it went, besides what it replies.
+#[derive(Debug, Default)]
+pub(crate) struct CommandOutcome {
+    pub given: Option<CommandValue>,
+    pub failure: Option<String>,
 }
 
 impl<'a> Context<'a> {
+    /// Gives back a value from a command: what a `{/command}` hole is worth where the command was typed inside a line (see
+    /// `docs/specs/scripting-spec.md` 4.5). A command that gives nothing is worth `None`; so is one that gives more than once,
+    /// the last time counting.
+    pub fn give(&mut self, value: CommandValue) {
+        self.outcome.given = Some(value);
+    }
+
+    /// Says the command failed: the line it is in stops and the player is told `message` (with the hole it was, if it was one).
+    /// A command that only replies an error, as every command did before this existed, did not fail in this sense, and a line
+    /// goes on after it.
+    pub fn fail(&mut self, message: &str) {
+        self.outcome.failure = Some(message.to_owned());
+    }
+
     /// The tick being run.
     pub fn tick(&self) -> Tick {
         self.tick
@@ -306,6 +330,7 @@ impl<'a> Context<'a> {
                 tick: self.tick,
                 client: self.client,
                 declared: None,
+                outcome: CommandOutcome::default(),
             };
             if let Verdict::Refuse(reason) = run(event as &dyn Any, &mut inner) {
                 return Verdict::Refuse(reason);

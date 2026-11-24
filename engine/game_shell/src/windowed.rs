@@ -45,7 +45,7 @@ const POSE_INTERVAL: Duration = Duration::from_millis(50);
 /// How often what the keys ask is sent again when it has not changed.
 const MOVEMENT_REPEAT: Duration = Duration::from_millis(100);
 /// How long a line of chat or the answer to a command stays on the screen.
-const REPLY_SHOWN_FOR: Duration = Duration::from_secs(8);
+const REPLY_SHOWN_FOR: Duration = Duration::from_secs(16);
 /// How many such lines the screen holds at once.
 const MESSAGES_SHOWN: usize = 6;
 type GameSession<G> = Session<Box<dyn Connection>, G>;
@@ -352,7 +352,11 @@ impl<G: GameDefinition> Viewer<G> {
                 let reply = self.session.client_command(text);
                 self.say(reply, now);
             }
-            Line::ServerCommand(text) => self.session.send_command(text),
+            Line::ServerCommand(text) => {
+                if let Err(error) = self.session.send_command_line(text) {
+                    self.say(error, now);
+                }
+            }
             Line::Chat(text) => self.session.send_chat(text),
             Line::Script(_) => self.say(
                 "code after > cannot be run yet: scripts are not built".to_owned(),

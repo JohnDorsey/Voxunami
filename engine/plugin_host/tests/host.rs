@@ -9,9 +9,9 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    Argument, CASCADE_LIMIT, CommandSpec, EntityDespawned, EntitySpawned, Event, HandlerSpec,
-    Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError, SaveScope,
-    ShipParked, SystemSpec, Verdict,
+    Argument, CASCADE_LIMIT, CommandSpec, CommandValue, EntityDespawned, EntitySpawned, Event,
+    HandlerSpec, Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError,
+    SaveScope, ShipParked, SystemSpec, Verdict,
 };
 use protocol::{ClientMessage, EntityId, Message, ServerMessage};
 use server::test_support::log_in;
@@ -1378,6 +1378,276 @@ fn help_belongs_to_the_host_and_a_game_without_commands_has_none() {
         replies_to(&mut rig, &["/help"]),
         ["this game has no commands"]
     );
+}
+
+// ---------------------------------------------------------------- holes in a command line (scripting spec 4)
+
+/// Commands that give values, so that holes have something to be worth, and write down which ran.
+fn plugin_with_values(log: &Log) -> Box<dyn Plugin> {
+    let log = Arc::clone(log);
+    plugin("test:values", move |registrar| {
+        let gives = |name: &'static str, value: CommandValue| {
+            let log = Arc::clone(&log);
+            (
+                CommandSpec::new(name, "gives a value"),
+                move |context: &mut plugin_host::Context<'_>,
+                      _: protocol::ClientId,
+                      _: &plugin_host::Arguments<'_>| {
+                    note(&log, name);
+                    context.give(value.clone());
+                },
+            )
+        };
+        let text = |text: &str| CommandValue::Text(text.to_owned());
+        for (spec, run) in [
+            gives("two", CommandValue::Integer(2)),
+            gives("half", CommandValue::Float(0.5)),
+            gives("yes", CommandValue::Bool(true)),
+            gives("name", text("Alex")),
+            gives("pair", text("1 2")),
+            gives("five_as_text", text("5")),
+            gives("empty", text("")),
+            gives("braces", text(r"{/two} \ }")),
+            gives("nothing", CommandValue::None),
+        ] {
+            registrar.command(spec, run);
+        }
+        let broken_log = Arc::clone(&log);
+        registrar.command(CommandSpec::new("broken", "fails"), move |context, _, _| {
+            note(&broken_log, "broken");
+            context.fail("it broke");
+        });
+        let chatty_log = Arc::clone(&log);
+        registrar.command(
+            CommandSpec::new("chatty", "replies and gives"),
+            move |context, client, _| {
+                note(&chatty_log, "chatty");
+                context.reply(client, "hello");
+                context.give(CommandValue::Text("x".to_owned()));
+            },
+        );
+        registrar.command(
+            CommandSpec::new("go", "takes a number").argument(Argument::number("x")),
+            |context, client, arguments| {
+                context.reply(client, &format!("go {}", arguments.number(0)))
+            },
+        );
+        registrar.command(
+            CommandSpec::new("pick", "takes a word").argument(Argument::word("word")),
+            |context, client, arguments| {
+                context.reply(client, &format!("pick {}", arguments.word(0)))
+            },
+        );
+    })
+}
+
+fn rig_with_values() -> (Rig, Log) {
+    let log = new_log();
+    let rig = build(|_, _| vec![plugin_with_commands(), plugin_with_values(&log)]).unwrap();
+    (rig, log)
+}
+
+#[test]
+fn a_hole_inside_the_rest_of_a_command_is_pasted_as_text_and_its_words_are_words() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/say {/two}",
+                "/say a{/name}b",
+                "/say {/pair} end",
+                "/say x{/pair}y",
+                "/say {/half} {/yes} {/nothing}",
+                "say {/two}",
+            ]
+        ),
+        ["2", "aAlexb", "1+2+end", "x1+2y", "0.5+True+None", "2"]
+    );
+}
+
+#[test]
+fn a_hole_that_is_a_whole_argument_fills_a_slot_with_a_value_of_the_right_kind() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/give base_blocks:lamp {/two}",
+                "/go {/two}",
+                "/go {/half}",
+                "/pick {/name}",
+            ]
+        ),
+        ["gave 2 of base_blocks:lamp", "go 2", "go 0.5", "pick Alex"]
+    );
+}
+
+#[test]
+fn a_value_of_the_wrong_kind_is_refused_and_names_the_slot_and_the_hole() {
+    let (mut rig, _) = rig_with_values();
+    // the hole ran before the command was refused, and the answer says so
+    let ran = " (1 hole before it already ran and is not undone)";
+    let expected = [
+        "usage: /give BLOCK [COUNT]; COUNT must be a whole number, and hole 1 (at character 11) gave a number with a fraction",
+        "usage: /give BLOCK [COUNT]; COUNT must be a whole number, and hole 1 (at character 11) gave text",
+        "usage: /give BLOCK [COUNT]; COUNT must be a whole number, and hole 1 (at character 11) gave text",
+        "usage: /give BLOCK [COUNT]; BLOCK must be an identifier like namespace:name, and hole 1 (at character 7) gave text",
+        "usage: /go X; X must be a number, and hole 1 (at character 5) gave a truth value (True or False)",
+        "usage: /go X; X must be a number, and hole 1 (at character 5) gave text",
+        "usage: /pick WORD; WORD must be a word, and hole 1 (at character 7) gave a whole number",
+        "usage: /pick WORD; WORD must be a word, and hole 1 (at character 7) gave text that is empty or holds a blank or control character",
+    ];
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/give a:b {/half}",
+                "/give a:b {/name}",
+                "/give a:b {/five_as_text}",
+                "/give {/name}",
+                "/go {/yes}",
+                "/go {/name}",
+                "/pick {/two}",
+                "/pick {/pair}",
+            ]
+        ),
+        expected.map(|reply| format!("{reply}{ran}")),
+        "nothing is converted by guessing: the text 5 is not a whole number, and text with a space is not a word"
+    );
+}
+
+#[test]
+fn a_hole_joined_to_text_cannot_fill_a_slot_that_is_not_the_rest() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/give a:b 1{/two}", "/go {/two}{/two}"]),
+        [
+            "usage: /give BLOCK [COUNT]; COUNT is made of text and a hole, and only the argument that takes the rest can be (1 hole before it already ran and is not undone)",
+            "usage: /go X; X is made of text and a hole, and only the argument that takes the rest can be (2 holes before it already ran and are not undone)",
+        ]
+    );
+}
+
+#[test]
+fn a_rest_that_needs_a_word_and_gets_none_is_answered_with_the_usage() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/say {/empty}", "/say a {/empty}"]),
+        [
+            "usage: /say WORDS... (1 hole before it already ran and is not undone)",
+            "a"
+        ]
+    );
+}
+
+#[test]
+fn a_failing_hole_stops_the_line_and_says_which_hole_and_what_already_ran() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/say a {/broken} {/two}",
+                "/say {/name} {/broken}",
+                "/say {/nonsense}"
+            ]
+        ),
+        [
+            "hole 1 (at character 8): it broke",
+            "hole 2 (at character 14): it broke (1 hole before it already ran and is not undone)",
+            "hole 1 (at character 6): unknown command; try /braces, /broken, /chatty, /empty, /five_as_text, /give BLOCK [COUNT], /go X, /half, /help [COMMAND], /name, /nothing, /pair, /pick WORD, /say WORDS..., /two, /yes",
+        ]
+    );
+    // `say` never ran, and the hole after the failing one never ran
+    assert_eq!(lines(&log), ["broken", "name", "broken"]);
+}
+
+#[test]
+fn a_command_that_fails_after_its_holes_ran_says_so() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/go {/half} {/two}"]),
+        ["usage: /go X (2 holes before it already ran and are not undone)"]
+    );
+}
+
+#[test]
+fn what_a_nested_command_says_is_said_and_each_command_gives_only_its_own_value() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/say {/chatty}",
+                "/say {/two} {/nothing}",
+                "/say {/help say}"
+            ]
+        ),
+        ["hello", "x", "2+None", "/say WORDS...: says words", "None"]
+    );
+    assert_eq!(lines(&log), ["chatty", "two", "nothing"]);
+}
+
+#[test]
+fn what_a_hole_gives_is_never_read_as_a_hole() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(replies_to(&mut rig, &["/say {/braces}"]), [r"{/two}+\+}"]);
+    assert_eq!(
+        lines(&log),
+        ["braces"],
+        "the braces in what it gave ran nothing"
+    );
+}
+
+#[test]
+fn escapes_keep_a_brace_or_a_backslash_as_text() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &[r"/say \{/two\} a\\b \n"]),
+        [r"{/two}+a\b+\n"]
+    );
+    assert!(lines(&log).is_empty());
+}
+
+#[test]
+fn a_line_with_a_hole_that_is_not_closed_or_that_the_server_cannot_run_is_answered_with_why() {
+    let (mut rig, _) = rig_with_values();
+    let replies = replies_to(
+        &mut rig,
+        &["/say {/two", "/say {.name}", "/say {>1+1}", "/say {*a}"],
+    );
+    assert_eq!(replies.len(), 4);
+    assert!(
+        replies[0].starts_with("the hole that opens at character 6 is never closed"),
+        "{}",
+        replies[0]
+    );
+    assert_eq!(
+        replies[1],
+        "hole 1 (at character 6): a command of the window can only be run by the window, before the line is sent"
+    );
+    assert_eq!(
+        replies[2],
+        "hole 1 (at character 6): code cannot be run yet: scripts are not built"
+    );
+    assert!(
+        replies[3].starts_with("{* and {** at character 6 are kept"),
+        "{}",
+        replies[3]
+    );
+}
+
+#[test]
+fn the_name_of_a_command_cannot_be_a_hole() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/{/name} a"]),
+        [
+            "a hole cannot be the name of a command: holes are for the words after it (1 hole before it already ran and is not undone)"
+        ]
+    );
+    assert_eq!(lines(&log), ["name"]);
 }
 
 // ---------------------------------------------------------------- entities

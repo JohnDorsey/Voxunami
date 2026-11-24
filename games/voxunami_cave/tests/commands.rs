@@ -78,3 +78,79 @@ fn tp_moves_the_player_and_explains_what_it_cannot_do() {
         ["that is outside the world"]
     );
 }
+
+/// What a player typed, sent the way the window sends it (the holes of the window run first), and what the server answered.
+fn typed(rig: &mut Rig, player: &mut Player, line: &str) -> Result<Vec<String>, String> {
+    player.send_command_line(line)?;
+    rig.step();
+    rig.step();
+    rig.settle(&mut [player]);
+    Ok(player.take_command_replies())
+}
+
+#[test]
+fn a_hole_runs_a_command_of_the_server_before_the_line_does_and_what_it_did_stays_done() {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    // `{/fly}` runs first, says what it says, and is worth `None`, which `/tp` is given as the word None, and that is not a number
+    // (`/tp` takes the rest of the line and answers a bad one itself, as it always did, so the answer is its own).
+    let replies = typed(&mut rig, &mut player, "/tp 20.5 {/fly} 3").unwrap();
+    assert_eq!(
+        replies,
+        ["you are walking", "usage: /tp X Y Z; Y must be a number"]
+    );
+    // the hole ran, and nothing undid it
+    assert_eq!(
+        typed(&mut rig, &mut player, "/fly").unwrap(),
+        ["you are flying"]
+    );
+}
+
+#[test]
+fn a_hole_that_fails_names_itself_and_a_line_that_is_never_closed_says_so() {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    let replies = typed(&mut rig, &mut player, "/tp 1 2 {/nonsense}").unwrap();
+    assert_eq!(replies.len(), 1);
+    assert!(
+        replies[0].starts_with("hole 1 (at character 9): unknown command; try "),
+        "{}",
+        replies[0]
+    );
+    // a hole that is never closed is found by the window, which sends nothing
+    let error = typed(&mut rig, &mut player, "/tp 1 2 {/fly").unwrap_err();
+    assert!(
+        error.starts_with("the hole that opens at character 9 is never closed"),
+        "{error}"
+    );
+    assert!(player.take_command_replies().is_empty());
+}
+
+#[test]
+fn a_hole_of_the_window_is_run_by_the_window_and_the_server_gets_its_answer_as_text() {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    // `.shadows` answers with words, and `/fly` takes none: the server was sent them as words
+    let answer = player.client_command(".shadows");
+    assert!(!answer.is_empty());
+    let replies = typed(&mut rig, &mut player, "/fly {.shadows}").unwrap();
+    assert_eq!(replies, ["usage: /fly"]);
+    // a hole of the window that fails sends nothing at all
+    let error = typed(&mut rig, &mut player, "/fly {.nonsense}").unwrap_err();
+    assert!(
+        error.starts_with("hole 1 (at character 6): unknown client command .nonsense"),
+        "{error}"
+    );
+    assert_eq!(player.take_command_replies(), Vec::<String>::new());
+    assert_eq!(
+        typed(&mut rig, &mut player, "/fly").unwrap(),
+        ["you are walking"],
+        "the failed line did not toggle flying"
+    );
+}

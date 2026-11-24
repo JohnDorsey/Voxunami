@@ -981,6 +981,7 @@ dependencies = [
  "glam 0.34.1",
  "identity",
  "libm",
+ "line_language",
  "namespaced_id",
  "player_presence",
  "plugin_host",
@@ -1500,6 +1501,14 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.4",
+]
+
+[[package]]
+name = "line_language"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "protocol",
 ]
 
 [[package]]
@@ -2329,6 +2338,7 @@ version = "0.0.0"
 dependencies = [
  "binary_codec",
  "entities",
+ "line_language",
  "namespaced_id",
  "protocol",
  "server",

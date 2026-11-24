@@ -33,6 +33,7 @@ pub use forms::{
     FormError, FormId, MAXIMUM_FORMS_PER_PLAYER, UiAction, UiClose, UiResponse, UiShow,
 };
 pub use host::{CASCADE_LIMIT, PluginHost};
+pub use line_language::CommandValue;
 pub use prompt::{
     MAXIMUM_PROMPT_OPTIONS, MAXIMUM_PROMPT_TEXT, Prompt, PromptAnswer, PromptClosed, PromptError,
     PromptId,
