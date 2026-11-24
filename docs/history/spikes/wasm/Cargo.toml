@@ -1,0 +1,16 @@
+# Spike: one real terrain generator (Cave's rolling hills) compiled to wasm, against the same code native (docs/specs/generator-identity-spec.md, question 5).
+# A standalone workspace, not part of the main one. Build the module and run the harness with `run.sh` (scratch build folder outside the repository).
+[workspace]
+resolver = "3"
+members = ["spike_generator", "generator_module", "harness"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+panic = "abort"

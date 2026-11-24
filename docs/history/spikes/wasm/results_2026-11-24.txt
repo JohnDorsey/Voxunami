@@ -1,0 +1,26 @@
+# Run 1 (2026-11-24, both runtimes, 2 passes, the last reported), AMD Ryzen 5 7600X, Windows 10; wasmtime 51.0.0 (cranelift 0.138.0), wasmi 2.0.3
+module 108128 bytes; 1152 bricks (700 with a surface or cave, 452 uniform); 2 passes, the last one reported
+native                 mixed: call      5135 us (worst      7867) copy     0 us   x native       -   uniform: call 1276.1 us copy     0 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmtime: compile 58.6 ms, instantiate 22 us, init 36 us
+wasmtime               mixed: call      5253 us (worst      7594) copy     2 us   x native    1.02   uniform: call 1321.4 us copy     2 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmtime + fuel: compile 84.5 ms, instantiate 17 us, init 28 us
+wasmtime + fuel        mixed: call      6347 us (worst      9266) copy     2 us   x native    1.24   uniform: call 1601.7 us copy     2 us   differing bricks 0   fuel/mixed 159484805  fuel/uniform 39449047
+  wasmi: translate 0.4 ms, instantiate 30 us, init 519 us
+wasmi                  mixed: call     95591 us (worst    164347) copy     8 us   x native   18.61   uniform: call 24047.4 us copy     5 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmi + fuel: translate 0.5 ms, instantiate 17 us, init 576 us
+wasmi + fuel           mixed: call     84679 us (worst     98546) copy     7 us   x native   16.49   uniform: call 20967.8 us copy     3 us   differing bricks 0   fuel/mixed 295672244  fuel/uniform 76355113
+
+# Wasmtime alone, three more runs (3 passes each; copied from the console): native / wasmtime / wasmtime + fuel, mixed call in us
+run 2: 5243 / 5294 (x1.01) / 6483 (x1.24)
+run 3: 5245 / 5279 (x1.01) / 6482 (x1.24)
+run 4: 5226 / 5294 (x1.01) / 6471 (x1.24)
+wasmtime linear memory after the run: 1472 KiB; compile 59-64 ms (84-93 ms with fuel); instantiate 15-34 us; init 28-50 us; 0 differing bricks in each run
+
+# Wasmi alone (1 pass), after the run above (the first run was on a busier machine: x18.6 and x16.5)
+native                 mixed: call      5213 us (worst      8052) copy     0 us   x native       -   uniform: call 1288.6 us copy     0 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmi: translate 0.5 ms, instantiate 25 us, init 736 us
+  wasmi: linear memory 1472 KiB after the run
+wasmi                  mixed: call     70818 us (worst     89624) copy     8 us   x native   13.59   uniform: call 17752.7 us copy     3 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmi + fuel: translate 0.4 ms, instantiate 28 us, init 724 us
+  wasmi + fuel: linear memory 1472 KiB after the run
+wasmi + fuel           mixed: call     71601 us (worst     88766) copy     7 us   x native   13.74   uniform: call 17769.4 us copy     3 us   differing bricks 0   fuel/mixed 295672445  fuel/uniform 76355120

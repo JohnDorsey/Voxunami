@@ -60,7 +60,20 @@ Two questions follow that the owner should answer:
 - **Question 2, the meaning of the three numbers:** agreed (patch: the same terrain; minor: details; major: a different world).
 - **What the namespace of a generator id is:** **the id of the pack that owns the generator**, as for blocks today (`my_pack:hills`), so the namespace of a generator always equals its pack's folder name and `check-pack` can rely on it. There is no separate vendor part. An author who ships several packs shows it in the pack ids (a naming convention such as `acme_terrain`), not in the syntax. An optional `author` key in `pack.json` may be added later as metadata only (not built). Shader packs keep their `author:name` ids. The `@1.2.3` stays a way to write the version beside a `NamespacedId`; nothing that reads `NamespacedId` changes.
 - **Question 1 (the spelling)** is settled by this: `pack_id:generator_name@1.2.3`, with the version stored as three numbers beside the id. The dotted form is not used.
-- **Still open:** 3 (what the world stores), 4 (the policies), 5 (the spike first).
+- **Question 3, what the world stores:** (b), **the version in use**, changed only when the operator accepts an upgrade (written to the world, a line in the log). Not settled: what `/reload` does to a running server when a newer version appears (my expectation: it keeps the version in use until the upgrade is accepted).
+- **Question 4, the policies:** `exact`, `patch` and `minor`; a major never floats.
+- **Question 5, the spike first:** the owner asked for it on 2026-11-24 (one generator, native against wasm, on the same bricks).
+- **Still open:** nothing in the questions; the not-settled `/reload` detail above.
+
+## What the spike found (2026-11-24)
+
+The spike is `history/spikes/wasm/` (`wasm-generator-spike.md` there has the table and what it did not measure). One real generator, Cave's rolling hills, compiled to a wasm module with no imports (108 KB) and run on the same 1,152 bricks natively, in wasmtime (machine code) and in wasmi (an interpreter). **[measured, one machine]**
+
+- **The terrain is the same:** every brick equals the native one voxel for voxel in every configuration. (Linux not run.)
+- **Wasmtime costs almost nothing: 1.01 times native, 1.24 times with fuel** (5.3 and 6.5 ms a brick against 5.2). My guess of 1.5 to 3 times above was too pessimistic for this generator; **[believed]** the reason is that it is scalar float and integer code with no memory tricks, which a compiler to machine code handles as well as the native compiler does. A different generator could differ.
+- **Wasmi is too slow for a generator: about 14 times native** (71 ms a brick), so a view of thousands of bricks would take minutes. This is what `architecture-review.md` said to check ("a JIT only for a generator, and only if a measurement asks"): **the measurement asks.** Wasmi stays the likelier choice for rules, where speed matters less, but it is not a choice for generators.
+- **Fuel is not portable between runtimes** (159 vs 296 million for the same brick). For a generator that is harmless if fuel is only a cut-off that stops a module that never ends, since a generator that finishes gives the same bits whatever the count; it would matter if a budget were part of the simulation (rules). **[believed]**
+- **Open for the owner**, since it is a decision about a dependency and about what a client must run: wasmtime is a JIT (more code, a larger build, and a client must trust a JIT's sandbox); wasmi is small and cannot do the work. If clients may not run a JIT (a platform that forbids it), a generator must be compiled in, or the client falls back to the server's bricks (the world-writer spike's subject).
 
 ## Questions for the owner
 

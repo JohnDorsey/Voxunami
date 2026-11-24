@@ -1,0 +1,12 @@
+[package]
+name = "generator_module"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+spike_generator = { path = "../spike_generator" }
+voxel_space = { path = "../../../../../engine/voxel_space" }

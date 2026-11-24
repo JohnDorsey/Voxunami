@@ -1,0 +1,10 @@
+[package]
+name = "spike_generator"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+terrain = { path = "../../../../../engine/terrain" }
+voxel_grid = { path = "../../../../../engine/voxel_grid" }
+voxel_space = { path = "../../../../../engine/voxel_space" }
