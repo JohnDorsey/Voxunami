@@ -12,8 +12,10 @@
 //! one that is there is left alone (so an entity is the same entity tick after tick). A ball aboard a ship that the bodies have not yet made, or are making, is left until they have
 //! (a ship that a lock has just made is new, and the ball it was carried onto is the one it is to have).
 
+use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, EntityKindSpec};
 use namespaced_id::NamespacedId;
+use protocol::{EntityId, Message};
 use server::ServerWorld;
 use voxel_space::{EntityPose, GridId, Orientation, WorldPosition};
 
@@ -27,21 +29,60 @@ pub fn joint_ball_kind() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// The kind of a ball: no components, a place is all it has.
+/// Whether the ball is the ball of a joint that is rigid (made so by `/joint immobilize`, or locked): a client draws it in another colour. A component of the ball that clients are told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JointBallRigid(pub bool);
+
+impl Message for JointBallRigid {
+    fn kind() -> NamespacedId {
+        "engine:joint_ball_rigid"
+            .parse()
+            .expect("constant identifier is valid")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_u8(u8::from(self.0));
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let rigid = match reader.read_u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(DecodeError::Invalid("a rigid flag is 0 or 1")),
+        };
+        reader.finish()?;
+        Ok(Self(rigid))
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![Self(false), Self(true)]
+    }
+}
+
+/// The kind of a ball: whether its joint is rigid is all it has besides a place.
 pub(super) fn joint_ball_kind_spec() -> EntityKindSpec {
-    EntityKindSpec::new(joint_ball_kind().as_str())
+    EntityKindSpec::new(joint_ball_kind().as_str()).component(JointBallRigid(false), true)
 }
 
 /// Where a ball is: the ship it is aboard and the point in voxels in the ship's own coordinates.
 type Place = (GridId, [f64; 3]);
 
 impl Bodies {
-    /// The places there should be a ball at, in order: the first end of every coupling, and the first end of every locked pair of ends of a ship.
-    fn places_for_balls(&self, world: &ServerWorld) -> Vec<Place> {
-        let mut places: Vec<Place> = self
+    /// The places there should be a ball at, in order, and whether each is the ball of a rigid joint: the first end of every coupling (rigid if the world says the pair is), and the
+    /// first end of every locked pair of ends of a ship (a locked joint is rigid).
+    fn places_for_balls(&self, world: &ServerWorld) -> Vec<(Place, bool)> {
+        let mut places: Vec<(Place, bool)> = self
             .couplings
             .iter()
-            .map(|(key, coupled)| (key.0, coupled.first_end.local_centre()))
+            .map(|(key, coupled)| {
+                (
+                    (key.0, coupled.first_end.local_centre()),
+                    world.immobilized_ships().contains(key),
+                )
+            })
             .collect();
         for frame in self.frames.values() {
             for (id, record) in &frame.ships {
@@ -52,18 +93,22 @@ impl Bodies {
                 places.extend(
                     facing_pairs(&ends)
                         .into_iter()
-                        .map(|pair| (*id, pair.first.local_centre())),
+                        .map(|pair| ((*id, pair.first.local_centre()), true)),
                 );
             }
         }
         // (A ship that is gone has no ball: a coupling that is let go in the next tick still names it in the tick of a merge.)
-        places.retain(|(ship, _)| world.data().grids().get(*ship).is_some());
-        places.sort_by(|(first, at), (second, other)| {
+        places.retain(|((ship, _), _)| world.data().grids().get(*ship).is_some());
+        places.sort_by(|((first, at), _), ((second, other), _)| {
             first
                 .cmp(second)
                 .then(at.partial_cmp(other).expect("places are numbers"))
         });
-        places.dedup();
+        places.dedup_by(|(later, later_rigid), (earlier, earlier_rigid)| {
+            let same = later == earlier;
+            *earlier_rigid |= same && *later_rigid;
+            same
+        });
         places
     }
 
@@ -81,12 +126,20 @@ impl Bodies {
     pub(super) fn keep_the_balls(&mut self, world: &mut ServerWorld) {
         let kind = joint_ball_kind();
         let mut missing = self.places_for_balls(world);
-        let mut extra = Vec::new();
+        let mut extra: Vec<EntityId> = Vec::new();
+        let mut to_mark: Vec<(EntityId, bool)> = Vec::new();
         for entity in world.entities().iter().filter(|entity| entity.kind == kind) {
             let place = (entity.pose.grid, entity.pose.position.in_voxels());
-            match missing.iter().position(|wanted| *wanted == place) {
+            match missing.iter().position(|(wanted, _)| *wanted == place) {
                 Some(index) => {
-                    missing.remove(index);
+                    let (_, rigid) = missing.remove(index);
+                    // (A ball whose mark cannot be read is marked again.)
+                    if !matches!(
+                        entity.components.get::<JointBallRigid>(),
+                        Ok(Some(JointBallRigid(marked))) if marked == rigid
+                    ) {
+                        to_mark.push((entity.id, rigid));
+                    }
                 }
                 None => {
                     // (Aboard a ship the bodies have not made yet, it is left: a ship that a lock has just made has the ball it was carried onto.)
@@ -101,9 +154,14 @@ impl Bodies {
         for id in extra {
             world.despawn_entity(id);
         }
-        for (ship, at) in missing {
+        for (id, rigid) in to_mark {
+            let _ = world.set_entity_component(id, &JointBallRigid(rigid));
+        }
+        for ((ship, at), rigid) in missing {
             let pose = EntityPose::new(ship, WorldPosition::from_voxels(at), Orientation::IDENTITY);
-            let _ = world.spawn_entity(&kind, pose, ComponentBag::new());
+            let mut marks = ComponentBag::new();
+            marks.set(&JointBallRigid(rigid));
+            let _ = world.spawn_entity(&kind, pose, marks);
         }
     }
 }

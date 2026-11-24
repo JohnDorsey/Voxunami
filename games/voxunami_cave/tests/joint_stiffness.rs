@@ -210,7 +210,17 @@ fn lock_is_refused_on_a_pair_that_is_rigid_or_being_braked_and_is_asked_when_it_
     let reply = say(&mut scene, &mut player, "/joint lock");
     assert!(reply.contains("mobilize them first"), "{reply}");
     say(&mut scene, &mut player, "/joint mobilize");
+    // (Swinging again: a pair that is not turning is made rigid at once, and the refusal would be the rigid one's.)
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(1), [0.0; 3], [0.0, 0.6, 0.0])
+            .unwrap();
+    });
     say(&mut scene, &mut player, "/joint immobilize 5");
+    assert!(
+        pairs_that_are_rigid(&scene).is_empty(),
+        "it is braking, not rigid"
+    );
     let reply = say(&mut scene, &mut player, "/joint lock");
     assert!(reply.contains("mobilize them first"), "{reply}");
     say(&mut scene, &mut player, "/joint mobilize");
@@ -366,6 +376,20 @@ fn a_pair_that_was_made_rigid_is_rigid_again_when_its_ships_come_back_from_files
 #[test]
 fn a_chain_on_a_rail_is_immobilized_at_a_joint_and_the_cars_of_that_joint_keep_their_turn() {
     let mut chain = a_chain_on_a_rail();
+    let anchor = chain.ships[0];
+    let rail_of = |chain: &common::joints::ChainOnARail| {
+        chain
+            .scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(anchor)
+            .unwrap()
+            .rail
+            .is_some()
+    };
+    assert!(rail_of(&chain), "the group rides a rail");
     chain.player.send_command("/joint immobilize 0");
     let mut now = chain.ships.clone();
     for _ in 0..3 {
@@ -376,6 +400,10 @@ fn a_chain_on_a_rail_is_immobilized_at_a_joint_and_the_cars_of_that_joint_keep_t
     assert!(reply.contains("immobilized ships"), "{reply}");
     let pairs = pairs_that_are_rigid(&chain.scene);
     assert_eq!(pairs.len(), 1, "{reply}");
+    assert!(
+        !rail_of(&chain),
+        "the group is off the rail: its cars are turned there"
+    );
     let (first, second) = pairs[0];
     // The group swings (the chain is swinging in its rail); the two cars of the rigid joint do not turn against each other.
     keep_up_with(&mut chain.scene, &mut chain.player, &now);
@@ -388,4 +416,41 @@ fn a_chain_on_a_rail_is_immobilized_at_a_joint_and_the_cars_of_that_joint_keep_t
         moved < 1e-3,
         "the cars turned against each other by {moved}"
     );
+}
+
+#[test]
+fn a_brake_asked_of_a_coupling_that_is_gone_is_not_kept_for_the_cars_when_they_are_coupled_again() {
+    use server::GridView;
+    use voxel_space::VoxelCoordinate;
+    use voxunami_cave::content::CaveContent;
+    let (mut scene, report, mut player) = two_cars_swinging();
+    say(&mut scene, &mut player, "/joint immobilize 30");
+    // The end of the east car is taken away (a block edit) and the coupling goes with it; put back, the cars are coupled again.
+    let content = CaveContent::new();
+    let joint = common::joints::joint_block();
+    let look = common::joints::ball_end_toward(voxel_space::FaceDirection::PositiveX);
+    let (air, block_channel) = (content.blocks.air, content.block_channel());
+    scene.run(move |world| {
+        world
+            .grid(ship_id(0))
+            .unwrap()
+            .set(block_channel, VoxelCoordinate::new(3, 0, 0), air)
+            .unwrap();
+    });
+    tick_and_follow(&mut scene, &mut player, 3);
+    assert_eq!(report().couplings, 0, "the coupling went with the block");
+    let (state_channel, orientation_channel) =
+        (content.state_channel(), content.orientation_channel());
+    scene.run(move |world| {
+        let mut view = world.grid(ship_id(0)).unwrap();
+        let at = VoxelCoordinate::new(3, 0, 0);
+        view.set(state_channel, at, look.state).unwrap();
+        view.set(orientation_channel, at, look.orientation).unwrap();
+        view.set(block_channel, at, joint).unwrap();
+    });
+    until_coupled(&mut scene, &mut player, &report, 1, 600);
+    // Nobody asked for this coupling to be made rigid: whatever time went by, it is not.
+    tick_and_follow(&mut scene, &mut player, 120);
+    assert!(pairs_that_are_rigid(&scene).is_empty());
+    assert!(say(&mut scene, &mut player, "/joint mobilize").contains("nothing is immobilized"));
 }

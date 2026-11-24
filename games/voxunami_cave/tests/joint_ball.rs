@@ -10,7 +10,7 @@ use common::joints::{
 };
 use common::{Player, Scene, length, say, ship_id, tick_and_follow};
 use entities::ComponentBag;
-use grid_bodies::joint_ball_kind;
+use grid_bodies::{JointBallRigid, joint_ball_kind};
 use protocol::EntityId;
 use voxel_space::{BrickCoordinate, EntityPose, GridId, Orientation, WorldPosition};
 
@@ -254,4 +254,86 @@ fn a_player_is_shown_the_ball_as_a_ball_of_the_joints_colour_where_the_ends_meet
         apart < 0.01,
         "the ball is drawn {apart} voxels from the pivot"
     );
+}
+
+/// Whether each ball is marked as the ball of a rigid joint, in order of identifier.
+fn rigid_balls(scene: &Scene) -> Vec<bool> {
+    scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == joint_ball_kind())
+        .map(|entity| {
+            entity
+                .components
+                .get::<JointBallRigid>()
+                .expect("the component can be read")
+                .expect("a ball has it")
+                .0
+        })
+        .collect()
+}
+
+#[test]
+fn a_ball_is_marked_rigid_while_its_joint_is_rigid_and_not_marked_when_the_joint_is_let_turn_again()
+{
+    let (mut scene, report, mut player) = two_cars();
+    until_coupled(&mut scene, &mut player, &report, 1, 600);
+    until_a_ball(&mut scene, &mut player, 1, 5);
+    assert_eq!(rigid_balls(&scene), vec![false], "a ball joint turns");
+    let id = balls(&scene)[0].0;
+    say(&mut scene, &mut player, "/joint immobilize 0");
+    tick_and_follow(&mut scene, &mut player, 4);
+    assert_eq!(rigid_balls(&scene), vec![true]);
+    assert_eq!(balls(&scene)[0].0, id, "the same ball, marked");
+    say(&mut scene, &mut player, "/joint mobilize");
+    tick_and_follow(&mut scene, &mut player, 4);
+    assert_eq!(rigid_balls(&scene), vec![false]);
+}
+
+#[test]
+fn the_ball_of_a_locked_pair_is_marked_rigid_and_a_lock_marks_the_ball_it_keeps() {
+    let (mut scene, mut player) = {
+        let (scene, _report, player) = a_player_and_cars(24.0, vec![(20.0, the_two_cars_locked())]);
+        (scene, player)
+    };
+    until_a_ball(&mut scene, &mut player, 1, 10);
+    assert_eq!(rigid_balls(&scene), vec![true], "a locked joint is rigid");
+    let (mut scene, report, mut player) = two_cars();
+    until_coupled(&mut scene, &mut player, &report, 1, 600);
+    until_a_ball(&mut scene, &mut player, 1, 5);
+    assert_eq!(rigid_balls(&scene), vec![false]);
+    say(&mut scene, &mut player, "/joint lock");
+    let mut ticks = 0;
+    while ships(&scene).len() > 1 && ticks < 60 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        ticks += 1;
+    }
+    tick_and_follow(&mut scene, &mut player, 5);
+    assert_eq!(rigid_balls(&scene), vec![true]);
+}
+
+#[test]
+fn a_player_is_shown_the_ball_of_a_rigid_joint_in_another_colour_than_the_ball_of_a_joint_that_turns()
+ {
+    let (mut scene, report, mut player) = two_cars();
+    until_coupled(&mut scene, &mut player, &report, 1, 600);
+    until_a_ball(&mut scene, &mut player, 1, 5);
+    tick_and_follow(&mut scene, &mut player, 5);
+    let ball = player.entity_boxes()[0];
+    assert_eq!(ball.material, common::joints::joint_block());
+    say(&mut scene, &mut player, "/joint immobilize 0");
+    tick_and_follow(&mut scene, &mut player, 8);
+    let stiff = player.entity_boxes()[0];
+    assert_eq!(stiff.shape, renderer::EntityShape::Ball);
+    assert_eq!(
+        stiff.material,
+        voxunami_cave::content::CaveContent::new().blocks.lamp
+    );
+    assert_ne!(stiff.material, ball.material);
+    say(&mut scene, &mut player, "/joint mobilize");
+    tick_and_follow(&mut scene, &mut player, 8);
+    assert_eq!(player.entity_boxes()[0].material, ball.material);
 }

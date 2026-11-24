@@ -1223,6 +1223,25 @@ fn a_rigid_coupling_that_is_let_go_of_frees_its_cars_and_nothing_is_left_of_it()
         world.step();
     }
     assert!(most_different(the_second_in_the_first(&world), held) > 0.1);
+    // Nothing holds the pivots together any more: a ball left behind would keep them at one place however the cars turn (and they are turned by a torque on one of them).
+    let apart = pivots_apart(&world);
+    assert!(
+        apart > 0.1,
+        "the pivots are {apart} voxels apart: something still holds them"
+    );
+}
+
+/// How far apart the two cars' ends of the pivot of `face_pivot` are in the world, in voxels.
+fn pivots_apart(world: &BodyWorld) -> f64 {
+    let pivot = face_pivot(4, 4);
+    let place = |id: BodyId, local: Vec3| {
+        let state = world.state(id).unwrap();
+        let origin = state
+            .position
+            .relative_to(WorldPosition::from_voxels([0.0; 3]));
+        add(origin, turned(state.orientation.components(), local))
+    };
+    difference(place(FIRST, pivot.first), place(SECOND, pivot.second))
 }
 
 #[test]

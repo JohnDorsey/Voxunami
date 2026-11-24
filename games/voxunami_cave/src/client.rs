@@ -10,7 +10,7 @@ use game_shell::client_plugin::{
     ActionSpec, Appearance, ClientContext, ClientPlugin, ClientRegistrar, MouseButton,
 };
 use game_shell::{GameContent, KeyCode};
-use grid_bodies::joint_ball_kind;
+use grid_bodies::{JointBallRigid, joint_ball_kind};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
 use renderer::EntityShape;
@@ -574,6 +574,8 @@ impl ClientPlugin for ClientItems {
 pub struct ClientJointBalls {
     /// The number of the joint's block in this game's registry (the palette value it is drawn in).
     material: u32,
+    /// The number of the block the ball of a rigid joint looks like (a lamp's warm light colour, which no other part of a joint has).
+    rigid_material: u32,
 }
 
 impl ClientJointBalls {
@@ -582,7 +584,10 @@ impl ClientJointBalls {
             .1
             .raw_id_of(&dev_ball_joint_id())
             .expect("Cave has the dev ball joint");
-        Self { material }
+        Self {
+            material,
+            rigid_material: content.blocks.lamp,
+        }
     }
 }
 
@@ -592,11 +597,16 @@ impl ClientPlugin for ClientJointBalls {
     }
 
     fn register(&self, registrar: &mut ClientRegistrar<'_>) {
-        let material = self.material;
-        registrar.entity_appearance(joint_ball_kind(), move |_| {
+        let (material, rigid_material) = (self.material, self.rigid_material);
+        registrar.entity_appearance(joint_ball_kind(), move |entity| {
+            // (A ball whose mark cannot be read is drawn as a ball that turns.)
+            let rigid = matches!(
+                entity.component::<JointBallRigid>(),
+                Ok(Some(JointBallRigid(true)))
+            );
             Some(Appearance {
                 size: [4, 4, 4],
-                material,
+                material: if rigid { rigid_material } else { material },
                 centre_offset: [0.0; 3],
                 shape: EntityShape::Ball,
             })

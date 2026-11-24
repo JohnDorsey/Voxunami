@@ -7,12 +7,14 @@ publish.workspace = true
 description = "Ships as rigid bodies: the plugin that moves the grids of a world with gravity, forces and collisions."
 
 [dependencies]
+binary_codec.workspace = true
 block_models.workspace = true
 entities.workspace = true
 libm = "0.2"
 namespaced_id.workspace = true
 thiserror.workspace = true
 physics.workspace = true
+protocol.workspace = true
 plugin_host.workspace = true
 region_octree.workspace = true
 server.workspace = true

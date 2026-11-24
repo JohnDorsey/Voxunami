@@ -33,7 +33,7 @@ mod rail_joints;
 mod rail_ports;
 mod stiffness;
 
-pub use balls::joint_ball_kind;
+pub use balls::{JointBallRigid, joint_ball_kind};
 use rail_ports::is_a_rail_pair;
 
 use couplings::{Coupled, CouplingKey};
