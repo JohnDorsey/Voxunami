@@ -165,8 +165,10 @@ mod tests {
         assert_eq!(orthographic_level(3.0, 0.0), 1);
         // A pixel twice as wide is one level more, all the way up, and the coarsest level is the end.
         let mut previous = orthographic_level(3.0, 1.0);
+        let mut pixel = 1.0;
         for step in 1..60 {
-            let level = orthographic_level(3.0, 2.0_f64.powi(step));
+            pixel *= 2.0;
+            let level = orthographic_level(3.0, pixel);
             assert_eq!(level, previous + 1, "{step}");
             previous = level;
         }
