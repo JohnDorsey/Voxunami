@@ -1,6 +1,6 @@
 //! The terrain of a level drawn beyond its bricks, as the game says for each level (`GameDefinition::level_detail`): in Cave the level of space is drawn in coarse nodes out
-//! past the size of the universe (so the great rivers are seen from anywhere), and the overworld, which the game does not draw so, is bricks only. A player who goes
-//! from one to the other has the view of each.
+//! past the size of the universe (so the great rivers are seen from anywhere), and the overworld out to the horizon of its hills (made from the hills without their caves, so
+//! a node of it takes a third of a millisecond: `docs/specs/viewpoints-spec.md` 9p). A player who goes from one to the other has the view of each.
 
 mod common;
 
@@ -31,6 +31,24 @@ impl Nodes {
     }
 }
 
+/// The updates until the view has nothing more to say for a few rounds (the hills out to the horizon are some tens of thousands of nodes).
+fn settled_view(scene: &mut Scene, player: &mut Player) -> Vec<MeshUpdate> {
+    let mut updates = Vec::new();
+    let mut quiet = 0;
+    let began = std::time::Instant::now();
+    while quiet < 5 {
+        let more = view_after(scene, player);
+        quiet = if more.is_empty() { quiet + 1 } else { 0 };
+        updates.extend(more);
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(600),
+            "the view does not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    updates
+}
+
 fn coarse_uploads(updates: &[MeshUpdate]) -> usize {
     updates
         .iter()
@@ -53,7 +71,8 @@ fn scene_with_a_player() -> (Scene, Player) {
 }
 
 #[test]
-fn the_level_of_space_is_drawn_in_nodes_and_the_overworld_in_bricks_only() {
+fn the_level_of_space_and_the_overworld_are_each_drawn_in_nodes_beyond_their_bricks_and_the_nodes_of_one_are_not_left_up_in_the_other()
+ {
     let (mut scene, mut player) = scene_with_a_player();
     let mut renderer = Nodes::default();
     // At the narrowest part of the river, 320 metres from it: the thread is in the nodes of the finest levels.
@@ -71,23 +90,34 @@ fn the_level_of_space_is_drawn_in_nodes_and_the_overworld_in_bricks_only() {
     assert!(coarse_uploads(&updates) > 0, "nodes of the river are drawn");
     assert!(!renderer.0.is_empty());
 
-    // The overworld is not: bricks, no node is drawn there, and the nodes of the river are taken down (the renderer is told: it holds none).
+    let river_nodes = renderer.0.clone();
+
+    // The overworld is drawn in nodes as well, its own: the nodes of the river are taken down (the renderer is told), and the hills are drawn out past the bricks.
+    // (A player keeps the place they had, which is over the pole of the planet, 63 kilometres from the hills: they are put on the hills.)
     say(&mut scene, &mut player, "/level go overworld");
-    let updates = view_after(&mut scene, &mut player);
+    say(&mut scene, &mut player, "/tp 16 110 16");
+    tick_and_follow(&mut scene, &mut player, 30);
+    let updates = settled_view(&mut scene, &mut player);
     renderer.apply(&updates);
     assert!(
-        !player.draws_coarse_terrain(),
-        "the overworld is drawn in bricks"
-    );
-    assert_eq!(
-        coarse_uploads(&updates),
-        0,
-        "no node of the river is drawn in the overworld"
+        player.draws_coarse_terrain(),
+        "the overworld is drawn in nodes beyond its bricks"
     );
     assert!(
-        renderer.0.is_empty(),
+        coarse_uploads(&updates) > 0,
+        "the hills of the overworld are drawn beyond the bricks"
+    );
+    assert!(
+        river_nodes.is_disjoint(&renderer.0),
         "{} nodes of the river are left up in the overworld",
-        renderer.0.len()
+        river_nodes.intersection(&renderer.0).count()
+    );
+    // Nodes of more than one level: the near ones are fine and the far ones coarse.
+    let levels: std::collections::BTreeSet<u8> =
+        renderer.0.iter().map(|cube| cube.level()).collect();
+    assert!(
+        levels.len() >= 3,
+        "the hills are drawn in nodes of levels {levels:?}"
     );
 
     // And back: the nodes again.
@@ -121,10 +151,16 @@ fn from_the_widest_part_the_river_is_drawn_too() {
 }
 
 #[test]
-fn cave_draws_the_level_of_space_in_nodes_out_past_the_universe_and_no_other_level() {
+fn cave_draws_the_level_of_space_in_nodes_out_past_the_universe_and_the_overworld_to_the_horizon_of_its_hills()
+ {
     assert_eq!(Cave::coarse_detail(), None);
     let overworld: namespaced_id::NamespacedId = "voxunami_cave:overworld".parse().unwrap();
-    assert_eq!(Cave::level_detail(&overworld), None);
+    let hills = Cave::level_detail(&overworld).expect("the overworld is drawn in nodes");
+    assert!(
+        (1.0e4..=1.0e6).contains(&hills.maximum_distance),
+        "the hills are drawn out to {} voxels",
+        hills.maximum_distance
+    );
     let space: namespaced_id::NamespacedId = "voxunami_cave:mini_cosmos".parse().unwrap();
     let detail = Cave::level_detail(&space).expect("the level of space is drawn in nodes");
     // Out past the diameter of the universe (93 billion light years is 8.8 x 10^26 metres), from anywhere in it.

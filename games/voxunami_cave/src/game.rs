@@ -101,6 +101,11 @@ pub fn light_scheme<C: Connection>(session: &CaveSession<C>) -> Option<LightSche
 /// kilograms, pulls a player a metre from it by about two hundred-thousandths of a metre a second a second; this is ten million million times its mass).
 pub const PULLING_MASS: f64 = 1.0e19;
 
+/// How far out the overworld is drawn in coarse nodes, in voxels: the horizon of its hills. **Measured** (viewpoints-spec.md 9p, from the ground, 3 pixels a cell): out to
+/// 3,000 voxels 24,000 nodes, to 10,000 43,000 nodes (29 MB of meshes), to 50,000 66,000; each doubling of the distance adds about 10,000 nodes. It is a choice of what a view
+/// from nothing costs against how far a hill is seen, and it may be changed: nothing but this number depends on it.
+pub const OVERWORLD_DRAW_DISTANCE: f64 = 10_000.0;
+
 impl GameDefinition for Cave {
     type Content = CaveContent;
 
@@ -143,10 +148,18 @@ impl GameDefinition for Cave {
     }
 
     /// The level of space is drawn in coarse nodes out past the size of the universe (93 billion light years is 8.8 x 10^26 metres across), so that the great rivers are seen
-    /// from anywhere; the overworld is not drawn beyond its bricks. The light of terrain that nobody has lit is none: the nodes are as dark as the bricks beside them.
+    /// from anywhere; the overworld is drawn in them out to the horizon of its hills ([`OVERWORLD_DRAW_DISTANCE`]), made from the hills without their caves, so that a
+    /// node of them takes a third of a millisecond (`docs/specs/viewpoints-spec.md` 9p). The light of terrain that nobody has lit is none: the nodes are as dark as the bricks beside them.
     fn level_detail(level: &NamespacedId) -> Option<CoarseDetail> {
-        (*level == mini_cosmos_id()).then_some(CoarseDetail {
-            maximum_distance: 2.0e27,
+        let maximum_distance = if *level == mini_cosmos_id() {
+            2.0e27
+        } else if *level == overworld_id() {
+            OVERWORLD_DRAW_DISTANCE
+        } else {
+            return None;
+        };
+        Some(CoarseDetail {
+            maximum_distance,
             unlit: 0,
             cell_pixels: 3.0,
             bytes_per_second: 1_000_000,

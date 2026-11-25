@@ -21,6 +21,14 @@ pub trait DensityField: Debug + Send + Sync {
         let _ = (region, footprint);
         Interval::new(f64::NEG_INFINITY, f64::INFINITY)
     }
+
+    /// The height of the surface in the column of voxels at `x` and `z`, seen at `footprint`: the field is ground below it (a voxel whose middle is lower) and air above, in
+    /// that column and at the same footprint. A field that is the height of a surface says so, and a coarse node of it is found a column at a time
+    /// ([`crate::coarse_node_of_surface`]), a hundred times faster than asking about every cell. `None`, the default, for a field that is not that (one with caves or overhangs).
+    fn surface_height(&self, x: i128, z: i128, footprint: LevelOfDetail) -> Option<f64> {
+        let _ = (x, z, footprint);
+        None
+    }
 }
 
 /// Ground whose surface height varies with x and z: solid below `base_height + hills(x, z)`.
@@ -58,6 +66,15 @@ impl DensityField for Heightfield {
             .bounds_through_finer(region, footprint)
             .shifted(self.base_height)
             .minus(height)
+    }
+
+    fn surface_height(&self, x: i128, z: i128, footprint: LevelOfDetail) -> Option<f64> {
+        // (The hills do not depend on y if they are planar, and the height of the sample is any; if they are not, there is no height of the surface to give.)
+        if !self.hills.is_planar() {
+            return None;
+        }
+        let position = VoxelCoordinate::try_new(x, 0, z).ok()?;
+        Some(self.base_height + self.hills.sample(position, footprint))
     }
 }
 

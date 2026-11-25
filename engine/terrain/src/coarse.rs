@@ -106,6 +106,142 @@ pub fn fills_of_field_cell_by_cell(field: &dyn DensityField, cube: BrickCube) ->
     Some(fills)
 }
 
+/// The coarse node of a cube of a field that is the height of a surface ([`DensityField::surface_height`]), found a column of cells at a time: the height at the middle of each
+/// of the 32 x 32 columns (and of the ring of columns round them, which the cells beside the node are asked about), and from it how full each cell is, as the share of its
+/// voxels that are ground. That is one sample for each column, where asking about every cell takes up to 64 for each cell (`docs/specs/lod-spec.md` 9a: 0.3 ms a node against
+/// 18 to 43). The block of a cell and the surface it shows are worked out from the fills as for every node ([`coarse_node_from_fills`]).
+///
+/// `None` for a brick, for a field that has no height of its own, and for a cube so far out that the middle of a column cannot be told.
+pub fn coarse_node_of_surface(
+    field: &dyn DensityField,
+    materials: SurfaceLayers,
+    cube: BrickCube,
+    unlit: u8,
+) -> Option<CoarseNode> {
+    node_of_surface(field, materials, cube, unlit, true)
+}
+
+/// The same without the shortcuts for a node that is air all through and one that is ground all through with ground all round it (the tests check them against each other).
+#[cfg(any(test, feature = "test-support"))]
+pub fn coarse_node_of_surface_without_shortcuts(
+    field: &dyn DensityField,
+    materials: SurfaceLayers,
+    cube: BrickCube,
+    unlit: u8,
+) -> Option<CoarseNode> {
+    node_of_surface(field, materials, cube, unlit, false)
+}
+
+fn node_of_surface(
+    field: &dyn DensityField,
+    materials: SurfaceLayers,
+    cube: BrickCube,
+    unlit: u8,
+    shortcuts: bool,
+) -> Option<CoarseNode> {
+    let level = cube.level();
+    if level == 0 {
+        return None;
+    }
+    let detail = LevelOfDetail::new(level)?;
+    let edge = 1i128 << level;
+    let origin = cube.origin().origin();
+    let node_edge = NODE_EDGE as i128;
+    let side = node_edge + 2;
+    let middle_of = |origin: i128, column: i128| {
+        origin
+            .checked_add(column.checked_mul(edge)?)?
+            .checked_add(edge / 2)
+    };
+    let height_of_column = |column_x: i128, column_z: i128| {
+        field.surface_height(
+            middle_of(origin.x(), column_x)?,
+            middle_of(origin.z(), column_z)?,
+            detail,
+        )
+    };
+
+    // The height of the surface in each column of the node and in the ring of columns round it.
+    let mut heights = vec![0.0f64; (side * side) as usize];
+    let (mut lowest, mut highest) = (f64::INFINITY, f64::NEG_INFINITY);
+    for column_z in -1..=node_edge {
+        for column_x in -1..=node_edge {
+            let height = height_of_column(column_x, column_z)?;
+            heights[((column_z + 1) * side + column_x + 1) as usize] = height;
+            lowest = lowest.min(height);
+            highest = highest.max(height);
+        }
+    }
+
+    // How full the cell `layer` cells up from the bottom of the node is where the surface is `height` high: the share of its voxels whose middle is under the surface.
+    let fill_of = |height: f64, layer: i128| -> u8 {
+        let Some(bottom) = layer
+            .checked_mul(edge)
+            .and_then(|up| origin.y().checked_add(up))
+        else {
+            return 0;
+        };
+        let (low, size) = (bottom as f64, edge as f64);
+        if height <= low {
+            0
+        } else if height >= low + size {
+            255
+        } else {
+            (((height - low) / size * 255.0 + 0.5) as u8).clamp(1, 254)
+        }
+    };
+
+    if shortcuts {
+        // Ground that is under the surface all through, all round and over (as far as the layers of the surface look) is the same everywhere; so is air all through.
+        let above = (SURFACE_LAYER_DEPTH as i128 + edge - 1) / edge;
+        let top_looked_at = (node_edge + above)
+            .checked_mul(edge)
+            .and_then(|up| origin.y().checked_add(up));
+        if top_looked_at.is_some_and(|top| lowest >= top as f64) {
+            return Some(CoarseNode::uniform(CoarseCell {
+                block: materials.deep,
+                fill: 255,
+                light: unlit,
+                exposure: 0,
+            }));
+        }
+        if highest <= origin.y() as f64 {
+            return Some(CoarseNode::uniform(CoarseCell::empty(materials.air, unlit)));
+        }
+    }
+
+    let mut fills = vec![0u8; CELLS_PER_NODE];
+    for column_z in 0..node_edge {
+        for column_x in 0..node_edge {
+            let height = heights[((column_z + 1) * side + column_x + 1) as usize];
+            for layer in 0..node_edge {
+                fills[(column_x + 32 * layer + 1024 * column_z) as usize] = fill_of(height, layer);
+            }
+        }
+    }
+    if fills.iter().all(|&fill| fill == 0) {
+        return Some(CoarseNode::uniform(CoarseCell::empty(materials.air, unlit)));
+    }
+    let fill_outside = |cell: [i128; 3]| {
+        let inside_ring =
+            (-1..=node_edge).contains(&cell[0]) && (-1..=node_edge).contains(&cell[2]);
+        let height = if inside_ring {
+            Some(heights[((cell[2] + 1) * side + cell[0] + 1) as usize])
+        } else {
+            height_of_column(cell[0], cell[2])
+        };
+        height.map_or(0, |height| fill_of(height, cell[1]))
+    };
+    Some(coarse_node_from_fills(
+        &fills,
+        &fill_outside,
+        [0, 1, 0],
+        edge,
+        materials,
+        unlit,
+    ))
+}
+
 fn sampler_of(field: &dyn DensityField, cube: BrickCube) -> Option<Sampler<'_>> {
     let level = cube.level();
     if level == 0 {
@@ -1234,6 +1370,209 @@ mod tests {
             seen > 0,
             "the slope never went through two cells over each other"
         );
+    }
+
+    // ---- The nodes of a field that is the height of a surface, found a column of cells at a time ----
+
+    use crate::density::Heightfield;
+    use crate::noise::{Dimensionality, FractalNoise};
+
+    fn hills() -> Heightfield {
+        Heightfield::new(
+            64.0,
+            FractalNoise::standard(2024, Dimensionality::Planar, 7, 6, 40.0, 0.5),
+        )
+    }
+
+    fn cube_of(brick: [i128; 3], level: u8) -> BrickCube {
+        BrickCube::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), level).unwrap()
+    }
+
+    fn drawn(cell: &CoarseCell) -> bool {
+        cell.fill >= DRAWN_FILL
+    }
+
+    #[test]
+    fn the_height_a_heightfield_says_is_where_its_samples_turn_from_ground_to_air_and_no_other_field_says_one()
+     {
+        let field = hills();
+        for (x, z) in [(0, 0), (-5, 17), (1_000, -2_000), (123_456, 7)] {
+            for level in [0u8, 3, 6] {
+                let detail = LevelOfDetail::new(level).unwrap();
+                let height = field.surface_height(x, z, detail).unwrap();
+                // A voxel is ground when its middle is below the surface.
+                let top = (height - 0.5).ceil() as i128;
+                for (y, ground) in [
+                    (top - 2, true),
+                    (top - 1, true),
+                    (top, false),
+                    (top + 3, false),
+                ] {
+                    let position = VoxelCoordinate::try_new(x, y, z).unwrap();
+                    assert_eq!(
+                        field.sample(position, detail) > 0.0,
+                        ground,
+                        "({x}, {y}, {z}) at level {level}, surface at {height}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            Flat(50.0).surface_height(0, 0, LevelOfDetail::FULL_DETAIL),
+            None
+        );
+        // Hills that depend on height are not the height of a surface.
+        let caves = Heightfield::new(
+            64.0,
+            FractalNoise::standard(1, Dimensionality::Volumetric, 5, 2, 1.0, 0.5),
+        );
+        assert_eq!(caves.surface_height(3, 4, LevelOfDetail::FULL_DETAIL), None);
+        assert!(
+            coarse_node_of_surface(&Flat(50.0), materials(), cube_of([0, 0, 0], 2), UNLIT)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_brick_has_no_node_by_columns_either() {
+        assert!(
+            coarse_node_of_surface(&hills(), materials(), cube_of([0, 0, 0], 0), UNLIT).is_none()
+        );
+    }
+
+    #[test]
+    fn a_cell_of_flat_ground_is_filled_by_columns_with_the_share_of_its_voxels_that_are_ground_to_within_half_a_voxel()
+     {
+        for height in [50.0, 77.3, 130.0, 64.0] {
+            let field = Heightfield::new(height, FractalNoise::none());
+            for level in 1..=5u8 {
+                let edge = 1i128 << level;
+                for brick_y in (-2..8).map(|n| n * edge) {
+                    let cube = cube_of([0, brick_y, 0], level);
+                    let node = coarse_node_of_surface(&field, materials(), cube, UNLIT).unwrap();
+                    for (index, found) in node.cells().enumerate() {
+                        let layer = (index / 32 % 32) as i128;
+                        let bottom = brick_y * 32 + layer * edge;
+                        // The voxels of the cell that are ground: those whose middle is below the surface.
+                        let ground = (((height - 0.5).ceil() as i128) - bottom).clamp(0, edge);
+                        let share = ground as f64 / edge as f64 * 255.0;
+                        let allowed = 255.0 * 0.5 / edge as f64 + 1.0;
+                        assert!(
+                            (f64::from(found.fill) - share).abs() <= allowed,
+                            "height {height}, level {level}, brick y {brick_y}, cell {index}: {} for {ground} of {edge} voxels",
+                            found.fill
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hills_are_drawn_by_columns_in_nearly_every_cell_as_asking_about_every_cell_draws_them() {
+        let field = hills();
+        let (mut cells_seen, mut cells_differ, mut exposures_differ) = (0usize, 0usize, 0usize);
+        let mut nodes = 0;
+        for level in 1..=4u8 {
+            let edge = 1i128 << level;
+            for x in [-2, 0, 3] {
+                for z in [-1, 0, 2] {
+                    // The bricks from the ground to over the hills: the surface is between 24 and 104 voxels up.
+                    for y in (0..=(8 / edge + 1)).map(|n| n * edge) {
+                        let cube = cube_of([x * edge, y, z * edge], level);
+                        let columns =
+                            coarse_node_of_surface(&field, materials(), cube, UNLIT).unwrap();
+                        let asked =
+                            coarse_node_of_field_cell_by_cell(&field, materials(), cube, UNLIT)
+                                .unwrap();
+                        if columns.uniform_cell().is_some() && asked.uniform_cell().is_some() {
+                            continue;
+                        }
+                        nodes += 1;
+                        for (found, wanted) in columns.cells().zip(asked.cells()) {
+                            cells_seen += 1;
+                            cells_differ += usize::from(drawn(&found) != drawn(&wanted));
+                            exposures_differ +=
+                                usize::from((found.exposure > 0) != (wanted.exposure > 0));
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "{cells_differ} of {cells_seen} cells in {nodes} nodes are drawn differently by columns, {exposures_differ} are exposed differently"
+        );
+        assert!(nodes > 20, "{nodes} nodes were not uniform");
+        // (The spike of lod-spec 9a: 99.3 percent of the cells drawn alike.)
+        assert!(
+            cells_differ * 200 <= cells_seen,
+            "{cells_differ} of {cells_seen} cells in {nodes} nodes are drawn differently"
+        );
+        // (The surface of the cells at the edges of a node is told by the columns beside the node: left out, a cell of ground at the edge of a node is taken to have air beside it.)
+        assert!(
+            exposures_differ * 50 <= cells_seen,
+            "{exposures_differ} of {cells_seen} cells in {nodes} nodes are exposed differently"
+        );
+    }
+
+    #[test]
+    fn the_shortcuts_for_ground_and_air_all_through_change_nothing_by_columns() {
+        let field = hills();
+        let (mut solid, mut empty) = (0, 0);
+        for level in 1..=6u8 {
+            let edge = 1i128 << level;
+            for x in [-1, 0, 1] {
+                for z in [0, 1] {
+                    for y in (-6..=6).map(|n| n * edge) {
+                        let cube = cube_of([x * edge, y, z * edge], level);
+                        let quick =
+                            coarse_node_of_surface(&field, materials(), cube, UNLIT).unwrap();
+                        let slow = coarse_node_of_surface_without_shortcuts(
+                            &field,
+                            materials(),
+                            cube,
+                            UNLIT,
+                        )
+                        .unwrap();
+                        assert_eq!(quick, slow, "{cube:?}");
+                        match quick.uniform_cell() {
+                            Some(cell) if cell.fill == 255 => solid += 1,
+                            Some(_) => empty += 1,
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            solid >= 10 && empty >= 10,
+            "{solid} solid and {empty} empty nodes"
+        );
+    }
+
+    #[test]
+    fn the_surface_of_a_hill_is_grass_on_top_with_dirt_under_it_by_columns_and_exposed_where_the_ground_ends()
+     {
+        let field = hills();
+        // A node of level 2 (cells of 4 voxels) over the hills: every column has a top cell that is grass and exposed.
+        let node =
+            coarse_node_of_surface(&field, materials(), cube_of([0, 0, 0], 2), UNLIT).unwrap();
+        let mut tops = 0;
+        for z in 0..32u8 {
+            for x in 0..32u8 {
+                let top = (0..32u8).rev().find(|&y| drawn(&cell(&node, x, y, z)));
+                if let Some(top) = top.filter(|&top| top < 31) {
+                    tops += 1;
+                    let found = cell(&node, x, top, z);
+                    assert_eq!(found.block, GRASS, "({x}, {top}, {z})");
+                    assert!(found.exposure > 0, "({x}, {top}, {z})");
+                    if top > 0 {
+                        assert_ne!(cell(&node, x, top - 1, z).block, AIR);
+                    }
+                }
+            }
+        }
+        assert!(tops > 500, "{tops} columns had a top inside the node");
     }
 
     use super::node_digest as digest;

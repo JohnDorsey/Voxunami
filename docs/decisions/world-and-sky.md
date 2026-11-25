@@ -138,8 +138,8 @@ with its numbers and what was found, is in `history/decision-diary.md`. Entries 
 - **Coarse levels go to the root** (owner, 2026-10-27): `MAXIMUM_DETAIL_LEVEL`, `LevelOfDetail::MAXIMUM_LEVEL` and the octree's `ROOT_LEVEL` are 116 (a compile-time assertion
   keeps them the same). No generator makes anything above level 40 yet, so the levels above are checked by scale with synthetic fields; seeing everything at every scale
   is about 2.2 million nodes, which is why a view has a maximum distance. Open: the renderer's depth range at these distances (`future-goals.md`).
-- **A game says how far each level is drawn** (`GameDefinition::level_detail`): Cave draws the level of space in nodes to 2 x 10^27 voxels and the overworld in bricks only (its nodes cost
-  60 to 375 ms each). Not done: the server's correction of far nodes after an edit.
+- **A game says how far each level is drawn** (`GameDefinition::level_detail`): Cave draws the level of space in nodes to 2 x 10^27 voxels and the overworld to 10,000 voxels (from the hills
+  without their caves, 0.3 ms a node; it was bricks only while its nodes cost 60 to 375 ms: `viewpoints-spec.md` 9p). Not done: the server's correction of far nodes after an edit.
 
 **The great rivers and places**
 - **The great rivers** (owner, 2026-10-27): one river across the universe in `mini_cosmos`, of one block (`base_blocks:great_river_water`, passable, never flows), a billion light years

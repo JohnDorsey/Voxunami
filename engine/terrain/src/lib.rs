@@ -26,9 +26,15 @@ mod noise;
 pub mod test_support;
 mod world_terrain;
 
-pub use coarse::{coarse_node_from_fills, coarse_node_of_field, cube_is_air, cube_may_show};
+pub use coarse::{
+    coarse_node_from_fills, coarse_node_of_field, coarse_node_of_surface, cube_is_air,
+    cube_may_show,
+};
 #[cfg(any(test, feature = "test-support"))]
-pub use coarse::{coarse_node_of_field_cell_by_cell, fills_of_field_cell_by_cell, node_digest};
+pub use coarse::{
+    coarse_node_of_field_cell_by_cell, coarse_node_of_surface_without_shortcuts,
+    fills_of_field_cell_by_cell, node_digest,
+};
 pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
 pub use empty::{EmptyTerrain, empty};
 pub use generator::{

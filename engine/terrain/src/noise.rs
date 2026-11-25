@@ -151,6 +151,11 @@ impl FractalNoise {
         Self::new(0, Dimensionality::Planar, Vec::new())
     }
 
+    /// Whether the noise depends on x and z only, and is the same at every height.
+    pub(crate) fn is_planar(&self) -> bool {
+        matches!(self.dimensionality, Dimensionality::Planar)
+    }
+
     /// An octave is kept at a level of detail only if its wavelength is at least the footprint.
     fn keeps(octave: &Octave, footprint: LevelOfDetail) -> bool {
         octave.wavelength_log2 >= footprint.level()

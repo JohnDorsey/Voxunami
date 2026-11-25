@@ -71,14 +71,17 @@ pub fn rolling_hills(
         settings.cave_half_thickness,
         16.0,
     );
+    // Seen from far away it is the hills without their caves: the sheets of air under them are twelve times the quads of the hills, invisible from above, and what makes a node
+    // of them take 94 to 201 ms against 0.3 for a node of the height of the surface alone (docs/specs/lod-spec.md 9a, viewpoints-spec.md 6.6 A).
     FieldTerrainGenerator::new(
         Arc::new(Minimum {
-            first: ground,
+            first: ground.clone(),
             second: caves,
         }),
         material_channel,
         layers,
     )
+    .with_far_field(Arc::new(ground))
 }
 
 #[cfg(test)]
@@ -151,6 +154,129 @@ mod tests {
         let expected: Vec<u64> = pinned_bricks.iter().map(|&(_, digest)| digest).collect();
         assert_eq!(observed, expected);
     }
+
+    fn overworld_generator(fixture: &StandardTestLayout) -> terrain::FieldTerrainGenerator {
+        rolling_hills(
+            RollingHillsSettings::for_one_metre_voxels(2024),
+            fixture.material,
+            LAYERS,
+        )
+    }
+
+    fn node_of(
+        generator: &impl TerrainGenerator,
+        brick: [i128; 3],
+        level: u8,
+    ) -> coarse_cells::CoarseNode {
+        let cube = region_octree::BrickCube::containing(
+            BrickCoordinate::new(brick[0], brick[1], brick[2]),
+            level,
+        );
+        generator
+            .coarse_node(cube, 0)
+            .expect("a node of a cube above level 0")
+    }
+
+    /// The overworld seen from far away is its hills without their caves (docs/specs/lod-spec.md 9a, viewpoints-spec.md 6.6 A): the sheets of air under the hills are
+    /// twelve times the quads of the hills themselves and are not to be seen from above. So the ground of every column of a node is whole: full below the surface, then
+    /// the cell the surface goes through, then air, and no air under ground.
+    #[test]
+    fn the_coarse_nodes_of_the_overworld_have_no_caves_though_its_bricks_do() {
+        let fixture = StandardTestLayout::default();
+        let generator = overworld_generator(&fixture);
+        // The bricks have them: air under the ground in a column of voxels, somewhere among the bricks under the hills.
+        let mut caves_in_bricks = false;
+        for y in 0..3 {
+            for x in 0..4 {
+                let brick =
+                    generator.generate_brick(&fixture.layout, BrickCoordinate::new(x, y, 0));
+                caves_in_bricks |= (0..32u8).any(|column| {
+                    let mut seen_air_under_ground = false;
+                    let mut ground_above = false;
+                    for height in (0..32u8).rev() {
+                        let solid = brick.get(
+                            fixture.material,
+                            voxel_space::LocalVoxelIndex::new(column, height, 3),
+                        ) != LAYERS.air;
+                        if solid {
+                            ground_above = true;
+                        } else if ground_above {
+                            seen_air_under_ground = true;
+                        }
+                    }
+                    seen_air_under_ground
+                });
+            }
+        }
+        assert!(
+            caves_in_bricks,
+            "the bricks under the hills have no caves: the test looks in the wrong place"
+        );
+
+        let mut nodes_with_a_surface = 0;
+        for (level, edge) in [(1u8, 2i128), (2, 4), (3, 8)] {
+            for x in [-2, 0, 3] {
+                for y in 0..=(4 / edge + 1) {
+                    let node = node_of(&generator, [x * edge, y * edge, 0], level);
+                    if node.uniform_cell().is_some() {
+                        continue;
+                    }
+                    nodes_with_a_surface += 1;
+                    for z in 0..32u8 {
+                        for column in 0..32u8 {
+                            let mut last = u8::MAX;
+                            for height in 0..32u8 {
+                                let fill = node
+                                    .cell(voxel_space::LocalVoxelIndex::new(column, height, z))
+                                    .fill;
+                                assert!(
+                                    fill <= last,
+                                    "level {level}, node ({x}, {y}): column ({column}, {z}) is fuller at {height} than under it: {fill} over {last}"
+                                );
+                                last = fill;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            nodes_with_a_surface > 3,
+            "{nodes_with_a_surface} nodes had a surface in them"
+        );
+    }
+
+    /// Like the bricks of a generator, its coarse nodes are not to change once a recording of them could be played again: these are the fingerprint, from the code that
+    /// made them (they pin behaviour; they are not an independent check of it). If this fails, add a new generator version instead of changing the output.
+    #[test]
+    fn the_coarse_nodes_of_the_overworld_are_pinned() {
+        let fixture = StandardTestLayout::default();
+        let generator = overworld_generator(&fixture);
+        let digests: Vec<u64> = [
+            ([0, 0, 0], 1u8),
+            ([8, 0, -8], 3),
+            ([64, 0, 64], 6),
+            ([0, 0, 0], 9),
+            ([0, -512, 0], 9),
+            ([-512, 0, 512], 9),
+            ([1_000_000_000_000, 0, -3], 20),
+        ]
+        .into_iter()
+        .map(|(brick, level)| terrain::node_digest(&node_of(&generator, brick, level)))
+        .collect();
+        assert_eq!(digests, PINNED_OVERWORLD_NODE_DIGESTS);
+    }
+
+    const PINNED_OVERWORLD_NODE_DIGESTS: [u64; 7] = [
+        17_679_892_460_646_433_895,
+        5_245_355_481_354_334_154,
+        1_133_631_287_852_297_237,
+        // (The octaves of the hills are 128 voxels across and more: from level 8 up the hills are not in a node, and the same ground is the same node anywhere.)
+        9_261_627_657_816_933_157,
+        17_360_563_479_208_760_101,
+        9_261_627_657_816_933_157,
+        157_173_885_870_648_101,
+    ];
 
     const PINNED_ROLLING_HILLS_DIGESTS: [u64; 7] = [
         10_435_167_514_397_377_490,

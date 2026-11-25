@@ -106,6 +106,8 @@ pub const SURFACE_LAYER_DEPTH: usize = 4;
 #[derive(Clone, Debug)]
 pub struct FieldTerrainGenerator {
     field: Arc<dyn DensityField>,
+    /// What the coarse nodes are made from, when it is not the field ([`FieldTerrainGenerator::with_far_field`]).
+    far_field: Option<Arc<dyn DensityField>>,
     material_channel: ChannelIndex,
     materials: SurfaceLayers,
 }
@@ -118,9 +120,22 @@ impl FieldTerrainGenerator {
     ) -> Self {
         Self {
             field,
+            far_field: None,
             material_channel,
             materials,
         }
+    }
+
+    /// Draws the coarse nodes of this generator from `far_field` and not from its field: the outer skin of the world, what it looks like from far away, without the features
+    /// that cannot be seen from there (the caves under hills, which are all but invisible from above and are twelve times the quads, `docs/specs/lod-spec.md` 9a). The bricks are
+    /// still the field's. A far field that is the height of a surface ([`DensityField::surface_height`]) has its nodes found a column at a time, which is about a hundred
+    /// times faster; one that is not has them found a cell at a time, as a field's are.
+    ///
+    /// Like the field, it is part of what a world is drawn as: a generator that has had one never has another.
+    #[must_use]
+    pub fn with_far_field(mut self, far_field: Arc<dyn DensityField>) -> Self {
+        self.far_field = Some(far_field);
+        self
     }
 }
 
@@ -178,7 +193,20 @@ impl TerrainGenerator for FieldTerrainGenerator {
     }
 
     fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
-        crate::coarse::coarse_node_of_field(&*self.field, self.materials, cube, unlit)
+        match &self.far_field {
+            None => crate::coarse::coarse_node_of_field(&*self.field, self.materials, cube, unlit),
+            Some(far_field) => {
+                crate::coarse::coarse_node_of_surface(&**far_field, self.materials, cube, unlit)
+                    .or_else(|| {
+                        crate::coarse::coarse_node_of_field(
+                            &**far_field,
+                            self.materials,
+                            cube,
+                            unlit,
+                        )
+                    })
+            }
+        }
     }
 
     fn may_show(&self, cube: BrickCube) -> bool {
@@ -217,6 +245,53 @@ mod tests {
             fixture.material,
             MATERIALS,
         )
+    }
+
+    #[test]
+    fn a_generator_with_a_far_field_draws_its_coarse_nodes_from_it_and_makes_its_bricks_from_the_field()
+     {
+        let fixture = StandardTestLayout::default();
+        let plain = flat_ground_generator(20.0, &fixture);
+        let with_far = flat_ground_generator(20.0, &fixture)
+            .with_far_field(Arc::new(Heightfield::new(100.0, FractalNoise::none())));
+        let far_alone = flat_ground_generator(100.0, &fixture);
+        // Its bricks are the field's.
+        for y in [0, 1, 2, 3] {
+            let at = BrickCoordinate::new(0, y, 0);
+            assert_eq!(
+                with_far
+                    .generate_brick(&fixture.layout, at)
+                    .content_digest(),
+                plain.generate_brick(&fixture.layout, at).content_digest(),
+                "brick at {y}"
+            );
+        }
+        // Its coarse nodes are the far field's: the same as those of a generator whose field that is, and not those of its own field.
+        let cube = BrickCube::new(BrickCoordinate::new(0, 0, 0), 2).unwrap();
+        let far = far_alone.coarse_node(cube, 7).unwrap();
+        assert_eq!(with_far.coarse_node(cube, 7), Some(far.clone()));
+        assert_ne!(plain.coarse_node(cube, 7), Some(far));
+        // A brick has no node, far field or not.
+        let brick = BrickCube::new(BrickCoordinate::new(0, 0, 0), 0).unwrap();
+        assert_eq!(with_far.coarse_node(brick, 7), None);
+    }
+
+    #[test]
+    fn a_far_field_that_is_not_the_height_of_a_surface_has_its_nodes_found_a_cell_at_a_time() {
+        let fixture = StandardTestLayout::default();
+        let settings = RollingHillsSettings::for_one_metre_voxels(7);
+        // Hills with caves are not the height of a surface: the nodes of the far field are asked of its cells.
+        let far: Arc<dyn DensityField> = hills_field(settings);
+        let with_far = flat_ground_generator(20.0, &fixture).with_far_field(Arc::clone(&far));
+        let far_alone = FieldTerrainGenerator::new(far, fixture.material, MATERIALS);
+        let cube = BrickCube::new(BrickCoordinate::new(0, 0, 0), 3).unwrap();
+        let wanted = far_alone.coarse_node(cube, 5);
+        assert!(
+            wanted
+                .as_ref()
+                .is_some_and(|node| node.uniform_cell().is_none())
+        );
+        assert_eq!(with_far.coarse_node(cube, 5), wanted);
     }
 
     fn material_at(brick: &Brick, fixture: &StandardTestLayout, x: u8, y: u8, z: u8) -> u32 {
