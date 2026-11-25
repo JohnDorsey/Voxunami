@@ -24,7 +24,7 @@ const _: () = assert!(MAXIMUM_DETAIL_LEVEL == region_octree::ROOT_LEVEL);
 const BRICK_EDGE: f64 = BRICK_EDGE_LENGTH as f64;
 
 /// Half the diagonal of a cube of side 1: the radius of the sphere round it.
-const HALF_DIAGONAL: f64 = 0.866_025_403_784_438_6;
+pub(crate) const HALF_DIAGONAL: f64 = 0.866_025_403_784_438_6;
 
 /// How fine the drawing is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -151,7 +151,7 @@ impl<'a> Selection<'a> {
 }
 
 /// Where a cube is from the viewer, in voxels along each axis: the low and the high end of the cube.
-fn span(cube: BrickCube, viewer: WorldPosition) -> [(f64, f64); 3] {
+pub(crate) fn span(cube: BrickCube, viewer: WorldPosition) -> [(f64, f64); 3] {
     let origin = cube.origin();
     let edge = cube.edge_length() as f64 * BRICK_EDGE;
     let (brick, offset) = (viewer.brick(), viewer.offset());
@@ -231,7 +231,7 @@ pub fn select_nodes(extent: BrickBox, selection: &Selection<'_>) -> Vec<BrickCub
 
 /// The lowest level at which one cube spans `bricks` bricks (at least one) along an axis: the smallest `level` with `2^level >= bricks`. The extent of a
 /// grid is as wide as the range of bricks, 2^116, so this is wider than a `u64`.
-fn level_covering(bricks: u128) -> u8 {
+pub(crate) fn level_covering(bricks: u128) -> u8 {
     (u128::BITS - (bricks - 1).leading_zeros()) as u8
 }
 
