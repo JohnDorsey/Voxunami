@@ -17,7 +17,7 @@ use server::ServerWorld;
 use voxel_space::GridId;
 
 use super::couplings::Coupled;
-use super::{Bodies, Joining};
+use super::{Bodies, Joining, REFUSED_RETRY_TICKS};
 use crate::docking::{Approach, BlockFaceView, approach};
 
 /// How the ends of a coupling are placed to each other, as the world has the two cars.
@@ -94,6 +94,24 @@ impl Bodies {
                 continue;
             };
             if !docking.settings.can_snap(&how) || self.refused.contains_key(&pair) {
+                continue;
+            }
+            // (A planet stays whatever it weighs, and the car is written into it: the planet keeps its identifier, `write_ship_into_planet`.)
+            let planet_side = self.frames.get(&coupled.frame).and_then(|frame| {
+                [
+                    (pair.0, coupled.first_end, pair.1, coupled.second_end),
+                    (pair.1, coupled.second_end, pair.0, coupled.first_end),
+                ]
+                .into_iter()
+                .find(|(id, ..)| frame.planets.contains_key(id))
+            });
+            if let Some((planet, planet_end, car, car_end)) = planet_side {
+                if self.write_ship_into_planet(world, (planet, planet_end), (car, car_end)) {
+                    self.count(|report| report.locks_made += 1);
+                } else {
+                    self.refused.insert(pair, self.tick + REFUSED_RETRY_TICKS);
+                    self.count(|report| report.locks_refused += 1);
+                }
                 continue;
             }
             let Some(join) = self.who_stays_when_joined(

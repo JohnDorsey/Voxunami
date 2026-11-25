@@ -96,6 +96,15 @@ impl Bodies {
                         .map(|pair| ((*id, pair.first.local_centre()), true)),
                 );
             }
+            // (A planet has them too, of the blocks built on it: two ends facing each other on the ground are locked, and the car that is cut out of them is coupled.)
+        }
+        for (id, planet) in &self.planet_ends {
+            let ends: Vec<BlockFace> = planet.by_brick.values().flatten().copied().collect();
+            places.extend(
+                facing_pairs(&ends)
+                    .into_iter()
+                    .map(|pair| ((*id, pair.first.local_centre()), true)),
+            );
         }
         // (A ship that is gone has no ball: a coupling that is let go in the next tick still names it in the tick of a merge.)
         places.retain(|((ship, _), _)| world.data().grids().get(*ship).is_some());
@@ -114,12 +123,13 @@ impl Bodies {
 
     /// Whether the bodies have made a ship (its record is whole): a ball aboard one that they have not is not theirs to judge yet.
     fn has_been_made(&self, ship: GridId) -> bool {
-        self.frames.values().any(|frame| {
-            frame
-                .ships
-                .get(&ship)
-                .is_some_and(|record| record.making.is_none())
-        })
+        self.planet_ends.contains_key(&ship)
+            || self.frames.values().any(|frame| {
+                frame
+                    .ships
+                    .get(&ship)
+                    .is_some_and(|record| record.making.is_none())
+            })
     }
 
     /// Makes the entities of the kind be the balls there should be, and no others (see the module).

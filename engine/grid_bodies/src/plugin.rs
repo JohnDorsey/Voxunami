@@ -324,6 +324,14 @@ impl Ship {
     }
 }
 
+/// The ends of the joints that are built on a planet, in each of its stored bricks that has any.
+#[derive(Default)]
+struct PlanetEnds {
+    by_brick: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
+    /// Whether the stored bricks have been looked at (after that, the bricks that change).
+    scanned: bool,
+}
+
 /// A planet (a ship with terrain) in the simulation: a body that is fixed, whose colliders are only of the bricks that ships are near.
 struct Planet {
     /// The bricks, in the planet's own coordinates, that have colliders (made from what is stored there, or else from the generator).
@@ -1072,6 +1080,9 @@ struct Bodies {
     stored_bricks: BTreeMap<LevelIndex, StoredBricks>,
     /// The same for the planets that have a body: which bricks of their own voxels are stored (built or dug), by planet.
     stored_planet_bricks: BTreeMap<GridId, StoredBricks>,
+    /// The ends of joints of every planet there is, built blocks that are looked for in the stored bricks (see [`PlanetEnds`]): whether or not a ship is near, so that two ends that
+    /// face each other on the ground have their ball, and a ship's end can be coupled to one.
+    planet_ends: BTreeMap<GridId, PlanetEnds>,
     /// What the world is to be told of the weight of ships, at the end of the step.
     weighed: BTreeMap<GridId, (f64, [f64; 3], Option<HullBox>)>,
     /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
@@ -1151,6 +1162,7 @@ impl Bodies {
             checks: BTreeMap::new(),
             changed_terrain_bricks: BTreeSet::new(),
             weighed: BTreeMap::new(),
+            planet_ends: BTreeMap::new(),
             refused: BTreeMap::new(),
             couplings: BTreeMap::new(),
             next_coupling: 0,
@@ -1725,6 +1737,7 @@ impl Bodies {
         self.make_ship_bricks(world);
         self.sync_planets(world);
         self.scan_planets_for_ports(world, &changed_ships);
+        self.scan_planets_for_joint_ends(world, &changed_ships);
         self.keep_terrain(world, &changed_terrain, &changed_ships);
         self.settle_ships(world);
 
@@ -2263,6 +2276,60 @@ impl Bodies {
                     } else {
                         planet.ports.insert(brick, ports);
                     }
+                }
+            }
+        }
+    }
+
+    /// Looks at the stored bricks of every planet for the ends of joints, as for ports, but of the planets that have no body too: all of them the first time, and then the ones that
+    /// changed. A planet that is gone is forgotten.
+    fn scan_planets_for_joint_ends(
+        &mut self,
+        world: &ServerWorld,
+        changed: &BTreeSet<(GridId, BrickCoordinate)>,
+    ) {
+        let Some(docking) = &self.config.docking else {
+            return;
+        };
+        let weigher = Weigher {
+            table: &self.config.table,
+            density: self.config.density,
+            block_channel: self.config.block_channel,
+            state_channel: self.config.state_channel,
+            orientation_channel: self.config.orientation_channel,
+            air: self.config.air,
+        };
+        let planets: BTreeSet<GridId> = world
+            .data()
+            .grids()
+            .iter()
+            .filter(|(_, ship)| ship.terrain.is_some())
+            .map(|(id, _)| id)
+            .collect();
+        self.planet_ends.retain(|id, _| planets.contains(id));
+        for id in planets {
+            let Some(grid) = world.data().grids().get(id) else {
+                continue;
+            };
+            let ends = self.planet_ends.entry(id).or_default();
+            let bricks: Vec<BrickCoordinate> = if ends.scanned {
+                changed
+                    .iter()
+                    .filter(|(held, _)| *held == id)
+                    .map(|(_, brick)| *brick)
+                    .collect()
+            } else {
+                grid.voxels.sorted_brick_coordinates()
+            };
+            ends.scanned = true;
+            for brick in bricks {
+                let found = weigher
+                    .scan_brick(grid, brick, Some(docking.table()))
+                    .joint_ends;
+                if found.is_empty() {
+                    ends.by_brick.remove(&brick);
+                } else {
+                    ends.by_brick.insert(brick, found);
                 }
             }
         }
@@ -3425,12 +3492,39 @@ impl Bodies {
         if !docking.has_port(planet_grid, planet_port) || !docking.has_port(ship_grid, ship_port) {
             return false;
         }
+        let done = self.write_ship_into_planet(world, (planet, planet_port), (ship, ship_port));
+        if done {
+            self.refused.remove(&(pair.first, pair.second));
+            self.count(|report| report.dockings_made += 1);
+        } else {
+            self.refused
+                .insert((pair.first, pair.second), self.tick + REFUSED_RETRY_TICKS);
+            self.count(|report| report.dockings_refused += 1);
+        }
+        done
+    }
+
+    /// Writes a ship into a planet where a face of the ship meets a face of the planet's (a docking port, or the end of a joint): the ship is put exactly where the two are in line
+    /// and its blocks are written into the planet ([`ServerWorld::dock_into`]), which keeps its identifier. Whether it was done: it is not when blocks of the ship would be where the
+    /// planet has blocks, its ground's too, and the ship is left where it was.
+    fn write_ship_into_planet(
+        &self,
+        world: &mut ServerWorld,
+        (planet, planet_face): (GridId, BlockFace),
+        (ship, ship_face): (GridId, BlockFace),
+    ) -> bool {
+        let (Some(planet_grid), Some(ship_grid)) = (
+            world.data().grids().get(planet),
+            world.data().grids().get(ship),
+        ) else {
+            return false;
+        };
         let (still_pose, moving_pose) = (planet_grid.pose, ship_grid.pose);
         let from = still_pose.position;
-        let still_view = BlockFaceView::of(planet_port, &still_pose, from);
-        let moving_view = BlockFaceView::of(ship_port, &moving_pose, from);
+        let still_view = BlockFaceView::of(planet_face, &still_pose, from);
+        let moving_view = BlockFaceView::of(ship_face, &moving_pose, from);
         let turn = approach(&still_view, &moving_view).turn;
-        let Some((docked, _)) = docked_pose(&still_pose, planet_port, ship_port, turn) else {
+        let Some((docked, _)) = docked_pose(&still_pose, planet_face, ship_face, turn) else {
             return false;
         };
         if world.set_grid_pose(ship, docked).is_err() {
@@ -3445,19 +3539,11 @@ impl Bodies {
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
         };
-        match world.dock_into(planet, ship, &plan) {
-            Ok(()) => {
-                self.refused.remove(&(pair.first, pair.second));
-                self.count(|report| report.dockings_made += 1);
-                true
-            }
-            Err(_) => {
-                let _ = world.set_grid_pose(ship, moving_pose);
-                self.refused
-                    .insert((pair.first, pair.second), self.tick + REFUSED_RETRY_TICKS);
-                self.count(|report| report.dockings_refused += 1);
-                false
-            }
+        if world.dock_into(planet, ship, &plan).is_ok() {
+            true
+        } else {
+            let _ = world.set_grid_pose(ship, moving_pose);
+            false
         }
     }
 

@@ -725,6 +725,12 @@ impl Ships {
                 )
             }
             (_, Some((_, ship, pair))) => match self.docking.unlock(world, ship, pair) {
+                // (A planet keeps its number: the car that was cut out of its ground is the other.)
+                Ok([first, second]) if first == ship || second == ship => format!(
+                    "unlocked ship {}: ship {} is cut out of it, and is coupled to it",
+                    number(ship),
+                    number(if first == ship { second } else { first })
+                ),
                 Ok([first, second]) => format!(
                     "unlocked ship {} into ships {} and {}",
                     number(ship),
