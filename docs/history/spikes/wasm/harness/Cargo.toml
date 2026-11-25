@@ -7,5 +7,5 @@ publish.workspace = true
 [dependencies]
 spike_generator = { path = "../spike_generator" }
 voxel_space = { path = "../../../../../engine/voxel_space" }
-wasmtime = { version = "51", default-features = false, features = ["cranelift", "runtime", "std"] }
+wasmtime = { version = "51", default-features = false, features = ["cranelift", "runtime", "std", "pulley"] }
 wasmi = "2"

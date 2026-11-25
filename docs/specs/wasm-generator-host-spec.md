@@ -1,0 +1,104 @@
+# A host for terrain generators written as wasm: a plan (2026-11-25)
+
+The owner said on 2026-11-25 that a client may run a JIT for generators, and asked for a plan of the host. **A plan and my opinion; nothing in it is built.** It follows `generator-identity-spec.md` (the answers there are taken as decided: the id is `pack_id:generator_name`, the version `@1.2.3` is carried beside it, the world stores the version in use, and the policies are exact, patch and minor) and the measurements of `history/spikes/wasm/wasm-generator-spike.md`. Labels: **[read]** I read it in the code or a document; **[measured]** a run; **[believed]** reasoning I did not run.
+
+## 1. What the host plugs into, as the code is today
+
+- **[read]** `terrain::TerrainGenerator` has four methods: `generate_brick` (required), and `coarse_node`, `may_show`, `solid_core` (defaults: `None`, `true`, `None`). It is `Send + Sync`, so several worker threads call one generator at once.
+- **[read]** `terrain::GeneratorFamily::build(parameters: &[u8])` makes a generator from bytes, and a world already keeps such a generator as a **recipe**: `engine:generator_recipes`, each `(instance, family, parameters)`, which is also in the world description every client is sent in `Welcome`. A recipe whose family a program lacks becomes a **placeholder** (`MissingGenerator`: the unmodified terrain cannot be reproduced, and nothing is lost from the save).
+- **[read]** `WorldTerrain` is a registry of generators and an octree saying which generator made each region; changing the default affects only regions generated afterwards. Nothing in it needs to change.
+- **[read]** The pack side is built (steps 1 to 7 of `pack-archive-spec.md`): a pack is a canonical archive with an index, replicated to clients when `replicate` is true, with a `server/` folder withheld, a root hash as its identity, and `RequestPacks` / `PackChunk` for transfer. The loader already has the rule that a pack with code a client must run needs `replicate: true`, waiting for there to be code.
+- **[read]** **The client derives coarse cells from the generator** (`coarse_streaming`: the server sends only what the client "does not derive"), and a generator that gives `coarse_node = None` has **no far terrain at all** (an empty node). So `may_show` and `solid_core` are optimisations, and `coarse_node` is not: a wasm generator without it draws nothing beyond its bricks.
+- **[read]** `FieldTerrainGenerator` (what Cave's hills are) writes only the block channel; every other channel keeps its default.
+
+## 2. The central choice: a wasm generator is a family
+
+A module is **code that makes a generator from parameter bytes**, which is what `GeneratorFamily` is. So the host is one `GeneratorFamily` per module, registered when its pack is loaded, and a world keeps an ordinary recipe for it. **No change to `WorldTerrain`, the registry, the replication of packs or the way a client gets the recipes.** Confidence high: the seam is there and is used by the planet family today.
+
+New engine crate `wasm_generators` (the engine never names a game; the dependency is wasmtime and `terrain`).
+
+## 3. The module's contract (version 1)
+
+A module has **no imports at all** (no clock, no files, no randomness, no host functions): a module that imports anything is refused. This is what makes the sandbox small: the only way in is the parameters and the coordinates, and the only way out is the output buffer.
+
+Exports **[a proposal]**:
+
+| Export | Meaning |
+|---|---|
+| `memory` | linear memory, at most the pages the manifest says (default 32 MiB) |
+| `abi` | a global, `1` |
+| `io_buffer() -> i32` | address of a buffer of at least 128 KiB the host reads and writes (the spike's module has its buffer in the same shape) |
+| `init(parameters_length: i32) -> i32` | the host has put the parameters at `io_buffer`; 0 is success |
+| `generate_brick(x: i64, y: i64, z: i64)` | fills `io_buffer` with 32,768 `u16`, **palette indices** (below) |
+| `may_show(...) -> i32`, `coarse_node(...)`, `solid_core(...)` | optional; the cube is its origin (three `i64`) and level; `coarse_node` fills 32,768 cells as the engine's cell type is laid out; absent means the defaults of the trait |
+
+- **A palette, not block numbers.** A block's number is the world's own (the registry numbers differ between worlds), so a module cannot know it. The manifest lists the blocks the module may write by name (`base_blocks:stone`...), `generate_brick` writes an index into that list, and the host maps each name to the world's number once, when it builds the generator. A name no loaded pack has is an error at load (the loader's style), not a silent air. **[believed good; it also means a module never needs recompiling when a world has other blocks]**
+- **Brick coordinates are `i128` in the engine and `i64` here.** The host answers "air" without calling the module for a brick outside `i64`, which is about 15,000 light years at one metre a voxel **[arithmetic]**. The great rivers (a billion light years wide) are a native generator and are not the first use; **an owner's question** whether v1 should widen it (two `i64` each) instead of leaving it.
+- **Only the block channel**, as Cave's generators write only theirs. Other channels keep their defaults (the host makes `Brick::new(layout)` and sets the block channel from the buffer).
+
+## 4. An SDK, so that an author writes the same code natively and as wasm
+
+**[measured in the spike]** the engine's own `terrain`, `voxel_grid`, `voxel_space` and `coarse_cells` crates build for `wasm32-unknown-unknown` unchanged, and Cave's rolling hills built from them produced the same bricks as the native build in every runtime.
+
+A small crate `generator_sdk` would let an author write `impl TerrainGenerator` (or just a `DensityField`) and one macro line, `export_generator!(MyGenerator, parameters_reader)`, which produces the exports above, including the coarse cells (using the engine's `coarse_node_of_field`, which would be compiled **into the module**). Three consequences, the second the one I care about most:
+
+1. An author tests the generator natively with the engine's own tools (property tests, the golden bricks) and ships the same code as wasm.
+2. **A module is a frozen copy of the engine's noise, layering and coarse code.** A later change to the engine can never move the terrain of an old module, which is exactly the rule that a released generator is never edited, kept by construction.
+3. Authors in other languages can write the exports by hand against the table above; the SDK is a convenience, not the contract.
+
+## 5. The host
+
+- **Compile once per process** (59-64 ms [measured]; 84-93 ms with fuel), instantiate once **per worker thread** (15-34 us; about 1.5 MiB each [measured]), in a free list: a call takes an instance out, runs, and puts it back. No `Store` is ever used by two threads. The cost of the host is a mutex taken for a pointer, not for a brick.
+- **Limits** (`ResourceLimiter`, fuel): memory pages, one instance per call, stack depth, and **fuel per call as a kill switch** for a module that never ends. Fuel counts differ between runtimes (159 million against 296 million for one brick [measured]), so the budget must be generous (my pick: 20 times what the module's own probe bricks use) and **a fuel or trap failure of a module marks it faulty for the whole session**, and is never made into a plausible brick. A budget that stays part of a *result* (the rules' fuel) would need a pinned runtime; for a generator it does not.
+- **Determinism settings:** threads, relaxed SIMD and the other non-deterministic proposals are off. **NaN canonicalization is a trade-off I measured: it costs 2.3 to 2.6 times native for Cave's hills (12.97 ms against 5.07 ms a brick, one run of three passes) and I would leave it off by default.** The risk it covers is a NaN's payload bits differing between machines, which only matters if a module turns a NaN's bits into output (`to_bits`, a hash of a float); a module that does is wrong anyway. Instead:
+- **A self-check at load.** The manifest lists a few probe bricks and the hash of each (an engine hash of the palette indices); the host generates them when it loads the module, on every machine, and **a mismatch refuses the module with the brick and both hashes**. It is the cross-check of the `pack_check` kind: cheap, and it turns "the same module gives the same terrain on every machine" from a hope into something each client has verified on its own CPU and runtime before it draws. (This also catches a JIT bug, which is the part of "a client trusts a JIT" the owner may care about.)
+
+## 6. How a pack carries generators, and how versions work
+
+- **Files** **[a proposal]**: `generators/NAME/VERSION/generator.json` and `module.wasm` in a pack (the pack's other folders are one file per thing the same way). `generator.json` has `abi`, `palette`, the parameters' JSON schema, the probe bricks with their hashes, and the memory limit. The id is `PACK:NAME`, the version is the folder's `1.2.3`.
+- **One pack carries every version a world may be using**, because the world stores the version in use and an old version must stay available after a newer one is installed. An author keeps old versions in the pack. **A client downloads all of them today** (a pack is sent whole); the per-file request already named in `pack-archive-spec.md` removes that cost later, and until then the cost is the modules' size (108 KB for Cave's hills, **[measured]**).
+- **The world's recipe stores the version in use**: `(instance, family, version, parameters)`. This is a **format change of `engine:generator_recipes`** (a new section version; allowed before the first release), and it moves a pinned world file byte count. **The owner decides it, as the rule says for anything that changes a shared decoder.**
+- **The policy** (`exact`, `patch`, `minor`; a major never floats) is a server setting that answers one question: *which installed version may replace the one in use when the operator asks to upgrade?* Nothing upgrades by itself. The act is a server command, `/generator upgrade INSTANCE [VERSION]`, which refuses a version the policy does not allow, writes the recipe, and puts a line in the log. **Version resolution is a pure function with a property test** (same major, order by minor then patch, never a lower version).
+- **Parameters** are the bytes `init` reads. For packs I propose **canonical JSON** (keys sorted, no spaces): a world is then reproducible from text, the schema in `generator.json` gives editors completion as the planet family's does, and the module does its own parsing. **[believed fine; the planet family uses a fixed binary form and so can a module whose author prefers one]**
+
+## 7. The client, and when it cannot run a module
+
+Order on joining **[read]**: `Welcome` (with the world description holding the recipes), then `Packs`, then the packs asked for. Today a client with no module for a recipe's family gets a placeholder and no unmodified terrain, so **a generator has to be built when its pack has arrived**, the world's terrain version counted up (`WorldTerrain::set_assignment` and `version` already exist for this) and the view told to choose again. Until then the ground is not drawn: **a state the client does not have today and the biggest piece of work on the client side.**
+
+When the client **cannot** run the module (the pack was not replicated, the self-check failed, or the platform forbids code that can be made executable), my proposal for v1 is **to refuse the join with the reason, in words**. A server that sends the bricks themselves is possible (`GridContent::Bricks` exists for ships) but it is a feature of its own, and the world-writer spike's neighbour; I would not build it before there is a platform that needs it.
+
+## 8. Platforms with no JIT
+
+The question was asked on 2026-11-25; the answer I found is in the chat and I keep the part that affects the plan here. **[read, secondary: documents on the web, not verified by running anything]** iOS and iPadOS do not let an ordinary app make memory executable at run time. Wasmtime has an answer built in: **Pulley, its own portable interpreter, in the same crate and the same API**, chosen by `Config::target("pulley64")`, which wasmtime itself says to expect to be about ten times slower than machine code (measured here: see below). I found **no public statement for Xbox, PlayStation or Switch**, and I believe but did not verify that retail console games cannot make code executable. Hardened desktops (macOS's hardened runtime, which needs a JIT entitlement; Windows's arbitrary code guard; SELinux's execmem) can forbid it per application, and that is the case the interpreter is for.
+
+**Measured on Cave's hills (`spikes/wasm/`, one machine, Pulley one pass):** **Pulley is 70 times native (356 ms a brick, worst 1.4 s), five times slower than wasmi's 14 times**, and 206 times with fuel and canonical NaNs (those two together made wasmtime's machine code 2.3 times). That is far from the "about ten times" wasmtime's own page expects; **I did not find out why** (a single pass, and I did not try other settings of the interpreter), so I only say what this module did here. Either way **no interpreter is fast enough to draw a world from a generator that costs 5 ms native**: a view of a thousand bricks would take 14 seconds on wasmi at best (one thread) and six minutes on Pulley.
+
+The practical rule I propose: the host asks wasmtime for machine code first. Where code cannot be made executable, **a platform with no JIT does not run generators by default**: the join is refused with the reason (section 7), and if one is ever targeted, the first thing to try is **wasmi** (small, pure Rust, 14 times), not Pulley, with the server's bricks as the real answer. A generator whose self-check takes too long on the client's runtime is refused the same way.
+
+## 9. The order of the work
+
+Each step ends with tests, clippy, fmt and doc, and a push. Tests first; the safest piece first. Sizes are **[believed]** and relative.
+
+1. **`generator_sdk` and one example generator** (Cave's hills as a pack's module), with the tests that lock what the native generator makes: golden bricks. A module needs `rustup target add wasm32-unknown-unknown`; the **open question** is whether the repository holds a built module as a fixture (reproducible only for one compiler) with a test that rebuilds it and compares *bricks*, not bytes, or builds it in a test. My pick: the fixture plus a check that compares bricks. *(Small.)*
+2. **`wasm_generators`, the host, alone** (no pack, no world): load, validate, refuse (an import, a missing export, a wrong `abi`, memory over the limit, an infinite loop, a trap, a palette index out of range, a probe brick that differs), the pool across threads, equal to native on the probe bricks, the self-check, a mutation run on each refusal. *(Medium, and the heart of it.)*
+3. **The pack format and the loader**: `generators/NAME/VERSION/`, the schema, `check-pack` listing generators with their probe results, the loader refusing `replicate: false` beside a module, and the version function. *(Small to medium.)*
+4. **The server**: the family from the pack, recipes with versions (the format change: **the owner's yes first**), the policy setting, `/generator upgrade`, `/generator default` for a level. *(Medium.)*
+5. **The client**: build the generator when the pack arrives, the "ground not yet drawn" state, the refusal message, the self-check on the client's own machine. *(The risk: the view must choose again when a generator appears; there is a version counter for it, and I have not tried.)*
+6. **The choice of runtime at start** (machine code, else refuse; an interpreter only if a platform asks, and then wasmi on the measurements above). *(Small once 2 exists.)*
+7. **Wider coordinates, per-file requests, bricks from the server**: only if a use asks.
+
+## 10. What I did not measure, and what could change the plan
+
+- **Several threads.** The pool is the design; scaling was not run. If wasmtime's calls contend, the step 2 benchmark says so before anything is built on it.
+- **A different generator** (a planet, with its coarse cells): the hills are scalar float and integer code, the best case for any compiler; **[believed]** a planet is the same kind, a generator that makes heavy use of memory or SIMD could differ.
+- **The cost of the dependency**: a cold build of the spike (wasmtime and wasmi both) was 3 minutes, and I did not measure the size of a game's binary. Wasmtime releases often with breaking changes, so the version is pinned exactly; that is a maintenance cost, not a risk to the terrain, because the module and its probe hashes decide what is accepted.
+- **Linux.** Everything measured is Windows; the self-check is the answer on every machine the game runs on, and a Linux run of the spike is a small job that would first show a difference.
+- **A hostile module** is contained by the sandbox, the limits and the missing imports; it can still make terrain its author likes, which is the author's right, and can be slow, which fuel and the self-check's time catch. I did not review wasmtime's own history of sandbox faults; a decision to *let any server's module run on a client* is a trust decision for the owner, and it is the reason `replicate` is on a pack the player has joined and no module is fetched from anywhere else.
+
+## 11. For the owner
+
+1. **The recipe format change** (version beside the family): yes or no, and when.
+2. **Coordinates**: `i64` in v1 (my pick), or wide from the start?
+3. **A client that cannot run a module is refused** in v1, with the server's bricks later if a platform needs them (my pick), or is that the first thing to build?
+4. **NaN canonicalization off by default with the load-time self-check** (my pick, with the cost above), or on?
+5. **Where the first user is**: a body (a planet from a pack, which the recipe path serves today) or the overworld level of a world (needs `/generator default` and the "ground not yet drawn" state)? My pick: bodies first, because the road from a body file to a recipe is built, and the client's late-built generator has to be solved for either; confidence low-medium, since I did not check that a body avoids any of the client work.

@@ -89,9 +89,15 @@ struct Wasmtime {
 }
 
 impl Wasmtime {
-    fn new(bytes: &[u8], fuel: bool) -> (Self, Durations) {
+    /// `nan`: every NaN a float operation makes is made the one canonical NaN, so that the bits of a NaN cannot differ between machines (it costs a check after
+    /// float operations). `pulley`: the portable interpreter of wasmtime instead of machine code, for a platform where code cannot be made executable.
+    fn new(bytes: &[u8], fuel: bool, nan: bool, pulley: bool) -> (Self, Durations) {
         let mut config = wasmtime::Config::new();
         config.consume_fuel(fuel);
+        config.cranelift_nan_canonicalization(nan);
+        if pulley {
+            config.target("pulley64").expect("the pulley target is built in");
+        }
         let engine = wasmtime::Engine::new(&config).expect("engine");
         let started = Instant::now();
         let module = wasmtime::Module::new(&engine, bytes).expect("module compiles");
@@ -382,23 +388,27 @@ fn main() {
     let native_report = measure("native", &mut native, &bricks, &classes, &mut reference, passes);
     print(&native_report, None);
 
-    for fuel in [false, true].into_iter().filter(|_| only.contains("wasmtime")) {
-        let label = if fuel { " + fuel" } else { "" };
-        let (mut runner, durations) = Wasmtime::new(&bytes, fuel);
+    // (fuel, canonical NaNs, pulley, the word that selects it, the label)
+    let configurations = [
+        (false, false, false, "wasmtime", "wasmtime"),
+        (true, false, false, "wasmtime", "wasmtime + fuel"),
+        (false, true, false, "nan", "wasmtime + nan"),
+        (true, true, false, "nan", "wasmtime + fuel + nan"),
+        (false, false, true, "pulley", "pulley"),
+        (true, true, true, "pulley", "pulley + fuel + nan"),
+    ];
+    for (fuel, nan, pulley, word, label) in configurations {
+        if !only.contains(word) {
+            continue;
+        }
+        let (mut runner, durations) = Wasmtime::new(&bytes, fuel, nan, pulley);
         println!(
-            "  wasmtime{label}: compile {:.1} ms, instantiate {:.0} us, init {:.0} us",
+            "  {label}: compile {:.1} ms, instantiate {:.0} us, init {:.0} us",
             micros(durations.compile) / 1e3,
             micros(durations.instantiate),
             micros(durations.init)
         );
-        let report = measure(
-            &format!("wasmtime{label}"),
-            &mut runner,
-            &bricks,
-            &classes,
-            &mut reference,
-            passes,
-        );
+        let report = measure(label, &mut runner, &bricks, &classes, &mut reference, passes);
         print(&report, Some(&native_report));
     }
     for fuel in [false, true].into_iter().filter(|_| only.contains("wasmi")) {

@@ -19,6 +19,7 @@ Run it with `run.sh` (needs `rustup target add wasm32-unknown-unknown`; the buil
 | wasmi (interpreter) | 71 ms | 17.8 ms | **13.6** (18.6 in a first run on a busier machine) |
 | wasmi with fuel | 72 ms | 17.8 ms | 13.7 (16.5 in that run) |
 
+- **Added on 2026-11-25** (`harness ... nan` and `... pulley`): **canonical NaNs** (`cranelift_nan_canonicalization`) in wasmtime cost **2.56 times native** (13.0 ms a brick; 2.27 with fuel, 11.5 ms; worst brick 24 and 48 ms, so a noisy run). **Pulley**, wasmtime's own interpreter (no machine code), was **70.3 times native** (356 ms a mixed brick, worst 1.39 s; one pass) and 206 times with fuel and canonical NaNs; the same 1,152 bricks were identical. Pulley was slower than wasmi (14 times) here and far from the "about 10 times" wasmtime's page expects; I did not find out why.
 - **Identical:** all 1,152 bricks equal the native ones voxel for voxel in all four wasm configurations (0 differing). That is one machine and one operating system; Linux was **not run**.
 - **A one-value brick is not free:** it costs about a quarter of a mixed one, so the bounds shortcut does not classify all of them. (The harness's name for the class, "uniform", means only that the output is one value.)
 - **Cost of the wasm side apart from the brick:** compile 59-64 ms (84-93 ms with fuel), once per module; instantiate 15-34 us; init 28-50 us; 1,472 KiB of linear memory per instance (the default 1 MiB stack among it, **believed**); reading a brick out 2 us.

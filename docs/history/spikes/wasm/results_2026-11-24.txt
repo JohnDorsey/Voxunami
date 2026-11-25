@@ -24,3 +24,22 @@ wasmi                  mixed: call     70818 us (worst     89624) copy     8 us 
   wasmi + fuel: translate 0.4 ms, instantiate 28 us, init 724 us
   wasmi + fuel: linear memory 1472 KiB after the run
 wasmi + fuel           mixed: call     71601 us (worst     88766) copy     7 us   x native   13.74   uniform: call 17769.4 us copy     3 us   differing bricks 0   fuel/mixed 295672445  fuel/uniform 76355120
+
+# 2026-11-25: canonical NaNs (3 passes) and Pulley (1 pass), same machine; the harness now takes a word list (nan, pulley)
+module 108128 bytes; 1152 bricks (700 with a surface or cave, 452 uniform); 3 passes, the last one reported
+native                 mixed: call      5068 us (worst      7738) copy     0 us   x native       -   uniform: call 1253.6 us copy     0 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmtime + nan: compile 62.6 ms, instantiate 45 us, init 29 us
+  wasmtime + nan: linear memory 1472 KiB after the run
+wasmtime + nan         mixed: call     12972 us (worst     24058) copy     4 us   x native    2.56   uniform: call 3301.8 us copy     2 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  wasmtime + fuel + nan: compile 87.0 ms, instantiate 15 us, init 33 us
+  wasmtime + fuel + nan: linear memory 1472 KiB after the run
+wasmtime + fuel + nan  mixed: call     11490 us (worst     47831) copy     7 us   x native    2.27   uniform: call 2851.5 us copy     3 us   differing bricks 0   fuel/mixed 159484805  fuel/uniform 39449047
+---
+module 108128 bytes; 1152 bricks (700 with a surface or cave, 452 uniform); 1 passes, the last one reported
+native                 mixed: call      5067 us (worst      5996) copy     0 us   x native       -   uniform: call 1259.2 us copy     0 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  pulley: compile 63.8 ms, instantiate 52 us, init 56 us
+  pulley: linear memory 1472 KiB after the run
+pulley                 mixed: call    356170 us (worst   1387434) copy     9 us   x native   70.29   uniform: call 91521.8 us copy     5 us   differing bricks 0   fuel/mixed -  fuel/uniform -
+  pulley + fuel + nan: compile 406.7 ms, instantiate 39 us, init 98 us
+  pulley + fuel + nan: linear memory 1472 KiB after the run
+pulley + fuel + nan    mixed: call   1046347 us (worst   3777742) copy     8 us   x native  206.50   uniform: call 260637.1 us copy     4 us   differing bricks 0   fuel/mixed 159484805  fuel/uniform 39449047
