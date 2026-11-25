@@ -12,7 +12,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use block_models::BlockTable;
@@ -28,6 +28,7 @@ use world_storage::LevelData;
 
 use crate::brick_states::{BrickState, BrickStates, HeldBricks};
 use crate::cube_states::Taken;
+use crate::job_queue::{JobQueue, Taken as Handed, default_warm_threads};
 use crate::occupancy::{OccupancyChange, OccupancyLog, OccupancyStatistics};
 
 /// Where the bricks around a viewer come from: the terrain of a level, or the terrain of a ship (a planet). A brick is either known as it is (an edited one) or
@@ -266,11 +267,59 @@ enum Job {
     },
 }
 
+/// What a job that waits in the queue says of itself: the epoch it was handed out in, the brick it is for, and whether it makes the brick's picture (and not its voxels).
+struct Waiting {
+    epoch: u64,
+    coordinate: BrickCoordinate,
+    meshing: bool,
+}
+
+impl Job {
+    fn waiting(&self) -> Waiting {
+        match self {
+            Job::Generate {
+                epoch, coordinate, ..
+            } => Waiting {
+                epoch: *epoch,
+                coordinate: *coordinate,
+                meshing: false,
+            },
+            Job::Mesh {
+                epoch, coordinate, ..
+            } => Waiting {
+                epoch: *epoch,
+                coordinate: *coordinate,
+                meshing: true,
+            },
+        }
+    }
+}
+
+/// Whether a job that waits is one for what the viewer draws now, when the viewer is at `center` (and was handed out for the second ball alone, before the viewer went to its
+/// place): the voxels of a brick in the ball that is loaded round the viewer (`load_radius`), the picture of a brick in its fine region. A job of an epoch that is over is not:
+/// it was never counted, and is made for nothing, as any is that was handed out before a reset.
+fn is_wanted_by_the_viewer(
+    job: &Waiting,
+    epoch: u64,
+    center: BrickCoordinate,
+    load_radius: i128,
+    fine_region: &FineRegion,
+) -> bool {
+    job.epoch == epoch
+        && if job.meshing {
+            fine_region.wants_brick(job.coordinate)
+        } else {
+            !is_farther_than(job.coordinate, center, load_radius)
+        }
+}
+
 enum JobResult {
     Generated {
         epoch: u64,
         coordinate: BrickCoordinate,
         brick: Arc<Brick>,
+        /// Whether the job was made as one for the second ball alone (see [`WorldMesher::set_warm_centre`]).
+        warm: bool,
     },
     Meshed {
         epoch: u64,
@@ -278,6 +327,8 @@ enum JobResult {
         version: u64,
         mesh: PackedBrickMesh,
         occupancy: Option<BrickOccupancy>,
+        /// As for [`JobResult::Generated`].
+        warm: bool,
     },
     /// The job panicked, with this payload.
     Panicked(Box<dyn Any + Send>),
@@ -333,6 +384,14 @@ fn is_farther_than(a: BrickCoordinate, b: BrickCoordinate, radius: i128) -> bool
             > radius * radius
 }
 
+/// Gives a job to the threads, for the viewer or for the second ball alone (which is counted).
+fn hand_out(jobs: &JobQueue<Job>, warm_in_flight: &mut usize, job: Job, warm: bool) {
+    if warm {
+        *warm_in_flight += 1;
+    }
+    jobs.push(job, warm);
+}
+
 pub struct WorldMesher {
     settings: ViewSettings,
     channels: ViewChannels,
@@ -348,9 +407,14 @@ pub struct WorldMesher {
     held_back: bool,
     /// Counts the pictures that have become ready, so that a coordinator can tell that there is something new.
     ready_serial: u64,
-    jobs: Option<mpsc::Sender<Job>>,
+    /// What the threads take their jobs from: what is made for the viewer is taken before what is made for the second ball alone, and only a share of the threads make the
+    /// second ball's at the same time ([`JobQueue`]).
+    jobs: Arc<JobQueue<Job>>,
     results: mpsc::Receiver<JobResult>,
     workers: Vec<JoinHandle<()>>,
+    /// How many of the jobs in flight were handed out for the second ball alone and no thread has told the end of, and how many threads make them at the same time.
+    warm_in_flight: usize,
+    warm_worker_count: usize,
     scheduled_last_update: usize,
     /// Counts the times the mesher was reset; work and results from an earlier count are ignored.
     epoch: u64,
@@ -380,19 +444,21 @@ impl WorldMesher {
     /// `table` says what each block and state of the channels is: which faces it hides, and how it
     /// fills its cell.
     pub fn new(settings: ViewSettings, channels: ViewChannels, table: Arc<BlockTable>) -> Self {
-        let (job_sender, job_receiver) = mpsc::channel::<Job>();
+        let worker_count = settings.worker_count.max(1);
+        let warm_worker_count = default_warm_threads(worker_count);
+        let jobs = Arc::new(JobQueue::<Job>::new(warm_worker_count));
         let (result_sender, results) = mpsc::channel::<JobResult>();
-        let job_receiver = Arc::new(Mutex::new(job_receiver));
-        let workers = (0..settings.worker_count.max(1))
+        let workers = (0..worker_count)
             .map(|_| {
-                let job_receiver = Arc::clone(&job_receiver);
+                let jobs = Arc::clone(&jobs);
                 let result_sender = result_sender.clone();
                 let table = Arc::clone(&table);
                 std::thread::spawn(move || {
                     loop {
-                        // Hold the lock only while waiting for the next job, not while running it.
-                        let job = job_receiver.lock().expect("job queue lock").recv();
-                        let Ok(job) = job else { return };
+                        // (A thread waits here for a job it may take: one made for the viewer, or one for the second ball alone if the threads that are for those are not all busy.)
+                        let Some(Handed { job, warm }) = jobs.next() else {
+                            return;
+                        };
                         // A generator with a bug panics here, on a thread nobody is watching: it is caught, and said to the one who updates the mesher, who panics with it. (A thread
                         // that dies with its job leaves the job pending for ever and the view waiting for it, with nothing to say why.)
                         let result = catch_unwind(AssertUnwindSafe(|| match job {
@@ -405,6 +471,7 @@ impl WorldMesher {
                                 epoch,
                                 coordinate,
                                 brick: Arc::new(generator.generate_brick(&layout, coordinate)),
+                                warm,
                             },
                             Job::Mesh {
                                 epoch,
@@ -449,10 +516,12 @@ impl WorldMesher {
                                     mesh: mesh_brick(&neighbourhood, &table).pack(),
                                     occupancy: want_occupancy
                                         .then(|| BrickOccupancy::of(&neighbourhood.center, &table)),
+                                    warm,
                                 }
                             }
                         }))
                         .unwrap_or_else(JobResult::Panicked);
+                        jobs.done(warm);
                         if result_sender.send(result).is_err() {
                             return;
                         }
@@ -469,9 +538,11 @@ impl WorldMesher {
             load_offsets: offsets_within(settings.view_radius_bricks + 1),
             held_back: false,
             ready_serial: 0,
-            jobs: Some(job_sender),
+            jobs,
             results,
             workers,
+            warm_in_flight: 0,
+            warm_worker_count,
             scheduled_last_update: 0,
             epoch: 0,
             occupancy: OccupancyLog::new(),
@@ -548,6 +619,24 @@ impl WorldMesher {
             self.warm_centre = centre;
             self.warm_waiting.clear();
         }
+    }
+
+    /// How many threads make the bricks of the second ball alone at the same time. By default half of them, at least one: the second ball is not to take the whole machine
+    /// from the viewer (what the viewer draws is made first, by whichever thread is free).
+    pub fn warm_worker_count(&self) -> usize {
+        self.warm_worker_count
+    }
+
+    /// Sets how many threads make the bricks of the second ball alone at the same time (at least one, at most the threads there are).
+    pub fn set_warm_worker_count(&mut self, count: usize) {
+        self.warm_worker_count = count.clamp(1, self.workers.len().max(1));
+        self.jobs.set_warm_threads(self.warm_worker_count);
+    }
+
+    /// How many of the bricks that are being made were handed out for the second ball alone, and not for what the viewer draws (a brick that waits when the viewer goes to its
+    /// place is a drawn one from then on: it is not counted).
+    pub fn warm_bricks_being_made(&self) -> usize {
+        self.warm_in_flight
     }
 
     /// Lets go of the pictures that were made for the second ball alone and held hidden ([`WorldMesher::park_ready`]) and that `keep` does not say are kept (a brick that is
@@ -798,6 +887,7 @@ impl WorldMesher {
         displayed.dedup();
         self.versions.clear();
         self.scheduled_last_update = 0;
+        self.warm_in_flight = 0;
         self.warm_waiting.clear();
         self.occupancy.clear_all();
         displayed.into_iter().map(MeshUpdate::Remove).collect()
@@ -836,8 +926,10 @@ impl WorldMesher {
                     epoch,
                     coordinate,
                     brick,
+                    warm,
                 } => {
                     if epoch == self.epoch {
+                        self.finish_in_flight(warm);
                         self.states.finish_generating(coordinate, brick);
                     }
                 }
@@ -847,7 +939,11 @@ impl WorldMesher {
                     version,
                     mesh,
                     occupancy,
+                    warm,
                 } => {
+                    if epoch == self.epoch {
+                        self.finish_in_flight(warm);
+                    }
                     if epoch != self.epoch
                         || !self.states.finish_meshing(coordinate)
                         || version != self.version_of(coordinate)
@@ -918,31 +1014,70 @@ impl WorldMesher {
             }
         }
 
-        let mut scheduled = self.schedule_around(source, center, &fine_region);
+        self.promote_the_warm_jobs_that_are_wanted(center, &fine_region);
+        let mut scheduled = self.schedule_around(source, center, &fine_region, false);
         // (A second ball round the same centre is the first.)
         if let Some(region) = &warm_region
             && let Some(warm) = self.warm_centre.filter(|&warm| warm != center)
         {
-            // (What is made for the viewer comes first: the limit on jobs is the same.)
-            scheduled += self.schedule_around(source, warm, region);
+            // (What is made for the viewer comes first, and has the room it needs: the second ball's jobs are held apart, for its share of the threads.)
+            scheduled += self.schedule_around(source, warm, region, true);
         }
         self.scheduled_last_update = scheduled;
         updates
     }
 
+    /// A job that was handed out for the second ball alone and that no thread has taken yet is a drawn one when what the viewer draws now wants its brick (the viewer has gone
+    /// to the place that was kept ready): it is made before the warm jobs that wait, and counted with what is drawn.
+    fn promote_the_warm_jobs_that_are_wanted(
+        &mut self,
+        center: BrickCoordinate,
+        fine_region: &FineRegion,
+    ) {
+        if self.warm_in_flight == 0 {
+            return;
+        }
+        let epoch = self.epoch;
+        let load_radius = self.settings.view_radius_bricks + 1;
+        let promoted = self.jobs.promote_all(|job| {
+            is_wanted_by_the_viewer(&job.waiting(), epoch, center, load_radius, fine_region)
+        });
+        self.warm_in_flight = self.warm_in_flight.saturating_sub(promoted);
+    }
+
+    /// A job that was in flight is over: one made for the second ball alone makes room for the next.
+    fn finish_in_flight(&mut self, warm: bool) {
+        if warm {
+            self.warm_in_flight = self.warm_in_flight.saturating_sub(1);
+        }
+    }
+
     /// Loads the bricks round `center` that are not, starts the jobs that generate the voxels of those that are not known, and the jobs that mesh the bricks of `fine_region`
-    /// whose neighbours are loaded; at most as many as the limit on jobs in flight. Returns how many things it started or loaded.
+    /// whose neighbours are loaded; at most as many as the limit on jobs in flight, of the kind: what is for the viewer is held for all the threads, and what is for the second ball
+    /// alone (`warm`) for its share of them. Returns how many things it started or loaded.
     fn schedule_around(
         &mut self,
         source: &impl TerrainSource,
         center: BrickCoordinate,
         fine_region: &FineRegion,
+        warm: bool,
     ) -> usize {
         let view_radius = self.settings.view_radius_bricks;
-        let maximum_in_flight = self.workers.len() * 4;
+        let maximum_in_flight = if warm {
+            self.warm_worker_count * 4
+        } else {
+            self.workers.len() * 4
+        };
         let mut scheduled = 0;
         for &[dx, dy, dz] in &self.load_offsets {
-            if self.states.jobs_in_flight() >= maximum_in_flight {
+            let in_flight = if warm {
+                self.warm_in_flight
+            } else {
+                self.states
+                    .jobs_in_flight()
+                    .saturating_sub(self.warm_in_flight)
+            };
+            if in_flight >= maximum_in_flight {
                 break;
             }
             let Some(coordinate) = center.checked_offset(dx, dy, dz) else {
@@ -959,16 +1094,17 @@ impl WorldMesher {
                     && let Some(generator) = source.generator_for(coordinate)
                 {
                     self.states.start_generating(coordinate);
-                    self.jobs
-                        .as_ref()
-                        .expect("workers run until the mesher is dropped")
-                        .send(Job::Generate {
+                    hand_out(
+                        &self.jobs,
+                        &mut self.warm_in_flight,
+                        Job::Generate {
                             epoch: self.epoch,
                             coordinate,
                             generator,
                             layout: Arc::clone(source.layout()),
-                        })
-                        .expect("workers are running");
+                        },
+                        warm,
+                    );
                     scheduled += 1;
                     continue;
                 }
@@ -984,18 +1120,19 @@ impl WorldMesher {
             if let Some(snapshot) = self.snapshot_of(coordinate) {
                 let version = self.version_of(coordinate);
                 self.states.start_meshing(coordinate);
-                self.jobs
-                    .as_ref()
-                    .expect("workers run until the mesher is dropped")
-                    .send(Job::Mesh {
+                hand_out(
+                    &self.jobs,
+                    &mut self.warm_in_flight,
+                    Job::Mesh {
                         epoch: self.epoch,
                         coordinate,
                         version,
                         snapshot: Box::new(snapshot),
                         channels: self.channels.clone(),
                         want_occupancy: self.occupancy.is_enabled(),
-                    })
-                    .expect("workers are running");
+                    },
+                    warm,
+                );
                 scheduled += 1;
             }
         }
@@ -1036,8 +1173,8 @@ impl WorldMesher {
 
 impl Drop for WorldMesher {
     fn drop(&mut self) {
-        // Closing the job queue ends each worker's loop.
-        self.jobs = None;
+        // Closing the job queue ends each worker's loop (what waits in it is dropped).
+        self.jobs.close();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -1066,6 +1203,38 @@ mod tests {
         assert!(is_farther_than(brick(16, -4, 7), centre, 5));
         assert!(is_farther_than(brick(4, -4, 7), centre, 5));
         assert!(!is_farther_than(brick(5, -4, 7), centre, 5));
+    }
+
+    fn waiting(epoch: u64, coordinate: BrickCoordinate, meshing: bool) -> Waiting {
+        Waiting {
+            epoch,
+            coordinate,
+            meshing,
+        }
+    }
+
+    #[test]
+    fn a_waiting_job_to_generate_is_wanted_by_the_viewer_in_the_ball_that_is_loaded_round_it_and_a_job_to_mesh_in_its_fine_region_and_neither_of_an_epoch_that_is_over()
+     {
+        let centre = brick(10, -4, 7);
+        // The ball that is loaded has a radius of 4 here, the fine region 1: a brick 3 along is loaded and not meshed.
+        let fine_region = FineRegion::new(centre, 1);
+        let wanted = |job: Waiting| is_wanted_by_the_viewer(&job, 5, centre, 4, &fine_region);
+        // Voxels to generate: in the ball, not in the box that holds it (3, 3, 0 is farther than 4).
+        assert!(wanted(waiting(5, brick(14, -4, 7), false)));
+        assert!(!wanted(waiting(5, brick(15, -4, 7), false)));
+        assert!(!wanted(waiting(5, brick(13, -1, 7), false)));
+        assert!(wanted(waiting(5, brick(13, -3, 7), false)));
+        // A picture to make: in the fine region, which is not the ball that is loaded.
+        assert!(wanted(waiting(5, centre, true)));
+        assert!(!wanted(waiting(5, brick(13, -4, 7), true)));
+        assert!(wanted(waiting(5, brick(13, -4, 7), false)));
+        assert!(!wanted(waiting(5, brick(40, -4, 7), true)));
+        // Whatever the brick, a job that was handed out before a reset is not.
+        for meshing in [false, true] {
+            assert!(!wanted(waiting(4, centre, meshing)));
+            assert!(!wanted(waiting(6, centre, meshing)));
+        }
     }
 
     #[test]

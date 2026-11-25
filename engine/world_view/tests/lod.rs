@@ -3216,8 +3216,13 @@ fn a_warm_viewpoint_that_moves_at_every_update_is_worked_out_again_once_in_a_whi
     );
 }
 
+/// (This was a test that no brick round the warm viewpoint was handed out in the first update, while the drawn viewpoint had bricks to make: the two shared one limit on the
+/// bricks in flight, and the drawn ones used it all. The warm ones are held under a limit of their own now, for their share of the threads, so that order is not the rule;
+/// what is kept is that the drawn ones are handed out first, with all the room they had, and what is new is the warm room, exactly. The order that matters is the one the
+/// threads take them in, which is `the_bricks_that_are_drawn_are_made_before_the_warm_ones_that_wait_though_those_were_handed_out_first`, further down.)
 #[test]
-fn the_bricks_round_the_drawn_viewpoint_are_started_before_those_round_the_warm_one() {
+fn the_bricks_round_the_drawn_viewpoint_are_handed_out_first_with_all_the_room_they_had_and_those_round_the_warm_one_get_a_room_of_their_own()
+ {
     let trip = Trip::new();
     let made = std::cell::RefCell::new(Vec::new());
     let generated = std::cell::RefCell::new(Vec::new());
@@ -3231,15 +3236,25 @@ fn the_bricks_round_the_drawn_viewpoint_are_started_before_those_round_the_warm_
     view.set_warm_viewpoint(warm(viewer_in(brick(30, 0, 0)), &far()));
     screen_of_one_update(&mut view, &terrain);
     let asked = generated.borrow().clone();
-    assert!(
-        asked.len() >= 4,
-        "{} bricks were started in the first update",
+    // The mesher has 3 threads and 1 of them is for warm work: 4 jobs for each thread are held for what is drawn (12), and 4 apart for what is only kept ready.
+    assert_eq!(
+        asked.len(),
+        12 + 4,
+        "{} bricks were handed out in the first update",
         asked.len()
     );
-    for coordinate in &asked {
+    for coordinate in &asked[..12] {
         assert!(
             coordinate.x().abs() <= 8 && coordinate.y().abs() <= 8 && coordinate.z().abs() <= 8,
-            "{coordinate:?}, round the warm viewpoint, was started while the drawn viewpoint has bricks to make"
+            "{coordinate:?}, round the warm viewpoint, was handed out before the bricks of the drawn viewpoint"
+        );
+    }
+    for coordinate in &asked[12..] {
+        assert!(
+            (coordinate.x() - 30).abs() <= 8
+                && coordinate.y().abs() <= 8
+                && coordinate.z().abs() <= 8,
+            "{coordinate:?} is not round the warm viewpoint"
         );
     }
 }
@@ -4294,7 +4309,7 @@ fn a_warm_viewpoint_taken_away_as_the_viewer_goes_there_leaves_nothing_pinned_fo
 
 // ---- A share of the threads for the warm viewpoint (docs/specs/viewpoints-spec.md, section 9l) ----
 
-/// A generator whose nodes go through a gate, take a moment, and are counted as they are made: how many at the same time, at most.
+/// A generator whose nodes (or whose bricks, for [`Counted::of_bricks`]) go through a gate, take a moment, and are counted as they are made: how many at the same time, at most.
 #[derive(Debug)]
 struct Counting1 {
     inner: Arc<dyn TerrainGenerator>,
@@ -4302,28 +4317,44 @@ struct Counting1 {
     now: Arc<std::sync::atomic::AtomicUsize>,
     most: Arc<std::sync::atomic::AtomicUsize>,
     pause: std::time::Duration,
-    /// The cubes whose nodes were started, in the order the threads started them.
+    /// The cubes whose nodes (or bricks) were started, in the order the threads started them.
     started: Arc<Mutex<Vec<BrickCube>>>,
+    /// Whether the bricks are what is counted, and the nodes are made as they are.
+    bricks: bool,
 }
 
-impl TerrainGenerator for Counting1 {
-    fn generate_brick(&self, layout: &GridLayout, coordinate: BrickCoordinate) -> Brick {
-        self.inner.generate_brick(layout, coordinate)
-    }
-
-    fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+impl Counting1 {
+    /// Counts one made: records the cube, waits at the gate, takes a moment, then does `make`.
+    fn counted<T>(&self, cube: BrickCube, make: impl FnOnce() -> T) -> T {
         self.started.lock().unwrap().push(cube);
         let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
         self.most.fetch_max(now, Ordering::SeqCst);
         self.gate.pass();
         std::thread::sleep(self.pause);
-        let node = self.inner.coarse_node(cube, unlit);
+        let made = make();
         self.now.fetch_sub(1, Ordering::SeqCst);
-        node
+        made
     }
 }
 
-/// The terrain of a level whose nodes are made through a gate and counted ([`Counting1`]).
+impl TerrainGenerator for Counting1 {
+    fn generate_brick(&self, layout: &GridLayout, coordinate: BrickCoordinate) -> Brick {
+        if !self.bricks {
+            return self.inner.generate_brick(layout, coordinate);
+        }
+        let cube = BrickCube::new(coordinate, 0).expect("a brick is a cube");
+        self.counted(cube, || self.inner.generate_brick(layout, coordinate))
+    }
+
+    fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+        if self.bricks {
+            return self.inner.coarse_node(cube, unlit);
+        }
+        self.counted(cube, || self.inner.coarse_node(cube, unlit))
+    }
+}
+
+/// The terrain of a level whose nodes are made through a gate and counted ([`Counting1`]), or whose bricks are ([`Counted::of_bricks`]).
 struct Counted<'a> {
     level: &'a LevelData,
     gate: Arc<Gate>,
@@ -4331,6 +4362,9 @@ struct Counted<'a> {
     most: Arc<std::sync::atomic::AtomicUsize>,
     pause: std::time::Duration,
     started: Arc<Mutex<Vec<BrickCube>>>,
+    bricks: bool,
+    /// The gate that what is handed out from now on goes through, once [`Counted::use_another_gate`] has put one in place of `gate`.
+    later_gate: std::cell::RefCell<Option<Arc<Gate>>>,
 }
 
 impl<'a> Counted<'a> {
@@ -4342,12 +4376,50 @@ impl<'a> Counted<'a> {
             most: Arc::default(),
             pause,
             started: Arc::default(),
+            bricks: false,
+            later_gate: std::cell::RefCell::new(None),
         }
+    }
+
+    /// The same, for the bricks: it is their generating that goes through the gate and is counted, and the nodes are made as they are.
+    fn of_bricks(level: &'a LevelData, open: bool, pause: std::time::Duration) -> Self {
+        Self {
+            bricks: true,
+            ..Self::new(level, open, pause)
+        }
+    }
+
+    /// A new gate, shut, that what is handed out from now on goes through: what was handed out before stays at the gate it had.
+    fn use_another_gate(&self) -> Arc<Gate> {
+        let gate = Gate::new(false);
+        *self.later_gate.borrow_mut() = Some(Arc::clone(&gate));
+        gate
+    }
+
+    fn wrapped(&self, inner: Arc<dyn TerrainGenerator>) -> Arc<dyn TerrainGenerator> {
+        Arc::new(Counting1 {
+            inner,
+            gate: self
+                .later_gate
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&self.gate)),
+            now: Arc::clone(&self.now),
+            most: Arc::clone(&self.most),
+            pause: self.pause,
+            started: Arc::clone(&self.started),
+            bricks: self.bricks,
+        })
     }
 
     /// The cubes whose nodes were started since this was last asked, in the order the threads started them.
     fn started(&self) -> Vec<BrickCube> {
         std::mem::take(&mut *self.started.lock().unwrap())
+    }
+
+    /// How many have been started since this was last asked for them, without taking them.
+    fn started_count(&self) -> usize {
+        self.started.lock().unwrap().len()
     }
 
     /// The most nodes that were being made at the same time since this was last asked.
@@ -4363,7 +4435,12 @@ impl TerrainSource for Counted<'_> {
     }
 
     fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
-        self.level.generator_for(coordinate)
+        let inner = self.level.generator_for(coordinate)?;
+        Some(if self.bricks {
+            self.wrapped(inner)
+        } else {
+            inner
+        })
     }
 
     fn layout(&self) -> &Arc<GridLayout> {
@@ -4382,14 +4459,7 @@ impl CoarseTerrainSource for Counted<'_> {
 
     fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
         let inner = self.level.coarse_generator(cube)?;
-        Some(Arc::new(Counting1 {
-            inner,
-            gate: Arc::clone(&self.gate),
-            now: Arc::clone(&self.now),
-            most: Arc::clone(&self.most),
-            pause: self.pause,
-            started: Arc::clone(&self.started),
-        }))
+        Some(self.wrapped(inner))
     }
 }
 
@@ -4538,6 +4608,369 @@ fn a_warm_job_that_waits_when_its_place_is_the_one_that_is_drawn_is_made_as_a_dr
     let _ = view.reset();
     assert_eq!(view.warm_nodes_being_made(), 0);
     assert_eq!(view.nodes_being_made(), 0);
+}
+
+// ---- A share of the threads for the bricks of the warm viewpoint too (docs/specs/viewpoints-spec.md, section 9o) ----
+
+/// How long the tests of the threads that hold at a gate wait for what they are waiting for: a few jobs that take no time, so this is for a view that is stuck. It is shorter
+/// than the minute a thread waits at a gate for somebody to open it ([`Gate::pass`]), so that a test that fails does so by its own assertion, and not with a thread that gave up
+/// at the gate at the same moment (which ended the whole test binary).
+const GATED_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn view_with_brick_threads(scene: &Scene, node_workers: usize, brick_workers: usize) -> LodView {
+    LodView::new(
+        scene.mesher_with_workers(3, brick_workers),
+        LodConfig {
+            unlit: 0,
+            worker_count: node_workers,
+        },
+    )
+}
+
+/// Updates the view, at `viewer`, and puts what it says on the screen, until `condition` holds of it.
+fn update_until(
+    view: &mut LodView,
+    screen: &mut Screen,
+    terrain: &impl CoarseTerrainSource,
+    viewer: WorldPosition,
+    what: &str,
+    mut condition: impl FnMut(&LodView) -> bool,
+) {
+    let started = std::time::Instant::now();
+    while !condition(view) {
+        screen.apply(view.update(GridId::MAIN, terrain, viewer, &far()));
+        assert!(started.elapsed() < GATED_DEADLINE, "{what}");
+        std::thread::sleep(std::time::Duration::from_micros(300));
+    }
+}
+
+/// The bricks that were handed to the threads for what is drawn, as the mesher counts them.
+fn drawn_bricks_being_made(view: &LodView) -> usize {
+    view.mesher().pending_jobs() - view.mesher().warm_bricks_being_made()
+}
+
+#[test]
+fn a_view_makes_the_bricks_of_its_warm_place_on_half_the_threads_of_its_mesher_at_most_and_all_of_them()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let terrain = Counted::of_bricks(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    let mut view = view_with_brick_threads(&trip.scene, 2, 6);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    let mut screen = Screen::default();
+    // The sky alone first: nothing is assigned there, so no brick is made, and the closed gate holds nothing.
+    settle_checked_in(&mut view, &mut screen, &terrain, sky(), &far(), "the sky");
+    assert_eq!(terrain.started_count(), 0);
+
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        "no brick of the ground was started",
+        |_| terrain.started_count() >= 3,
+    );
+    // A while with the gate shut: the threads that are not for warm work take no brick (of 6 threads, 3 are), though more wait than the 3 that are held.
+    for _ in 0..100 {
+        screen.apply(view.update(GridId::MAIN, &terrain, sky(), &far()));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        terrain.started_count(),
+        3,
+        "bricks that are only kept ready were started on more threads than the share"
+    );
+    assert_eq!(terrain.most_at_once(), 3);
+
+    // A view that is told to use more threads for it does, at once: the bricks that wait are taken by the threads that were not allowed to.
+    view.set_warm_worker_count(6);
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        "the threads that were let into warm work took no brick",
+        |_| terrain.started_count() >= 6,
+    );
+
+    terrain.gate.open();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    assert!(screen.bricks.is_empty(), "no brick is drawn at the sky");
+    for (coordinate, mesh) in &fresh_ground.bricks {
+        assert_eq!(
+            screen.hidden_bricks.get(coordinate),
+            Some(mesh),
+            "{coordinate:?} is held hidden as a fresh view draws it"
+        );
+    }
+    assert_eq!(view.mesher().warm_bricks_being_made(), 0);
+    assert_eq!(view.mesher().pending_jobs(), 0);
+}
+
+#[test]
+fn what_is_handed_out_for_the_warm_bricks_is_apart_from_what_is_handed_out_for_the_drawn_ones_and_neither_takes_the_others_room()
+ {
+    let trip = Trip::new();
+    let terrain = Counted::of_bricks(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    let mut view = view_with_brick_threads(&trip.scene, 1, 2);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    // The ground is drawn, and a place 20 bricks along is only kept ready.
+    view.set_warm_viewpoint(warm(viewer_in(brick(20, 0, 0)), &far()));
+    let mut screen = Screen::default();
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        "bricks were not handed out for both",
+        |view| view.mesher().warm_bricks_being_made() >= 4 && drawn_bricks_being_made(view) >= 8,
+    );
+    screen.apply(view.update(GridId::MAIN, &terrain, Trip::ground(), &far()));
+    // 2 threads hold 4 each of what is drawn, and 1 thread (half of 2) holds 4 of what is only kept ready: the drawn bricks are not fewer for the warm ones, and the warm
+    // ones are not more than the share holds.
+    assert_eq!(view.mesher().warm_bricks_being_made(), 4);
+    assert_eq!(drawn_bricks_being_made(&view), 8);
+}
+
+#[test]
+fn a_warm_brick_that_waits_when_its_place_is_the_one_that_is_drawn_is_made_as_a_drawn_one_and_a_reset_forgets_what_was_held()
+ {
+    let trip = Trip::new();
+    let fresh_ground = what_a_fresh_view_draws(&trip.scene, brick(0, 0, 0), &far());
+    let terrain = Counted::of_bricks(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    // One thread, held at the gate by a brick of the ground that is only kept ready: what is handed out for it after waits behind it.
+    let mut view = view_with_brick_threads(&trip.scene, 1, 1);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        "no brick of the ground was handed out and started",
+        |view| view.mesher().warm_bricks_being_made() >= 4 && terrain.started_count() >= 1,
+    );
+    assert_eq!(view.mesher().warm_bricks_being_made(), 4);
+
+    // The viewer goes to the ground: the bricks that wait are its own now, and are counted so. The one the thread has taken stays what it was handed out as.
+    view.set_warm_viewpoint(None);
+    screen.apply(view.update(GridId::MAIN, &terrain, Trip::ground(), &far()));
+    assert_eq!(
+        view.mesher().warm_bricks_being_made(),
+        1,
+        "the ones that wait are drawn ones now"
+    );
+
+    // The gate opens: the view is what a fresh view at the ground is, and nothing is left in flight.
+    terrain.gate.open();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        &far(),
+        "the ground",
+    );
+    assert_eq!(screen.bricks, fresh_ground.bricks);
+    assert_eq!(view.mesher().warm_bricks_being_made(), 0);
+    assert_eq!(view.mesher().pending_jobs(), 0);
+
+    // A reset forgets what was held for the warm place, as what was held for the drawn one.
+    terrain.gate.close();
+    view.set_warm_viewpoint(warm(viewer_in(brick(20, 0, 0)), &far()));
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        Trip::ground(),
+        "no brick was handed out for the place 20 bricks along",
+        |view| view.mesher().warm_bricks_being_made() > 0,
+    );
+    let _ = view.reset();
+    assert_eq!(view.mesher().warm_bricks_being_made(), 0);
+    assert_eq!(view.mesher().pending_jobs(), 0);
+}
+
+#[test]
+fn what_was_handed_out_for_the_warm_place_before_a_reset_is_not_counted_with_what_is_handed_out_after_it_when_it_is_over()
+ {
+    let trip = Trip::new();
+    let terrain = Counted::of_bricks(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    // One thread for warm work, held at the first gate by a brick that was handed out before the reset, with 3 more that wait behind it.
+    let mut view = view_with_brick_threads(&trip.scene, 1, 2);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        "no brick of the ground was handed out and started",
+        |view| view.mesher().warm_bricks_being_made() >= 4 && terrain.started_count() >= 1,
+    );
+    screen.apply(view.reset());
+    assert_eq!(view.mesher().warm_bricks_being_made(), 0);
+
+    // What is handed out after the reset goes through a gate of its own, behind the 4 that were: 4 are counted again.
+    let second_gate = terrain.use_another_gate();
+    let _opens_second = OpensWhenDropped(Arc::clone(&second_gate));
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        "no brick was handed out after the reset",
+        |view| view.mesher().warm_bricks_being_made() >= 4,
+    );
+    // The first gate opens: the 4 bricks of before the reset are made, and then the thread starts one of those of after it, which waits at the second gate.
+    terrain.gate.open();
+    let began = std::time::Instant::now();
+    while terrain.started_count() < 5 {
+        assert!(
+            began.elapsed() < GATED_DEADLINE,
+            "{} of 5 bricks were started",
+            terrain.started_count()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // What the view is told now is the end of 4 jobs of before the reset, and nothing of those of after it: they are not taken off the count of the 4 that wait.
+    screen.apply(view.update(GridId::MAIN, &terrain, sky(), &far()));
+    // (A count that was taken down is made up by what the same update hands out, up to the room there is: what shows it is how many bricks are being made.)
+    assert_eq!(
+        view.mesher().warm_bricks_being_made(),
+        4,
+        "jobs that were handed out before the reset were taken off the count of those handed out after it"
+    );
+    assert_eq!(
+        view.mesher().pending_jobs(),
+        4,
+        "more bricks were handed out than the room there is: the count was taken down by jobs that were not its own"
+    );
+
+    // The second gate opens, and all that was handed out is made.
+    second_gate.open();
+    settle_checked_in(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        &far(),
+        "the sky, the ground warm",
+    );
+    assert_eq!(view.mesher().warm_bricks_being_made(), 0);
+    assert_eq!(view.mesher().pending_jobs(), 0);
+}
+
+#[test]
+fn the_bricks_that_are_drawn_are_made_before_the_warm_ones_that_wait_though_those_were_handed_out_first()
+ {
+    let trip = Trip::new();
+    let terrain = Counted::of_bricks(trip.scene.world.main(), false, std::time::Duration::ZERO);
+    // 3 threads, 1 of them for warm work.
+    let mut view = view_with_brick_threads(&trip.scene, 1, 3);
+    let _opens = OpensWhenDropped(Arc::clone(&terrain.gate));
+    view.hold_hidden_pictures(256 << 20);
+    view.set_warm_viewpoint(warm(Trip::ground(), &far()));
+    let mut screen = Screen::default();
+    // The warm bricks come first: the thread for them takes one and is held at the gate, and the others that were handed out wait.
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        sky(),
+        "no brick of the ground was handed out and started",
+        |view| view.mesher().pending_jobs() >= 4 && terrain.started_count() >= 1,
+    );
+    // Then the viewer goes 20 bricks along, to a place that has bricks to draw: the 2 threads that are free take the first two, held at the gate, and the rest wait.
+    let along = viewer_in(brick(20, 0, 0));
+    update_until(
+        &mut view,
+        &mut screen,
+        &terrain,
+        along,
+        "the bricks of the new place were not handed out and started",
+        |view| view.mesher().pending_jobs() >= 4 + 12 && terrain.started_count() >= 3,
+    );
+    // The gate opens, and the threads make what was handed out and nothing else (no update is made, so nothing is handed out after).
+    terrain.gate.open();
+    let began = std::time::Instant::now();
+    while terrain.started_count() < 16 {
+        assert!(
+            began.elapsed() < GATED_DEADLINE,
+            "{} of 16 bricks were started",
+            terrain.started_count()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let order = terrain.started();
+    let is_warm = |cube: &BrickCube| cube.origin().x() < 10;
+    let second_warm = order
+        .iter()
+        .enumerate()
+        .filter(|(_, cube)| is_warm(cube))
+        .nth(1)
+        .map(|(position, _)| position)
+        .expect("a second brick of the warm place was started");
+    let drawn_before = order[..second_warm]
+        .iter()
+        .filter(|cube| !is_warm(cube))
+        .count();
+    // (The 3 threads write what they start a moment after they take it, so up to 3 of the 12 may be written out of order.)
+    assert!(
+        drawn_before >= 12 - 3,
+        "only {drawn_before} of the 12 bricks that are drawn were started before the second brick that is only kept ready"
+    );
+}
+
+#[test]
+fn a_mesher_makes_the_bricks_of_a_place_kept_ready_on_half_its_threads_unless_told_otherwise_and_a_view_that_is_told_a_share_tells_its_mesher_as_well()
+ {
+    let scene = scene();
+    assert_eq!(scene.mesher_with_workers(3, 6).warm_worker_count(), 3);
+    assert_eq!(
+        scene.mesher_with_workers(3, 1).warm_worker_count(),
+        1,
+        "at least one"
+    );
+    assert_eq!(
+        scene.mesher_with_workers(3, 11).warm_worker_count(),
+        5,
+        "half of 11, down"
+    );
+    let mut mesher = scene.mesher_with_workers(3, 6);
+    mesher.set_warm_worker_count(2);
+    assert_eq!(mesher.warm_worker_count(), 2);
+    mesher.set_warm_worker_count(0);
+    assert_eq!(mesher.warm_worker_count(), 1, "at least one");
+    mesher.set_warm_worker_count(100);
+    assert_eq!(
+        mesher.warm_worker_count(),
+        6,
+        "at most the threads there are"
+    );
+
+    // A view's share is for its nodes and its bricks, each at most the threads they have.
+    let mut view = view_with_brick_threads(&scene, 4, 6);
+    assert_eq!(view.warm_worker_count(), 2);
+    assert_eq!(view.mesher().warm_worker_count(), 3);
+    view.set_warm_worker_count(5);
+    assert_eq!(view.warm_worker_count(), 4);
+    assert_eq!(view.mesher().warm_worker_count(), 5);
 }
 
 // ---- A camera that moves a long way a frame keeps its cut while it is far from what it draws (docs/specs/viewpoints-spec.md, phase 5b) ----

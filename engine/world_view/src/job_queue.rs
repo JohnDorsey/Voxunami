@@ -1,4 +1,5 @@
-//! The queue the threads that make nodes take their jobs from, for a view that keeps a second place warm ([`crate::LodView::set_warm_viewpoint`]).
+//! The queue the threads that make nodes, and the threads that make bricks ([`crate::WorldMesher`]), take their jobs from, for a view that keeps a second place warm
+//! ([`crate::LodView::set_warm_viewpoint`]).
 //!
 //! The nodes of the place that is drawn and the nodes of the place that is only kept ready are made by the same threads, but not alike: a **drawn** job is taken before any
 //! **warm** one that waits, and only **a share of the threads** (`warm_threads`) make warm jobs at the same time. The share is what leaves the rest of the machine, and the
@@ -10,6 +11,12 @@
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+
+/// How many of `workers` threads make warm jobs at the same time unless the view is told otherwise: half of them, at least one. What is only kept ready is not to take the whole
+/// machine from the player (a ground map that was kept ready took 10 cores of 12 for 1.7 s, measured 2026-11-23), and what is drawn is made first by whichever thread is free.
+pub(crate) fn default_warm_threads(workers: usize) -> usize {
+    (workers / 2).max(1)
+}
 
 /// A job and what kind it is, as a thread takes it: it tells the queue when it is done with it ([`JobQueue::done`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -103,6 +110,22 @@ impl<T> JobQueue<T> {
         drop(state);
         self.wake.notify_one();
         true
+    }
+
+    /// Makes every warm job that waits and that `is` says is a drawn one, at the back of the drawn jobs, in the order they waited in. How many there were: a job that a thread has
+    /// taken cannot be moved.
+    pub fn promote_all(&self, is: impl Fn(&T) -> bool) -> usize {
+        let mut state = self.locked();
+        let (wanted, left): (VecDeque<T>, VecDeque<T>) =
+            std::mem::take(&mut state.warm).into_iter().partition(&is);
+        state.warm = left;
+        let count = wanted.len();
+        state.drawn.extend(wanted);
+        drop(state);
+        for _ in 0..count {
+            self.wake.notify_one();
+        }
+        count
     }
 
     /// The next job, waiting for one that may be taken, or `None` when the queue is closed (the thread ends).

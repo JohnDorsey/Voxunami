@@ -83,6 +83,38 @@ fn a_warm_job_that_waits_can_be_made_a_drawn_one_and_one_that_is_taken_or_not_th
 }
 
 #[test]
+fn every_warm_job_that_waits_and_is_wanted_is_made_a_drawn_one_in_the_order_it_waited_and_how_many_is_said()
+ {
+    let queue = JobQueue::new(1);
+    for job in [1, 2, 3, 4, 5] {
+        queue.push(job, true);
+    }
+    queue.push(10, false);
+    assert_eq!(taken(&queue), Some((10, false)));
+    assert_eq!(taken(&queue), Some((1, true)));
+    queue.push(11, false);
+    // 1 is being made and does not move; 3 and 5 wait and do; 2 and 4 are not wanted.
+    assert_eq!(queue.promote_all(|job| *job % 2 == 1), 2);
+    assert_eq!(queue.promote_all(|job| *job == 99), 0, "nothing is wanted");
+    assert_eq!(
+        queue.promote_all(|job| *job == 10),
+        0,
+        "a drawn job is not a warm one"
+    );
+    // Behind the drawn job that waited already, in the order they waited in, and ahead of the warm jobs that are left.
+    assert_eq!(taken(&queue), Some((11, false)));
+    assert_eq!(taken(&queue), Some((3, false)));
+    assert_eq!(taken(&queue), Some((5, false)));
+    assert_eq!(
+        taken(&queue),
+        None,
+        "2 and 4 wait for the thread of warm work"
+    );
+    queue.done(true);
+    assert_eq!(taken(&queue), Some((2, true)));
+}
+
+#[test]
 fn a_queue_that_is_closed_drops_what_waited_and_gives_nothing_more() {
     let queue = JobQueue::new(2);
     queue.push(1, true);

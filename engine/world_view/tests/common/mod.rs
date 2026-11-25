@@ -91,13 +91,26 @@ impl Scene {
     }
 
     pub fn mesher_seeing(&self, radius: i128, channels: ViewChannels) -> WorldMesher {
+        self.mesher_of(radius, 3, channels)
+    }
+
+    /// A mesher with `workers` threads (`mesher` has three).
+    pub fn mesher_with_workers(&self, radius: i128, workers: usize) -> WorldMesher {
+        self.mesher_of(
+            radius,
+            workers,
+            ViewChannels::new(self.material, None, None),
+        )
+    }
+
+    fn mesher_of(&self, radius: i128, workers: usize, channels: ViewChannels) -> WorldMesher {
         // Air is see-through; every other block of the fixtures is an opaque cube.
         let mut opaque = vec![true; 16];
         opaque[self.air as usize] = false;
         WorldMesher::new(
             ViewSettings {
                 view_radius_bricks: radius,
-                worker_count: 3,
+                worker_count: workers,
             },
             channels,
             Arc::new(BlockTable::of_cubes(&opaque)),

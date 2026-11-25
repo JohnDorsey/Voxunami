@@ -24,17 +24,10 @@ use world_storage::LevelData;
 use crate::brick_states::HeldBricks;
 use crate::cube_states::{Arrival, CubeStates, HeldPictures, Replacement, Taken};
 use crate::job_feed::jobs_to_hold;
-use crate::job_queue::{JobQueue, Taken as Handed};
+use crate::job_queue::{JobQueue, Taken as Handed, default_warm_threads};
 use crate::may_show_memo::MayShowMemo;
 use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
 use crate::warm_cut::{KeptCut, Selection, WarmFinished, WarmJob, WarmWorker, warm_queue_of};
-
-/// How many of the threads that make nodes make the nodes of the warm viewpoint at the same time, unless the view is told otherwise
-/// ([`LodView::set_warm_worker_count`]): half of them, at least one. What is only kept ready is not to take the whole machine from the player (a ground map that was kept ready
-/// took 10 cores of 12 for 1.7 s, measured 2026-11-23), and what is drawn is made first by whichever thread is free.
-fn default_warm_workers(workers: usize) -> usize {
-    (workers / 2).max(1)
-}
 
 /// How much a picture is asked to show.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -262,7 +255,7 @@ impl LodView {
     /// A view whose bricks are made by `mesher`, which is held back from now on.
     pub fn new(mesher: WorldMesher, config: LodConfig) -> Self {
         let mesher = mesher.with_held_back_display();
-        let jobs = Arc::new(JobQueue::<Job>::new(default_warm_workers(
+        let jobs = Arc::new(JobQueue::<Job>::new(default_warm_threads(
             config.worker_count,
         )));
         let (result_sender, results) = mpsc::channel::<Finished>();
@@ -344,7 +337,7 @@ impl LodView {
             warm_nodes_in_flight: 0,
             warm_node_cubes: HashSet::new(),
             warm_finished_last_update: 0,
-            warm_worker_count: default_warm_workers(config.worker_count),
+            warm_worker_count: default_warm_threads(config.worker_count),
             jobs: Some(jobs),
             results,
             workers,
@@ -395,12 +388,14 @@ impl LodView {
         self.warm_worker_count
     }
 
-    /// Sets how many threads make the nodes of the warm viewpoint at the same time (at least one, at most the threads there are). By default half of them.
+    /// Sets how many threads make the nodes of the warm viewpoint at the same time, and how many make its bricks ([`WorldMesher::set_warm_worker_count`]): at least one, at most
+    /// the threads there are of each. By default half of them.
     pub fn set_warm_worker_count(&mut self, count: usize) {
         self.warm_worker_count = count.clamp(1, self.workers.len().max(1));
         if let Some(jobs) = &self.jobs {
             jobs.set_warm_threads(self.warm_worker_count);
         }
+        self.mesher.set_warm_worker_count(count);
     }
 
     /// Keeps the pictures of nodes that leave the screen, up to `budget_bytes` of them, instead of dropping them: a node that is taken down is **hidden** in the renderer
