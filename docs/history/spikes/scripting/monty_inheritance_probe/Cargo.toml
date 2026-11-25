@@ -1,0 +1,15 @@
+[package]
+name = "inherit-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace root, so that nothing else tries to own it. The fork at its current head, by path.
+[workspace]
+
+[dependencies]
+monty = { path = "E:/s/vx/monty/crates/monty" }
+monty-types = { path = "E:/s/vx/monty/crates/monty-types" }
+
+[profile.release]
+debug = false
