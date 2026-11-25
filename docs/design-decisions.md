@@ -40,7 +40,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Voxels are strictly cubic. Real-time rendering is rasterized; a path-traced offline renderer for replay export comes later.
 - The grid is always cubic (owner, 2026-10-16), apart from coarser levels of detail in the distance. A block may fill only
   part of its cell, using a block shape chosen by the block's *state*, so that shapes do not multiply the number of block
-  types and run into the renderer's palette cap (256 material values, 16 of them used by avatars). So a voxel carries
+  types and run into the renderer's palette cap (then 256 material values, 16 of them used by avatars; **since Phase 31 a buffer of up to 1,048,576 materials**,
+  with the 16 avatar colours the last values of a 24-bit quad: `MAXIMUM_GAME_MATERIALS`). So a voxel carries
   a block and a state, as two channels (built; see `build-log.md`, Phase 7). A game without states leaves the second channel out.
 - Worlds have several levels (built; see `build-log.md`, Phase 6). Each level has its own grid, terrain assignments and edited
   bricks. All levels of a world share its channels, content registries, terrain generator versions and **seed**: a level

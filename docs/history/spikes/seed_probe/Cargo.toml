@@ -1,0 +1,22 @@
+# A probe for docs/history/seed-secrecy-survey.md: the engine's seed mixer run backwards, Java's Random, the cost of deriving and of searching with BLAKE3, and the palettes of real bricks.
+# A standalone workspace, not part of the main one, and (like the other programs in spikes/) not kept compiling: it uses the engine's own crates by path.
+# Run it with a scratch build folder outside the repository:
+#   cargo run --release --manifest-path docs/history/spikes/seed_probe/Cargo.toml --target-dir E:/s/vx/seed-probe-target -- inversion java derive palette
+#   cargo run --release --manifest-path docs/history/spikes/seed_probe/Cargo.toml --target-dir E:/s/vx/seed-probe-target -- brute 24 28 32
+[package]
+name = "seed_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+blake3 = "1"
+terrain = { path = "../../../../engine/terrain" }
+voxel_grid = { path = "../../../../engine/voxel_grid" }
+voxel_space = { path = "../../../../engine/voxel_space" }
+
+[workspace]
+
+[profile.release]
+opt-level = 3
+debug = false

@@ -1,0 +1,54 @@
+Output of seed_probe, 2026-11-25. One machine: Ryzen 5 7600X (12 threads), Windows 10, release build, the engine's crates as of the branch graphics-world-painting.
+The two runs were made one after the other; the numbers in docs/history/seed-secrecy-survey.md and docs/specs/procedural-materials-spec.md are these.
+
+$ seed_probe inversion java derive palette
+== 1. The engine's seed mixer is a bijection, so it can be run backwards ==
+terrain::mix(0) = 0xE220A8397B1DCDAF (the published first output of splitmix64 from 0 is 0xE220A8397B1DCDAF)
+unmix(mix(x)) == x and mix(unmix(x)) == x for 10000000 random x
+-- a child seed derived with the engine's lattice hash gives its parent away --
+parent 0x09DDEF1D6252AAE5, child 0xCB9376BC25E1774E, recovered from the child and its number: 0x09DDEF1D6252AAE5 (5.7 ns each, 1)
+-- one full-precision property computed with the engine's noise gives the seed away --
+material seed 0xE10B88BB9C64D13E; from the first property alone (-0.715259327958409) and a check against the second, recovered Some("0xE10B88BB9C64D13E") after 1621 of 2048 candidates in 39.2 us
+== 2. Three floats of Java's Random give its whole state ==
+3 observed floats [0.48626876, 0.27974308, 0.03521645]: the 48-bit state found by trying at most 2^24 low parts in 1.2 ms; stepping it back one place gives the state before them: equal (it is 0x26EDAA436546)
+5,000 steps back and 5,000 forward land on the same state: yes
+== 3a. What deriving a seed with BLAKE3 costs ==
+blake3::derive_key of a 40-byte input under a context string: 109.3 ns each (10000000 calls; 1)
+blake3::keyed_hash of an 8-byte input: 54.1 ns each (1)
+== 4. The block channel of real bricks (Cave's rolling hills, 12 x 12 x 8 bricks round the origin, seed 5) ==
+paletted, 2 values, 1-bit indices                4 bricks,      4104 bytes in memory and      4108 encoded, each on average
+paletted, 3 values, 2-bit indices               14 bricks,      8204 bytes in memory and      8208 encoded, each on average
+paletted, 4 values, 2-bit indices              682 bricks,      8208 bytes in memory and      8212 encoded, each on average
+uniform                                        452 bricks,         0 bytes in memory and         5 encoded, each on average
+1152 bricks: 5729128 bytes in memory (4973 each), 5734188 encoded (4978 each); with no palette: 75497472 bytes with a u16 for each voxel, 150994944 with a u32
+-- what a brick costs by how many different values it holds (constructed, the values spread over the brick) --
+    1 distinct: uniform                                            0 bytes in memory,       5 encoded
+    2 distinct: paletted, 2 values, 1-bit indices               4104 bytes in memory,    4108 encoded
+    3 distinct: paletted, 3 values, 2-bit indices               8204 bytes in memory,    8208 encoded
+    4 distinct: paletted, 4 values, 2-bit indices               8208 bytes in memory,    8212 encoded
+    5 distinct: paletted, 5 values, 4-bit indices              16404 bytes in memory,   16408 encoded
+   16 distinct: paletted, 16 values, 4-bit indices             16448 bytes in memory,   16452 encoded
+   17 distinct: paletted, 17 values, 8-bit indices             32836 bytes in memory,   32840 encoded
+  255 distinct: paletted, 255 values, 8-bit indices            33788 bytes in memory,   33792 encoded
+  256 distinct: paletted, 256 values, 8-bit indices            33792 bytes in memory,   33796 encoded
+  257 distinct: dense                                         131072 bytes in memory,  131073 encoded
+ 1000 distinct: dense                                         131072 bytes in memory,  131073 encoded
+
+$ seed_probe brute 24 28 32
+== 3b. Searching a small secret through a keyed BLAKE3 hash, whole space, all threads ==
+24 bits: 16777216 candidates in 0.10 s on 12 threads = 174.1 million a second
+28 bits: 268435456 candidates in 1.60 s on 12 threads = 168.3 million a second
+32 bits: 4294967296 candidates in 26.12 s on 12 threads = 164.5 million a second
+-- the last rate, 164 million a second, extended (one hash per candidate; real checks cost more, so these are the cheapest an attacker can have) --
+2^32  this machine:           26.1 s   one RTX 4090 at 22.1 GH/s:           194 ms   a thousand of them:             0 ms
+2^40  this machine:        1.9 hours   one RTX 4090 at 22.1 GH/s:           49.8 s   a thousand of them:            50 ms
+2^48  this machine:        19.8 days   one RTX 4090 at 22.1 GH/s:        3.5 hours   a thousand of them:           12.7 s
+2^56  this machine:    1.388e1 years   one RTX 4090 at 22.1 GH/s:        37.7 days   a thousand of them:     54.3 minutes
+2^64  this machine:    3.554e3 years   one RTX 4090 at 22.1 GH/s:    2.645e1 years   a thousand of them:         9.7 days
+2^80  this machine:    2.329e8 years   one RTX 4090 at 22.1 GH/s:    1.733e6 years   a thousand of them:    1.733e3 years
+2^96  this machine:   1.527e13 years   one RTX 4090 at 22.1 GH/s:   1.136e11 years   a thousand of them:    1.136e8 years
+2^128 this machine:   6.557e22 years   one RTX 4090 at 22.1 GH/s:   4.879e20 years   a thousand of them:    4.879e17 years
+
+A second run of `seed_probe inversion`, after the source was formatted (the same results, only the timings differ): 7.1 ns each for the parent from the child, and 43.0 us for the seed from one property (still found at try 1,621 of 2048).
+
+Notes. The GPU column is hashcat's published SHA-256 speed (22,138.4 MH/s, version 7.0.0) used as a stand-in for a hash, not a measurement of BLAKE3 on a GPU. Each section was run once: the one-off timings (39.2 us, 1.2 ms) are single runs; the search rate agrees across the three sizes (174, 168, 164 million a second). The probe's own random inputs come from a small xorshift driver; the first section checks terrain::mix against the published splitmix64 value so that the engine's function is the one under test.
