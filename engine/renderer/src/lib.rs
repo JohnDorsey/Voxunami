@@ -27,7 +27,7 @@ mod sun_boxes;
 mod voxel_renderer;
 
 pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
-pub use camera::{Camera, Frustum};
+pub use camera::{Camera, Frustum, Projection};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };

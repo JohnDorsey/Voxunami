@@ -7,6 +7,17 @@ pub(crate) fn gpu_vector(vector: [f64; 3]) -> Vec3 {
     Vec3::new(vector[0] as f32, vector[1] as f32, vector[2] as f32)
 }
 
+/// How a camera turns what is in front of it into a picture.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Projection {
+    /// Things are smaller the farther they are, by the camera's `vertical_field_of_view`; depth goes on for ever.
+    #[default]
+    Perspective,
+    /// Things are as large far away as near, as for a map looking over a level: `height` voxels fill the picture from the bottom to the top (and `height` times the aspect
+    /// ratio from side to side), and what is more than `depth` voxels ahead of the camera's near plane is not drawn. `vertical_field_of_view` plays no part.
+    Orthographic { height: f32, depth: f32 },
+}
+
 /// A first-person camera. Its position is a [`WorldPosition`], so it stays precise at any distance
 /// from the origin; everything drawn is placed relative to it.
 ///
@@ -25,8 +36,10 @@ pub struct Camera {
     pub frame_rotation: Quat,
     /// Vertical field of view in radians.
     pub vertical_field_of_view: f32,
-    /// The distance of the nearest thing drawn. There is no far plane: depth is reversed and goes on for ever (see [`Camera::view_projection`]).
+    /// The distance of the nearest thing drawn. There is no far plane for a perspective camera: depth is reversed and goes on for ever (see [`Camera::view_projection`]).
     pub near_plane: f32,
+    /// Perspective, the default, or orthographic.
+    pub projection: Projection,
 }
 
 impl Camera {
@@ -42,7 +55,13 @@ impl Camera {
             frame_rotation: Quat::IDENTITY,
             vertical_field_of_view: 70.0 * std::f32::consts::PI / 180.0,
             near_plane: 0.1,
+            projection: Projection::Perspective,
         }
+    }
+
+    /// Whether the camera is orthographic.
+    pub fn is_orthographic(&self) -> bool {
+        matches!(self.projection, Projection::Orthographic { .. })
     }
 
     /// The turn of the view: the angles' turn, then the frame's. A camera in no frame is the angles' turn alone, to the bit.
@@ -92,13 +111,29 @@ impl Camera {
     /// farther is between 0 and 1, however far. A floating point depth buffer has most of its precision near 0, which is where the far things are, so
     /// surfaces keep their order at planet distances: measured, walls 2 metres apart are in order at 100 kilometres and at 10,000 kilometres, and at 100,000
     /// kilometres the limit is between 4 and 8 metres (the test draws them, in both orders of drawing). The depth buffer is cleared to 0 and the test is "greater".
+    ///
+    /// An orthographic camera has a far plane, `depth` voxels past the near one: depth is 1 at the near plane and 0 at the far one, and goes between them in a straight line.
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        // Right-handed, y up, clip depth 0..1: wgpu's conventions, with depth reversed.
-        let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
-            self.vertical_field_of_view,
-            aspect_ratio,
-            self.near_plane,
-        );
+        let projection = match self.projection {
+            // Right-handed, y up, clip depth 0..1: wgpu's conventions, with depth reversed.
+            Projection::Perspective => {
+                glam::camera::rh::proj::directx::perspective_infinite_reverse(
+                    self.vertical_field_of_view,
+                    aspect_ratio,
+                    self.near_plane,
+                )
+            }
+            Projection::Orthographic { height, depth } => {
+                let (near, far) = (self.near_plane, self.near_plane + depth);
+                // The same conventions: x and y by the size of the box the picture sees, and the depth `(far + z) / (far - near)` for a place at `z` (ahead is negative).
+                Mat4::from_cols(
+                    Vec4::new(2.0 / (height * aspect_ratio), 0.0, 0.0, 0.0),
+                    Vec4::new(0.0, 2.0 / height, 0.0, 0.0),
+                    Vec4::new(0.0, 0.0, 1.0 / (far - near), 0.0),
+                    Vec4::new(0.0, 0.0, far / (far - near), 1.0),
+                )
+            }
+        };
         projection * Mat4::from_quat(self.rotation().inverse())
     }
 }
@@ -108,12 +143,19 @@ impl Camera {
 pub struct Frustum {
     /// Each plane is `(normal, distance)`; points with `normal . p + distance >= 0` are inside.
     planes: [Vec4; 5],
+    /// The far plane, for a view that has one (an orthographic one).
+    far: Option<Vec4>,
 }
 
 impl Frustum {
     /// Extracts the planes of a clip volume with depth in `0..=1` (wgpu's convention) that is reversed (1 at the near plane) and has no far plane, as
     /// [`Camera::view_projection`] makes.
     pub fn from_view_projection(view_projection: Mat4) -> Self {
+        Self::from_view_projection_with_far(view_projection, false)
+    }
+
+    /// The planes of a clip volume as [`Frustum::from_view_projection`] says, and, if `with_far`, the plane where depth is 0 (an orthographic camera's far plane).
+    pub fn from_view_projection_with_far(view_projection: Mat4, with_far: bool) -> Self {
         let (row0, row1, row2, row3) = (
             view_projection.row(0),
             view_projection.row(1),
@@ -130,7 +172,17 @@ impl Frustum {
                 // Depth at most 1 is not nearer than the near plane. (Depth at least 0 is every distance: there is no plane for it.)
                 normalize(row3 - row2),
             ],
+            // (Depth at least 0 is not farther than the far plane.)
+            far: with_far.then(|| normalize(row2)),
         }
+    }
+
+    /// The frustum of the camera as it is drawn at this aspect ratio.
+    pub fn of_camera(camera: &Camera, aspect_ratio: f32) -> Self {
+        Self::from_view_projection_with_far(
+            camera.view_projection(aspect_ratio),
+            camera.is_orthographic(),
+        )
     }
 
     /// False only if the sphere is entirely outside one plane. It may be true for spheres that are
@@ -138,6 +190,7 @@ impl Frustum {
     pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
         self.planes
             .iter()
+            .chain(&self.far)
             .all(|plane| plane.truncate().dot(center) + plane.w >= -radius)
     }
 }
@@ -197,6 +250,109 @@ mod tests {
         assert!(!frustum.intersects_sphere(Vec3::new(0.0, -1.0e6, -1.0e3), 1.0));
         // A sphere that reaches into the view from the side is kept.
         assert!(frustum.intersects_sphere(Vec3::new(1.0e3, 0.0, -1.0e3), 1.0e3));
+    }
+
+    fn orthographic(height: f32, depth: f32) -> Camera {
+        Camera {
+            projection: Projection::Orthographic { height, depth },
+            ..camera_at_origin()
+        }
+    }
+
+    fn ndc_of(camera: &Camera, aspect_ratio: f32, point: Vec3) -> Vec3 {
+        let clip = camera.view_projection(aspect_ratio) * point.extend(1.0);
+        clip.truncate() / clip.w
+    }
+
+    #[test]
+    fn a_camera_is_perspective_unless_it_is_made_otherwise_and_its_matrix_is_what_it_was() {
+        let mut camera = camera_at_origin();
+        camera.look_by(0.4, -0.2);
+        assert_eq!(camera.projection, Projection::Perspective);
+        assert!(!camera.is_orthographic());
+        let expected = glam::camera::rh::proj::directx::perspective_infinite_reverse(
+            camera.vertical_field_of_view,
+            1.5,
+            camera.near_plane,
+        ) * Mat4::from_quat(camera.rotation().inverse());
+        assert_eq!(camera.view_projection(1.5), expected);
+        assert_eq!(
+            Frustum::of_camera(&camera, 1.5),
+            Frustum::from_view_projection(camera.view_projection(1.5))
+        );
+    }
+
+    #[test]
+    fn an_orthographic_camera_draws_a_thing_as_large_far_as_near() {
+        let camera = orthographic(100.0, 5_000.0);
+        // A place at the top of the box (50 voxels up) and at the right edge of a picture twice as wide as it is high (100 voxels right) is at the corner, at any distance.
+        for distance in [1.0f32, 100.0, 4_000.0] {
+            let ndc = ndc_of(&camera, 2.0, Vec3::new(100.0, 50.0, -distance));
+            assert!(
+                (ndc.x - 1.0).abs() < 1e-6 && (ndc.y - 1.0).abs() < 1e-6,
+                "{distance}: {ndc:?}"
+            );
+            let middle = ndc_of(&camera, 2.0, Vec3::new(0.0, 0.0, -distance));
+            assert!(middle.x.abs() < 1e-6 && middle.y.abs() < 1e-6);
+        }
+        // To the right is to the right, and above is up.
+        let ndc = ndc_of(&camera, 1.0, Vec3::new(10.0, 20.0, -300.0));
+        assert!((ndc.x - 0.2).abs() < 1e-6 && (ndc.y - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_depth_of_an_orthographic_camera_goes_from_1_at_the_near_plane_to_0_at_the_far_one_in_a_line()
+     {
+        let camera = orthographic(100.0, 1_000.0);
+        let (near, far) = (camera.near_plane, camera.near_plane + 1_000.0);
+        let depth = |distance: f32| ndc_of(&camera, 1.0, Vec3::new(0.0, 0.0, -distance)).z;
+        assert!((depth(near) - 1.0).abs() < 1e-6);
+        assert!(depth(far).abs() < 1e-6);
+        assert!((depth(0.5 * (near + far)) - 0.5).abs() < 1e-6);
+        // Nearer is greater, as in the reversed depth of the perspective camera.
+        assert!(depth(10.0) > depth(20.0) && depth(20.0) > depth(900.0));
+    }
+
+    #[test]
+    fn the_frustum_of_an_orthographic_camera_is_a_box_with_a_near_and_a_far_end() {
+        let camera = orthographic(100.0, 1_000.0);
+        let frustum = Frustum::of_camera(&camera, 2.0);
+        let sees = |x: f32, y: f32, z: f32, radius: f32| {
+            frustum.intersects_sphere(Vec3::new(x, y, z), radius)
+        };
+        assert!(sees(0.0, 0.0, -500.0, 1.0), "the middle");
+        assert!(sees(99.0, 49.0, -500.0, 0.5), "inside a corner");
+        assert!(sees(99.0, 49.0, -900.0, 0.5), "and as far as it goes");
+        // A box has the same width at any distance: what a perspective camera would see at 900 is out here.
+        assert!(!sees(130.0, 0.0, -900.0, 1.0), "beside the box");
+        assert!(!sees(0.0, 60.0, -10.0, 1.0), "over the box");
+        assert!(
+            sees(105.0, 0.0, -500.0, 10.0),
+            "a big sphere across the edge"
+        );
+        // The far end is a plane, and what is behind the near one is out.
+        assert!(!sees(0.0, 0.0, -1_200.0, 1.0), "beyond the far plane");
+        assert!(
+            sees(0.0, 0.0, -1_050.0, 100.0),
+            "a sphere across the far plane"
+        );
+        assert!(!sees(0.0, 0.0, 50.0, 1.0), "behind the camera");
+        // A perspective camera has no far end.
+        assert!(
+            Frustum::of_camera(&camera_at_origin(), 2.0)
+                .intersects_sphere(Vec3::new(0.0, 0.0, -1.0e9), 1.0)
+        );
+    }
+
+    #[test]
+    fn an_orthographic_camera_turns_with_its_angles_and_what_is_straight_ahead_is_in_the_middle_at_any_depth()
+     {
+        let mut camera = orthographic(100.0, 1_000.0);
+        camera.look_by(0.7, -Camera::MAXIMUM_PITCH);
+        for distance in [5.0f32, 500.0] {
+            let ndc = ndc_of(&camera, 1.0, camera.forward() * distance);
+            assert!(ndc.x.abs() < 1e-5 && ndc.y.abs() < 1e-5, "{ndc:?}");
+        }
     }
 
     #[test]

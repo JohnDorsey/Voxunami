@@ -934,6 +934,21 @@ struct SizedTarget {
     view: wgpu::TextureView,
 }
 
+/// The matrix the sky is drawn with: from a point of the near plane in clip space to the direction the pixel looks along. For a perspective camera that is the inverse of its
+/// matrix; an orthographic camera looks along one direction at every pixel, so the matrix sends every point to that direction.
+fn sky_rays_of(camera: &Camera, view_projection: glam::Mat4) -> glam::Mat4 {
+    if camera.is_orthographic() {
+        glam::Mat4::from_cols(
+            glam::Vec4::ZERO,
+            glam::Vec4::ZERO,
+            glam::Vec4::ZERO,
+            camera.forward().extend(1.0),
+        )
+    } else {
+        view_projection.inverse()
+    }
+}
+
 /// Draws bricks of meshed voxels. Positions are camera-relative: each brick's offset from the
 /// camera is computed in exact integer arithmetic, so precision does not degrade far from the
 /// origin.
@@ -2746,7 +2761,9 @@ impl VoxelRenderer {
         self.ensure_depth_target(size);
         let aspect_ratio = size.0 as f32 / size.1 as f32;
         let view_projection = camera.view_projection(aspect_ratio);
-        let frustum = Frustum::from_view_projection(view_projection);
+        let frustum = Frustum::of_camera(camera, aspect_ratio);
+        // (An orthographic camera sees along one direction from everywhere: whether a face looks at it is not a matter of where it is, so every face is drawn.)
+        let skip_faces_looking_away = self.skip_faces_looking_away && !camera.is_orthographic();
 
         self.prepare_volume(camera);
         let volume_frame = self.volume_frame(camera);
@@ -2877,6 +2894,7 @@ impl VoxelRenderer {
         self.write_frame_uniform(
             view_projection,
             camera.vertical_field_of_view / size.1 as f32,
+            sky_rays_of(camera, view_projection),
             camera.position,
             shadows.as_ref(),
         );
@@ -3075,8 +3093,7 @@ impl VoxelRenderer {
                 looking_away_skipped += draw_quads_facing(
                     &mut pass,
                     &brick.quad_faces,
-                    self.skip_faces_looking_away
-                        .then(|| drawables[index].placement.camera_in_cells()),
+                    skip_faces_looking_away.then(|| drawables[index].placement.camera_in_cells()),
                 );
             }
             // The bricks that have blocks that do not fill their cells, with the other pipeline.
@@ -3091,8 +3108,7 @@ impl VoxelRenderer {
                 looking_away_skipped += draw_quads_facing(
                     &mut pass,
                     &brick.detailed_faces,
-                    self.skip_faces_looking_away
-                        .then(|| drawables[index].placement.camera_in_cells()),
+                    skip_faces_looking_away.then(|| drawables[index].placement.camera_in_cells()),
                 );
             }
             pass.set_pipeline(whole_pipeline);
@@ -3348,6 +3364,7 @@ impl VoxelRenderer {
         &self,
         view_projection: glam::Mat4,
         pixel_angle: f32,
+        sky_rays: glam::Mat4,
         camera: WorldPosition,
         shadows: Option<&ShadowPlan>,
     ) {
@@ -3410,7 +3427,7 @@ impl VoxelRenderer {
                     .filter(|planned| planned.used)
                     .map_or_else(Zeroable::zeroed, cascade_uniform)
             }),
-            sky_rays: view_projection.inverse().to_cols_array_2d(),
+            sky_rays: sky_rays.to_cols_array_2d(),
             star_frame: self
                 .atmosphere
                 .heavens
