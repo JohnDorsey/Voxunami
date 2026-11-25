@@ -139,6 +139,7 @@ fn settings() -> LodSettings {
         },
         zoom: None,
         maximum_distance: 350.0,
+        orthographic: None,
     }
 }
 

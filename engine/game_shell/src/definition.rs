@@ -203,6 +203,13 @@ pub trait GameDefinition: Sized + 'static {
         Self::coarse_detail()
     }
 
+    /// Whether the map of the level with this identifier is drawn without perspective: from a camera whose picture shows a thing as large far away as near, over a cut of one
+    /// level of nodes (`docs/specs/viewpoints-spec.md` 6.5), as a map of a flat ground of hills is. The default is no: a map is a perspective camera that goes round its focus.
+    fn orthographic_map(level: &NamespacedId) -> bool {
+        let _ = level;
+        false
+    }
+
     /// The sun of the level with this identifier, if it has one: where it is by the world's clock, how much it lights, and the colour of the sky (see
     /// [`crate::sun::Sun`]). The default is no sun: the pictures are as the game's light makes them and the sky is the renderer's.
     fn sun(level: &NamespacedId) -> Option<crate::sun::Sun> {

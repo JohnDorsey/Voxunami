@@ -116,7 +116,32 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         match self.rig.state {
             State::Body => self.camera,
             State::Fly(camera) => camera,
+            State::Orbit(orbit) if self.map_is_orthographic() => {
+                orbit.orthographic_camera(&self.focus_frame(orbit.focus), &self.camera)
+            }
             State::Orbit(orbit) => orbit.camera(&self.focus_frame(orbit.focus), &self.camera),
+        }
+    }
+
+    /// Whether the map that is drawn is orthographic: it is drawn, and the game says the level's map is ([`GameDefinition::orthographic_map`]).
+    pub fn map_is_orthographic(&self) -> bool {
+        matches!(self.rig.state, State::Orbit(_))
+            && self
+                .client
+                .world()
+                .world()
+                .level_id(self.level)
+                .is_some_and(G::orthographic_map)
+    }
+
+    /// Where the cubes of the drawn picture are chosen from: the camera's place, and for an orthographic map the focus (the eye of such a camera is only a way back from what it
+    /// looks at, and the bricks that are drawn as bricks are those at the middle of the picture).
+    pub(crate) fn drawn_viewer(&self) -> WorldPosition {
+        match self.rig.state {
+            State::Orbit(orbit) if self.map_is_orthographic() => {
+                self.focus_frame(orbit.focus).centre
+            }
+            _ => self.drawn_camera().position,
         }
     }
 
@@ -249,7 +274,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     pub(super) fn drawn_places_besides_the_body(&self) -> BTreeMap<GridId, WorldPosition> {
         match self.rig.state {
             State::Body => BTreeMap::new(),
-            _ => self.places_in_grids(self.drawn_camera().position),
+            _ => self.places_in_grids(self.drawn_viewer()),
         }
     }
 

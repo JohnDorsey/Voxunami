@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
+use coarse_cells::orthographic_level;
 use coarse_streaming::{CoarseNodes, DetailPlace, MAXIMUM_PLACES, SetDetail};
 use identity::Identity;
 use namespaced_id::NamespacedId;
@@ -26,8 +27,8 @@ use voxel_space::{
 use winit::keyboard::KeyCode;
 use world_view::{
     GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange, OccupancyStatistics,
-    RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, Viewpoint,
-    WorldMesher, cast_ray,
+    OrthographicCut, RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings,
+    Viewpoint, WorldMesher, cast_ray,
 };
 
 use crate::client_commands::ClientSettings;
@@ -134,8 +135,12 @@ fn lod_settings_of(request: &SetDetail, detail: &CoarseDetail) -> LodSettings {
         detail: request.settings(),
         zoom: request.zoom(),
         maximum_distance: detail.maximum_distance,
+        orthographic: None,
     }
 }
+
+/// How many times wider than high a picture may be, for the box an orthographic map is drawn over (a screen of 21 to 9 is 2.3).
+const ORTHOGRAPHIC_WIDEST_ASPECT: f64 = 2.5;
 
 /// The height of the picture, in pixels, until a window or a screenshot says otherwise.
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 1080.0;
@@ -683,6 +688,35 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
+    /// The cut of the drawn map when it is orthographic ([`Session::map_is_orthographic`]): the level whose cells are about `cell_pixels` pixels across, in a box that holds the
+    /// picture seen from any side. Both change in steps (the level, and the box by doubling), so that a camera that is turned or zoomed a little chooses the cubes again at
+    /// none of the steps.
+    fn orthographic_cut(&self, detail: &CoarseDetail) -> Option<OrthographicCut> {
+        let orbit = self.orbit().filter(|_| self.map_is_orthographic())?;
+        let height = orbit.orthographic_height(&self.camera);
+        let level = orthographic_level(
+            f64::from(detail.cell_pixels),
+            height / f64::from(self.viewport_height),
+        );
+        // How far the picture reaches over the ground: sideways half its width (a screen is at most this many times wider than high) and along it half its height over the sine
+        // of the way it looks down (a view along the ground sees without end: it is held to a quarter).
+        let sine = libm::sin(orbit.elevation.abs()).max(0.25);
+        let (half_width, half_along) = (
+            height * 0.5 * ORTHOGRAPHIC_WIDEST_ASPECT,
+            height * 0.5 / sine,
+        );
+        let wanted = libm::sqrt(half_width * half_width + half_along * half_along) * 1.25;
+        let edge = f64::from(32u32 << level.min(26));
+        let mut extent = edge * 2.0;
+        while extent < wanted {
+            extent *= 2.0;
+        }
+        Some(OrthographicCut {
+            level,
+            half_extent: extent.min(detail.maximum_distance.max(edge)),
+        })
+    }
+
     /// The places that are kept ready ([`Session::keep_ready`]) in a grid whose nodes this session draws, in each grid's own coordinates: the server is asked for the nodes
     /// that an edit changes round each, as it is round the camera (`docs/specs/viewpoints-spec.md`, 6.3). A place in another level's terrain, or in a ship that has no
     /// terrain of its own and is not far, is a place nothing is drawn from, and is not asked for.
@@ -970,6 +1004,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         // What the picture is made from is the drawn camera's; what the server is told of is the player's body. A camera that is not the player's eyes may go a way from where
         // the cubes were chosen before they are chosen again (it crosses a brick every frame when it goes round a map).
         let drawn = self.drawn_camera();
+        let drawn_place = self.drawn_viewer();
         let tolerance = if self.view_mode() == ViewMode::Body {
             0.0
         } else {
@@ -984,7 +1019,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .get(&GridId::root(self.level))
             .map(|place| place.brick())
             .into_iter()
-            .chain((self.view_mode() != ViewMode::Body).then(|| drawn.position.brick()));
+            .chain((self.view_mode() != ViewMode::Body).then(|| drawn_place.brick()));
         for place in beside_the_body {
             if place != center && !free_centres.contains(&place) {
                 free_centres.push(place);
@@ -1023,9 +1058,18 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             TerrainView::Coarse(coarse) => Some(self.coarse_request(&coarse.detail)),
             TerrainView::Bricks(_) => None,
         };
+        let orthographic = match &self.terrain {
+            TerrainView::Coarse(coarse) => self.orthographic_cut(&coarse.detail),
+            TerrainView::Bricks(_) => None,
+        };
         match (&mut self.terrain, &request) {
             (TerrainView::Coarse(coarse), Some(request)) => {
                 let settings = lod_settings_of(request, &coarse.detail);
+                // (What is drawn of an orthographic map is chosen by the cut; what is kept ready is the body's, by distance, as it was.)
+                let drawn_settings = LodSettings {
+                    orthographic,
+                    ..settings
+                };
                 coarse
                     .view
                     .set_release_warm_pictures(self.settings.release_map_pictures);
@@ -1037,8 +1081,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 updates.extend(coarse.view.update(
                     GridId::root(level),
                     data,
-                    drawn.position,
-                    &settings,
+                    drawn_place,
+                    &drawn_settings,
                 ));
                 if let Some(report) = coarse.view.take_stall_report() {
                     eprintln!("warning: {report}");

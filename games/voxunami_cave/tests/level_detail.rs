@@ -11,7 +11,7 @@ use renderer::{GraphicsContext, VoxelRenderer};
 use voxunami_cave::Cave;
 use world_view::MeshUpdate;
 
-/// The coarse nodes the renderer holds, as the updates say (an empty mesh takes a node down, as a removal does).
+/// The coarse nodes the renderer draws, as the updates say (an empty mesh takes a node down, as a removal does, and a node that is held hidden is not drawn).
 #[derive(Default)]
 struct Nodes(std::collections::HashSet<region_octree::BrickCube>);
 
@@ -22,8 +22,13 @@ impl Nodes {
                 MeshUpdate::UploadCoarse { cube, mesh } if !mesh.is_empty() => {
                     self.0.insert(*cube);
                 }
-                MeshUpdate::UploadCoarse { cube, .. } | MeshUpdate::RemoveCoarse(cube) => {
+                MeshUpdate::UploadCoarse { cube, .. }
+                | MeshUpdate::RemoveCoarse(cube)
+                | MeshUpdate::HideCoarse(cube) => {
                     self.0.remove(cube);
+                }
+                MeshUpdate::ShowCoarse(cube) => {
+                    self.0.insert(*cube);
                 }
                 _ => {}
             }
@@ -233,4 +238,165 @@ fn the_widest_part_of_the_river_is_drawn_from_outside_on_every_graphics_adapter(
             "{name}: the corner is {corner:?}, which is not the dark sky"
         );
     }
+}
+
+#[test]
+fn the_map_of_the_overworld_is_orthographic_and_is_nodes_of_one_level_over_the_box_where_the_map_of_space_is_perspective()
+ {
+    let (mut scene, mut player) = scene_with_a_player();
+    let mut renderer = Nodes::default();
+    // The map of the level of space, round the player's body: a perspective camera.
+    player.show_map();
+    assert!(!player.map_is_orthographic());
+    assert!(!player.drawn_camera().is_orthographic());
+    player.show_body();
+
+    say(&mut scene, &mut player, "/level go overworld");
+    say(&mut scene, &mut player, "/tp 16 110 16");
+    tick_and_follow(&mut scene, &mut player, 30);
+    renderer.apply(&settled_view(&mut scene, &mut player));
+    let perspective_nodes = renderer.0.len();
+    assert!(perspective_nodes > 5_000, "{perspective_nodes}");
+    assert!(!player.drawn_camera().is_orthographic());
+
+    // Out to a picture 11,000 voxels high: the map is orthographic, and the picture is made of nodes of one level, a few thousand.
+    player.show_map();
+    player.orbit_zoom(1_000.0);
+    assert!(player.map_is_orthographic());
+    let camera = player.drawn_camera();
+    let renderer::Projection::Orthographic { height, depth } = camera.projection else {
+        panic!(
+            "the map of the overworld is orthographic: {:?}",
+            camera.projection
+        );
+    };
+    assert!((10_000.0..12_000.0).contains(&height), "{height}");
+    assert!(
+        depth > height,
+        "the box reaches past the middle of the picture"
+    );
+    renderer.apply(&settled_view(&mut scene, &mut player));
+    let mut by_level = std::collections::BTreeMap::<u8, usize>::new();
+    for cube in &renderer.0 {
+        *by_level.entry(cube.level()).or_default() += 1;
+    }
+    let total = renderer.0.len();
+    // The ball of bricks is where the picture is looked at, the focus, and not where the eye is far back: no node covers the brick the player is in.
+    let focus_brick = voxel_space::BrickCoordinate::new(0, 3, 0);
+    assert!(
+        renderer
+            .0
+            .iter()
+            .all(|cube| region_octree::BrickCube::containing(focus_brick, cube.level()) != *cube),
+        "a node covers the brick at the focus"
+    );
+    let (level, count) = by_level
+        .iter()
+        .max_by_key(|(_, count)| **count)
+        .map(|(level, count)| (*level, *count))
+        .unwrap();
+    // A pixel is 10 voxels: cells of 8 (level 3, 2.6 pixels) to 16 are about 3 pixels.
+    assert!((3..=4).contains(&level), "{by_level:?}");
+    assert!(
+        count * 10 >= total * 9,
+        "nearly all of one level: {by_level:?}"
+    );
+    assert!(
+        (500..6_000).contains(&total),
+        "a map is a few thousand nodes: {by_level:?} against {perspective_nodes} for the view from the ground"
+    );
+    assert!(
+        by_level.keys().all(|node_level| *node_level <= level),
+        "no node is coarser than the level: {by_level:?}"
+    );
+
+    // Back in the player's eyes: perspective, and the view of the ground again.
+    player.show_body();
+    assert!(!player.drawn_camera().is_orthographic());
+    renderer.apply(&settled_view(&mut scene, &mut player));
+    assert!(renderer.0.len() > 5_000, "{}", renderer.0.len());
+}
+
+/// The map of the overworld is a picture of the hills seen from straight over (and aslant), on every adapter: the ground fills the picture from edge to edge (an orthographic camera
+/// has no horizon), and it has the grass, the sun's light and the fog of none. `VOX_SAVE_IMAGES` names a directory to keep the pictures in.
+#[test]
+fn the_map_of_the_overworld_fills_the_picture_with_hills_on_every_graphics_adapter() {
+    let contexts = GraphicsContext::all_physical_adapters();
+    if contexts.is_empty() {
+        assert!(
+            std::env::var_os("VOX_REQUIRE_GPU").is_none(),
+            "VOX_REQUIRE_GPU is set but no graphics adapter is available"
+        );
+        eprintln!("no graphics adapter available; skipping GPU test");
+        return;
+    }
+    let (mut scene, mut player) = scene_with_a_player();
+    let mut updates = Vec::new();
+    say(&mut scene, &mut player, "/level go overworld");
+    say(&mut scene, &mut player, "/tp 16 110 16");
+    tick_and_follow(&mut scene, &mut player, 30);
+    updates.extend(settled_view(&mut scene, &mut player));
+    player.show_map();
+    player.orbit_zoom(300.0);
+    // (Straight over, and a little aslant: the two ways a map is looked at.)
+    for (name, elevation) in [("over", 1.5), ("aslant", 0.7)] {
+        player.orbit_by(0.0, elevation - player.orbit().unwrap().elevation);
+        updates.extend(settled_view(&mut scene, &mut player));
+        let camera = player.drawn_camera();
+        assert!(camera.is_orthographic());
+        for context in &contexts {
+            let adapter = renderer::describe(&context.adapter);
+            let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
+            configure_renderer(
+                &mut renderer,
+                player.block_table(),
+                player.package(),
+                player.fog_radius_bricks(),
+            );
+            let (lit, occluders) = game_shell::view::lit_atmosphere(&player);
+            renderer.set_sun_occluders(&occluders);
+            renderer.set_atmosphere(lit);
+            apply_updates(&mut renderer, updates.clone());
+            let (rgba, statistics) = renderer.render_to_rgba(&camera, 320, 180);
+            if let Some(directory) = std::env::var_os("VOX_SAVE_IMAGES") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).unwrap();
+                let file = directory.join(format!(
+                    "overworld_map_{name}_{}.png",
+                    adapter
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>()
+                ));
+                save_png(&file, 320, 180, &rgba);
+            }
+            // The ground is drawn all over the picture: grass green in nearly every pixel, and what is not is the shade of a slope or a block of stone.
+            let green = rgba
+                .chunks(4)
+                .filter(|pixel| pixel[1] > pixel[0] && pixel[1] > pixel[2])
+                .count();
+            let pixels = 320 * 180;
+            assert!(
+                green * 100 >= pixels * 70,
+                "{adapter} {name}: {green} of {pixels} pixels are grass ({} nodes drawn)",
+                statistics.coarse_nodes_drawn
+            );
+            assert!(statistics.coarse_nodes_drawn > 100, "{adapter} {name}");
+        }
+    }
+}
+
+/// Keeps a picture in a file.
+fn save_png(file: &std::path::Path, width: u32, height: u32, rgba: &[u8]) {
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(std::fs::File::create(file).unwrap()),
+        width,
+        height,
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(rgba))
+        .unwrap();
 }

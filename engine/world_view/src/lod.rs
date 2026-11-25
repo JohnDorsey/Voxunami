@@ -36,6 +36,20 @@ pub struct LodSettings {
     pub zoom: Option<Zoom>,
     /// Nodes whose nearest point is farther than this many voxels are not drawn.
     pub maximum_distance: f64,
+    /// A cut of one level over a box round the viewer, for a picture that has no perspective (a map looking over a level), where the rule of `detail` would draw nothing but
+    /// the ground at the viewer's feet in detail. `None`: the cut is chosen by the distance from the viewer, as it always was.
+    pub orthographic: Option<OrthographicCut>,
+}
+
+/// What an orthographic picture is drawn from: every cube of one level inside a box round the viewer ([`coarse_cells::select_orthographic`]). The picture is of the same
+/// area whatever its angle, so the box is a cube of `half_extent` voxels each way from the viewer (a view that has gone round has the same cut), and its size and the level are
+/// made to change in steps so that a camera that is turned or zoomed a little does not choose again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrthographicCut {
+    /// The detail level of every node of the cut.
+    pub level: u8,
+    /// How far from the viewer, along each axis, the cut reaches, in voxels.
+    pub half_extent: f64,
 }
 
 /// A place a view is to be ready to draw from: where the viewer is, in the grid's coordinates, and how much it is asked to show

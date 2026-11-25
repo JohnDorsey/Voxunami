@@ -6,7 +6,7 @@
 //! planet does not change. All of it is cosmetic and client-side: nothing here is read by the simulation, and it needs no clock.
 
 use glam::Quat;
-use renderer::Camera;
+use renderer::{Camera, Projection};
 use voxel_space::{GridId, GridPose, Orientation, WorldPosition};
 
 /// What an orbit camera is locked on.
@@ -110,6 +110,32 @@ impl Orbit {
                 .min(Self::MAXIMUM_DISTANCE),
             ..self
         }
+    }
+
+    /// The smallest distance the eye of an orthographic map is from the middle of its focus, in voxels: its box reaches ahead from the eye, and behind the middle of the picture.
+    const ORTHOGRAPHIC_EYE_DISTANCE: f64 = 128.0;
+
+    /// How many voxels the picture of an orthographic map is high: what a perspective camera at this distance sees at the focus, so that zooming goes as it does there.
+    pub fn orthographic_height(&self, template: &Camera) -> f64 {
+        2.0 * libm::tan(f64::from(template.vertical_field_of_view) * 0.5) * self.distance
+    }
+
+    /// The camera of an orthographic map: the orbit's angles, the picture as high as [`Orbit::orthographic_height`] says, and the eye as far back as that (never nearer than
+    /// `ORTHOGRAPHIC_EYE_DISTANCE`): in this view nothing changes with the distance of the eye, so what is zoomed is the box and not where the eye is, and what is
+    /// near the focus is in the box whatever the zoom.
+    pub fn orthographic_camera(&self, frame: &FocusFrame, template: &Camera) -> Camera {
+        let height = self.orthographic_height(template);
+        let eye = Self {
+            distance: height.max(Self::ORTHOGRAPHIC_EYE_DISTANCE),
+            ..*self
+        };
+        let mut camera = eye.camera(frame, template);
+        // (Ahead from the eye: to the focus, and as far past it as the picture is high, and some more for the hills over and under it.)
+        camera.projection = Projection::Orthographic {
+            height: height as f32,
+            depth: (eye.distance + height + 512.0) as f32,
+        };
+        camera
     }
 
     /// The camera: `template` (what it shows: the field of view, the nearest plane) placed on the orbit round `frame` and turned to look at its middle, in the focus's frame.

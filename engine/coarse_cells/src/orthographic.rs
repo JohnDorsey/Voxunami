@@ -10,6 +10,7 @@
 use region_octree::BrickCube;
 use voxel_space::{BRICK_EDGE_LENGTH, BrickBox, WorldPosition};
 
+use crate::fine_region::FineRegion;
 use crate::selection::{HALF_DIAGONAL, MAXIMUM_DETAIL_LEVEL, level_covering, span};
 
 /// The box an orthographic camera sees, in the axes of the grid: from the eye, `depth` voxels along `forward`, and `half_width` and `half_height` voxels to each side of
@@ -38,9 +39,13 @@ pub fn orthographic_level(cell_pixels: f64, voxels_per_pixel: f64) -> u8 {
 
 /// The cubes of `level` that touch the box of the view and that `may_hold` says may hold something (a cube it says no to is left out with everything inside it), in the order
 /// of a depth-first walk with the low half first. A cube is kept if the sphere round it touches the box, so a few cubes at the edges are kept that only just miss it.
+///
+/// The bricks of `fine_region` are drawn as bricks whatever the level is, as in [`crate::select_around_brick`]: a cube that touches it is split down to the bricks, so that a node
+/// never covers a brick that is also drawn, and the bricks of the region are never left out for `may_hold`.
 pub fn select_orthographic(
     view: &OrthographicView,
     level: u8,
+    fine_region: Option<&FineRegion>,
     may_hold: &dyn Fn(BrickCube) -> bool,
 ) -> Vec<BrickCube> {
     let level = level.min(MAXIMUM_DETAIL_LEVEL);
@@ -62,7 +67,7 @@ pub fn select_orthographic(
     let root_level = level_covering(widest as u128).max(level);
     let mut chosen = Vec::new();
     for root in BrickCube::covering(extent, root_level) {
-        descend(root, view, level, may_hold, &mut chosen);
+        descend(root, view, level, fine_region, may_hold, &mut chosen);
     }
     chosen
 }
@@ -95,13 +100,16 @@ fn descend(
     cube: BrickCube,
     view: &OrthographicView,
     level: u8,
+    fine_region: Option<&FineRegion>,
     may_hold: &dyn Fn(BrickCube) -> bool,
     chosen: &mut Vec<BrickCube>,
 ) {
-    if !touches_the_box(cube, view) || !may_hold(cube) {
+    let in_the_fine_region = fine_region.is_some_and(|region| region.touches_cube(cube));
+    if !touches_the_box(cube, view) || !(in_the_fine_region || cube.level() == 0 || may_hold(cube))
+    {
         return;
     }
-    if cube.level() <= level {
+    if cube.level() == 0 || (!in_the_fine_region && cube.level() <= level) {
         chosen.push(cube);
         return;
     }
@@ -118,7 +126,7 @@ fn descend(
             cube.level() - 1,
         )
         .expect("half of a cube is a cube");
-        descend(child, view, level, may_hold, chosen);
+        descend(child, view, level, fine_region, may_hold, chosen);
     }
 }
 
@@ -180,7 +188,7 @@ mod tests {
      {
         let view = looking_down(300.0, 400.0, 200.0, 1_000.0);
         let level = 3;
-        let cubes = select_orthographic(&view, level, &|_| true);
+        let cubes = select_orthographic(&view, level, None, &|_| true);
         assert!(cubes.iter().all(|cube| cube.level() == level));
         let edge = 32i128 << level;
         // No two overlap (all are of one level, so they are the same cube or apart).
@@ -247,7 +255,7 @@ mod tests {
                 1_080.0 * voxels_per_pixel,
                 height + 1_000.0,
             );
-            select_orthographic(&view, level, &ground_at_zero).len()
+            select_orthographic(&view, level, None, &ground_at_zero).len()
         };
         let near = at_height(500.0);
         let far = at_height(100_000.0);
@@ -258,19 +266,20 @@ mod tests {
         let wide = looking_down(500.0, 1_920.0 * 32.0, 1_080.0 * 32.0, 1_500.0);
         let wide_level = orthographic_level(3.0, 32.0);
         assert_eq!(wide_level, level + 4);
-        let wide_count = select_orthographic(&wide, wide_level, &ground_at_zero).len();
+        let wide_count = select_orthographic(&wide, wide_level, None, &ground_at_zero).len();
         assert!(wide_count <= near + near / 8, "{wide_count} against {near}");
     }
 
     #[test]
     fn a_cube_that_may_not_hold_anything_is_left_out_with_all_that_is_in_it() {
         let view = looking_down(300.0, 400.0, 400.0, 1_000.0);
-        let everything = select_orthographic(&view, 2, &|_| true);
-        let none = select_orthographic(&view, 2, &|_| false);
+        let everything = select_orthographic(&view, 2, None, &|_| true);
+        let none = select_orthographic(&view, 2, None, &|_| false);
         assert!(none.is_empty());
         // Refusing the cubes of one half of the world leaves exactly the others.
-        let right_only =
-            select_orthographic(&view, 2, &|cube| cube.origin().x() >= 0 || cube.level() > 6);
+        let right_only = select_orthographic(&view, 2, None, &|cube| {
+            cube.origin().x() >= 0 || cube.level() > 6
+        });
         let expected = everything
             .iter()
             .filter(|cube| cube.origin().x() >= 0)
@@ -293,7 +302,7 @@ mod tests {
             half_height: 150.0,
             depth: 800.0,
         };
-        let cubes = select_orthographic(&view, 3, &ground_at_zero);
+        let cubes = select_orthographic(&view, 3, None, &ground_at_zero);
         assert!(!cubes.is_empty());
         let here = |x: i128, z: i128| {
             cubes.iter().any(|cube| {
@@ -321,18 +330,45 @@ mod tests {
             forward: [0.0, -s, s],
             ..view
         };
-        let others = select_orthographic(&turned, 3, &ground_at_zero);
+        let others = select_orthographic(&turned, 3, None, &ground_at_zero);
         assert_ne!(cubes, others);
+    }
+
+    #[test]
+    fn the_bricks_of_a_fine_region_are_bricks_whatever_the_level_and_no_node_covers_one() {
+        let view = looking_down(300.0, 600.0, 600.0, 1_000.0);
+        let region = FineRegion::new(BrickCoordinate::new(0, 0, 0), 2);
+        let cubes = select_orthographic(&view, 3, Some(&region), &ground_at_zero);
+        let bricks: Vec<_> = cubes.iter().filter(|cube| cube.level() == 0).collect();
+        assert!(!bricks.is_empty());
+        // Every brick is in a cube of 2 bricks that touches the region (the region's own and its fringe).
+        assert!(bricks.iter().all(|cube| region.wants_brick(cube.origin())));
+        // No cube holds another: a node never covers a brick that is drawn.
+        for node in cubes.iter().filter(|cube| cube.level() > 0) {
+            assert!(!region.touches_cube(*node), "{node:?}");
+            assert!(
+                !bricks
+                    .iter()
+                    .any(|brick| BrickCube::containing(brick.origin(), node.level()) == *node),
+                "{node:?}"
+            );
+        }
+        // Without the region it is nodes of the one level alone.
+        let plain = select_orthographic(&view, 3, None, &ground_at_zero);
+        assert!(plain.iter().all(|cube| cube.level() == 3));
+        // The bricks of the region are held though `may_hold` says no.
+        let refused = select_orthographic(&view, 3, Some(&region), &|_| false);
+        assert!(!refused.is_empty() && refused.iter().all(|cube| cube.level() == 0));
     }
 
     #[test]
     fn the_cubes_are_the_same_every_time_and_a_view_a_very_long_way_from_the_origin_has_as_many() {
         let view = looking_down(300.0, 400.0, 400.0, 1_000.0);
         assert_eq!(
-            select_orthographic(&view, 2, &ground_at_zero),
-            select_orthographic(&view, 2, &ground_at_zero)
+            select_orthographic(&view, 2, None, &ground_at_zero),
+            select_orthographic(&view, 2, None, &ground_at_zero)
         );
-        let near = select_orthographic(&view, 2, &ground_at_zero).len();
+        let near = select_orthographic(&view, 2, None, &ground_at_zero).len();
         let far = OrthographicView {
             eye: WorldPosition::new(
                 BrickCoordinate::new(10_i128.pow(30), 0, -10_i128.pow(30)),
@@ -340,6 +376,9 @@ mod tests {
             ),
             ..view
         };
-        assert_eq!(select_orthographic(&far, 2, &ground_at_zero).len(), near);
+        assert_eq!(
+            select_orthographic(&far, 2, None, &ground_at_zero).len(),
+            near
+        );
     }
 }

@@ -168,6 +168,11 @@ pub fn lit_atmosphere<C: Connection, G: GameDefinition>(
         session.fog_radius_bricks(),
         session.settings().ambient_light,
     );
+    // (A map without perspective has no fog: its whole box is as clear at the far end as at the near one.)
+    if let renderer::Projection::Orthographic { depth, .. } = session.drawn_camera().projection {
+        lit.fog_start = depth * 2.0;
+        lit.fog_end = depth * 2.0 + 1.0;
+    }
     let Some(sun) = session.sun_view() else {
         return (lit, Vec::new());
     };

@@ -12,7 +12,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use coarse_cells::{EditedCubes, ViewSelection, select_around_brick};
+use coarse_cells::{
+    EditedCubes, FineRegion, OrthographicView, ViewSelection, select_around_brick,
+    select_orthographic,
+};
 use region_octree::BrickCube;
 use terrain::SolidBall;
 use voxel_space::{BrickCoordinate, GridId, WorldPosition};
@@ -101,6 +104,11 @@ impl Selection<'_> {
                 && !core
                     .is_some_and(|core| is_hidden_by(&core, viewer_in_voxels, cube, VIEWER_MARGIN))
         };
+        if let Some(cut) = self.settings.orthographic {
+            let cubes = self.select_orthographic(&cut, &may_hold);
+            memo.borrow_mut().finish_round();
+            return cubes;
+        }
         let cubes = select_around_brick(
             self.centre,
             &ViewSelection {
@@ -113,6 +121,29 @@ impl Selection<'_> {
         );
         memo.borrow_mut().finish_round();
         cubes
+    }
+}
+
+impl Selection<'_> {
+    /// The cubes of an orthographic cut: the cubes of its level in the box that reaches `half_extent` voxels each way from the middle of the brick the viewer is in.
+    fn select_orthographic(
+        &self,
+        cut: &crate::lod::OrthographicCut,
+        may_hold: &dyn Fn(BrickCube) -> bool,
+    ) -> Vec<BrickCube> {
+        let reach = cut.half_extent;
+        // (The box is made along the axes of the grid, from a place `reach` back along the way it looks, so that the viewer is in the middle of it.)
+        let view = OrthographicView {
+            eye: coarse_cells::brick_centre(self.centre).translated([0.0, 0.0, -reach]),
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            forward: [0.0, 0.0, 1.0],
+            half_width: reach,
+            half_height: reach,
+            depth: reach * 2.0,
+        };
+        let region = FineRegion::new(self.centre, self.fine_radius);
+        select_orthographic(&view, cut.level, Some(&region), may_hold)
     }
 }
 

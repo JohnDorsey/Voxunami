@@ -2711,6 +2711,10 @@ The owner asked for the optional improvement of the list. **Measured first, and 
 
 The owner saw no LODs in the overworld, in the player's view or the map: by design, its nodes cost 18 to 200 ms and `level_detail` was none. A node of its hills without the caves, found a column of cells at a time (`DensityField::surface_height`, `coarse_node_of_surface`, `FieldTerrainGenerator::with_far_field`, opt-in), takes 0.3 ms against 4 to 55 (release, 130 times faster at levels 1 to 4), and 0.27 percent of its cells are drawn differently from asking about every cell. Cave's `rolling_hills` uses it and the overworld is drawn in nodes to `OVERWORLD_DRAW_DISTANCE` = 10,000 voxels: 43,000 nodes, 29 MB, about 10,000 more for each doubling (my choice of the distance, one constant). 12 mutants caught; seven nodes pinned; whole workspace 4,423 tests passed. Not built: orthographic projection, selection and rule (6b to 6d); the frame rate with the nodes up was not measured. Spec 9p.
 
+## Phase 6b to 6d, the orthographic map of the overworld (2026-11-25)
+
+An orthographic camera in the renderer (`Camera::projection`, a far plane, every face drawn, the sky along the view), one level of cubes over a box (`coarse_cells::select_orthographic`, `orthographic_level`), and the map of the overworld made of them (`GameDefinition::orthographic_map`, `LodSettings::orthographic`, `Orbit::orthographic_camera`, the cut chosen from the focus, no fog). From 11,000 voxels up the map is 4,835 nodes, 99 percent of one level, against 9,857 from the ground. Not done: shadows for it (the pictures are grass without relief: one cascade only), a window, the warm map, the server's corrections. Spec 9q.
+
 Follow-up (2026-11-25): the overworld's cut held 46,110 cubes, 38,663 of them buried nodes under the ground, because `may_show` used the field with its caves; a generator with a far field now asks the far field (13,006 cubes by the probe). Three tests; the whole workspace passes, 4,426.
 ## `main` merged into the physics branch (2026-11-21)
 

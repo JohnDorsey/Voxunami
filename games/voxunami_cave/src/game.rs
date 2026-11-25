@@ -166,6 +166,12 @@ impl GameDefinition for Cave {
         })
     }
 
+    /// The map of the overworld is orthographic (the owner, 2026-11-21: perspective everywhere, in the levels with planets in them perspective only, and in the overworld
+    /// orthographic is available and the default).
+    fn orthographic_map(level: &NamespacedId) -> bool {
+        *level == overworld_id()
+    }
+
     /// A day of twenty minutes of the world's clock that begins at half past six in the morning, in the level of space and in the overworld: the sun is seven degrees
     /// above the horizon where players start, so that the shadows are long and easy to see. The sun is in the plane of a path that goes a little to one side of the top of the
     /// planet at noon (so that it is never straight overhead at the place players start), and it is hidden by the planet in space and by the flat ground of the overworld. The sky is the blue the game always had, to a height of 30 kilometres over a planet (a fifth of its radius, and a clear

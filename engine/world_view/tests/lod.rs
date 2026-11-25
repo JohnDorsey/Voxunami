@@ -157,6 +157,7 @@ fn settings() -> LodSettings {
         },
         zoom: None,
         maximum_distance: 1500.0,
+        orthographic: None,
     }
 }
 
@@ -164,6 +165,7 @@ fn settings() -> LodSettings {
 fn nearer() -> LodSettings {
     LodSettings {
         maximum_distance: 700.0,
+        orthographic: None,
         ..settings()
     }
 }
@@ -453,6 +455,7 @@ fn a_view_that_jumps_from_far_away_to_the_ground_is_refined_a_level_at_a_time_an
     let mut screen = Screen::default();
     let far_settings = LodSettings {
         maximum_distance: 4.0e4,
+        orthographic: None,
         ..settings()
     };
     // From 100,000 voxels up: a few big nodes.
@@ -614,6 +617,7 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
 fn steady() -> LodSettings {
     LodSettings {
         maximum_distance: 350.0,
+        orthographic: None,
         ..settings()
     }
 }
@@ -820,6 +824,7 @@ impl Trip {
         scene.assign_around(brick(0, 0, 0), 40);
         let far = LodSettings {
             maximum_distance: 4.0e4,
+            orthographic: None,
             ..settings()
         };
         Self { scene, far }
@@ -2551,6 +2556,7 @@ fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_takin
 fn far() -> LodSettings {
     LodSettings {
         maximum_distance: 1.2e4,
+        orthographic: None,
         ..settings()
     }
 }
@@ -5116,6 +5122,7 @@ fn a_change_of_what_is_asked_of_the_picture_or_of_the_terrain_chooses_the_cut_ag
     // Nothing is drawn within reach: there is nothing to measure the distance to, so a tolerance is no tolerance.
     let near = LodSettings {
         maximum_distance: 100.0,
+        orthographic: None,
         ..far()
     };
     let mut view = view_of(&trip.scene, 3);
@@ -5139,4 +5146,94 @@ fn a_negative_or_unreal_tolerance_is_none() {
         view.update(GridId::MAIN, terrain, at_the_sky_along(1), &far());
         assert_eq!(view.selections(), selections + 1, "{bad}");
     }
+}
+
+/// The settings of a view that has no perspective: every node of one level in a box of `half_extent` voxels each way from the viewer.
+fn orthographic(level: u8, half_extent: f64) -> LodSettings {
+    LodSettings {
+        orthographic: Some(world_view::OrthographicCut { level, half_extent }),
+        ..settings()
+    }
+}
+
+#[test]
+fn an_orthographic_cut_is_the_nodes_of_one_level_in_a_box_and_the_bricks_of_the_ball_and_nothing_overlaps()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    screen.apply(view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &orthographic(3, 600.0),
+    ));
+    assert!(view.is_settled());
+    assert_eq!(view.shown(), view.wanted());
+    assert_nothing_overlaps(view.shown());
+    assert_screen_matches(&screen, &view);
+    // Nodes are all of the level, and the rest are the bricks of the ball (as the perspective cut has them).
+    let (bricks, nodes): (Vec<&BrickCube>, Vec<&BrickCube>) =
+        view.shown().iter().partition(|cube| cube.level() == 0);
+    assert!(!nodes.is_empty() && !bricks.is_empty());
+    let region = coarse_cells::FineRegion::new(brick(0, 0, 0), 3);
+    // (A cube of the level that touches the ball is split down to its bricks and the halves of it that do not are nodes of the levels between: the step from the bricks.)
+    assert!(
+        nodes.iter().all(|cube| cube.level() == 3
+            || region.touches_cube(BrickCube::containing(cube.origin(), 3))),
+        "a node that is not of the level and is not by the ball"
+    );
+    assert!(nodes.iter().filter(|cube| cube.level() == 3).count() > 50);
+    assert!(bricks.iter().all(|cube| region.wants_brick(cube.origin())));
+    // And they are inside the box: 600 voxels is 19 bricks, and a cube of level 3 is 8.
+    for cube in view.shown() {
+        let origin = cube.origin();
+        let edge = cube.edge_length() as i128;
+        assert!(
+            origin.x() + edge >= -20 - 8 && origin.x() <= 20 + 8,
+            "{cube:?}"
+        );
+        assert!(
+            origin.z() + edge >= -20 - 8 && origin.z() <= 20 + 8,
+            "{cube:?}"
+        );
+    }
+    // A cut of another level is nodes of that level, drawn again as a whole (the view is not settled with the old nodes on the screen).
+    screen.apply(view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &orthographic(4, 600.0),
+    ));
+    assert!(
+        view.shown()
+            .iter()
+            .filter(|cube| cube.level() > 0)
+            .all(|cube| cube.level() == 4
+                || region.touches_cube(BrickCube::containing(cube.origin(), 4)))
+    );
+    assert!(view.shown().iter().filter(|cube| cube.level() == 4).count() > 10);
+    assert!(
+        view.shown().iter().all(|cube| cube.level() != 3
+            || region.touches_cube(BrickCube::containing(cube.origin(), 4)))
+    );
+    assert_nothing_overlaps(view.shown());
+    assert_screen_matches(&screen, &view);
+}
+
+#[test]
+fn a_view_with_no_orthographic_cut_is_chosen_by_distance_as_it_always_was() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &settings(),
+    );
+    let levels: std::collections::BTreeSet<u8> =
+        view.shown().iter().map(|cube| cube.level()).collect();
+    assert!(levels.len() >= 3, "{levels:?}");
 }

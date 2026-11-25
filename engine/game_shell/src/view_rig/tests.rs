@@ -186,6 +186,52 @@ fn what_the_camera_shows_of_the_template_is_kept() {
 }
 
 #[test]
+fn an_orthographic_map_is_as_high_as_a_perspective_camera_at_that_distance_sees_at_the_focus_and_its_eye_is_that_far_back_with_a_box_that_reaches_past_the_middle()
+ {
+    let mut template = camera_at([1.0, 2.0, 3.0], 0.3, 0.1);
+    template.vertical_field_of_view = 1.0;
+    let orbit = Orbit {
+        focus: Focus::Body,
+        azimuth: 0.4,
+        elevation: 0.9,
+        distance: 5_000.0,
+    };
+    let frame = level_frame(1.0);
+    let height = 2.0 * libm::tan(0.5) * 5_000.0;
+    assert!((orbit.orthographic_height(&template) - height).abs() < 1e-9);
+    let camera = orbit.orthographic_camera(&frame, &template);
+    let perspective = orbit.camera(&frame, &template);
+    // The same way of looking, and the same field of view otherwise kept.
+    assert_eq!(
+        (camera.yaw, camera.pitch),
+        (perspective.yaw, perspective.pitch)
+    );
+    assert_eq!(camera.near_plane, template.near_plane);
+    let renderer::Projection::Orthographic {
+        height: drawn_height,
+        depth,
+    } = camera.projection
+    else {
+        panic!("{:?}", camera.projection);
+    };
+    assert!((f64::from(drawn_height) - height).abs() < 1.0);
+    // The eye is as far back as the picture is high (here the same as the perspective camera's distance: 5,000 against 5,463), and the box reaches past the focus.
+    let back = |camera: &renderer::Camera| {
+        let relative = camera.position.relative_to(frame.centre);
+        libm::sqrt(relative.iter().map(|part| part * part).sum::<f64>())
+    };
+    assert!((back(&camera) - height).abs() < 1e-6, "{}", back(&camera));
+    assert!(f64::from(depth) > back(&camera) + height);
+    // Zoomed all the way in, the eye keeps a distance of its own, so that what is near the focus is in the box.
+    let near = Orbit {
+        distance: 4.0,
+        ..orbit
+    }
+    .orthographic_camera(&frame, &template);
+    assert!((back(&near) - 128.0).abs() < 1e-6, "{}", back(&near));
+}
+
+#[test]
 fn turning_wraps_the_azimuth_and_stops_the_elevation_short_of_straight_up_and_down() {
     let orbit = Orbit {
         focus: Focus::Body,

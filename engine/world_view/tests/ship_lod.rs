@@ -102,6 +102,7 @@ fn settings() -> LodSettings {
         },
         zoom: None,
         maximum_distance: 1500.0,
+        orthographic: None,
     }
 }
 
@@ -330,6 +331,7 @@ fn changing_the_detail_draws_the_planet_nearer_or_farther_and_the_picture_follow
 
     planet.set_detail(LodSettings {
         maximum_distance: 400.0,
+        orthographic: None,
         ..settings()
     });
     screen.apply_planet(planet.settle(&source, viewer));
@@ -478,6 +480,7 @@ fn from_over_a_round_planet_what_is_behind_its_horizon_is_not_made_and_what_is_b
     let viewer = WorldPosition::new(brick(0, 20, 0), [16.0, 0.0, 16.0]);
     let detail = LodSettings {
         maximum_distance: 5000.0,
+        orthographic: None,
         ..settings()
     };
     let culled = settle_a_view(&scene, &source, viewer, &detail);
@@ -532,6 +535,7 @@ fn the_horizon_goes_with_the_viewer_what_was_hidden_is_drawn_when_the_viewer_goe
     );
     let detail = LodSettings {
         maximum_distance: 5000.0,
+        orthographic: None,
         ..settings()
     };
     let top = WorldPosition::new(brick(0, 20, 0), [16.0, 0.0, 16.0]);
