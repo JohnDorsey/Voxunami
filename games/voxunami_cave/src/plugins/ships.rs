@@ -750,7 +750,7 @@ impl Ships {
     ) -> Option<(f64, GridId, DockedPair)> {
         let mut nearest: Option<(f64, GridId, DockedPair)> = None;
         for (id, ship) in world.data().grids().iter() {
-            if ship.level != level || ship.terrain.is_some() {
+            if ship.level != level {
                 continue;
             }
             let (Some(extent), Some(here)) = (Extent::of(ship), ship.pose.world_to_local(eyes))

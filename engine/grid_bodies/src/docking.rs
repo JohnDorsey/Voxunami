@@ -585,7 +585,7 @@ impl Docking {
             return Err(UndockError::NotLocked);
         }
         if moving.terrain.is_some() {
-            return Err(SplitError::HasTerrain.into());
+            return self.unlock_from_planet(world, ship, pair);
         }
         let crossing = |pair: &DockedPair| {
             [
@@ -690,27 +690,18 @@ impl Docking {
         planet: GridId,
         pair: DockedPair,
     ) -> Result<[GridId; 2], UndockError> {
-        let mut sides: Vec<(BTreeSet<VoxelCoordinate>, bool)> = Vec::new();
-        for (start, other) in [(pair.first, pair.second), (pair.second, pair.first)] {
-            let side = self.built_side(world, planet, start.voxel, other.voxel)?;
-            if side.contains(&other.voxel) {
-                return Err(UndockError::Welded);
-            }
-            let grounded = self.stands_on_the_ground(world, planet, &side)?;
-            sides.push((side, grounded));
-        }
-        let leaving = match (sides[0].1, sides[1].1) {
-            (true, true) => return Err(UndockError::BothSidesOnTheGround),
-            (false, true) => 0,
-            (true, false) => 1,
-            (false, false) => usize::from(sides[1].0.len() < sides[0].0.len()),
-        };
+        let between_the_ports = BTreeSet::from([
+            (pair.first.voxel, pair.second.voxel),
+            (pair.second.voxel, pair.first.voxel),
+        ]);
+        let (leaving, side) =
+            self.side_that_leaves_a_planet(world, planet, pair, &between_the_ports)?;
         let staying_port = if leaving == 0 {
             pair.second
         } else {
             pair.first
         };
-        let voxels: Vec<VoxelCoordinate> = sides[leaving].0.iter().copied().collect();
+        let voxels: Vec<VoxelCoordinate> = side.iter().copied().collect();
         let pose = world
             .data()
             .grids()
@@ -737,13 +728,74 @@ impl Docking {
         })
     }
 
-    /// The voxels with a built block (see above) joined to this one without crossing to the other voxel, which is where the other port is.
+    /// Which side of a pair of ports or joint ends of a planet leaves it (0 for the side of the first, 1 for the second's) and its voxels: the blocks that someone built, joined to the end
+    /// without crossing a pair of voxels in `cuts`, on each side; the side that does not stand on the ground leaves, the smaller if neither does, and nothing leaves if both do.
+    fn side_that_leaves_a_planet(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        pair: DockedPair,
+        cuts: &BTreeSet<(VoxelCoordinate, VoxelCoordinate)>,
+    ) -> Result<(usize, BTreeSet<VoxelCoordinate>), UndockError> {
+        let mut sides: Vec<(BTreeSet<VoxelCoordinate>, bool)> = Vec::new();
+        for (start, other) in [(pair.first, pair.second), (pair.second, pair.first)] {
+            let side = self.built_side(world, planet, start.voxel, cuts)?;
+            if side.contains(&other.voxel) {
+                return Err(UndockError::Welded);
+            }
+            let grounded = self.stands_on_the_ground(world, planet, &side)?;
+            sides.push((side, grounded));
+        }
+        let leaving = match (sides[0].1, sides[1].1) {
+            (true, true) => return Err(UndockError::BothSidesOnTheGround),
+            (false, true) => 0,
+            (true, false) => 1,
+            (false, false) => usize::from(sides[1].0.len() < sides[0].0.len()),
+        };
+        Ok((leaving, sides.swap_remove(leaving).0))
+    }
+
+    /// Unlocks a pair of joint ends of a planet: the side that does not stand on the ground is cut out of the planet as a car, in place and going as the planet's ground there goes,
+    /// and **not set apart**: the end that stays in the ground and the car's are where they were, in line, and the car is coupled to the planet again by the rule that couples
+    /// (a joint is a coupling). Every lock of the planet is a cut between cars (as for a ship). Returns the side of the first end and the side of the second, the planet being the one that stayed.
+    fn unlock_from_planet(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        pair: DockedPair,
+    ) -> Result<[GridId; 2], UndockError> {
+        let moving = world
+            .data()
+            .grids()
+            .get(planet)
+            .ok_or(AccessError::NoSuchGrid(planet))?;
+        let every_lock: BTreeSet<(VoxelCoordinate, VoxelCoordinate)> = self
+            .locked_pairs(moving)
+            .iter()
+            .flat_map(|locked| {
+                [
+                    (locked.first.voxel, locked.second.voxel),
+                    (locked.second.voxel, locked.first.voxel),
+                ]
+            })
+            .collect();
+        let (leaving, side) = self.side_that_leaves_a_planet(world, planet, pair, &every_lock)?;
+        let voxels: Vec<VoxelCoordinate> = side.iter().copied().collect();
+        let ship = world.detach_blocks(planet, &voxels)?;
+        Ok(if leaving == 0 {
+            [ship, planet]
+        } else {
+            [planet, ship]
+        })
+    }
+
+    /// The voxels with a built block (see above) joined to this one without crossing a pair of voxels in `cuts`.
     fn built_side(
         &self,
         world: &mut ServerWorld,
         planet: GridId,
         start: VoxelCoordinate,
-        other: VoxelCoordinate,
+        cuts: &BTreeSet<(VoxelCoordinate, VoxelCoordinate)>,
     ) -> Result<BTreeSet<VoxelCoordinate>, UndockError> {
         let mut view = world.grid(planet)?;
         let mut side: BTreeSet<VoxelCoordinate> = BTreeSet::from([start]);
@@ -754,9 +806,7 @@ impl Docking {
                 let Some(next) = voxel.checked_offset(step[0], step[1], step[2]) else {
                     continue;
                 };
-                let between_the_ports =
-                    (voxel == start && next == other) || (voxel == other && next == start);
-                if between_the_ports || side.contains(&next) {
+                if cuts.contains(&(voxel, next)) || side.contains(&next) {
                     continue;
                 }
                 let now = view.get(self.block_channel, next)?;

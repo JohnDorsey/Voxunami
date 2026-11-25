@@ -5,13 +5,14 @@ mod common;
 
 use block_models::Shape;
 use common::docking::{
-    Look, PLAIN, Placed, a_pair, blocks_of, facing, make, port_block, ships, stone,
+    Look, PLAIN, Placed, a_pair, a_planet_under_the_patch, blocks_of, facing, make, port_block,
+    ships, stone,
 };
 use common::{Scene, ship_id};
 use game_shell::GameContent;
 use server::GridView;
 use voxel_space::{
-    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LevelIndex, Orientation,
+    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, Orientation,
     VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::{
@@ -883,39 +884,6 @@ fn fire_crosses_what_was_the_boundary_between_two_docked_ships_and_does_not_betw
         touching_left, 29,
         "touching but not docked: nothing crosses between ships"
     );
-}
-
-/// The planet of Cave's small-planet generator in the overworld, with the overworld's pull taken away so that its own is all there is, put so that the
-/// top of the ground of the patch at x 0 to 3 and z 5 to 8 (flat there, top voxel 63,679) is at height 399. Returns the height of the planet's centre.
-fn a_planet_under_the_patch(scene: &mut Scene) -> f64 {
-    let centre = 399.0 - 63_680.0;
-    scene.run(move |world| {
-        world.set_level_gravity(LevelIndex::MAIN, [0.0; 3]);
-        let generator = world
-            .data()
-            .main()
-            .terrain
-            .generators()
-            .runtime_id(&voxunami_cave::generators::small_planet_generator_identifier())
-            .expect("the world has the planet's generator");
-        let planet = world
-            .create_grid(
-                LevelIndex::MAIN,
-                pose(0.0, centre, 0.0, Orientation::IDENTITY),
-            )
-            .unwrap();
-        world
-            .set_grid_terrain(
-                planet,
-                world_storage::GridTerrain {
-                    generator,
-                    extent: voxel_space::BrickBox::around(BrickCoordinate::ORIGIN, 2000),
-                    mass: (10.0 * 63_710.0f64 * 63_710.0 / 6.674e-11),
-                },
-            )
-            .unwrap();
-    });
-    centre
 }
 
 /// A docking port on the ground of the planet at x 1, z 6, facing up.
