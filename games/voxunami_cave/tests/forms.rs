@@ -11,7 +11,9 @@ use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use namespaced_id::NamespacedId;
-use plugin_host::{CommandSpec, FormId, HandlerSpec, Plugin, Registrar, UiAction, UiResponded};
+use plugin_host::{
+    CommandClass, CommandSpec, FormId, HandlerSpec, Plugin, Registrar, UiAction, UiResponded,
+};
 use transport::Connection;
 use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxunami_cave::content::CaveContent;
@@ -55,7 +57,7 @@ impl Plugin for Shower {
     fn register(&self, registrar: &mut Registrar<'_>) {
         let shown = Arc::clone(&self.shown);
         registrar.command(
-            CommandSpec::new("menu", "shows a form"),
+            CommandSpec::new("menu", "shows a form").class(CommandClass::Change),
             move |context, client, _| {
                 if let Ok(id) = context.show_ui(client, &menu(&[1, 2, 3])) {
                     shown.lock().unwrap().push(id);
@@ -63,14 +65,14 @@ impl Plugin for Shower {
             },
         );
         registrar.command(
-            CommandSpec::new("change", "changes a form"),
+            CommandSpec::new("change", "changes a form").class(CommandClass::Change),
             |context, client, _| {
                 let _ = context.update_ui(client, FormId::new(1), &menu(&[7, 8]));
             },
         );
         let shown = Arc::clone(&self.shown);
         registrar.command(
-            CommandSpec::new("shut", "closes the last form shown"),
+            CommandSpec::new("shut", "closes the last form shown").class(CommandClass::Change),
             move |context, client, _| {
                 if let Some(id) = shown.lock().unwrap().last().copied() {
                     context.close_ui(client, id);

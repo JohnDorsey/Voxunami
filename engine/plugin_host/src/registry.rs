@@ -50,6 +50,8 @@ pub(crate) struct MessageEntry {
 }
 
 pub(crate) struct CommandEntry {
+    /// The part before the colon of the id of the plugin that registered it: the pack its permission ids are in.
+    pub pack: String,
     pub spec: CommandSpec,
     pub run: RefCell<CommandFn>,
 }

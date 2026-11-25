@@ -22,7 +22,9 @@ mod registrar;
 mod registry;
 mod spec;
 
-pub use command::{Argument, ArgumentKind, Arguments, CommandSpec};
+pub use command::{
+    Argument, ArgumentKind, Arguments, CommandClass, CommandId, CommandNode, CommandSpec,
+};
 pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
 pub use event::{

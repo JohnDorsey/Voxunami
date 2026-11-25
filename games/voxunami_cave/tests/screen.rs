@@ -15,7 +15,8 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::{camera_at, configure_renderer, show_screen};
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    CommandSpec, FormId, HandlerSpec, Plugin, PromptAnswered, Registrar, UiAction, UiResponded,
+    CommandClass, CommandSpec, FormId, HandlerSpec, Plugin, PromptAnswered, Registrar, UiAction,
+    UiResponded,
 };
 use renderer::{GraphicsContext, VoxelRenderer};
 use transport::Connection;
@@ -80,23 +81,26 @@ impl Plugin for Shower {
     fn register(&self, registrar: &mut Registrar<'_>) {
         let last = Arc::clone(&self.last);
         registrar.command(
-            CommandSpec::new("menu", "shows"),
+            CommandSpec::new("menu", "shows").class(CommandClass::Change),
             move |context, client, _| {
                 *last.lock().unwrap() = context.show_ui(client, &menu()).ok();
             },
         );
         let last = Arc::clone(&self.last);
         registrar.command(
-            CommandSpec::new("shut", "closes"),
+            CommandSpec::new("shut", "closes").class(CommandClass::Change),
             move |context, client, _| {
                 if let Some(id) = last.lock().unwrap().take() {
                     context.close_ui(client, id);
                 }
             },
         );
-        registrar.command(CommandSpec::new("ask", "asks"), |context, client, _| {
-            let _ = context.prompt(client, "Delete the level?", &["Keep it", "Delete it"]);
-        });
+        registrar.command(
+            CommandSpec::new("ask", "asks").class(CommandClass::Change),
+            |context, client, _| {
+                let _ = context.prompt(client, "Delete the level?", &["Keep it", "Delete it"]);
+            },
+        );
         let heard = Arc::clone(&self.heard);
         registrar.on::<UiResponded>(HandlerSpec::new("test:hear_forms"), move |event, _| {
             heard.lock().unwrap().push(*event)

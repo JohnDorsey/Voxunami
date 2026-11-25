@@ -9,9 +9,9 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    Argument, CASCADE_LIMIT, CommandSpec, CommandValue, EntityDespawned, EntitySpawned, Event,
-    HandlerSpec, Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError,
-    SaveScope, ShipParked, SystemSpec, Verdict,
+    Argument, CASCADE_LIMIT, CommandClass, CommandSpec, CommandValue, EntityDespawned,
+    EntitySpawned, Event, HandlerSpec, Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost,
+    Registrar, RegistrationError, SaveScope, ShipParked, SystemSpec, Verdict,
 };
 use protocol::{ClientMessage, EntityId, Message, ServerMessage};
 use server::test_support::log_in;
@@ -472,7 +472,10 @@ fn plugins_that_cannot_be_registered_are_refused_with_the_reason() {
         Some(RegistrationError::DuplicateMessage(id("test:kind")))
     );
     let command = |registrar: &mut Registrar<'_>| {
-        registrar.command(CommandSpec::new("go", "goes"), |_, _, _| {});
+        registrar.command(
+            CommandSpec::new("go", "goes").class(CommandClass::Change),
+            |_, _, _| {},
+        );
     };
     assert_eq!(
         registration_error(vec![plugin("test:a", command), plugin("test:b", command)]),
@@ -969,6 +972,7 @@ fn a_command_gets_its_arguments_and_an_unknown_one_is_answered_with_the_usages()
             let log = Arc::clone(&log);
             registrar.command(
                 CommandSpec::new("tp", "teleports")
+                    .class(CommandClass::Change)
                     .argument(Argument::number("x"))
                     .argument(Argument::number("y"))
                     .argument(Argument::number("z")),
@@ -985,7 +989,10 @@ fn a_command_gets_its_arguments_and_an_unknown_one_is_answered_with_the_usages()
                     context.reply(client, "teleported");
                 },
             );
-            registrar.command(CommandSpec::new("fly", "flies"), |_, _, _| {});
+            registrar.command(
+                CommandSpec::new("fly", "flies").class(CommandClass::Change),
+                |_, _, _| {},
+            );
         })]
     })
     .unwrap();
@@ -1274,6 +1281,7 @@ fn plugin_with_commands() -> Box<dyn Plugin> {
     plugin("test:p", |registrar| {
         registrar.command(
             CommandSpec::new("give", "gives a block to a player")
+                .class(CommandClass::Change)
                 .argument(Argument::identifier("block"))
                 .argument(Argument::integer("count").optional()),
             |context, client, arguments| {
@@ -1289,7 +1297,9 @@ fn plugin_with_commands() -> Box<dyn Plugin> {
             },
         );
         registrar.command(
-            CommandSpec::new("say", "says words").argument(Argument::rest("words")),
+            CommandSpec::new("say", "says words")
+                .class(CommandClass::Change)
+                .argument(Argument::rest("words")),
             |context, client, arguments| {
                 context.reply(client, &arguments.rest(0).join("+"));
             },
@@ -1364,10 +1374,233 @@ fn help_lists_every_command_or_explains_one() {
     );
 }
 
+/// A command with subcommands, two deep: `/zone` alone, `list`, `go NAME`, and `mark` with `add N` and `remove N`.
+fn plugin_with_a_tree() -> Box<dyn Plugin> {
+    plugin("test:p", |registrar| {
+        registrar.command(
+            CommandSpec::new("zone", "works with zones")
+                .class(CommandClass::Read)
+                .runs_alone()
+                .subcommand(CommandSpec::new("list", "lists the zones"))
+                .subcommand(
+                    CommandSpec::new("go", "goes to a zone")
+                        .class(CommandClass::Change)
+                        .argument(Argument::word("name")),
+                )
+                .subcommand(
+                    CommandSpec::new("mark", "marks zones")
+                        .class(CommandClass::Change)
+                        .subcommand(
+                            CommandSpec::new("add", "marks a zone")
+                                .argument(Argument::integer("n")),
+                        )
+                        .subcommand(
+                            CommandSpec::new("remove", "unmarks a zone")
+                                .class(CommandClass::Permission)
+                                .argument(Argument::integer("n")),
+                        ),
+                ),
+            |context, client, arguments| {
+                let which = arguments.subcommand().join(" ");
+                let text = match arguments.subcommand() {
+                    ["go"] => format!("{which} {}", arguments.word(0)),
+                    ["mark", _] => format!("{which} {}", arguments.integer(0)),
+                    _ => format!("[{which}]"),
+                };
+                context.reply(client, &text);
+            },
+        );
+    })
+}
+
+const ZONE_USAGE: &str =
+    "usage: /zone, /zone list, /zone go NAME, /zone mark add N, /zone mark remove N";
+
+#[test]
+fn a_command_goes_down_its_subcommands_and_its_arguments_are_those_of_the_one_it_ends_at() {
+    let mut rig = build(|_, _| vec![plugin_with_a_tree()]).unwrap();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/zone",
+                "/zone list",
+                "/zone go moon",
+                "/zone mark add 5",
+                "/zone mark remove -2",
+            ]
+        ),
+        ["[]", "[list]", "go moon", "mark add 5", "mark remove -2"]
+    );
+}
+
+#[test]
+fn a_word_that_is_no_subcommand_and_a_node_that_is_not_finished_are_answered_with_the_whole_usage()
+{
+    let mut rig = build(|_, _| vec![plugin_with_a_tree()]).unwrap();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/zone fly",
+                "/zone go",
+                "/zone go a b",
+                "/zone list now",
+                "/zone mark",
+                "/zone mark add",
+                "/zone mark fly 1",
+            ]
+        ),
+        [ZONE_USAGE; 7]
+    );
+    // an argument that is not what it should be says which, after the whole usage
+    assert_eq!(
+        replies_to(&mut rig, &["/zone mark add x", "/zone mark remove 1.5"]),
+        [
+            format!("{ZONE_USAGE}; N must be a whole number"),
+            format!("{ZONE_USAGE}; N must be a whole number"),
+        ]
+    );
+}
+
+#[test]
+fn a_command_that_has_subcommands_and_does_not_run_alone_answers_a_bare_call_with_its_usage() {
+    let mut rig = build(|_, _| {
+        vec![plugin("test:p", |registrar| {
+            registrar.command(
+                CommandSpec::new("pen", "works with pens")
+                    .class(CommandClass::Change)
+                    .subcommand(CommandSpec::new("up", "lifts it"))
+                    .subcommand(CommandSpec::new("down", "lowers it")),
+                |context, client, arguments| {
+                    context.reply(client, &format!("{:?}", arguments.subcommand()));
+                },
+            );
+        })]
+    })
+    .unwrap();
+    assert_eq!(
+        replies_to(&mut rig, &["/pen", "/pen up", "/pen sideways", "/nonsense"]),
+        [
+            "usage: /pen up, /pen down",
+            "[\"up\"]",
+            "usage: /pen up, /pen down",
+            "unknown command; try /help [COMMAND], /pen up|down",
+        ]
+    );
+}
+
+#[test]
+fn help_comes_from_the_tree_for_a_command_a_subcommand_and_one_below_it() {
+    let mut rig = build(|_, _| vec![plugin_with_a_tree()]).unwrap();
+    let help = "/help [COMMAND]: lists the commands; /help NAME says what one does";
+    let zone = format!("{}: works with zones", &ZONE_USAGE["usage: ".len()..]);
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/help",
+                "/help zone",
+                "/help zone mark",
+                "/help zone mark add",
+                "/help zone go",
+                "/help zone nothing",
+                "/nonsense",
+            ]
+        ),
+        [
+            help.to_owned(),
+            zone.clone(),
+            zone,
+            "/zone mark add N, /zone mark remove N: marks zones".to_owned(),
+            "/zone mark add N: marks a zone".to_owned(),
+            "/zone go NAME: goes to a zone".to_owned(),
+            help.to_owned(),
+            "unknown command; try /help [COMMAND], /zone [list|go|mark]".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn every_command_and_subcommand_has_an_id_in_its_pack_and_a_class_that_a_subcommand_may_take_from_above()
+ {
+    let host = PluginHost::new(vec![plugin_with_a_tree()], &sample_world(&game())).unwrap();
+    let nodes: Vec<(String, Option<CommandClass>, bool)> = host
+        .command_nodes()
+        .iter()
+        .map(|node| (node.id.to_string(), node.class, node.runs))
+        .collect();
+    let read = Some(CommandClass::Read);
+    let change = Some(CommandClass::Change);
+    let permission = Some(CommandClass::Permission);
+    assert_eq!(
+        nodes,
+        [
+            ("engine:help".to_owned(), read, true),
+            // `/zone` runs alone and reads; `list` takes that; `go` and `mark` change; `add` takes that and `remove` grants
+            ("test:zone".to_owned(), read, true),
+            ("test:zone.list".to_owned(), read, true),
+            ("test:zone.go".to_owned(), change, true),
+            ("test:zone.mark".to_owned(), change, false),
+            ("test:zone.mark.add".to_owned(), change, true),
+            ("test:zone.mark.remove".to_owned(), permission, true),
+        ]
+    );
+}
+
+#[test]
+fn a_command_the_server_runs_with_no_class_stops_the_host_from_starting_and_names_it() {
+    let no_class = |registrar: &mut Registrar<'_>| {
+        registrar.command(CommandSpec::new("loose", "has none"), |_, _, _| {});
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", no_class)]),
+        Some(RegistrationError::CommandWithoutClass(
+            "test:loose".to_owned()
+        ))
+    );
+    // a subcommand that no class reaches is named by its whole id
+    let one_child_without = |registrar: &mut Registrar<'_>| {
+        registrar.command(
+            CommandSpec::new("tree", "has a branch")
+                .subcommand(CommandSpec::new("left", "").class(CommandClass::Read))
+                .subcommand(CommandSpec::new("right", "")),
+            |_, _, _| {},
+        );
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", one_child_without)]),
+        Some(RegistrationError::CommandWithoutClass(
+            "test:tree.right".to_owned()
+        ))
+    );
+    // a command with subcommands that does not run alone needs no class of its own when each below it has one
+    let classed_below = |registrar: &mut Registrar<'_>| {
+        registrar.command(
+            CommandSpec::new("tree", "has a branch")
+                .subcommand(CommandSpec::new("left", "").class(CommandClass::Read))
+                .subcommand(CommandSpec::new("right", "").class(CommandClass::Change)),
+            |_, _, _| {},
+        );
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", classed_below)]),
+        None
+    );
+    // the window's commands, typed with a dot, are not asked of the server's permissions
+    let window = |registrar: &mut Registrar<'_>| {
+        registrar.command(CommandSpec::new("look", "").with_prefix('.'), |_, _, _| {});
+    };
+    assert_eq!(registration_error(vec![plugin("test:a", window)]), None);
+}
+
 #[test]
 fn help_belongs_to_the_host_and_a_game_without_commands_has_none() {
     let help = |registrar: &mut Registrar<'_>| {
-        registrar.command(CommandSpec::new("help", "my own"), |_, _, _| {});
+        registrar.command(
+            CommandSpec::new("help", "my own").class(CommandClass::Change),
+            |_, _, _| {},
+        );
     };
     assert_eq!(
         registration_error(vec![plugin("test:a", help)]),
@@ -1389,7 +1622,7 @@ fn plugin_with_values(log: &Log) -> Box<dyn Plugin> {
         let gives = |name: &'static str, value: CommandValue| {
             let log = Arc::clone(&log);
             (
-                CommandSpec::new(name, "gives a value"),
+                CommandSpec::new(name, "gives a value").class(CommandClass::Change),
                 move |context: &mut plugin_host::Context<'_>,
                       _: protocol::ClientId,
                       _: &plugin_host::Arguments<'_>| {
@@ -1413,13 +1646,16 @@ fn plugin_with_values(log: &Log) -> Box<dyn Plugin> {
             registrar.command(spec, run);
         }
         let broken_log = Arc::clone(&log);
-        registrar.command(CommandSpec::new("broken", "fails"), move |context, _, _| {
-            note(&broken_log, "broken");
-            context.fail("it broke");
-        });
+        registrar.command(
+            CommandSpec::new("broken", "fails").class(CommandClass::Change),
+            move |context, _, _| {
+                note(&broken_log, "broken");
+                context.fail("it broke");
+            },
+        );
         let chatty_log = Arc::clone(&log);
         registrar.command(
-            CommandSpec::new("chatty", "replies and gives"),
+            CommandSpec::new("chatty", "replies and gives").class(CommandClass::Change),
             move |context, client, _| {
                 note(&chatty_log, "chatty");
                 context.reply(client, "hello");
@@ -1427,13 +1663,17 @@ fn plugin_with_values(log: &Log) -> Box<dyn Plugin> {
             },
         );
         registrar.command(
-            CommandSpec::new("go", "takes a number").argument(Argument::number("x")),
+            CommandSpec::new("go", "takes a number")
+                .class(CommandClass::Change)
+                .argument(Argument::number("x")),
             |context, client, arguments| {
                 context.reply(client, &format!("go {}", arguments.number(0)))
             },
         );
         registrar.command(
-            CommandSpec::new("pick", "takes a word").argument(Argument::word("word")),
+            CommandSpec::new("pick", "takes a word")
+                .class(CommandClass::Change)
+                .argument(Argument::word("word")),
             |context, client, arguments| {
                 context.reply(client, &format!("pick {}", arguments.word(0)))
             },

@@ -311,9 +311,21 @@ impl<'a> Registrar<'a> {
                 .push(RegistrationError::DuplicateCommand(spec.name.to_owned()));
             return;
         }
+        let pack = self.plugin.namespace().to_owned();
+        // (The window's commands, typed with a dot, are the player's own and are not asked of the server's permissions.)
+        if spec.prefix() == '/' {
+            for node in spec.nodes(&pack) {
+                if node.runs && node.class.is_none() {
+                    self.builder
+                        .errors
+                        .push(RegistrationError::CommandWithoutClass(node.id.to_string()));
+                }
+            }
+        }
         self.builder.commands.insert(
             spec.name.to_owned(),
             CommandEntry {
+                pack,
                 spec,
                 run: RefCell::new(Box::new(run)),
             },

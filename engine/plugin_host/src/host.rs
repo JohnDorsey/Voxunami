@@ -14,7 +14,7 @@ use world_storage::{FarFileMaker, SavedShip, Section, ShipFormat, WorldData};
 
 use entities::EntityCatalog;
 
-use crate::command::{Argument, CommandSpec};
+use crate::command::{Argument, CommandClass, CommandNode, CommandSpec};
 use crate::context::{CommandOutcome, Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
 use crate::event::{
@@ -122,8 +122,23 @@ impl PluginHost {
     pub fn command_usages(&self) -> Vec<String> {
         command_list(&self.registry)
             .iter()
-            .map(CommandSpec::usage)
+            .map(|spec| spec.listing())
             .collect()
+    }
+
+    /// Every command and subcommand the server has, with the id it has in permissions and the class it was declared with,
+    /// in order of command name (the host's own `/help` among them).
+    pub fn command_nodes(&self) -> Vec<CommandNode> {
+        let mut nodes = Vec::new();
+        for spec in command_list(&self.registry) {
+            let pack = self
+                .registry
+                .commands
+                .get(spec.name())
+                .map_or(HELP_PACK, |entry| entry.pack.as_str());
+            nodes.extend(spec.nodes(pack));
+        }
+        nodes
     }
 
     /// The scope of each piece of saved plugin state, in the order the sections are written.
@@ -263,7 +278,7 @@ impl HoleRunner for CommandRunner<'_> {
         let Some(entry) = registry.commands.get(call.name.as_str()) else {
             let usages: Vec<String> = command_list(registry)
                 .iter()
-                .map(CommandSpec::usage)
+                .map(|spec| spec.listing())
                 .collect();
             return Err(if usages.is_empty() {
                 "this game has no commands".to_owned()
@@ -304,11 +319,15 @@ impl HoleRunner for CommandRunner<'_> {
 /// The name of the command the host provides itself.
 pub(crate) const HELP_COMMAND: &str = "help";
 
+/// The pack of the host's own command: the engine.
+const HELP_PACK: &str = "engine";
+
 fn help_spec() -> CommandSpec {
     CommandSpec::new(
         HELP_COMMAND,
         "lists the commands; /help NAME says what one does",
     )
+    .class(CommandClass::Read)
     .argument(Argument::word("command").optional())
 }
 
@@ -330,17 +349,26 @@ fn command_list(registry: &Registry) -> Vec<CommandSpec> {
 /// The replies to `/help`: a line for every command, or for the one named.
 fn help(registry: &Registry, words: &[&str]) -> Vec<String> {
     let specs = command_list(registry);
-    let describe = |spec: &CommandSpec| format!("{}: {}", spec.usage(), spec.summary());
+    let describe = |spec: &CommandSpec| {
+        spec.describe(&[])
+            .expect("a command can always describe itself")
+    };
     match words {
         [] => specs.iter().map(describe).collect(),
-        [wanted] => {
+        [wanted, path @ ..] => {
             let wanted = wanted.strip_prefix('/').unwrap_or(wanted);
             match specs.iter().find(|spec| spec.name() == wanted) {
-                Some(spec) => vec![describe(spec)],
-                None => vec![format!("there is no command {wanted}; /help lists them")],
+                Some(spec) => match spec.describe(path) {
+                    Some(description) => vec![description],
+                    // (more words than the command has subcommands: what `/help` itself says it takes)
+                    None => vec![describe(&help_spec())],
+                },
+                None if path.is_empty() => {
+                    vec![format!("there is no command {wanted}; /help lists them")]
+                }
+                None => vec![describe(&help_spec())],
             }
         }
-        _ => vec![describe(&help_spec())],
     }
 }
 

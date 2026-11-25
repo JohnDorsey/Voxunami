@@ -306,7 +306,7 @@ fn the_level_command_answers_and_a_player_who_leaves_is_hidden_and_forgotten_by_
         .collect();
     assert_eq!(
         replies,
-        ["unknown command; try /help [COMMAND], /level [SUBCOMMAND...]"]
+        ["unknown command; try /help [COMMAND], /level [list|go]"]
     );
     // Leaving: the table forgets the connection; the entity stays in the world, hidden.
     rig.client.send(&ClientMessage::Goodbye);

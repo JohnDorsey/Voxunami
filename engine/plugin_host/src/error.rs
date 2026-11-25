@@ -22,6 +22,10 @@ pub enum RegistrationError {
     DuplicateMessage(NamespacedId),
     #[error("the command {0} is registered twice")]
     DuplicateCommand(String),
+    #[error(
+        "the command {0} has no class: say whether it reads, changes, grants or automates (CommandSpec::class), on it or on the command above it"
+    )]
+    CommandWithoutClass(String),
     #[error("the entity kind {0} is declared twice")]
     DuplicateEntityKind(NamespacedId),
     #[error("the item {0} is declared twice")]

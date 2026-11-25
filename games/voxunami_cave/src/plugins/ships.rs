@@ -13,7 +13,8 @@ use namespaced_id::NamespacedId;
 use physics::Collision;
 use player_presence::{Presence, SharedPresence, lock};
 use plugin_host::{
-    Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
+    Argument, Arguments, CommandClass, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin,
+    Registrar, SystemSpec,
 };
 use protocol::ClientId;
 use server::{GridView, LogoutPolicy, ServerWorld, ShipSettings};
@@ -227,6 +228,7 @@ impl Plugin for ShipCommandsPlugin {
                 "ship",
                 "makes ships of what you built, and pushes, holds, pilots and puts them away",
             )
+            .class(CommandClass::Change)
             .argument(Argument::word("action"))
             .argument(Argument::rest("details").optional()),
             move |context, client, arguments| {
