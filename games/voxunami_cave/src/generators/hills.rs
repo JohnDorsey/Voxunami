@@ -103,6 +103,50 @@ mod tests {
     /// if one changes, existing worlds change under their players. They were produced by this
     /// code, so they pin behaviour; they are not an independent check of it. The bricks are
     /// chosen to contain real surface or caves, including negative and enormous coordinates.
+    /// The cubes a view draws at a place on the hills, split by level: nothing under the ground is drawn as a node, because a node is drawn from the hills without
+    /// their caves and nobody sees into those (the sheet caves could be anywhere under them, which once made 38,000 of 46,000 cubes buried ground).
+    #[test]
+    fn a_view_of_the_overworld_selects_cubes_on_the_ground_and_none_deep_under_it() {
+        use std::collections::BTreeMap;
+
+        use coarse_cells::{DetailSettings, ViewSelection, select_around_brick};
+
+        let fixture = StandardTestLayout::default();
+        let generator = rolling_hills(
+            RollingHillsSettings::for_one_metre_voxels(2024),
+            fixture.material,
+            LAYERS,
+        );
+        let view = ViewSelection {
+            detail: DetailSettings {
+                cell_pixels: 3.0,
+                pixel_size: 2.0 * 0.7002 / 1080.0,
+            },
+            zoom: None,
+            fine_radius: 8,
+            maximum_distance: 10_000.0,
+        };
+        let cubes = select_around_brick(BrickCoordinate::new(0, 3, 0), &view, &|cube| {
+            generator.may_show(cube)
+        });
+        let mut deep_nodes = 0usize;
+        let mut per_level: BTreeMap<u8, usize> = BTreeMap::new();
+        for cube in cubes.iter().filter(|cube| cube.level() > 0) {
+            *per_level.entry(cube.level()).or_default() += 1;
+            let top = cube.origin().origin().y() + (cube.edge_length() * 32) as i128;
+            // (The lowest the hills go is 64 - 80 = -16, and a cube is chosen with one beside it.)
+            if top <= -(2 * (cube.edge_length() * 32) as i128) {
+                deep_nodes += 1;
+            }
+        }
+        assert_eq!(deep_nodes, 0, "{per_level:?}");
+        // At most about 3,400 cubes a level (level 1, measured: 13,006 in all), where it was 11,000 with 46,110 in all.
+        for (level, count) in &per_level {
+            assert!(*count < 4_000, "level {level}: {count}");
+        }
+        assert!(cubes.len() < 16_000, "{}", cubes.len());
+    }
+
     #[test]
     fn rolling_hills_output_is_pinned() {
         let fixture = StandardTestLayout::default();

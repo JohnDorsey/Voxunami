@@ -210,7 +210,10 @@ impl TerrainGenerator for FieldTerrainGenerator {
     }
 
     fn may_show(&self, cube: BrickCube) -> bool {
-        crate::coarse::cube_may_show(&*self.field, cube)
+        // A cube is drawn as a node from the far field, so it is that field that says whether there is anything to see (the caves of the field are in no node: a cube under the
+        // ground is buried though a cave could be in it). The bricks near the viewer do not ask: the selection holds them whatever this says.
+        let drawn_from = self.far_field.as_ref().unwrap_or(&self.field);
+        crate::coarse::cube_may_show(&**drawn_from, cube)
     }
 
     fn is_air(&self, cube: BrickCube) -> bool {
@@ -245,6 +248,63 @@ mod tests {
             fixture.material,
             MATERIALS,
         )
+    }
+
+    /// Ground at 20 with sheet caves in it, as the overworld has them: a cube deep in the ground may have a cave in it, so the field cannot say that it is buried.
+    fn ground_with_caves(fixture: &StandardTestLayout) -> (FieldTerrainGenerator, Heightfield) {
+        use crate::density::{Minimum, ShellCaves};
+        use crate::noise::Dimensionality;
+        let ground = Heightfield::new(20.0, FractalNoise::none());
+        let caves = ShellCaves::new(
+            FractalNoise::standard(5, Dimensionality::Volumetric, 5, 2, 1.0, 0.5),
+            0.08,
+            16.0,
+        );
+        let generator = FieldTerrainGenerator::new(
+            Arc::new(Minimum {
+                first: ground.clone(),
+                second: caves,
+            }),
+            fixture.material,
+            MATERIALS,
+        );
+        (generator, ground)
+    }
+
+    #[test]
+    fn a_cube_deep_under_ground_with_caves_may_show_but_not_when_it_is_drawn_from_the_ground_alone()
+    {
+        let fixture = StandardTestLayout::default();
+        let (with_caves, ground) = ground_with_caves(&fixture);
+        let deep = BrickCube::new(BrickCoordinate::new(0, -64, 0), 3).unwrap();
+        let surface = BrickCube::new(BrickCoordinate::new(0, 0, 0), 3).unwrap();
+        let sky = BrickCube::new(BrickCoordinate::new(0, 8, 0), 3).unwrap();
+        // Without a far field the caves may be anywhere in it.
+        assert!(
+            with_caves.may_show(deep),
+            "precondition: caves may be in it"
+        );
+        assert!(with_caves.may_show(surface));
+        assert!(!with_caves.may_show(sky));
+        // Drawn from the ground alone (the far field), nobody sees into it, and the surface and the sky are as before.
+        let drawn_from_ground = with_caves.with_far_field(Arc::new(ground));
+        assert!(!drawn_from_ground.may_show(deep));
+        assert!(drawn_from_ground.may_show(surface));
+        assert!(!drawn_from_ground.may_show(sky));
+    }
+
+    #[test]
+    fn a_cube_that_only_the_far_field_has_ground_in_may_show() {
+        let fixture = StandardTestLayout::default();
+        let plain = flat_ground_generator(20.0, &fixture)
+            .with_far_field(Arc::new(Heightfield::new(300.0, FractalNoise::none())));
+        // (Air in the field, ground in the far field: it is drawn from the far field.)
+        let cube = BrickCube::new(BrickCoordinate::new(0, 4, 0), 2).unwrap();
+        assert!(plain.may_show(cube));
+        // And what the far field says is air is not shown, whatever the field has.
+        let far_air = flat_ground_generator(300.0, &fixture)
+            .with_far_field(Arc::new(Heightfield::new(20.0, FractalNoise::none())));
+        assert!(!far_air.may_show(cube));
     }
 
     #[test]
