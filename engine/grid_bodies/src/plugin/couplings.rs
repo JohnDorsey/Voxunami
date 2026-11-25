@@ -21,16 +21,26 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use physics::{BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, PivotPair, SolverDials};
 use server::ServerWorld;
-use voxel_space::{BrickCoordinate, GridId, WorldPosition};
+use voxel_space::{BrickCoordinate, FaceDirection, GridId, WorldPosition};
 use world_storage::MovingGrid;
 
 use super::rail_ports::is_a_rail_pair;
 use super::{Bodies, Frame, FrameKey};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{Inertia, JointSettings, effective_mass};
+use crate::joints::{HingeAxes, Inertia, JointSettings, effective_mass};
 
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
+
+/// How far from the middle of a hinge's end face, in voxels along its line, each of the two pivots of a hinge is: the two ends of a cylinder half a voxel long (as long as the bar is wide, and as
+/// wide as the ball is).
+const HINGE_PIVOT_OFFSET: f64 = 0.25;
+
+/// The point `distance` voxels from `from` along the way a face looks.
+fn along(from: [f64; 3], face: FaceDirection, distance: f64) -> [f64; 3] {
+    let step = face.offset();
+    [0, 1, 2].map(|axis| from[axis] + distance * step[axis] as f64)
+}
 
 /// A coupling the plugin made, and the ends of the two ships that it is made at.
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +50,9 @@ pub(super) struct Coupled {
     pub(super) frame: FrameKey,
     pub(super) first_end: BlockFace,
     pub(super) second_end: BlockFace,
+    /// Whether the two ends hold a hinge (`JointSettings::hinge_axes`, asked when the coupling was made, of the places the ships had then) and not a ball: the line of each, as its ship has it.
+    /// Kept with the coupling, so that a joint made again (in another frame) is the joint it was.
+    pub(super) hinge: Option<HingeAxes>,
     /// Whether the body world's coupling was made rigid at the turn its bodies had (`stiffness.rs`): what the world says of the pair is made true in the tick after it says it.
     pub(super) rigid: bool,
 }
@@ -187,7 +200,15 @@ impl Bodies {
         self.record_couplings(world);
         self.tell_the_desk_the_pivots(world);
         let now = self.couplings.len() as u64;
-        self.count(|report| report.couplings = now);
+        let hinges = self
+            .couplings
+            .values()
+            .filter(|coupled| coupled.hinge.is_some())
+            .count() as u64;
+        self.count(|report| {
+            report.couplings = now;
+            report.hinges = hinges;
+        });
     }
 
     /// Parts the pairs that `/joint decouple` asked to be parted in this tick (the joint desk has them), **after the step**, when the world has every ship at the place of the end of the tick
@@ -638,8 +659,8 @@ impl Bodies {
         pairs
     }
 
-    /// Couples two ships at their ends: a ball joint at the middle of the two faces, which are at one place to within the coupling distance and which the solver pulls
-    /// together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
+    /// Couples two ships at their ends: a ball joint at the middle of the two faces, or a hinge of two pivots on the line through that middle if both ends are hinges on one line (see
+    /// [`Coupled::hinge`]); the faces are at one place to within the coupling distance and the solver pulls the pivots together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
     fn make_coupling(
         &mut self,
         settings: &JointSettings,
@@ -651,6 +672,7 @@ impl Bodies {
             frame: frame_key,
             first_end: pair.first_end,
             second_end: pair.second_end,
+            hinge: settings.hinge_axes(&pair.first_view, &pair.second_view),
             rigid: false,
         };
         let key = (pair.first, pair.second);
@@ -675,10 +697,24 @@ impl Bodies {
             return false;
         };
         let (first, second) = (BodyId(key.0.get()), BodyId(key.1.get()));
-        let pivots = [PivotPair {
-            first: coupled.first_end.local_centre(),
-            second: coupled.second_end.local_centre(),
-        }];
+        let (first_centre, second_centre) = (
+            coupled.first_end.local_centre(),
+            coupled.second_end.local_centre(),
+        );
+        // (A ball is one pivot at the middle of the two faces. A hinge is two, along the line of each end, paired by the end of it that points the same way in the world: two ball joints
+        // that share two points are a hinge about the line through them.)
+        let pivots: Vec<PivotPair> = match coupled.hinge {
+            None => vec![PivotPair {
+                first: first_centre,
+                second: second_centre,
+            }],
+            Some(axes) => [1.0, -1.0]
+                .map(|side| PivotPair {
+                    first: along(first_centre, axes.first, side * HINGE_PIVOT_OFFSET),
+                    second: along(second_centre, axes.second, side * HINGE_PIVOT_OFFSET),
+                })
+                .to_vec(),
+        };
         // (Contacts between the two ships stay on: the owner, 2026-11-09.)
         if frame
             .bodies

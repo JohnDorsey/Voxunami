@@ -54,6 +54,10 @@ pub fn explain_block(table: &BlockTable, block: u32) -> String {
                 face_name(table.joint_face(block, state, orientation)),
             )
             .expect("writing to a string");
+            // (Said only for a block that has one, so that the digest of every block without a hinge is what it was before there were hinges.)
+            if let Some(hinge) = table.hinge_face(block, state, orientation) {
+                write!(text, " hinge {hinge:?}").expect("writing to a string");
+            }
             for face in FaceDirection::ALL {
                 write!(
                     text,
@@ -82,9 +86,13 @@ pub fn describe_blocks(table: &BlockTable, names: &[String]) -> String {
             .iter()
             .map(|&face| table.material_of_face(block, 0, 0, face).to_string())
             .collect();
+        // (Said only for a block that has one, as in `explain_block`.)
+        let hinge = table
+            .hinge_face(block, 0, 0)
+            .map_or_else(String::new, |face| format!(", hinge {face:?}"));
         writeln!(
             text,
-            "{number:>2} {name}: colour #{red:02x}{green:02x}{blue:02x}, {} states, state 0 faces [{}], front {}, axis {}, docking {}, joint {}, placement {:?}, behaviour {:016x}",
+            "{number:>2} {name}: colour #{red:02x}{green:02x}{blue:02x}, {} states, state 0 faces [{}], front {}, axis {}, docking {}, joint {}{hinge}, placement {:?}, behaviour {:016x}",
             table.state_count(block),
             faces.join(" "),
             face_name(table.front_face(block, 0, 0)),

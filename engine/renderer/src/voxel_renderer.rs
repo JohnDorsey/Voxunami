@@ -11,7 +11,8 @@ use voxel_meshing::{
     PackedQuad, mesh_brick,
 };
 use voxel_space::{
-    BRICK_VOXEL_COUNT, BrickCoordinate, GridId, GridPose, LocalVoxelIndex, WorldPosition,
+    BRICK_VOXEL_COUNT, BrickCoordinate, GridId, GridPose, LocalVoxelIndex, Orientation,
+    WorldPosition,
 };
 use wgpu::util::DeviceExt;
 
@@ -120,6 +121,9 @@ pub enum EntityShape {
     Box,
     /// A ball of half a voxel across (the ball of a joint), made of boxes as the world is: a cross of four, with a flat top and bottom, the size being ignored.
     Ball,
+    /// A cylinder of half a voxel across and half a voxel long (the cylinder of a hinge), made of boxes as the world is, with its length along its own x axis (turned as the box's
+    /// [`EntityBox::orientation`] says), the size being ignored.
+    Cylinder,
 }
 
 /// The boxes that a ball is made of, in eighths of a voxel in a cell of eight, about its middle: a plus of two boxes that is four across and two high, and a cap on it and under it that is two across
@@ -145,6 +149,42 @@ pub(crate) fn ball_boxes() -> [ShapeBox; 4] {
     ]
 }
 
+/// The boxes that a cylinder is made of, in eighths of a voxel in a cell of eight, about its middle: the round of the ball's plus (two boxes, four across and two thick, crossing) four long, along x. Seen
+/// from the end it is the ball's cross (12 of 16 cells), and from the side a whole square of 16.
+pub(crate) fn cylinder_boxes() -> [ShapeBox; 2] {
+    [
+        ShapeBox {
+            min: [2, 2, 3],
+            max: [6, 6, 5],
+        },
+        ShapeBox {
+            min: [2, 3, 2],
+            max: [6, 5, 6],
+        },
+    ]
+}
+
+/// Where the corner of the mesh of an entity's box is to be put, and how the mesh is turned, for the middle of its voxel to be at `relative` (from the camera) with the turn `orientation`: the
+/// mesh is a voxel in the middle of a brick, turned about that voxel's middle, so the corner is where the turned middle is not. No turn leaves the box upright in the world, as it always was.
+fn entity_box_corner(relative: Vec3, orientation: Orientation) -> (Vec3, [[f32; 3]; 3]) {
+    let eye = Vec3::splat(f32::from(AVATAR_EYE_VOXEL) + 0.5);
+    if orientation == Orientation::IDENTITY {
+        return (relative - eye, NO_TURN);
+    }
+    let turn = GridPose::new(
+        WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]),
+        orientation,
+    )
+    .rotation_matrix()
+    .map(|row| row.map(|entry| entry as f32));
+    let turned_eye = Vec3::new(
+        turn[0][0] * eye.x + turn[0][1] * eye.y + turn[0][2] * eye.z,
+        turn[1][0] * eye.x + turn[1][1] * eye.y + turn[1][2] * eye.z,
+        turn[2][0] * eye.x + turn[2][1] * eye.y + turn[2][2] * eye.z,
+    );
+    (relative - turned_eye, turn)
+}
+
 /// An entity drawn as a box: a thing that is not a player, and has no model yet (an item on the ground).
 /// Boxes are placed like avatars, and made like blocks that do not fill their cell, so their sizes are in
 /// eighths of a voxel.
@@ -160,6 +200,8 @@ pub struct EntityBox {
     pub material: u32,
     /// What it is shaped like.
     pub shape: EntityShape,
+    /// How it is turned, about the middle of the box: none for a thing that stands upright in the world (an item, a ball); a cylinder is turned so that its length runs the way it should.
+    pub orientation: Orientation,
 }
 
 impl EntityBox {
@@ -168,7 +210,7 @@ impl EntityBox {
         let material = self.material.clamp(1, MAXIMUM_GAME_MATERIALS as u32 - 1);
         let size = match self.shape {
             EntityShape::Box => self.size.map(|size| size.clamp(1, 8).div_ceil(2) * 2),
-            EntityShape::Ball => [4; 3],
+            EntityShape::Ball | EntityShape::Cylinder => [4; 3],
         };
         (material, size, self.shape)
     }
@@ -186,6 +228,7 @@ fn box_mesh(material: u32, size: [u8; 3], shape: EntityShape) -> PackedBrickMesh
             max: size.map(|size| (8 + size) / 2),
         }]),
         EntityShape::Ball => Shape::from_boxes(&ball_boxes()),
+        EntityShape::Cylinder => Shape::from_boxes(&cylinder_boxes()),
     };
     let solid = BlockDefinition::cube([0.5; 3]).with_shapes(vec![shape]);
     let air = BlockDefinition::air();
@@ -2496,12 +2539,13 @@ impl VoxelRenderer {
         for entity_box in &self.entity_boxes {
             let relative =
                 crate::camera::gpu_vector(entity_box.position.relative_to(camera.position));
+            let (corner, rotation) = entity_box_corner(relative, entity_box.orientation);
             drawables.push(Drawable {
                 mesh: MeshKey::Box(entity_box.key()),
                 placement: Placement {
-                    offset: relative - eye,
+                    offset: corner,
                     scale: 1.0,
-                    rotation: NO_TURN,
+                    rotation,
                     volume: 0,
                 },
                 middle: relative,
@@ -4343,12 +4387,115 @@ mod ball_tests {
     }
 
     #[test]
+    fn the_cylinder_is_half_a_voxel_across_and_long_along_x_and_round_from_its_end_and_whole_from_its_side()
+     {
+        let cells = filled(&cylinder_boxes());
+        // From 2 to 6 along each axis, as the ball is; 48 of the 64 (a plus of 12 of the 16 across, four long).
+        for axis in 0..3 {
+            assert_eq!(cells.iter().map(|cell| cell[axis]).min(), Some(2));
+            assert_eq!(cells.iter().map(|cell| cell[axis]).max(), Some(5));
+        }
+        assert_eq!(cells.len(), 48);
+        // The same about its length whichever way it is turned a quarter, and the same from each end.
+        let swapped: std::collections::BTreeSet<[u8; 3]> = cells
+            .iter()
+            .map(|cell| [cell[0], cell[2], cell[1]])
+            .collect();
+        assert_eq!(swapped, cells, "y and z");
+        for axis in 0..3 {
+            let mirrored: std::collections::BTreeSet<[u8; 3]> = cells
+                .iter()
+                .map(|cell| {
+                    let mut cell = *cell;
+                    cell[axis] = 7 - cell[axis];
+                    cell
+                })
+                .collect();
+            assert_eq!(mirrored, cells, "axis {axis}");
+        }
+        // No corner of the square across it: it is round, to the eighth, as the ball is.
+        for x in 2..6 {
+            for (y, z) in [(2, 2), (5, 5), (2, 5), (5, 2)] {
+                assert!(!cells.contains(&[x, y, z]), "{x} {y} {z}");
+            }
+        }
+        // The ball's plus is the same plus.
+        let ball_cells = filled(&ball_boxes());
+        for y in 2..6 {
+            for z in 2..6 {
+                let ball_has_it = ball_cells.contains(&[4, y, z]);
+                assert_eq!(cells.contains(&[3, y, z]), ball_has_it, "{y} {z}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cylinder_is_of_one_size_and_a_mesh_of_its_own_and_a_box_is_turned_about_its_middle() {
+        let cylinder = |size| EntityBox {
+            position: WorldPosition::from_voxels([0.0; 3]),
+            size,
+            material: 3,
+            shape: EntityShape::Cylinder,
+            orientation: Orientation::IDENTITY,
+        };
+        assert_eq!(cylinder([8, 8, 8]).key(), cylinder([2, 2, 2]).key());
+        assert_eq!(
+            cylinder([8, 2, 6]).key(),
+            (3, [4, 4, 4], EntityShape::Cylinder)
+        );
+        let ball = EntityBox {
+            shape: EntityShape::Ball,
+            ..cylinder([4, 4, 4])
+        };
+        assert_ne!(ball.key(), cylinder([4, 4, 4]).key());
+        // (How it is turned is not in the mesh: the mesh is turned when it is placed, so one mesh serves every turn.)
+        let turned = EntityBox {
+            orientation: Orientation::from_components([
+                0.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+                0.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ])
+            .unwrap(),
+            ..cylinder([4, 4, 4])
+        };
+        assert_eq!(turned.key(), cylinder([4, 4, 4]).key());
+    }
+
+    #[test]
+    fn a_box_with_no_turn_is_placed_as_it_always_was_and_one_with_a_turn_has_the_middle_of_its_voxel_where_it_is_asked()
+     {
+        let relative = Vec3::new(3.0, -2.0, 7.5);
+        let eye = Vec3::splat(16.5);
+        assert_eq!(
+            entity_box_corner(relative, Orientation::IDENTITY),
+            (relative - eye, NO_TURN)
+        );
+        // A quarter turn about y carries x to -z and z to x: the corner is where the turned middle of the voxel is `relative`.
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let quarter = Orientation::from_components([0.0, half, 0.0, half]).unwrap();
+        let (corner, turn) = entity_box_corner(relative, quarter);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(near(turn[0][2], 1.0) && near(turn[2][0], -1.0), "{turn:?}");
+        let middle = Vec3::new(
+            corner.x + turn[0][0] * eye.x + turn[0][1] * eye.y + turn[0][2] * eye.z,
+            corner.y + turn[1][0] * eye.x + turn[1][1] * eye.y + turn[1][2] * eye.z,
+            corner.z + turn[2][0] * eye.x + turn[2][1] * eye.y + turn[2][2] * eye.z,
+        );
+        assert!(
+            near(middle.x, relative.x) && near(middle.y, relative.y) && near(middle.z, relative.z),
+            "{middle:?} for {relative:?}"
+        );
+    }
+
+    #[test]
     fn a_ball_is_of_one_size_whatever_size_is_asked_and_has_a_mesh_of_its_own() {
         let ball = |size| EntityBox {
             position: WorldPosition::from_voxels([0.0; 3]),
             size,
             material: 3,
             shape: EntityShape::Ball,
+            orientation: Orientation::IDENTITY,
         };
         assert_eq!(ball([8, 8, 8]).key(), ball([2, 2, 2]).key());
         assert_eq!(ball([8, 2, 6]).key(), (3, [4, 4, 4], EntityShape::Ball));

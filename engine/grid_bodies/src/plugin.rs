@@ -33,7 +33,7 @@ mod rail_joints;
 mod rail_ports;
 mod stiffness;
 
-pub use balls::{JointBallRigid, joint_ball_kind};
+pub use balls::{JointRigid, joint_ball_kind, joint_hinge_kind};
 use rail_ports::is_a_rail_pair;
 
 use couplings::{Coupled, CouplingKey};
@@ -144,6 +144,8 @@ pub struct BodiesReport {
     pub dockings_refused: u64,
     /// Pairs of ships that are coupled by their joint ends now, and couplings made in all.
     pub couplings: u64,
+    /// How many of those hold a hinge (both ends are hinges on one line) and not a ball.
+    pub hinges: u64,
     pub couplings_made: u64,
     /// Couplings that were made again in another frame, because the group they are in was moved there whole (a coupling that is made again is not one made).
     pub couplings_moved: u64,
@@ -234,6 +236,7 @@ impl Plugin for GridBodiesPlugin {
         let bodies = Arc::new(Mutex::new(Bodies::new(config, Arc::clone(&self.report))));
         // The ball that is drawn where two joint ends meet is an entity of the server's (see `balls.rs`).
         registrar.entity_kind(balls::joint_ball_kind_spec());
+        registrar.entity_kind(balls::joint_hinge_kind_spec());
 
         // Where blocks changed, the colliders and the mass are made again.
         let hearing = Arc::clone(&bodies);
@@ -3683,10 +3686,14 @@ impl Weigher<'_> {
                     {
                         let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
                         if let Some(face) = table.docking_face(block, state, orientation) {
-                            ports.push(BlockFace { voxel: at, face });
+                            ports.push(BlockFace::plain(at, face));
                         }
                         if let Some(face) = table.joint_face(block, state, orientation) {
-                            joint_ends.push(BlockFace { voxel: at, face });
+                            joint_ends.push(BlockFace {
+                                voxel: at,
+                                face,
+                                hinge: table.hinge_face(block, state, orientation),
+                            });
                         }
                     }
                 }

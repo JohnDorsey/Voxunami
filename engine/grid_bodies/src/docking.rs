@@ -65,9 +65,21 @@ impl Default for DockingSettings {
 pub struct BlockFace {
     pub voxel: VoxelCoordinate,
     pub face: FaceDirection,
+    /// For the end of a joint that is a hinge (`engine:hinge_face`): one end of the line it turns about, in the ship's own axes. It runs through the middle of the face and across
+    /// the way the face looks, so it is never `face` or its opposite. `None` for a ball, and for a port, which has no such thing.
+    pub hinge: Option<FaceDirection>,
 }
 
 impl BlockFace {
+    /// A face with no hinge: a port, or the end of a joint that is a ball.
+    pub fn plain(voxel: VoxelCoordinate, face: FaceDirection) -> Self {
+        Self {
+            voxel,
+            face,
+            hinge: None,
+        }
+    }
+
     /// The middle of the face, in voxels, in the ship's own axes.
     pub fn local_centre(&self) -> [f64; 3] {
         let step = self.face.offset();
@@ -314,14 +326,16 @@ pub(crate) fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
         let Some(next) = first.voxel.checked_offset(step[0], step[1], step[2]) else {
             continue;
         };
-        let second = BlockFace {
-            voxel: next,
-            face: first.face.opposite(),
-        };
-        if first.voxel < second.voxel && faces.contains(&second) {
+        // (Found by where it is and which way it looks: the other end's hinge is its own business.)
+        let opposite = first.face.opposite();
+        if let Some(second) = faces
+            .iter()
+            .find(|face| face.voxel == next && face.face == opposite)
+            && first.voxel < second.voxel
+        {
             pairs.push(DockedPair {
                 first: *first,
-                second,
+                second: *second,
             });
         }
     }
@@ -863,10 +877,7 @@ mod tests {
     const WEST: FaceDirection = FaceDirection::NegativeX;
 
     fn port(x: i128, y: i128, z: i128, face: FaceDirection) -> BlockFace {
-        BlockFace {
-            voxel: VoxelCoordinate::new(x, y, z),
-            face,
-        }
+        BlockFace::plain(VoxelCoordinate::new(x, y, z), face)
     }
 
     fn pose(x: f64, y: f64, z: f64, orientation: Orientation) -> GridPose {

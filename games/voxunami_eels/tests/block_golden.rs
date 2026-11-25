@@ -60,7 +60,9 @@ const PINNED_NAMES: &[&str] = &[
 /// through the block, and its transparency mode).
 /// Moved on 2026-11-09 from (1215, 11_721_676_500_271_260_102) by the declaration of `engine:joint_face`, which every game's package carries: 198 bytes (worked out from Cave's, where it was
 /// measured, before the run, and then seen: 1,215 to 1,413).
-const PINNED_PACKAGE: (usize, u64) = (1413, 12_124_095_517_510_165_630);
+/// Moved on 2026-11-25 by the declaration of `engine:hinge_face` (the dev hinge joint), which every game's package carries: 210 bytes, measured in all three games (1,413 to 1,623 here; Cave's package grew by
+/// these and its new block). The table is the same: a block with no hinge is described as it was.
+const PINNED_PACKAGE: (usize, u64) = (1623, 18_018_958_382_673_706_296);
 
 /// Moved on 2026-11-09 by the new word `joint none` in every line (the dev ball joint, `decisions/joints-and-cars.md`, step 2): the behaviour digests are of text that has the word, and
 /// the control is that the old text, with the word taken out, has the old digest for every block (5 of 5) and the palette line is as it was.

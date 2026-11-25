@@ -7,6 +7,8 @@
 //! All of it is in metres, kilograms and seconds, the world's axes and `f64`; the one transcendental function (the cosine of the angle) is `libm`'s, so the result is the same
 //! on every machine.
 
+use voxel_space::FaceDirection;
+
 use crate::docking::{Approach, BlockFaceView, cross, dot, length, turn};
 
 /// How ships with joint ends are drawn together and coupled. The numbers of the owner's choice are marked; the pull itself (how it slows the ends as they come) is mine.
@@ -42,6 +44,17 @@ pub struct JointSettings {
     pub damping_torque_limit: f64,
     /// The extra substeps of the solver for a car that is coupled (owner, 2026-11-09: yes; four is my number, `loop-probe.md`, section 14).
     pub extra_substeps: usize,
+    /// How far, in degrees, the lines of two hinges may be from being one line for the pair to be a hinge (mine: the snap of a lock, 10). Two joints held at two pivots each, whose lines are
+    /// not one line, are pulled together by the solver, so the lines must be near one line to begin with; a pair that is farther is a ball (see [`JointSettings::hinge_axes`]).
+    pub hinge_degrees: f64,
+}
+
+/// What two hinge ends that make a hinge are about: the end of the line of the first's hinge that is named, and the end of the line of the second's that points the way the first's does
+/// in the world (both in the axes of the ship each is of), so that the pivots of the two ends are paired by them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HingeAxes {
+    pub first: FaceDirection,
+    pub second: FaceDirection,
 }
 
 impl Default for JointSettings {
@@ -58,6 +71,7 @@ impl Default for JointSettings {
             spin_waived_within: 0.01,
             damping_torque_limit: 10_000.0,
             extra_substeps: 4,
+            hinge_degrees: 10.0,
         }
     }
 }
@@ -94,6 +108,31 @@ impl JointSettings {
             && length(relative_velocity) <= self.max_relative_speed
             && (length(relative_spin) <= self.max_relative_spin
                 || approach.distance <= self.spin_waived_within)
+    }
+
+    /// Whether two joint ends that are coupled hold a hinge: both are hinges (`engine:hinge_face`) and the lines they turn about are, to `hinge_degrees`, one line in the world, whatever
+    /// the bend of the pair about it (the lines do not move as a hinge bends). Any other pair is a ball: a ball end is a ball in any pair, and two hinges whose lines cross are a ball
+    /// that is drawn as one, which says so.
+    pub fn hinge_axes(&self, first: &BlockFaceView, second: &BlockFaceView) -> Option<HingeAxes> {
+        let (first_line, second_line) = (first.block_face.hinge?, second.block_face.hinge?);
+        let world = |view: &BlockFaceView, line: FaceDirection| {
+            turn(view.rotation, line.offset().map(|part| part as f64))
+        };
+        let first_world = world(first, first_line);
+        let second_world = world(second, second_line);
+        // The end of the second's line that points the way the first's does.
+        let second_line = if dot(first_world, second_world) >= 0.0 {
+            second_line
+        } else {
+            second_line.opposite()
+        };
+        let second_world = world(second, second_line);
+        (dot(first_world, second_world) >= libm::cos(self.hinge_degrees * DEGREES)).then_some(
+            HingeAxes {
+                first: first_line,
+                second: second_line,
+            },
+        )
     }
 
     /// Whether two ends are at one place, to a centimetre ([`JointSettings::spin_waived_within`]): the ends of a pair that the world has as coupled (a saved world's, or one

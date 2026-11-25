@@ -864,6 +864,7 @@ mod tests {
                 "engine:density",
                 "engine:docking_face",
                 "engine:front_face",
+                "engine:hinge_face",
                 "engine:joint_face",
                 "engine:placeable_on_moving_grids"
             ]

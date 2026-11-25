@@ -213,6 +213,14 @@ pub mod engine {
         "the face of the block that couples to another ship's joint end: 0 for a block that is not a joint, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
     );
 
+    /// Which face of a block that is the end of a joint is one end of the line its hinge turns about (a face code, 0 for a joint that is a ball): the line runs through the middle of
+    /// the joint's end face, across the way the end looks, and the two cars of a coupling of two hinges bend about it and about nothing else. It is a property of its own, so that a
+    /// joint end is a ball unless a block says otherwise. Turned with the voxel, like the joint face.
+    pub const HINGE_FACE: PropertyKey<u8> = PropertyKey::face(
+        "engine:hinge_face",
+        "one end of the line the joint's hinge turns about, across the way its end looks: 0 for a joint that is a ball, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
+
     /// A block's mass for a body made of it, in kilograms a voxel. (Nothing reads it yet: bodies made of
     /// blocks are Phase 32.)
     pub const DENSITY: PropertyKey<u32> = PropertyKey::new(
@@ -282,6 +290,7 @@ impl PropertySchema {
             engine::PLACEABLE_ON_MOVING_GRIDS.declaration(),
             engine::DOCKING_FACE.declaration(),
             engine::JOINT_FACE.declaration(),
+            engine::HINGE_FACE.declaration(),
             engine::FRONT_FACE.declaration(),
             engine::AXIS_FACE.declaration(),
         ] {
@@ -428,6 +437,7 @@ mod tests {
             engine::AXIS_FACE.id(),
             engine::DOCKING_FACE.id(),
             engine::JOINT_FACE.id(),
+            engine::HINGE_FACE.id(),
         ] {
             let declaration = schema.get(&key_id(key)).expect("declared");
             assert_eq!(declaration.kind, PropertyKind::Face, "{key}");

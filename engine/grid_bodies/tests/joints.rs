@@ -4,7 +4,7 @@
 use grid_bodies::BlockFace;
 use grid_bodies::docking::{Approach, BlockFaceView};
 use grid_bodies::joints::{
-    Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world,
+    HingeAxes, Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world,
     inverse_inertia_along, mass_at_an_end,
 };
 use voxel_space::{FaceDirection, LatticeRotation, VoxelCoordinate};
@@ -36,10 +36,7 @@ fn dot(a: Vec3, b: Vec3) -> f64 {
 /// An end that looks along `normal` from `centre`: all the rules read of an end is where its face is and which way it looks.
 fn end(centre: Vec3, normal: Vec3) -> BlockFaceView {
     BlockFaceView {
-        block_face: BlockFace {
-            voxel: VoxelCoordinate::new(0, 0, 0),
-            face: FaceDirection::PositiveX,
-        },
+        block_face: BlockFace::plain(VoxelCoordinate::new(0, 0, 0), FaceDirection::PositiveX),
         centre,
         normal,
         rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -554,4 +551,137 @@ fn the_mass_at_the_end_of_a_car_is_its_mass_less_what_its_lever_gives_it_to_answ
         None
     );
     assert_eq!(mass_at_an_end(0.0, rod, [0.0; 3], [1.0, 0.0, 0.0]), None);
+}
+
+/// The turn about an axis (0 for x, 1 for y, 2 for z) by `degrees`, as the matrix a ship's turn is (`rotation[row][column]`).
+fn about(axis: usize, degrees: f64) -> [[f64; 3]; 3] {
+    let (sine, cosine) = (
+        libm::sin(degrees.to_radians()),
+        libm::cos(degrees.to_radians()),
+    );
+    let (first, second) = ((axis + 1) % 3, (axis + 2) % 3);
+    let mut matrix = [[0.0; 3]; 3];
+    matrix[axis][axis] = 1.0;
+    matrix[first][first] = cosine;
+    matrix[first][second] = -sine;
+    matrix[second][first] = sine;
+    matrix[second][second] = cosine;
+    matrix
+}
+
+fn multiply(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    [0, 1, 2].map(|row| [0, 1, 2].map(|column| (0..3).map(|k| a[row][k] * b[k][column]).sum()))
+}
+
+/// An end of a hinge on a ship turned by `rotation`: it looks up (along y) in the ship's own axes, and its hinge is the line along `hinge` in them.
+fn hinge_end(rotation: [[f64; 3]; 3], hinge: Option<FaceDirection>) -> BlockFaceView {
+    BlockFaceView {
+        block_face: BlockFace {
+            voxel: VoxelCoordinate::new(0, 0, 0),
+            face: FaceDirection::PositiveY,
+            hinge,
+        },
+        centre: [0.0; 3],
+        normal: [0, 1, 2].map(|row| rotation[row][1]),
+        rotation,
+    }
+}
+
+const NOT_TURNED: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+#[test]
+fn two_hinge_ends_whose_lines_are_one_line_make_a_hinge_and_the_hinge_of_the_second_is_the_end_of_its_line_that_looks_the_way_the_first_does()
+ {
+    let settings = JointSettings::default();
+    let east = FaceDirection::PositiveX;
+    let west = FaceDirection::NegativeX;
+    let first = hinge_end(NOT_TURNED, Some(east));
+    // The same line, whichever end of it the second's block names: it is given the end that points as the first's does (the pivots are paired by it).
+    for named in [east, west] {
+        assert_eq!(
+            settings.hinge_axes(&first, &hinge_end(NOT_TURNED, Some(named))),
+            Some(HingeAxes {
+                first: east,
+                second: east
+            }),
+            "{named:?}"
+        );
+    }
+    // A second ship turned half way round about the bar (y): its east is the world's west, so the end of its line that points the way the first's does is its west.
+    let turned_round = about(1, 180.0);
+    assert_eq!(
+        settings.hinge_axes(&first, &hinge_end(turned_round, Some(east))),
+        Some(HingeAxes {
+            first: east,
+            second: west
+        })
+    );
+    // The first named by its west end is told as it is named.
+    assert_eq!(
+        settings.hinge_axes(
+            &hinge_end(NOT_TURNED, Some(west)),
+            &hinge_end(NOT_TURNED, Some(east))
+        ),
+        Some(HingeAxes {
+            first: west,
+            second: west
+        })
+    );
+}
+
+#[test]
+fn a_hinge_is_a_hinge_however_far_it_is_bent_about_its_line_and_not_if_the_lines_are_not_one_line()
+{
+    let settings = JointSettings::default();
+    let east = FaceDirection::PositiveX;
+    let first = hinge_end(NOT_TURNED, Some(east));
+    // Bent about its own line by any angle: the lines are still the same.
+    for degrees in [0.0, 30.0, 90.0, 179.0] {
+        assert!(
+            settings
+                .hinge_axes(&first, &hinge_end(about(0, degrees), Some(east)))
+                .is_some(),
+            "{degrees}"
+        );
+    }
+    // Turned about the bar a quarter turn, the second's line goes across the first's (along z): two hinges at right angles are not a hinge.
+    assert_eq!(
+        settings.hinge_axes(&first, &hinge_end(about(1, 90.0), Some(east))),
+        None
+    );
+    // The line may be off by 10 degrees (a lock's snap) and not by more: the pivots of the two are brought together by the solver, and that is what it takes to.
+    assert_eq!(settings.hinge_degrees, 10.0);
+    assert!(
+        settings
+            .hinge_axes(&first, &hinge_end(about(1, 9.9), Some(east)))
+            .is_some()
+    );
+    assert!(
+        settings
+            .hinge_axes(&first, &hinge_end(about(1, -9.9), Some(east)))
+            .is_some()
+    );
+    assert_eq!(
+        settings.hinge_axes(&first, &hinge_end(about(1, 10.1), Some(east))),
+        None
+    );
+    // Off by a bend and a turn together: the turn is what counts.
+    assert_eq!(
+        settings.hinge_axes(
+            &first,
+            &hinge_end(multiply(about(1, 20.0), about(0, 40.0)), Some(east))
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_joint_end_that_is_a_ball_makes_a_ball_of_any_pair_it_is_in() {
+    let settings = JointSettings::default();
+    let east = FaceDirection::PositiveX;
+    let hinge = hinge_end(NOT_TURNED, Some(east));
+    let ball = hinge_end(NOT_TURNED, None);
+    assert_eq!(settings.hinge_axes(&hinge, &ball), None);
+    assert_eq!(settings.hinge_axes(&ball, &hinge), None);
+    assert_eq!(settings.hinge_axes(&ball, &ball), None);
 }

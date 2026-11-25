@@ -219,6 +219,12 @@ impl BlockDefinition {
         self.with_property(&engine::JOINT_FACE, face_code(Some(face)))
     }
 
+    /// The same block, whose joint end is a hinge that turns about the line along `face` and the face opposite it, as it is made, in every state (`engine:hinge_face`). Without
+    /// one a joint end is a ball.
+    pub fn with_hinge_face(self, face: FaceDirection) -> Self {
+        self.with_property(&engine::HINGE_FACE, face_code(Some(face)))
+    }
+
     /// The same block with a front, as it is made, in every state: a piston-like block, turned to face the player when it is placed (`engine:front_face`).
     pub fn with_front_face(self, face: FaceDirection) -> Self {
         self.with_property(&engine::FRONT_FACE, face_code(Some(face)))

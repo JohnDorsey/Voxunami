@@ -3,9 +3,10 @@
 
 mod common;
 
-use common::docking::{PLAIN, Placed, a_planet_under_the_patch, blocks_of, ships, stone};
+use common::docking::{Look, PLAIN, Placed, a_planet_under_the_patch, blocks_of, ships, stone};
 use common::joints::{
-    Report, ball_end_toward, joint_block, pairs_the_world_has_as_coupled, until_coupled, world_of,
+    Report, ball_end_toward, hinge_block, hinge_end_toward, joint_block,
+    pairs_the_world_has_as_coupled, turn_of_the_second_in_the_first, until_coupled, world_of,
 };
 use common::{Player, Scene, say, ship_id, tick_and_follow};
 use server::GridView;
@@ -18,17 +19,22 @@ const GROUND: i128 = 63_679;
 /// A planet with the ground that it makes, and on it at x 1, z 6 two joint blocks facing each other (the lower one's ball end up, the upper one's down) with three stones on the upper one:
 /// the structure. A player flies beside it. The planet is ship 0.
 fn a_structure_on_the_ground() -> (Scene, Player, GridId, Report) {
+    a_structure_joined_to_the_ground_by(
+        joint_block(),
+        ball_end_toward(FaceDirection::PositiveY),
+        ball_end_toward(FaceDirection::NegativeY),
+    )
+}
+
+/// The same structure, joined to the ground by these two blocks as they are turned (the lower looks up and the upper looks down).
+fn a_structure_joined_to_the_ground_by(
+    block: u32,
+    lower: Look,
+    upper: Look,
+) -> (Scene, Player, GridId, Report) {
     a_planet_with(vec![
-        (
-            [1, GROUND + 1, 6],
-            joint_block(),
-            ball_end_toward(FaceDirection::PositiveY),
-        ),
-        (
-            [1, GROUND + 2, 6],
-            joint_block(),
-            ball_end_toward(FaceDirection::NegativeY),
-        ),
+        ([1, GROUND + 1, 6], block, lower),
+        ([1, GROUND + 2, 6], block, upper),
         ([1, GROUND + 3, 6], stone(), PLAIN),
         ([2, GROUND + 3, 6], stone(), PLAIN),
         ([1, GROUND + 3, 7], stone(), PLAIN),
@@ -483,7 +489,7 @@ fn the_joint_to_the_ground_has_one_ball_aboard_the_planet_that_is_the_rigid_colo
             .map(|entity| {
                 let rigid = entity
                     .components
-                    .get::<grid_bodies::JointBallRigid>()
+                    .get::<grid_bodies::JointRigid>()
                     .expect("the component can be read")
                     .expect("a ball has it")
                     .0;
@@ -515,7 +521,7 @@ fn two_joint_ends_that_face_each_other_on_the_ground_have_a_rigid_ball_before_an
                 entity.pose.grid,
                 entity
                     .components
-                    .get::<grid_bodies::JointBallRigid>()
+                    .get::<grid_bodies::JointRigid>()
                     .expect("the component can be read")
                     .expect("a ball has it")
                     .0,
@@ -523,4 +529,94 @@ fn two_joint_ends_that_face_each_other_on_the_ground_have_a_rigid_ball_before_an
         })
         .collect();
     assert_eq!(balls, vec![(planet, true)]);
+}
+
+#[test]
+fn two_hinge_ends_that_face_each_other_on_the_ground_have_a_rigid_cylinder_and_no_ball_and_the_car_cut_out_of_them_is_coupled_as_a_hinge()
+ {
+    let (mut scene, mut player, planet, report) = a_structure_joined_to_the_ground_by(
+        hinge_block(),
+        hinge_end_toward(FaceDirection::PositiveY, FaceDirection::PositiveX),
+        hinge_end_toward(FaceDirection::NegativeY, FaceDirection::PositiveX),
+    );
+    let drawn = |scene: &Scene, kind: namespaced_id::NamespacedId| -> Vec<(GridId, bool)> {
+        scene
+            .rig
+            .server
+            .world()
+            .entities()
+            .iter()
+            .filter(|entity| entity.kind == kind)
+            .map(|entity| {
+                (
+                    entity.pose.grid,
+                    entity
+                        .components
+                        .get::<grid_bodies::JointRigid>()
+                        .expect("the component can be read")
+                        .expect("it has the mark")
+                        .0,
+                )
+            })
+            .collect()
+    };
+    tick_and_follow(&mut scene, &mut player, 3);
+    assert_eq!(
+        drawn(&scene, grid_bodies::joint_hinge_kind()),
+        vec![(planet, true)]
+    );
+    assert!(drawn(&scene, grid_bodies::joint_ball_kind()).is_empty());
+    // Cut out as a car, it is coupled to the ground end as a hinge, whose cylinder is aboard the planet still, and turns now.
+    say(&mut scene, &mut player, "/joint unlock");
+    until_coupled(&mut scene, &mut player, &report, 1, 300);
+    tick_and_follow(&mut scene, &mut player, 3);
+    assert_eq!(report().hinges, 1);
+    assert_eq!(
+        drawn(&scene, grid_bodies::joint_hinge_kind()),
+        vec![(planet, false)]
+    );
+    assert!(drawn(&scene, grid_bodies::joint_ball_kind()).is_empty());
+}
+
+/// How far the car's turn, in the axes of the ground, is from a turn about x (the entries that join x to y or to z, the greatest), and how far it has tipped about x (the sine of the angle).
+fn turn_off_the_line_and_tip(scene: &Scene, car: GridId) -> (f64, f64) {
+    let turn = turn_of_the_second_in_the_first(scene, ship_id(0), car);
+    let off = [(0, 1), (0, 2), (1, 0), (2, 0)]
+        .into_iter()
+        .map(|(row, column)| turn[row][column].abs())
+        .fold(0.0, f64::max);
+    (off, turn[2][1].abs())
+}
+
+/// The structure joined by two blocks, cut out by `/joint unlock` and left to stand on its joint under the planet's pull for ten seconds: how it turned (`turn_off_the_line_and_tip`).
+fn how_the_structure_turns_on_its_joint(block: u32, lower: Look, upper: Look) -> (f64, f64) {
+    let (mut scene, mut player, planet, report) =
+        a_structure_joined_to_the_ground_by(block, lower, upper);
+    say(&mut scene, &mut player, "/joint unlock");
+    let car = ships(&scene).into_iter().find(|id| *id != planet).unwrap();
+    until_coupled(&mut scene, &mut player, &report, 1, 300);
+    tick_and_follow(&mut scene, &mut player, 200);
+    turn_off_the_line_and_tip(&scene, car)
+}
+
+#[test]
+fn a_car_cut_out_of_the_ground_by_two_hinges_tips_about_the_line_of_the_hinges_and_no_other_and_by_two_balls_about_every_axis()
+ {
+    let (off, tip) = how_the_structure_turns_on_its_joint(
+        hinge_block(),
+        hinge_end_toward(FaceDirection::PositiveY, FaceDirection::PositiveX),
+        hinge_end_toward(FaceDirection::NegativeY, FaceDirection::PositiveX),
+    );
+    assert!(tip > 0.1, "the structure tipped about the line by {tip}");
+    assert!(
+        off < 0.02,
+        "a hinge on the ground turns about its line only: {off}"
+    );
+    // The control, which is what makes the test a test: the same structure on balls turns about the other axes as well (the stones are off the ball in x and in z).
+    let (ball_off, _) = how_the_structure_turns_on_its_joint(
+        joint_block(),
+        ball_end_toward(FaceDirection::PositiveY),
+        ball_end_toward(FaceDirection::NegativeY),
+    );
+    assert!(ball_off > 0.05, "{ball_off}");
 }

@@ -36,6 +36,7 @@ fn cave_numbers_its_blocks_as_it_always_did() {
             "voxunami_cave:dev_command_seat",
             "voxunami_cave:dev_rocket_engine",
             "voxunami_cave:dev_ball_joint",
+            "voxunami_cave:dev_hinge_joint",
         ]
     );
 }
@@ -102,7 +103,11 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 /// The lamp's picture (2026-11-13): `lamp.png`, 16 by 16, is now the lamp's texture, so the package is 1,048 bytes longer, 16,073 to 17,121 (1,024 of them the pixels; the other 24 are the picture's name and its entry, worked out by neither of us and not itemised), the lamp's faces are pictures (6 faces by 4 shades: 24 more materials, 319 to 343 colours) and every block after it has faces numbered 24 higher.
 /// The placeholder specular pictures (2026-11-13): `lamp_s.png` and `leaves_s.png`, 16 by 16 of four bytes each, so the package is 2,048 bytes longer, 17,121 to 19,169 (predicted before
 /// the run, and seen: the flag byte of each picture was there already); the table is the same (a companion makes no material), and the hash moved.
-const PINNED_PACKAGE: (usize, u64) = (19169, 2_715_168_694_325_898_240);
+/// The dev hinge joint (2026-11-25, `decisions/joints-and-cars.md`): the engine declares `engine:hinge_face` and Cave has one block more, which is a placeable item. The package is 19,169 bytes before and 19,619 now (+450:
+/// the declaration and the block with its entry, measured; the stream of `golden_session.rs` is 480 longer, the other 30 being the item). Every old block's face numbers moved, as they did for the ball joint: the new block's colour
+/// takes a place after the blocks' (the fire's state colours, the seat's brown, the engine's red and the ball's blue are one more), and its green end and orange line faces two places after the faces' own colours (every picture's
+/// face is three more: 31 to 34 for the stone's); so the old blocks' lines have other digests, and the palette is 346 colours where it was 343.
+const PINNED_PACKAGE: (usize, u64) = (19619, 1_382_370_830_637_760_954);
 
 /// What moved on 2026-11-09 (the dev ball joint, `docs/decisions/joints-and-cars.md`, step 2), and what did not. Every line has `joint none` or `joint PositiveY` after the docking face (the
 /// word `joint` is new, so every line is longer), and the new block is line 13. **Behaviour digests and face numbers moved for the old blocks, and the control says why:** with the new block
@@ -112,18 +117,19 @@ const PINNED_PACKAGE: (usize, u64) = (19169, 2_715_168_694_325_898_240);
 /// 29 to 31 for the stone's, 221 to 223 for the port's). The seat's brown (27 to 28) and the engine's red (28 to 29) are one more only, as they come before the blue.
 const PINNED_TABLE: &[&str] = &[
     " 0 base_blocks:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, joint none, placement Fixed, behaviour 67ba0384e7f1d7a0",
-    " 1 base_blocks:stone: colour #606060, 7 states, state 0 faces [31 32 33 34 35 36], front none, axis none, docking none, joint none, placement Fixed, behaviour 45d1c66c71ddf09a",
-    " 2 base_blocks:dirt: colour #81703b, 7 states, state 0 faces [55 56 57 58 59 60], front none, axis none, docking none, joint none, placement Fixed, behaviour 5340549e51b02ccb",
-    " 3 base_blocks:grass: colour #1e8929, 7 states, state 0 faces [79 80 81 82 83 84], front none, axis none, docking none, joint none, placement Fixed, behaviour c916d62631fb8f64",
-    " 4 base_blocks:lamp: colour #ffeba6, 1 states, state 0 faces [103 104 105 106 107 108], front none, axis none, docking none, joint none, placement Fixed, behaviour 4bdcd5b749ef3b3a",
-    " 5 base_blocks:wood: colour #887433, 7 states, state 0 faces [127 128 129 130 131 132], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour ec40bfc1aa635732",
-    " 6 base_blocks:fire: colour #f2801a, 1 states, state 0 faces [14 14 14 14 14 14], front none, axis none, docking none, joint none, placement Fixed, behaviour c66e9976277fd57f",
-    " 7 base_blocks:great_river_water: colour #283de8, 1 states, state 0 faces [175 176 177 178 179 180], front none, axis none, docking none, joint none, placement Fixed, behaviour 46d6c96fe570a4c3",
-    " 8 base_blocks:leaves: colour #1e862c, 1 states, state 0 faces [199 200 201 202 203 204], front none, axis none, docking none, joint none, placement Fixed, behaviour 579f86e92b2c37d4",
-    " 9 base_blocks:glass: colour #e1f3ff, 1 states, state 0 faces [223 224 225 226 227 228], front none, axis none, docking none, joint none, placement Fixed, behaviour ce916efb3085d083",
-    "10 voxunami_cave:dev_docking_port: colour #797658, 1 states, state 0 faces [247 248 249 250 251 252], front PositiveX, axis PositiveY, docking PositiveX, joint none, placement AlongPlacedFaceFacingPlayer { axis: PositiveY, front: PositiveX }, behaviour a09ca77ab0a2da69",
-    "11 voxunami_cave:dev_command_seat: colour #2b3638, 1 states, state 0 faces [11 28 28 11 11 11], front PositiveX, axis none, docking none, joint none, placement FrontToPlayer(PositiveX), behaviour ebf14fd87d07012f",
-    "12 voxunami_cave:dev_rocket_engine: colour #2b3638, 1 states, state 0 faces [12 12 12 29 12 12], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour e7cee0eace873bf3",
-    "13 voxunami_cave:dev_ball_joint: colour #2b3638, 1 states, state 0 faces [13 13 13 30 13 13], front none, axis PositiveY, docking none, joint PositiveY, placement AlongPlacedFace(PositiveY), behaviour ae8a711cbe186306",
-    "palette: 343 colours, digest c0e7f30340dd5f9f, pictures 312 on it, digest 33e27e72f3d797f5",
+    " 1 base_blocks:stone: colour #606060, 7 states, state 0 faces [34 35 36 37 38 39], front none, axis none, docking none, joint none, placement Fixed, behaviour a98a8c9b235d94c2",
+    " 2 base_blocks:dirt: colour #81703b, 7 states, state 0 faces [58 59 60 61 62 63], front none, axis none, docking none, joint none, placement Fixed, behaviour 8b29193e2560761b",
+    " 3 base_blocks:grass: colour #1e8929, 7 states, state 0 faces [82 83 84 85 86 87], front none, axis none, docking none, joint none, placement Fixed, behaviour fffa67b6e18325d4",
+    " 4 base_blocks:lamp: colour #ffeba6, 1 states, state 0 faces [106 107 108 109 110 111], front none, axis none, docking none, joint none, placement Fixed, behaviour c810206364ee3230",
+    " 5 base_blocks:wood: colour #887433, 7 states, state 0 faces [130 131 132 133 134 135], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour 2fd39f0cfc4370c8",
+    " 6 base_blocks:fire: colour #f2801a, 1 states, state 0 faces [15 15 15 15 15 15], front none, axis none, docking none, joint none, placement Fixed, behaviour 0e6dfc219ab40692",
+    " 7 base_blocks:great_river_water: colour #283de8, 1 states, state 0 faces [178 179 180 181 182 183], front none, axis none, docking none, joint none, placement Fixed, behaviour 352361417764c363",
+    " 8 base_blocks:leaves: colour #1e862c, 1 states, state 0 faces [202 203 204 205 206 207], front none, axis none, docking none, joint none, placement Fixed, behaviour 2767b5d9c7f868e6",
+    " 9 base_blocks:glass: colour #e1f3ff, 1 states, state 0 faces [226 227 228 229 230 231], front none, axis none, docking none, joint none, placement Fixed, behaviour d638117d0135d7a9",
+    "10 voxunami_cave:dev_docking_port: colour #797658, 1 states, state 0 faces [250 251 252 253 254 255], front PositiveX, axis PositiveY, docking PositiveX, joint none, placement AlongPlacedFaceFacingPlayer { axis: PositiveY, front: PositiveX }, behaviour 30296d1c4b18960e",
+    "11 voxunami_cave:dev_command_seat: colour #2b3638, 1 states, state 0 faces [11 29 29 11 11 11], front PositiveX, axis none, docking none, joint none, placement FrontToPlayer(PositiveX), behaviour 5a3121d3e492e58f",
+    "12 voxunami_cave:dev_rocket_engine: colour #2b3638, 1 states, state 0 faces [12 12 12 30 12 12], front none, axis PositiveY, docking none, joint none, placement AlongPlacedFace(PositiveY), behaviour a960118a40e2d3e7",
+    "13 voxunami_cave:dev_ball_joint: colour #2b3638, 1 states, state 0 faces [13 13 13 31 13 13], front none, axis PositiveY, docking none, joint PositiveY, placement AlongPlacedFace(PositiveY), behaviour 94777593e8ae9168",
+    "14 voxunami_cave:dev_hinge_joint: colour #363026, 1 states, state 0 faces [32 32 14 33 14 14], front PositiveX, axis PositiveY, docking none, joint PositiveY, hinge PositiveX, placement AlongPlacedFaceFacingPlayer { axis: PositiveY, front: PositiveX }, behaviour b13428950d0f9234",
+    "palette: 346 colours, digest a2d263126c87d008, pictures 312 on it, digest 5da6447dbb4c0565",
 ];
