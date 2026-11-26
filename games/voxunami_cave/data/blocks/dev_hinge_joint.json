@@ -9,7 +9,7 @@
   "properties": {
     "engine:axis_face": "up",
     "engine:joint_face": "up",
-    "engine:hinge_face": "east",
+    "engine:joint_line_face": "east",
     "engine:front_face": "east"
   }
 }

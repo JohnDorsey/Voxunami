@@ -58,6 +58,17 @@ impl Default for DockingSettings {
     }
 }
 
+/// The kinds of joint end. Ends are coupled, or locked, only with ends of their own kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JointKind {
+    /// Turns every way about the middle of the end's face.
+    Ball,
+    /// Bends about a line across the way its end looks.
+    Hinge,
+    /// Spins about the line along the way its end looks, which is the joint's own length.
+    Axle,
+}
+
 /// A face of a block of a ship that fits the face of another ship's block: the voxel the block is in and the face of it, in the ship's own axes. A docking port is one (the face
 /// `engine:docking_face` names), and so is the end of a joint (`engine:joint_face`); what the two share is where the face is and how it looks, and that is all this and
 /// [`BlockFaceView`] know, so that nothing here takes a joint for a port or a port for a joint (each has its own finder).
@@ -65,24 +76,33 @@ impl Default for DockingSettings {
 pub struct BlockFace {
     pub voxel: VoxelCoordinate,
     pub face: FaceDirection,
-    /// For the end of a joint that is a hinge (`engine:hinge_face`): one end of the line it turns about, in the ship's own axes. It runs through the middle of the face and across
-    /// the way the face looks, so it is never `face` or its opposite. `None` for a ball, and for a port, which has no such thing.
-    pub hinge: Option<FaceDirection>,
+    /// For the end of a joint that turns about a line (`engine:joint_line_face`): one end of that line, in the ship's own axes. It runs through the middle of the face; across the way the
+    /// face looks the joint is a hinge, along it (the face itself or its opposite) an axle. `None` for a ball, and for a port, which has no such thing.
+    pub line: Option<FaceDirection>,
 }
 
 impl BlockFace {
-    /// Whether two joint ends that face each other in one ship fit: two balls, or two hinges whose lines run the same way in the ship. Ends that do not fit are two blocks side by side, with no
-    /// joint there to be locked or drawn.
+    /// Whether two joint ends that face each other in one ship fit: two balls, or two hinges or two axles whose lines run the same way in the ship (ends that face each other look along one axis, so
+    /// a hinge's line and an axle's are never the same way). Ends that do not fit are two blocks side by side, with no joint there to be locked or drawn.
     pub(crate) fn fits(&self, other: &BlockFace) -> bool {
-        self.hinge.map(FaceDirection::axis) == other.hinge.map(FaceDirection::axis)
+        self.line.map(FaceDirection::axis) == other.line.map(FaceDirection::axis)
     }
 
-    /// A face with no hinge: a port, or the end of a joint that is a ball.
+    /// What kind of joint end this is, by where the line it turns about runs.
+    pub fn kind(&self) -> JointKind {
+        match self.line {
+            None => JointKind::Ball,
+            Some(line) if line.axis() == self.face.axis() => JointKind::Axle,
+            Some(_) => JointKind::Hinge,
+        }
+    }
+
+    /// A face with no line: a port, or the end of a joint that is a ball.
     pub fn plain(voxel: VoxelCoordinate, face: FaceDirection) -> Self {
         Self {
             voxel,
             face,
-            hinge: None,
+            line: None,
         }
     }
 

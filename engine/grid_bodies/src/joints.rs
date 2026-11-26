@@ -9,7 +9,7 @@
 
 use voxel_space::FaceDirection;
 
-use crate::docking::{Approach, BlockFaceView, cross, dot, length, turn};
+use crate::docking::{Approach, BlockFaceView, JointKind, cross, dot, length, turn};
 
 /// How ships with joint ends are drawn together and coupled. The numbers of the owner's choice are marked; the pull itself (how it slows the ends as they come) is mine.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,6 +64,8 @@ pub enum Holding {
     Ball,
     /// Two hinges on one line: two pivots on it, about which the cars bend and about nothing else.
     Hinge(LineAxes),
+    /// Two axles on one line, along the joints' own length: two pivots on it, about which the cars spin, with no limit, and about nothing else.
+    Axle(LineAxes),
 }
 
 impl Default for JointSettings {
@@ -88,7 +90,8 @@ impl Default for JointSettings {
 const DEGREES: f64 = std::f64::consts::PI / 180.0;
 
 impl JointSettings {
-    /// Whether two ends can pull on each other: they are of one kind (a ball pulls a ball and a hinge a hinge; ends of different kinds can never be coupled and do nothing to each other),
+    /// Whether two ends can pull on each other: they are of one kind (a ball pulls a ball, a hinge a hinge and an axle an axle; ends of different kinds can never be coupled and do nothing to each
+    /// other),
     /// their faces are near enough, each looks toward the other (a little behind it is allowed, by the coupling distance, so that ends that have come together still do), and they look
     /// against each other.
     pub fn pulls(
@@ -97,7 +100,7 @@ impl JointSettings {
         second: &BlockFaceView,
         approach: &Approach,
     ) -> bool {
-        first.block_face.hinge.is_some() == second.block_face.hinge.is_some()
+        first.block_face.kind() == second.block_face.kind()
             && approach.distance <= self.range
             && dot(first.normal, approach.gap) >= -self.couple_distance
             && dot(second.normal, approach.gap) <= self.couple_distance
@@ -122,15 +125,21 @@ impl JointSettings {
                 || approach.distance <= self.spin_waived_within)
     }
 
-    /// What two ends hold if they are coupled, and `None` if they cannot be: a ball holds only a ball. A hinge holds only a hinge whose line is, to `line_degrees`, the same line in the
-    /// world as its own, whatever the bend of the pair about it (the lines do not move as a hinge bends). Hinges whose lines cross hold nothing, and nor do ends of different kinds.
+    /// What two ends hold if they are coupled, and `None` if they cannot be: an end holds only an end of its own kind. Two hinges or two axles hold only if their lines are, to
+    /// `line_degrees`, the same line in the world, whatever the turn of the pair about it (the lines do not move as it turns). Lines that cross hold nothing.
     pub fn holding(&self, first: &BlockFaceView, second: &BlockFaceView) -> Option<Holding> {
-        match (first.block_face.hinge, second.block_face.hinge) {
-            (None, None) => Some(Holding::Ball),
-            (Some(first_line), Some(second_line)) => self
-                .one_line(first, first_line, second, second_line)
-                .map(Holding::Hinge),
-            _ => None,
+        let kind = first.block_face.kind();
+        if kind != second.block_face.kind() {
+            return None;
+        }
+        let one_line = || {
+            let (first_line, second_line) = (first.block_face.line?, second.block_face.line?);
+            self.one_line(first, first_line, second, second_line)
+        };
+        match kind {
+            JointKind::Ball => Some(Holding::Ball),
+            JointKind::Hinge => one_line().map(Holding::Hinge),
+            JointKind::Axle => one_line().map(Holding::Axle),
         }
     }
 

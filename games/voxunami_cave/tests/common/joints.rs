@@ -8,7 +8,9 @@ use voxel_space::{
     BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LatticeRotation,
     Orientation, WorldPosition,
 };
-use voxunami_cave::content::{CaveContent, dev_ball_joint_id, dev_hinge_joint_id};
+use voxunami_cave::content::{
+    CaveContent, dev_axle_joint_id, dev_ball_joint_id, dev_hinge_joint_id,
+};
 use voxunami_cave::placement::turn_carrying;
 
 use super::docking::{Look, Placed, make, stones};
@@ -44,6 +46,18 @@ pub fn hinge_end_toward(end: FaceDirection, line: FaceDirection) -> Look {
         state: 0,
         orientation: orientation as u32,
     }
+}
+
+pub fn axle_block() -> u32 {
+    CaveContent::new().registries()[0]
+        .1
+        .raw_id_of(&dev_axle_joint_id())
+        .expect("Cave has the dev axle joint")
+}
+
+/// A dev axle joint turned so that its end (the face that is its joint face, which is up as it is made, and its line) looks this way.
+pub fn axle_end_toward(face: FaceDirection) -> Look {
+    ball_end_toward(face)
 }
 
 /// A dev ball joint turned so that its ball end (the face that is its joint face, which is up as it is made) looks this way.
@@ -130,6 +144,28 @@ pub fn west_hinge_car(count: i128, line: FaceDirection) -> Vec<Placed> {
     blocks
 }
 
+/// A car of `count` stones in a row along x with an axle end after them looking east (its pivot is at x = `count` + 1 in the car).
+pub fn east_axle_car(count: i128) -> Vec<Placed> {
+    let mut blocks = stones(0, count);
+    blocks.push((
+        [count, 0, 0],
+        axle_block(),
+        axle_end_toward(FaceDirection::PositiveX),
+    ));
+    blocks
+}
+
+/// A car with an axle end looking west before `count` stones (its pivot is at x = 0 in the car).
+pub fn west_axle_car(count: i128) -> Vec<Placed> {
+    let mut blocks = vec![(
+        [0, 0, 0],
+        axle_block(),
+        axle_end_toward(FaceDirection::NegativeX),
+    )];
+    blocks.extend(stones(1, count + 1));
+    blocks
+}
+
 /// What the scene's bodies say, as a function.
 pub type Report = Box<dyn Fn() -> grid_bodies::BodiesReport>;
 
@@ -178,6 +214,14 @@ pub fn two_hinge_cars(
             (20.0, east_hinge_car(3, east_line)),
             (27.0, west_hinge_car(3, west_line)),
         ],
+    )
+}
+
+/// Two cars with axle ends three metres apart, in a line along x (the east car made first: ship 0), and a player beside them.
+pub fn two_axle_cars() -> (Scene, Report, Player) {
+    a_player_and_cars(
+        22.0,
+        vec![(20.0, east_axle_car(3)), (27.0, west_axle_car(3))],
     )
 }
 

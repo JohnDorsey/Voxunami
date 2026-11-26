@@ -164,7 +164,7 @@ pub struct BlockTable {
     /// The columns of the face properties of the engine, if the schema declares them.
     docking_face_column: Option<usize>,
     joint_face_column: Option<usize>,
-    hinge_face_column: Option<usize>,
+    joint_line_face_column: Option<usize>,
     front_face_column: Option<usize>,
     axis_face_column: Option<usize>,
     rotations: [LatticeRotation; ORIENTATION_COUNT],
@@ -418,13 +418,13 @@ impl BlockTable {
         let (
             docking_face_column,
             joint_face_column,
-            hinge_face_column,
+            joint_line_face_column,
             front_face_column,
             axis_face_column,
         ) = (
             find(engine::DOCKING_FACE.id()),
             find(engine::JOINT_FACE.id()),
-            find(engine::HINGE_FACE.id()),
+            find(engine::JOINT_LINE_FACE.id()),
             find(engine::FRONT_FACE.id()),
             find(engine::AXIS_FACE.id()),
         );
@@ -438,7 +438,7 @@ impl BlockTable {
             columns,
             docking_face_column,
             joint_face_column,
-            hinge_face_column,
+            joint_line_face_column,
             front_face_column,
             axis_face_column,
             rotations,
@@ -577,9 +577,14 @@ impl BlockTable {
         self.turned_face(self.joint_face_column, block, state, orientation)
     }
 
-    /// One end of the line a joint's hinge turns about (`engine:hinge_face`), in a state and an orientation: `None` for a block that has none, which if it is a joint end is a ball.
-    pub fn hinge_face(&self, block: u32, state: u32, orientation: u32) -> Option<FaceDirection> {
-        self.turned_face(self.hinge_face_column, block, state, orientation)
+    /// One end of the line a joint turns about (`engine:joint_line_face`), in a state and an orientation: `None` for a block that has none, which if it is a joint end is a ball.
+    pub fn joint_line_face(
+        &self,
+        block: u32,
+        state: u32,
+        orientation: u32,
+    ) -> Option<FaceDirection> {
+        self.turned_face(self.joint_line_face_column, block, state, orientation)
     }
 
     /// The front of a block that has one (`engine:front_face`), in a state and an orientation.
@@ -1276,17 +1281,17 @@ mod tests {
     }
 
     #[test]
-    fn the_hinge_face_turns_with_the_voxel_and_is_a_property_of_its_own() {
+    fn the_joint_line_face_turns_with_the_voxel_and_is_a_property_of_its_own() {
         // A joint end whose hinge turns about the line along east and west, and one that has no hinge (a ball).
         let hinge = BlockDefinition::cube([0.3; 3])
             .with_joint_face(FaceDirection::PositiveY)
-            .with_hinge_face(FaceDirection::PositiveX);
+            .with_joint_line_face(FaceDirection::PositiveX);
         let ball = BlockDefinition::cube([0.3; 3]).with_joint_face(FaceDirection::PositiveY);
         let table = BlockTable::from_definitions(&[Some(&hinge), Some(&ball)]);
         for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
             let o = orientation as u32;
             assert_eq!(
-                table.hinge_face(0, 0, o),
+                table.joint_line_face(0, 0, o),
                 Some(rotation.apply_face(FaceDirection::PositiveX)),
                 "{orientation}"
             );
@@ -1298,13 +1303,13 @@ mod tests {
             assert_eq!(table.front_face(0, 0, o), None);
             assert_eq!(table.axis_face(0, 0, o), None);
             assert_eq!(table.docking_face(0, 0, o), None);
-            assert_eq!(table.hinge_face(1, 0, o), None);
+            assert_eq!(table.joint_line_face(1, 0, o), None);
         }
         // A block that is not a joint has none, and an unknown block has none.
         let stone = BlockDefinition::cube([0.5; 3]);
         let table = BlockTable::from_definitions(&[Some(&stone)]);
-        assert_eq!(table.hinge_face(0, 0, 3), None);
-        assert_eq!(table.hinge_face(5, 0, 3), None);
+        assert_eq!(table.joint_line_face(0, 0, 3), None);
+        assert_eq!(table.joint_line_face(5, 0, 3), None);
     }
 
     #[test]

@@ -5,15 +5,17 @@ mod common;
 
 use block_models::{Placement, Shape, ShapeBox};
 use common::docking::{PLAIN, facing, make, port_block, stones};
-use common::joints::{ball_end_toward, hinge_block, hinge_end_toward, joint_block};
+use common::joints::{
+    axle_block, axle_end_toward, ball_end_toward, hinge_block, hinge_end_toward, joint_block,
+};
 use common::{Scene, ship_id};
 use game_shell::GameContent;
 use voxel_space::{
     BrickCoordinate, FaceDirection, GridPose, Orientation, VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::{
-    CaveContent, dev_ball_joint_id, dev_command_seat_id, dev_docking_port_id, dev_hinge_joint_id,
-    dev_rocket_engine_id,
+    CaveContent, dev_axle_joint_id, dev_ball_joint_id, dev_command_seat_id, dev_docking_port_id,
+    dev_hinge_joint_id, dev_rocket_engine_id,
 };
 use voxunami_cave::items::{creative_only_blocks, placeable_blocks};
 use voxunami_cave::plugins::docking;
@@ -47,10 +49,20 @@ fn the_dev_ball_joint_is_block_13_of_cave_placeable_and_creative_only() {
 }
 
 #[test]
-fn the_dev_hinge_joint_is_the_last_block_of_cave_placeable_and_creative_only() {
+fn the_dev_hinge_joint_is_block_14_of_cave_placeable_and_creative_only() {
     let content = CaveContent::new();
     let package = content.package_data();
     let id = dev_hinge_joint_id();
+    assert_eq!(package.blocks[14].0, id);
+    assert!(placeable_blocks(&package).contains(&id));
+    assert!(creative_only_blocks(&package).contains(&id));
+}
+
+#[test]
+fn the_dev_axle_joint_is_the_last_block_of_cave_placeable_and_creative_only() {
+    let content = CaveContent::new();
+    let package = content.package_data();
+    let id = dev_axle_joint_id();
     // (Last: the numbers of the blocks that were there before it do not move.)
     assert_eq!(
         package.blocks.last().map(|(identifier, _)| identifier),
@@ -64,9 +76,45 @@ fn the_dev_hinge_joint_is_the_last_block_of_cave_placeable_and_creative_only() {
             dev_command_seat_id(),
             dev_rocket_engine_id(),
             dev_ball_joint_id(),
+            dev_hinge_joint_id(),
             id
         ]
     );
+}
+
+#[test]
+fn a_dev_axle_joint_is_the_ball_joints_bar_with_its_line_along_it_and_is_placed_like_a_log() {
+    let content = CaveContent::new();
+    let table = content.block_table();
+    let block = axle_block();
+    let palette = table.palette();
+    assert_eq!(table.state_count(block), 1);
+    assert_eq!(table.docking_face(block, 0, 0), None);
+    assert_eq!(table.front_face(block, 0, 0), None);
+    assert_eq!(
+        table.placement(block, 0),
+        Placement::AlongPlacedFace(FaceDirection::PositiveY)
+    );
+    assert!(
+        table
+            .shape(table.model_of(block, 0, 0))
+            .same_cells(&Shape::from_boxes(&[AS_MADE]))
+    );
+    // Whichever way its end looks, its line is along it, and only the end has a colour of its own.
+    for face in FaceDirection::ALL {
+        let orientation = axle_end_toward(face).orientation;
+        assert_eq!(table.joint_face(block, 0, orientation), Some(face));
+        assert_eq!(table.joint_line_face(block, 0, orientation), Some(face));
+        for other in FaceDirection::ALL {
+            let material = table.material_of_face(block, 0, orientation, other);
+            let expected = if other == face {
+                [0.85, 0.35, 0.85]
+            } else {
+                table.color(block)
+            };
+            assert_eq!(palette[material as usize], expected, "{face:?} {other:?}");
+        }
+    }
 }
 
 #[test]
@@ -253,7 +301,7 @@ fn a_dev_hinge_joint_is_the_ball_joints_bar_with_a_line_across_the_way_it_looks_
         Some(FaceDirection::PositiveY)
     );
     assert_eq!(
-        table.hinge_face(block, 0, 0),
+        table.joint_line_face(block, 0, 0),
         Some(FaceDirection::PositiveX)
     );
     assert_eq!(table.axis_face(block, 0, 0), Some(FaceDirection::PositiveY));
@@ -283,7 +331,7 @@ fn a_dev_hinge_joint_is_the_ball_joints_bar_with_a_line_across_the_way_it_looks_
         {
             let look = hinge_end_toward(end, line);
             assert_eq!(table.joint_face(block, 0, look.orientation), Some(end));
-            let named = table.hinge_face(block, 0, look.orientation).unwrap();
+            let named = table.joint_line_face(block, 0, look.orientation).unwrap();
             assert!([line, line.opposite()].contains(&named), "{end:?} {line:?}");
             assert_eq!(table.front_face(block, 0, look.orientation), Some(named));
         }
@@ -291,7 +339,7 @@ fn a_dev_hinge_joint_is_the_ball_joints_bar_with_a_line_across_the_way_it_looks_
     // The ball joint has no hinge, whichever way it is turned, and nor has any other block of flight.
     for other in [joint_block(), port_block(), stone_block()] {
         for orientation in 0..24 {
-            assert_eq!(table.hinge_face(other, 0, orientation), None);
+            assert_eq!(table.joint_line_face(other, 0, orientation), None);
         }
     }
 }
@@ -309,7 +357,7 @@ fn the_end_of_a_hinge_and_the_two_faces_its_line_comes_out_of_have_colours_of_th
             .filter(|line| line.axis() != end.axis())
         {
             let orientation = hinge_end_toward(end, line).orientation;
-            let named = table.hinge_face(block, 0, orientation).unwrap();
+            let named = table.joint_line_face(block, 0, orientation).unwrap();
             for face in FaceDirection::ALL {
                 let material = table.material_of_face(block, 0, orientation, face);
                 let expected = if face == end {
@@ -367,7 +415,7 @@ fn a_ship_has_the_hinge_of_a_hinge_end_in_its_joint_ends_and_ends_that_face_each
     let ends: Vec<(VoxelCoordinate, FaceDirection, Option<usize>)> = docking
         .joint_ends_of(ship)
         .into_iter()
-        .map(|end| (end.voxel, end.face, end.hinge.map(FaceDirection::axis)))
+        .map(|end| (end.voxel, end.face, end.line.map(FaceDirection::axis)))
         .collect();
     assert_eq!(
         ends,
@@ -399,7 +447,7 @@ fn a_ship_has_the_hinge_of_a_hinge_end_in_its_joint_ends_and_ends_that_face_each
 }
 
 #[test]
-fn two_ends_that_face_each_other_in_a_ship_are_a_locked_pair_if_they_are_two_balls_or_two_hinges_on_one_line_and_not_otherwise()
+fn two_ends_that_face_each_other_in_a_ship_are_a_locked_pair_if_they_are_of_one_kind_and_on_one_line_and_not_otherwise()
  {
     let ball_east = ball_end_toward(FaceDirection::PositiveX);
     let ball_west = ball_end_toward(FaceDirection::NegativeX);
@@ -437,6 +485,24 @@ fn two_ends_that_face_each_other_in_a_ship_are_a_locked_pair_if_they_are_two_bal
             "a hinge and a ball",
             (hinge_block(), hinge(east, z)),
             (joint_block(), ball_west),
+            0,
+        ),
+        (
+            "two axles",
+            (axle_block(), axle_end_toward(east)),
+            (axle_block(), axle_end_toward(west)),
+            1,
+        ),
+        (
+            "an axle and a ball",
+            (axle_block(), axle_end_toward(east)),
+            (joint_block(), ball_west),
+            0,
+        ),
+        (
+            "an axle and a hinge",
+            (axle_block(), axle_end_toward(east)),
+            (hinge_block(), hinge(west, z)),
             0,
         ),
     ];

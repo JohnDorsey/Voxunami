@@ -144,6 +144,28 @@ pub fn dev_hinge_joint() -> BlockDefinition {
     definition
 }
 
+/// The identifier of the dev axle joint.
+pub fn dev_axle_joint_id() -> NamespacedId {
+    "voxunami_cave:dev_axle_joint"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The dev axle joint (creative only): the dev ball joint's bar, with an axle where that has a ball. It is a blue gray bar of 0.75 by 0.5 by 0.5 metres whose end is a purple face, the end of the
+/// joint (`engine:joint_face`) and one end of the line it turns about (`engine:joint_line_face`), which runs along the bar. Two of them whose purple ends look at each other across a cell
+/// boundary, half a metre apart, hold a cylinder from the tip of one to the tip of the other that the two cars spin about, with no limit, and about nothing else
+/// (`docs/decisions/joints-and-cars.md`, "The dev axle joint"). It has one state, made with the purple end up, and is placed like a log, with that end away from the face that was clicked.
+/// It is data: `data/blocks/dev_axle_joint.json`, in flat colours, with no pictures yet.
+pub fn dev_axle_joint() -> BlockDefinition {
+    let (identifier, definition) = block_from_data(
+        "games/voxunami_cave/data/blocks/dev_axle_joint.json",
+        "dev_axle_joint",
+        include_str!("../data/blocks/dev_axle_joint.json"),
+    );
+    assert_eq!(identifier, dev_axle_joint_id());
+    definition
+}
+
 /// The identifier of the dev command seat.
 pub fn dev_command_seat_id() -> NamespacedId {
     "voxunami_cave:dev_command_seat"
@@ -266,6 +288,9 @@ impl CaveContent {
         blocks
             .register(dev_hinge_joint_id(), dev_hinge_joint())
             .expect("the name of the dev hinge joint is not another block's");
+        blocks
+            .register(dev_axle_joint_id(), dev_axle_joint())
+            .expect("the name of the dev axle joint is not another block's");
         let spec = PackageSpec {
             textures: base_blocks::textures(),
             level: overworld_id(),

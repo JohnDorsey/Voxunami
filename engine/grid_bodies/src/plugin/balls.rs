@@ -4,7 +4,8 @@
 //! comes late; a client draws it as a ball (the game's client plugin gives the kind its appearance).
 //!
 //! **A hinge has a cylinder where a ball joint has a ball:** two hinge ends whose lines are one line (a coupling that holds a hinge, or a locked pair of hinges whose lines run the same way)
-//! have an entity of the kind **`engine:joint_hinge`** at the same place, turned so that its length (its own x axis) runs along the line of the hinge. Ends that cannot be coupled, or do
+//! have an entity of the kind **`engine:joint_hinge`** at the same place, turned so that its length (its own x axis) runs along the line of the hinge; two axles have one of the kind
+//! **`engine:joint_axle`**, along their line (the length of the joints, from one bar's tip to the other's). Ends that cannot be coupled, or do
 //! not fit, are no joint and have nothing.
 //!
 //! **Aboard the ship, not in the world:** its place in the ship's own coordinates does not change while the ends stay, so nothing moves it as the ship flies, turns on a rail or is
@@ -27,7 +28,7 @@ use voxel_space::{
 };
 
 use super::Bodies;
-use crate::docking::{BlockFace, locked_joint_pairs};
+use crate::docking::{BlockFace, JointKind, locked_joint_pairs};
 use crate::joints::Holding;
 
 /// The kind of the entity that is the ball of a joint.
@@ -40,6 +41,13 @@ pub fn joint_ball_kind() -> NamespacedId {
 /// The kind of the entity that is the cylinder of a hinge.
 pub fn joint_hinge_kind() -> NamespacedId {
     "engine:joint_hinge"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The kind of the entity that is the cylinder of an axle.
+pub fn joint_axle_kind() -> NamespacedId {
+    "engine:joint_axle"
         .parse()
         .expect("constant identifier is valid")
 }
@@ -83,16 +91,23 @@ pub(super) fn joint_ball_kind_spec() -> EntityKindSpec {
     EntityKindSpec::new(joint_ball_kind().as_str()).component(JointRigid(false), true)
 }
 
-/// The kind of a cylinder: whether its joint is rigid is all it has besides a place and the turn that says which way it runs.
+/// The kinds of the cylinders: whether its joint is rigid is all a cylinder has besides a place and the turn that says which way it runs.
 pub(super) fn joint_hinge_kind_spec() -> EntityKindSpec {
     EntityKindSpec::new(joint_hinge_kind().as_str()).component(JointRigid(false), true)
 }
 
-/// What a joint is drawn as: a ball, or a cylinder along the line of a hinge (the end of the line that its first end names, in the axes of the ship the cylinder is aboard).
+pub(super) fn joint_axle_kind_spec() -> EntityKindSpec {
+    EntityKindSpec::new(joint_axle_kind().as_str()).component(JointRigid(false), true)
+}
+
+/// What a joint is drawn as: a ball, or a cylinder along the line of a hinge or an axle (the end of the line that its first end names, in the axes of the ship the cylinder is aboard).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Drawing {
     Ball,
-    Cylinder(FaceDirection),
+    /// A hinge's cylinder, across the bars.
+    Hinge(FaceDirection),
+    /// An axle's, along them.
+    Axle(FaceDirection),
 }
 
 impl Drawing {
@@ -100,19 +115,25 @@ impl Drawing {
     fn of_a_coupling(holding: Holding) -> Self {
         match holding {
             Holding::Ball => Self::Ball,
-            Holding::Hinge(axes) => Self::Cylinder(axes.first),
+            Holding::Hinge(axes) => Self::Hinge(axes.first),
+            Holding::Axle(axes) => Self::Axle(axes.first),
         }
     }
 
     /// What a locked pair of ends of one ship (they fit: [`locked_joint_pairs`]) is drawn as, by its first end.
     fn of_a_locked_pair(first: &BlockFace) -> Self {
-        first.hinge.map_or(Self::Ball, Self::Cylinder)
+        match (first.kind(), first.line) {
+            (JointKind::Hinge, Some(line)) => Self::Hinge(line),
+            (JointKind::Axle, Some(line)) => Self::Axle(line),
+            _ => Self::Ball,
+        }
     }
 
     fn kind(self) -> NamespacedId {
         match self {
             Self::Ball => joint_ball_kind(),
-            Self::Cylinder(_) => joint_hinge_kind(),
+            Self::Hinge(_) => joint_hinge_kind(),
+            Self::Axle(_) => joint_axle_kind(),
         }
     }
 
@@ -120,7 +141,7 @@ impl Drawing {
     fn orientation(self) -> Orientation {
         match self {
             Self::Ball => Orientation::IDENTITY,
-            Self::Cylinder(line) => LatticeRotation::all()
+            Self::Hinge(line) | Self::Axle(line) => LatticeRotation::all()
                 .into_iter()
                 .find(|turn| turn.apply_face(FaceDirection::PositiveX) == line)
                 .expect("some turn of the lattice carries x onto any face")
@@ -136,7 +157,9 @@ impl Drawing {
         }
         match self {
             Self::Ball => true,
-            Self::Cylinder(line) => axis_a_cylinder_runs_along(orientation) == Some(line.axis()),
+            Self::Hinge(line) | Self::Axle(line) => {
+                axis_a_cylinder_runs_along(orientation) == Some(line.axis())
+            }
         }
     }
 }
@@ -223,14 +246,14 @@ impl Bodies {
 
     /// Makes the entities of the kinds be the balls and cylinders there should be, and no others (see the module).
     pub(super) fn keep_the_balls(&mut self, world: &mut ServerWorld) {
-        let (ball, hinge) = (joint_ball_kind(), joint_hinge_kind());
+        let kinds = [joint_ball_kind(), joint_hinge_kind(), joint_axle_kind()];
         let mut missing = self.places_for_balls(world);
         let mut extra: Vec<EntityId> = Vec::new();
         let mut to_mark: Vec<(EntityId, bool)> = Vec::new();
         for entity in world
             .entities()
             .iter()
-            .filter(|entity| entity.kind == ball || entity.kind == hinge)
+            .filter(|entity| kinds.contains(&entity.kind))
         {
             let place = (entity.pose.grid, entity.pose.position.in_voxels());
             match missing.iter().position(|(wanted, drawing, _)| {

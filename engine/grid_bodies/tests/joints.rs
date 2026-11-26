@@ -1,12 +1,12 @@
 //! The rules of joints between ships, apart from any ship: when two joint ends pull on each other, when they are coupled, and the pull (`docs/decisions/joints-and-cars.md`,
 //! "Coupling, lock, unlock"). The numbers the owner chose are in the first test; the pull is the part that is mine, and it is checked by working a pair of bodies out under it.
 
-use grid_bodies::BlockFace;
 use grid_bodies::docking::{Approach, BlockFaceView};
 use grid_bodies::joints::{
     Holding, Inertia, JointSettings, LineAxes, effective_inertia, effective_mass,
     inertia_in_the_world, inverse_inertia_along, mass_at_an_end,
 };
+use grid_bodies::{BlockFace, JointKind};
 use voxel_space::{FaceDirection, LatticeRotation, VoxelCoordinate};
 
 type Vec3 = [f64; 3];
@@ -579,7 +579,7 @@ fn hinge_end(rotation: [[f64; 3]; 3], hinge: Option<FaceDirection>) -> BlockFace
         block_face: BlockFace {
             voxel: VoxelCoordinate::new(0, 0, 0),
             face: FaceDirection::PositiveY,
-            hinge,
+            line: hinge,
         },
         centre: [0.0; 3],
         normal: [0, 1, 2].map(|row| rotation[row][1]),
@@ -673,7 +673,7 @@ fn ends_of_different_kinds_neither_pull_nor_couple_and_hinges_whose_lines_cross_
     let (ball_first, ball_second) = facing_pair(0.1, 0.0);
     let with_line = |view: BlockFaceView, line: Option<FaceDirection>| BlockFaceView {
         block_face: BlockFace {
-            hinge: line,
+            line,
             ..view.block_face
         },
         ..view
@@ -696,4 +696,88 @@ fn ends_of_different_kinds_neither_pull_nor_couple_and_hinges_whose_lines_cross_
     let second = with_line(ball_second, across);
     assert!(settings.pulls(&first, &second, &how));
     assert!(!settings.can_couple(&first, &second, &how, [0.0; 3], [0.0; 3]));
+}
+
+#[test]
+fn a_joint_end_is_a_ball_a_hinge_or_an_axle_by_where_the_line_it_turns_about_runs() {
+    let end = |face, line| BlockFace {
+        voxel: VoxelCoordinate::new(0, 0, 0),
+        face,
+        line,
+    };
+    for face in FaceDirection::ALL {
+        assert_eq!(end(face, None).kind(), JointKind::Ball);
+        for line in FaceDirection::ALL {
+            // The line along the way the end looks (either end of it) is an axle's; across it is a hinge's.
+            let expected = if line.axis() == face.axis() {
+                JointKind::Axle
+            } else {
+                JointKind::Hinge
+            };
+            assert_eq!(end(face, Some(line)).kind(), expected, "{face:?} {line:?}");
+        }
+    }
+}
+
+#[test]
+fn two_axles_hold_however_they_are_turned_about_their_line_and_not_if_it_is_not_one_line() {
+    let settings = JointSettings::default();
+    let up = FaceDirection::PositiveY;
+    let down = FaceDirection::NegativeY;
+    let first = hinge_end(NOT_TURNED, Some(up));
+    let held = |second: BlockFaceView| settings.holding(&first, &second);
+    let axle = |first, second| Some(Holding::Axle(LineAxes { first, second }));
+    // Whichever end of the line the second names, it is given the end that points as the first's does.
+    for named in [up, down] {
+        assert_eq!(held(hinge_end(NOT_TURNED, Some(named))), axle(up, up));
+    }
+    // Turned about the line (the bar) by any angle, and half way round about another axis so that the ends look at each other: still one line.
+    for degrees in [0.0, 17.0, 45.0, 90.0, 133.0, 180.0, 271.0] {
+        assert!(
+            matches!(
+                held(hinge_end(about(1, degrees), Some(up))),
+                Some(Holding::Axle(_))
+            ),
+            "{degrees}"
+        );
+    }
+    assert_eq!(
+        held(hinge_end(about(0, 180.0), Some(up))),
+        axle(up, down),
+        "turned over, its up is the world's down"
+    );
+    // Tilted off the line by more than ten degrees it is not one line.
+    assert!(held(hinge_end(about(0, 9.9), Some(up))).is_some());
+    assert_eq!(held(hinge_end(about(0, 10.1), Some(up))), None);
+    assert_eq!(held(hinge_end(about(2, 14.0), Some(up))), None);
+}
+
+#[test]
+fn an_axle_holds_only_an_axle_and_pulls_only_one() {
+    let settings = JointSettings::default();
+    let axle = hinge_end(NOT_TURNED, Some(FaceDirection::PositiveY));
+    let hinge = hinge_end(NOT_TURNED, Some(FaceDirection::PositiveX));
+    let ball = hinge_end(NOT_TURNED, None);
+    for other in [hinge, ball] {
+        assert_eq!(settings.holding(&axle, &other), None);
+        assert_eq!(settings.holding(&other, &axle), None);
+    }
+    // Pulls: ends that face each other, an axle and a hinge or a ball, do not pull; two axles do.
+    let (first, second) = facing_pair(0.5, 0.0);
+    let with_line = |view: BlockFaceView, line: Option<FaceDirection>| BlockFaceView {
+        block_face: BlockFace {
+            line,
+            ..view.block_face
+        },
+        ..view
+    };
+    // (The ends of `facing_pair` are on faces east: an axle's line there is along x, a hinge's along z.)
+    let along = Some(FaceDirection::PositiveX);
+    let across = Some(FaceDirection::PositiveZ);
+    let how = between(&first, &second);
+    for other in [across, None] {
+        assert!(!settings.pulls(&with_line(first, along), &with_line(second, other), &how));
+        assert!(!settings.pulls(&with_line(first, other), &with_line(second, along), &how));
+    }
+    assert!(settings.pulls(&with_line(first, along), &with_line(second, along), &how));
 }

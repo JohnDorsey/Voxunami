@@ -5,12 +5,13 @@
 mod common;
 
 use common::joints::{
-    a_player_and_cars, a_player_at_and_cars_posed, east_hinge_car, hinge_block, minus, two_cars,
-    two_hinge_cars, until_coupled, west_car, west_hinge_car, world_of,
+    a_player_and_cars, a_player_at_and_cars_posed, axle_block, east_axle_car, east_hinge_car,
+    hinge_block, minus, two_axle_cars, two_cars, two_hinge_cars, until_coupled, west_axle_car,
+    west_car, west_hinge_car, world_of,
 };
 use common::{FLOOR, Player, Scene, length, say, ship_id, tick_and_follow};
 use entities::ComponentBag;
-use grid_bodies::{JointRigid, joint_ball_kind, joint_hinge_kind};
+use grid_bodies::{JointRigid, joint_axle_kind, joint_ball_kind, joint_hinge_kind};
 use renderer::EntityShape;
 use voxel_space::{
     BrickCoordinate, EntityPose, FaceDirection, GridId, GridPose, Orientation, WorldPosition,
@@ -376,5 +377,102 @@ fn a_player_is_shown_the_cylinder_in_the_hinge_blocks_colour_where_the_ends_meet
         the_same_line(the_length_of_a_cylinder_turned(drawn.orientation), along(1)),
         "drawn along the hinge, which is along y in the world: {:?}",
         the_length_of_a_cylinder_turned(drawn.orientation)
+    );
+}
+
+/// What the axles' cylinders are: the ship each is aboard, where in it, which way its length runs there, and whether it is marked rigid.
+fn axles(scene: &Scene) -> Vec<(GridId, [f64; 3], [f64; 3], bool)> {
+    scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == joint_axle_kind())
+        .map(|entity| {
+            (
+                entity.pose.grid,
+                entity.pose.position.in_voxels(),
+                the_length_of_a_cylinder_turned(entity.pose.orientation),
+                entity
+                    .components
+                    .get::<JointRigid>()
+                    .expect("the component can be read")
+                    .expect("a cylinder has it")
+                    .0,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn an_axle_coupling_has_a_cylinder_along_the_bars_and_no_ball_or_hinge_and_has_it_only_while_it_is_coupled()
+ {
+    let (mut scene, report, mut player) = two_axle_cars();
+    until_coupled(&mut scene, &mut player, &report, 1, 600);
+    tick_and_follow(&mut scene, &mut player, 5);
+    let found = axles(&scene);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].0, found[0].1), (ship_id(0), [4.0, 0.5, 0.5]));
+    assert!(
+        the_same_line(found[0].2, along(0)),
+        "along the bars, which run along x: {:?}",
+        found[0].2
+    );
+    assert!(!found[0].3);
+    assert!(balls(&scene).is_empty() && hinges(&scene).is_empty());
+    assert!(say(&mut scene, &mut player, "/joint decouple").contains("decoupled"));
+    tick_and_follow(&mut scene, &mut player, 2);
+    assert!(axles(&scene).is_empty());
+}
+
+#[test]
+fn a_ship_whose_two_axle_ends_face_each_other_has_a_rigid_axle_cylinder_there() {
+    let mut blocks = east_axle_car(3);
+    blocks.extend(
+        west_axle_car(3)
+            .into_iter()
+            .map(|([x, y, z], block, look)| ([x + 4, y, z], block, look)),
+    );
+    let (mut scene, _report, mut player) = a_player_and_cars(24.0, vec![(20.0, blocks)]);
+    tick_and_follow(&mut scene, &mut player, 10);
+    let found = axles(&scene);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(the_same_line(found[0].2, along(0)));
+    assert!(found[0].3, "a locked joint is rigid");
+    assert!(balls(&scene).is_empty() && hinges(&scene).is_empty());
+}
+
+#[test]
+fn a_player_is_shown_the_axle_as_a_cylinder_of_the_axle_blocks_colour_along_the_cars_however_they_are_turned()
+ {
+    // The cars lie along z (turned a quarter about y), so the axle is along z in the world: not the way an upright cylinder lies (x).
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let about_y = Orientation::from_components([0.0, half, 0.0, half]).expect("a turn about y");
+    let at = |z: f64| {
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [20.0, common::joints::LEVEL, z]),
+            about_y,
+        )
+    };
+    let (mut scene, report, mut player) = a_player_at_and_cars_posed(
+        [20.5, FLOOR + 5.0, 36.0],
+        vec![(at(40.0), east_axle_car(3)), (at(33.0), west_axle_car(3))],
+    );
+    until_coupled(&mut scene, &mut player, &report, 1, 600);
+    tick_and_follow(&mut scene, &mut player, 10);
+    let boxes = player.entity_boxes();
+    assert_eq!(boxes.len(), 1, "{boxes:?}");
+    assert_eq!(boxes[0].shape, EntityShape::Cylinder);
+    assert_eq!(boxes[0].material, axle_block());
+    let wanted = world_of(&scene, ship_id(0), [4.0, 0.5, 0.5]);
+    assert!(length(minus(boxes[0].position.in_voxels(), wanted)) < 0.01);
+    assert!(
+        the_same_line(
+            the_length_of_a_cylinder_turned(boxes[0].orientation),
+            along(2)
+        ),
+        "{:?}",
+        the_length_of_a_cylinder_turned(boxes[0].orientation)
     );
 }

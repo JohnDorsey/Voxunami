@@ -32,8 +32,8 @@ use crate::joints::{Holding, Inertia, JointSettings, effective_mass};
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
 
-/// How far from the middle of a hinge's end face, in voxels along its line, each of the two pivots of a hinge is: the two ends of a cylinder half a voxel long (as long as the bar is wide, and as
-/// wide as the ball is).
+/// How far from the middle of a hinge's or an axle's end face, in voxels along its line, each of its two pivots is: the two ends of a cylinder half a voxel long (a hinge's runs across the bar, an
+/// axle's along it, from the tip of one bar to the tip of the other).
 const HINGE_PIVOT_OFFSET: f64 = 0.25;
 
 /// The point `distance` voxels from `from` along the way a face looks.
@@ -50,7 +50,7 @@ pub(super) struct Coupled {
     pub(super) frame: FrameKey,
     pub(super) first_end: BlockFace,
     pub(super) second_end: BlockFace,
-    /// What the two ends hold (`JointSettings::holding`, asked when the coupling was made, of the places the ships had then): a ball, or a hinge with the line of each, as its ship has it. Kept
+    /// What the two ends hold (`JointSettings::holding`, asked when the coupling was made, of the places the ships had then): a ball, or a hinge or an axle with the line of each, as its ship has it. Kept
     /// with the coupling, so that a joint made again (in another frame) is the joint it was.
     pub(super) holding: Holding,
     /// Whether the body world's coupling was made rigid at the turn its bodies had (`stiffness.rs`): what the world says of the pair is made true in the tick after it says it.
@@ -200,14 +200,18 @@ impl Bodies {
         self.record_couplings(world);
         self.tell_the_desk_the_pivots(world);
         let now = self.couplings.len() as u64;
-        let hinges = self
-            .couplings
-            .values()
-            .filter(|coupled| matches!(coupled.holding, Holding::Hinge(_)))
-            .count() as u64;
+        let holding = |wanted: fn(&Holding) -> bool| {
+            self.couplings
+                .values()
+                .filter(|coupled| wanted(&coupled.holding))
+                .count() as u64
+        };
+        let hinges = holding(|holding| matches!(holding, Holding::Hinge(_)));
+        let axles = holding(|holding| matches!(holding, Holding::Axle(_)));
         self.count(|report| {
             report.couplings = now;
             report.hinges = hinges;
+            report.axles = axles;
         });
     }
 
@@ -599,7 +603,7 @@ impl Bodies {
                         let second_view = BlockFaceView::of(*second_end, &second_ship.pose, from);
                         let how = approach(&first_view, &second_view);
                         // (A pair the world has saved is made again whatever the line-up and the speeds, by ends of one kind only.)
-                        if ((saved && first_end.hinge.is_some() == second_end.hinge.is_some())
+                        if ((saved && first_end.kind() == second_end.kind())
                             || settings.pulls(&first_view, &second_view, &how))
                             && best
                                 .as_ref()
@@ -661,7 +665,7 @@ impl Bodies {
         pairs
     }
 
-    /// Couples two ships at their ends: a ball joint at the middle of the two faces, or a hinge of two pivots on the line through that middle if both ends are hinges on one line (see
+    /// Couples two ships at their ends: a ball joint at the middle of the two faces, or two pivots on the line through that middle for two hinges or two axles on one line (see
     /// [`Coupled::holding`]); the faces are at one place to within the coupling distance and the solver pulls the pivots together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
     fn make_coupling(
         &mut self,
@@ -714,7 +718,7 @@ impl Bodies {
                 first: first_centre,
                 second: second_centre,
             }],
-            Holding::Hinge(axes) => [1.0, -1.0]
+            Holding::Hinge(axes) | Holding::Axle(axes) => [1.0, -1.0]
                 .map(|side| PivotPair {
                     first: along(first_centre, axes.first, side * HINGE_PIVOT_OFFSET),
                     second: along(second_centre, axes.second, side * HINGE_PIVOT_OFFSET),

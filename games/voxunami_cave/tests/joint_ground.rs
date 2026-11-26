@@ -5,8 +5,9 @@ mod common;
 
 use common::docking::{Look, PLAIN, Placed, a_planet_under_the_patch, blocks_of, ships, stone};
 use common::joints::{
-    Report, ball_end_toward, hinge_block, hinge_end_toward, joint_block,
-    pairs_the_world_has_as_coupled, turn_of_the_second_in_the_first, until_coupled, world_of,
+    Report, axle_block, axle_end_toward, ball_end_toward, hinge_block, hinge_end_toward,
+    joint_block, pairs_the_world_has_as_coupled, turn_of_the_second_in_the_first, until_coupled,
+    world_of,
 };
 use common::{Player, Scene, say, ship_id, tick_and_follow};
 use server::GridView;
@@ -619,4 +620,36 @@ fn a_car_cut_out_of_the_ground_by_two_hinges_tips_about_the_line_of_the_hinges_a
         ball_end_toward(FaceDirection::NegativeY),
     );
     assert!(ball_off > 0.05, "{ball_off}");
+}
+
+#[test]
+fn a_car_cut_out_of_the_ground_by_two_axles_spins_about_the_upright_and_nothing_else() {
+    let (mut scene, mut player, planet, report) = a_structure_joined_to_the_ground_by(
+        axle_block(),
+        axle_end_toward(FaceDirection::PositiveY),
+        axle_end_toward(FaceDirection::NegativeY),
+    );
+    say(&mut scene, &mut player, "/joint unlock");
+    let car = ships(&scene).into_iter().find(|id| *id != planet).unwrap();
+    until_coupled(&mut scene, &mut player, &report, 1, 300);
+    assert_eq!(report().axles, 1);
+    scene.run(move |world| {
+        world
+            .set_grid_velocity(car, [0.0; 3], [0.5, 0.8, 0.5])
+            .unwrap();
+    });
+    tick_and_follow(&mut scene, &mut player, 40);
+    let turn = turn_of_the_second_in_the_first(&scene, planet, car);
+    let off = [(0, 1), (1, 0), (1, 2), (2, 1)]
+        .into_iter()
+        .map(|(row, column)| turn[row][column].abs())
+        .fold(0.0, f64::max);
+    assert!(
+        off < 0.02,
+        "an axle on the ground turns about its line only: {turn:?}"
+    );
+    assert!(
+        turn[0][2].abs() > 0.1 || turn[0][0] < 0.9,
+        "and it does turn: {turn:?}"
+    );
 }

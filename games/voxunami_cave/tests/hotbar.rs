@@ -76,7 +76,7 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert!(!hotbar.modal);
     assert_eq!(hotbar.root.direction, Direction::Row);
     let shown = swatches(&hotbar.root);
-    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat, rocket engine, ball joint and hinge joint: in the colours the blocks are drawn in (the table of the game says
+    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat, rocket engine, ball joint, hinge joint and axle joint: in the colours the blocks are drawn in (the table of the game says
     // which: for a block with pictures it is their average), the first chosen, no counts in creative.
     let content = voxunami_cave::content::CaveContent::new();
     let table = content.block_table();
@@ -94,6 +94,7 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     let engine = position_of(voxunami_cave::content::dev_rocket_engine_id());
     let joint = position_of(voxunami_cave::content::dev_ball_joint_id());
     let hinge = position_of(voxunami_cave::content::dev_hinge_joint_id());
+    let axle = position_of(voxunami_cave::content::dev_axle_joint_id());
     let expected_colors = [
         table.color(ids.stone),
         table.color(ids.dirt),
@@ -108,6 +109,7 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         table.color(engine),
         table.color(joint),
         table.color(hinge),
+        table.color(axle),
     ];
     // (The two that have no pictures are what their files say.)
     assert_eq!(expected_colors[3], [1.0, 0.92, 0.65]);
@@ -116,9 +118,10 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert_eq!(expected_colors[9], [0.17, 0.21, 0.22]);
     assert_eq!(expected_colors[10], [0.17, 0.21, 0.22]);
     assert_eq!(expected_colors[11], [0.17, 0.21, 0.22]);
-    // (The hinge is a bronze gray of its own.)
+    // (The hinge is a bronze gray of its own, and the axle a blue gray.)
     assert_eq!(expected_colors[12], [0.21, 0.19, 0.15]);
-    assert_eq!(shown.len(), 13);
+    assert_eq!(expected_colors[13], [0.15, 0.18, 0.24]);
+    assert_eq!(shown.len(), 14);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()
     {
@@ -138,10 +141,10 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         chosen,
         [
             false, false, false, true, false, false, false, false, false, false, false, false,
-            false
+            false, false
         ]
     );
-    // The ninth key chooses the ninth block, the dev docking port; the right square bracket goes on to the seat, the engine, the ball joint and the hinge joint and then round to the first,
+    // The ninth key chooses the ninth block, the dev docking port; the right square bracket goes on to the seat, the engine, and the ball, hinge and axle joints and then round to the first,
     // and the left one back to the last.
     let chosen_index = |player: &mut Player| -> usize {
         let panels = overlays(player);
@@ -167,11 +170,13 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     player.key_pressed(KeyCode::BracketRight);
     assert_eq!(chosen_index(&mut player), 12);
     player.key_pressed(KeyCode::BracketRight);
+    assert_eq!(chosen_index(&mut player), 13);
+    player.key_pressed(KeyCode::BracketRight);
     assert_eq!(chosen_index(&mut player), 0);
     player.key_pressed(KeyCode::BracketLeft);
-    assert_eq!(chosen_index(&mut player), 12);
+    assert_eq!(chosen_index(&mut player), 13);
     player.key_pressed(KeyCode::BracketLeft);
-    assert_eq!(chosen_index(&mut player), 11);
+    assert_eq!(chosen_index(&mut player), 12);
 }
 
 /// Which swatch of the hotbar is chosen (one always is).
@@ -197,8 +202,8 @@ fn the_wheel_chooses_the_next_block_turned_down_and_the_one_before_turned_up_rou
     tick(&mut rig, &mut player, 2);
     assert_eq!(chosen_swatch(&mut player), 0);
 
-    // Down is on to the next, a notch at a time, past the ninth (where the number keys stop) to the last of the thirteen and round to the first.
-    for expected in 1..13 {
+    // Down is on to the next, a notch at a time, past the ninth (where the number keys stop) to the last of the fourteen and round to the first.
+    for expected in 1..14 {
         player.mouse_pressed(MouseButton::WheelDown);
         assert_eq!(chosen_swatch(&mut player), expected);
     }
@@ -207,9 +212,9 @@ fn the_wheel_chooses_the_next_block_turned_down_and_the_one_before_turned_up_rou
 
     // Up is back: from the first round to the last, and on to the one before.
     player.mouse_pressed(MouseButton::WheelUp);
-    assert_eq!(chosen_swatch(&mut player), 12, "round to the last");
+    assert_eq!(chosen_swatch(&mut player), 13, "round to the last");
     player.mouse_pressed(MouseButton::WheelUp);
-    assert_eq!(chosen_swatch(&mut player), 11);
+    assert_eq!(chosen_swatch(&mut player), 12);
 
     // It goes on from where a number key left it, and the block the HUD says is placed is the chosen one.
     player.key_pressed(KeyCode::Digit4);

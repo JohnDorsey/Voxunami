@@ -33,7 +33,7 @@ mod rail_joints;
 mod rail_ports;
 mod stiffness;
 
-pub use balls::{JointRigid, joint_ball_kind, joint_hinge_kind};
+pub use balls::{JointRigid, joint_axle_kind, joint_ball_kind, joint_hinge_kind};
 use rail_ports::is_a_rail_pair;
 
 use couplings::{Coupled, CouplingKey};
@@ -144,8 +144,9 @@ pub struct BodiesReport {
     pub dockings_refused: u64,
     /// Pairs of ships that are coupled by their joint ends now, and couplings made in all.
     pub couplings: u64,
-    /// How many of those hold a hinge (both ends are hinges on one line) and not a ball.
+    /// How many of those hold a hinge (two hinges on one line), and how many an axle (two axles on one line); the rest are balls.
     pub hinges: u64,
+    pub axles: u64,
     pub couplings_made: u64,
     /// Couplings that were made again in another frame, because the group they are in was moved there whole (a coupling that is made again is not one made).
     pub couplings_moved: u64,
@@ -237,6 +238,7 @@ impl Plugin for GridBodiesPlugin {
         // The ball that is drawn where two joint ends meet is an entity of the server's (see `balls.rs`).
         registrar.entity_kind(balls::joint_ball_kind_spec());
         registrar.entity_kind(balls::joint_hinge_kind_spec());
+        registrar.entity_kind(balls::joint_axle_kind_spec());
 
         // Where blocks changed, the colliders and the mass are made again.
         let hearing = Arc::clone(&bodies);
@@ -3692,7 +3694,7 @@ impl Weigher<'_> {
                             joint_ends.push(BlockFace {
                                 voxel: at,
                                 face,
-                                hinge: table.hinge_face(block, state, orientation),
+                                line: table.joint_line_face(block, state, orientation),
                             });
                         }
                     }
