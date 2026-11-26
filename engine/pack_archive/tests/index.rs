@@ -47,16 +47,29 @@ fn the_index_lists_every_file_sorted_with_its_size_and_hash() {
 }
 
 #[test]
-fn the_hash_of_known_bytes_is_sha_256() {
-    // the empty input and "abc" are the standard test vectors of SHA-256
+fn the_hash_of_known_bytes_is_blake3() {
+    // the empty input and "abc" as BLAKE3 hashes them; SHA-256 gives other bytes for both
     assert_eq!(
         Hash::of(b"").to_hex(),
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
     );
     assert_eq!(
         Hash::of(b"abc").to_hex(),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
     );
+}
+
+#[test]
+fn an_index_of_version_1_whose_hashes_were_sha_256_is_refused() {
+    let mut bytes = FileIndex::of(&sample(), |_| true).to_bytes();
+    assert_eq!(&bytes[..5], b"VXPI");
+    bytes[4] = 1;
+    assert!(matches!(
+        FileIndex::from_bytes(&bytes),
+        Err(ArchiveError::BadIndex {
+            reason: "an unknown version"
+        })
+    ));
 }
 
 #[test]

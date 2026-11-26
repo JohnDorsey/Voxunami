@@ -322,7 +322,9 @@ const PINNED_RECORDING_LENGTH: usize = 84_923;
 // version put back to 12 the old checksum, 3_889_045_335, came back (this server has no packs, so it sends no list: a server without packs says nothing of them).
 // Whether the packs are the whole (2026-11-23; protocol 14): the checksum changed once, for the protocol version in the welcome (14, was 13); the length did not, and with the version
 // put back to 13 the old checksum, 2_776_487_109, came back.
-const PINNED_RECORDING_CHECKSUM: u32 = 1_655_277_683;
+// Pack hashes are BLAKE3 (2026-11-26; protocol 15): the checksum changed once, for the protocol version in the welcome (15, was 14); the length did not,
+// and the old checksum, 1_655_277_683, passed with the new hashes while the version was still 14.
+const PINNED_RECORDING_CHECKSUM: u32 = 538_592_225;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

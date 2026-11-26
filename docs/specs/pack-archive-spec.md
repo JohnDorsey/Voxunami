@@ -143,9 +143,9 @@ Some things have no source on the client (the clock, entities the client did not
 
 - `Archive::from_files` (any order; refuses paths that are not allowed, twice, or a file and a folder) and `to_bytes`; `Archive::from_bytes(bytes, &Limits)` reads the canonical form only. It reads every field to name the reason, then **rewrites the archive and compares bytes**, so no second spelling of one archive can pass. Limits (default 10,000 files, 256 MiB a file, 1 GiB in all) are checked before a file is copied.
 - Paths: 1 to 255 bytes of `a-z 0-9 _ - . /` (a dash was allowed on 2026-11-22 at the owner's question: nothing needed it refused), no empty, `.` or `..` part. An upper-case or other character in an author's file name is still refused, which step 2 must say plainly when the server rewrites a zip.
-- `FileIndex` (path, size, SHA-256, sent), `root_hash` = SHA-256 of the index bytes (`VXPI`, version 1, count, entries), `to_bytes`/`from_bytes` (strict), `verify` (a whole archive) and `verify_received` (what a client was sent: withheld files absent, none unlisted).
+- `FileIndex` (path, size, SHA-256, sent), `root_hash` = SHA-256 of the index bytes (`VXPI`, version 1, count, entries; **BLAKE3 and version 2 since 2026-11-26**, below), `to_bytes`/`from_bytes` (strict), `verify` (a whole archive) and `verify_received` (what a client was sent: withheld files absent, none unlisted).
 - `cache_file_name(pack_id, &root)` gives `my_pack-<first 32 hex>.zip`.
-- **Not decided here, believed fine:** SHA-256 over BLAKE3 (already in the lock, no new dependency); the entry time is 00:00 on 1980-01-01.
+- **Not decided here, believed fine:** SHA-256 over BLAKE3 (already in the lock, no new dependency); the entry time is 00:00 on 1980-01-01. **The hash was decided on 2026-11-26 (owner): BLAKE3**, for file hashes and root hashes alike, through the `blake3` crate with its `pure` feature (Rust intrinsics, no C or assembly). The index's version went to 2 and the protocol's to 15, so that an old program is refused by name and not by a pack that fails its check. A client's store keeps its old files under names no pack has now; nothing deletes them.
 
 ## What step 2 built (2026-11-22), and what it did not
 

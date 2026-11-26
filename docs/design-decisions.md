@@ -75,8 +75,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Workflow: Claude commits and pushes finished phases (rule lifted by the owner after Phase 1f); each phase ends with
   passing checks.
 - Ships (airships, spacecraft; Phase 32): the decisions are in `decisions/players-and-ships.md`.
-- Values that depend on a server's secret are derived with **BLAKE3** (owner, 2026-11-26), never with `terrain::mix` or the engine's noise, which can be
-  run backwards. Nothing is built; the other rules proposed for secrets are not yet decided (`specs/procedural-materials-spec.md`, section 8).
+- The project's cryptographic hash is **BLAKE3** (owner, 2026-11-26): pack archives are hashed with it (built; `specs/pack-archive-spec.md`), and values that
+  depend on a server's secret are to be derived with it, never with `terrain::mix` or the engine's noise, which can be run backwards (not built; the other
+  rules proposed for secrets are not yet decided, `specs/procedural-materials-spec.md`, section 8).
 
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.

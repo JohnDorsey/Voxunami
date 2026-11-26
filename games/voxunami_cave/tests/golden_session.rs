@@ -405,8 +405,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 // and with the version put back to 12 the old hash, 2_646_309_225_932_220_837, came back (no pack is replicated here, so no list is sent).
 // Whether the packs are the whole (2026-11-23; protocol 14): the stream hash changed once, for the protocol version in the welcome (14, was 13); the length and the saved world did not,
 // and with the version put back to 13 the old hash, 8_352_820_050_690_785_866, came back.
+// Pack hashes are BLAKE3 (2026-11-26; protocol 15): the stream hash changed once, for the protocol version in the welcome (15, was 14); the length and the saved world did not,
+// and the old stream hash, 13_343_156_623_870_405_502, passed with the new hashes while the version was still 14.
 const PINNED: (u64, usize, u64) = (
-    13_343_156_623_870_405_502,
+    13_200_870_550_492_368_805,
     7_227_270,
     15_594_210_036_057_493_535,
 );

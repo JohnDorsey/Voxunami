@@ -2,19 +2,17 @@
 
 use std::fmt;
 
-use sha2::{Digest, Sha256};
-
 use crate::archive::{Archive, check_path};
 use crate::error::ArchiveError;
 
-/// A SHA-256 hash.
+/// A BLAKE3 hash, 32 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Hash([u8; 32]);
 
 impl Hash {
     /// The hash of some bytes.
     pub fn of(bytes: &[u8]) -> Hash {
-        Hash(Sha256::digest(bytes).into())
+        Hash(*blake3::hash(bytes).as_bytes())
     }
 
     pub fn as_bytes(&self) -> &[u8; 32] {
@@ -86,7 +84,8 @@ pub struct FileIndex {
 }
 
 const MAGIC: &[u8; 4] = b"VXPI";
-const INDEX_VERSION: u8 = 1;
+/// 2: the hashes are BLAKE3 (they were SHA-256 in version 1).
+const INDEX_VERSION: u8 = 2;
 /// Path length (2) + one path byte + size (8) + hash (32) + sent (1).
 const SMALLEST_ENTRY: usize = 2 + 1 + 8 + 32 + 1;
 
@@ -130,7 +129,7 @@ impl FileIndex {
         &self.entries
     }
 
-    /// The bytes the root hash is made of: `VXPI`, the version 1, the count, then for each entry the path (length and bytes), the size, the hash and the sent
+    /// The bytes the root hash is made of: `VXPI`, the version 2, the count, then for each entry the path (length and bytes), the size, the hash and the sent
     /// flag, all numbers little-endian.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();

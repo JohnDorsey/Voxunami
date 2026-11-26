@@ -12,9 +12,10 @@ description = "The canonical archive of a pack: one byte sequence for one set of
 import = ["dep:zip"]
 
 [dependencies]
+# `pure`: Rust intrinsics only, no C and no assembly is built into it (its build script still asks the C compiler what flags it takes).
+blake3 = { version = "1", features = ["pure"] }
 crc32fast = "1"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
-sha2 = "0.10"
 thiserror.workspace = true
 
 [dev-dependencies]

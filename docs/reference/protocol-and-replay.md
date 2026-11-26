@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 14)
+# The message stream and replays (protocol version 15)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -96,7 +96,7 @@ Server to client:
 | 13 | `GridsSpawned` | count, then per ship: grid id (varint, never a level's number), level (varint), pose without a grid (the position and orientation as in a pose), and a byte that is 0 or 1; if 1, the ship has terrain (a planet): the generator (a varint, the number it has in the world description's table of generators, as in a `GeneratorAssignment`) and the box of bricks it makes (two bricks as three zigzag varints each). Ships that came into the watched region, and every planet of the level that is watched, wherever it is (Phase 39e), in order of id; each is followed in the same tick by a `BrickContents` of every brick it has: of every brick for a ship that nothing generates, and of the stored (edited) bricks only for a ship with terrain, whose other bricks the client makes |
 | 14 | `GridsChanged` | count, then per ship: grid id, pose without a grid. Ships the client knows that moved |
 | 15 | `GridsDespawned` | count, then ids: ships that left the watched region or no longer exist; the client forgets their bricks |
-| 17 | `Packs` | a byte, 1 if the list is every pack the server runs besides the game's own and 0 if not (since version 14); count (0 to 256), then per pack: id (string: 1 to 64 characters of `a-z 0-9 _`, none twice), its file index (bytes: `VXPI`, version, count, then per file its path, size, hash and whether clients are sent it), and the size of the archive a client is sent (varint, at most 1 GiB). The pack's identity, its root hash, is the hash of the index bytes |
+| 17 | `Packs` | a byte, 1 if the list is every pack the server runs besides the game's own and 0 if not (since version 14); count (0 to 256), then per pack: id (string: 1 to 64 characters of `a-z 0-9 _`, none twice), its file index (bytes: `VXPI`, version, count, then per file its path, size, hash and whether clients are sent it), and the size of the archive a client is sent (varint, at most 1 GiB). The pack's identity, its root hash, is the hash of the index bytes. Every hash is BLAKE3, 32 bytes, and the index's version is 2 (since version 15; before, SHA-256 and version 1) |
 | 18 | `PackChunk` | root hash (32 bytes), offset (varint), bytes (at most 65,536, never none): a piece of the canonical archive of the pack with that root |
 | 16 | `PackageReplaced` | count of registries, then for each: the registry's kind (identifier), a count, and the identifiers appended to it, in order; then the package (bytes). Registries in order of their kinds, none with no entries, no entry twice |
 
