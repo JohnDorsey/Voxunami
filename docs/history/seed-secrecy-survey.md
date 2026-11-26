@@ -4,6 +4,164 @@
 
 Marks: **[read]** in this repository; **[measured]** run by `spikes/seed_probe/` (one machine: Ryzen 5 7600X, 12 threads, Windows 10, release build; Linux not run); **[web]** read on the web, with how (the page itself, or only a summary from the search tool, which can be wrong); **[recalled]** from my memory, not checked; **[believed]** my reasoning, not run.
 
+## Primer: hashes, secrets, keys and salts
+
+*Added 2026-11-26 at the owner's request. Read this first if the vocabulary is new. It is standard textbook cryptography written from my knowledge, not researched again for this survey **[recalled]**; the example values were computed **[measured]**. The sections after it keep their numbers.*
+
+### What a hash is
+
+A **hash function** takes any bytes and returns a fixed number of bytes, called the **hash** or **digest**. The same input always gives the same output. SHA-256 returns 32 bytes (256 bits):
+
+```
+SHA-256("iron") = 04e9c0db87e7eebbf8123dae64d169c85540d588a38b4f9f3fbc255c7c6c65a9
+SHA-256("irom") = 72c1110a94481a468ace3e295baecb4e75b300698088f7ac8053885d5a7cc5c7
+```
+
+One letter changed, and 130 of the 256 bits differ. Nothing about the first output helps predict the second.
+
+A **cryptographic** hash (SHA-256, BLAKE3) is designed to make three things infeasible:
+
+- going backwards from an output to an input (it is **one-way**);
+- finding a second input with the same output as a given one;
+- finding any two inputs with the same output (a **collision**).
+
+Hashing is not encryption. There is no key that "decrypts" a hash. To check a guess, you hash the guess and compare.
+
+A **non-cryptographic** hash, or **mixer** (the engine's `terrain::mix`, which is splitmix64), only has to be fast and look random. Its output looks just as scrambled, but it can be run backwards with a little arithmetic. A function that can be undone exactly like this is **invertible** (a **bijection**: every output has exactly one input). Mixers are right for terrain noise and wrong for secrets. **Looking random and being one-way are different properties**, and this is the most important point here.
+
+### A hash by itself hides nothing guessable
+
+One-way means you cannot *compute* the input. You can still *guess* it. If the input is a planet number from a million planets, an attacker hashes all million numbers and sees which one matches. The same goes for a password in a dictionary, or a 32-bit seed (26 seconds in section 4.1).
+
+Guessing everything is **brute force**. The only defence is that there are too many possibilities. That count is given in **bits**: a 128-bit value chosen at random has 2^128 possibilities, and each extra bit doubles the work. **Entropy** means how unpredictable a value really is, in bits. A "256-bit" value built from the current time may have only 30 bits of entropy.
+
+So secrecy comes from **mixing in something the attacker cannot guess**. The hash only keeps that something from being worked out from the results.
+
+### Secrets, seeds and keys
+
+- A **secret** is any value others must not learn.
+- A **seed** is the starting value of a **pseudo-random number generator**: a formula that produces a long, repeatable, random-looking stream from it. Same seed, same stream, which is why terrain can be rebuilt from a seed.
+- Most generators (Java's `Random`, splitmix64) reveal their state to anyone who sees a few outputs. A **cryptographically secure** generator does not.
+- The operating system offers a secure source of fresh randomness, fed by unpredictable hardware events. In Rust it is `OsRng`. **Secrets should come from here and nowhere else.**
+- A **key** is a secret used as an input to a cryptographic function. It is normally 128 or 256 random bits, never a word a person chose.
+
+In this document, "terrain seed" means a value clients may know, and "key" means a value they must never learn.
+
+### Keyed hashes
+
+A **keyed hash** takes two inputs: a key and a message.
+
+```
+output = keyed_hash(key, message)
+```
+
+Without the key you cannot compute the output, and seeing many outputs for messages you know does not reveal the key or help you predict another output. A function with that property is called a **pseudo-random function**, written **PRF** in these documents. **HMAC** is the standard way to build one from SHA-256 (`HMAC-SHA256`). BLAKE3 has a keyed mode built in (`keyed_hash`). The same operation, used to prove that a message came from someone who holds the key, is called a **message authentication code**.
+
+Use these, and do not invent your own, such as `SHA-256(key followed by message)`. That one has a known flaw (**length extension**: someone who sees one output can compute the output for a longer message without knowing the key). Gluing inputs together carelessly is also ambiguous: planet `1` material `23` and planet `12` material `3` both become `123`. Give every number a fixed width, for example 8 bytes each.
+
+### Deriving keys: root, branches and leaves
+
+You can feed a keyed hash's output back in as the key of the next one. Making new keys from an old one this way is **key derivation**, and the function is a **key derivation function**. It gives a **tree**:
+
+```
+root key                      random, made once, never leaves the server
+ |- "materials v1" key        a branch
+ |   |- planet 7 key          derived from the branch and the number 7
+ |   |   |- material 0 key    derived from the planet key and the number 0
+ |   |   |   |- density       a leaf
+ |   |   |   '- texture seed  a leaf seed
+ |- "terrain v1" key          another branch
+ '- "ids v1" key              another branch
+```
+
+- The **root** (or **master**) key is the one everything comes from.
+- A **child**, **derived** key or **subkey** is made from a parent.
+- A **branch** is a key and everything under it.
+- A **leaf** is a value at the end, from which nothing secret is derived. Leaves are what you actually use.
+- A **leaf seed** is a leaf that will seed an ordinary generator, here the noise that draws a texture. It is safe to reveal, because it is only the end of one twig.
+
+Why this is useful:
+
+- **Upwards is closed.** Knowing a child tells you nothing about its parent.
+- **Sideways is closed.** Knowing planet 7's key tells you nothing about planet 8's.
+- **Downwards is open.** Whoever has a key can compute everything under it. A leaked root loses everything; a leaked planet key loses one planet.
+- **Little to store.** Only the root is kept. Everything else is recomputed when needed, and always comes out the same.
+
+The text label in each step (`"materials v1"`) is its **purpose**. Using a different label for each use is **domain separation**: it guarantees that the value used for ids can never be the same as, or reveal, the value used for materials. HKDF calls this input `info`; BLAKE3 calls it the **context**. The `v1` lets you change a scheme later without colliding with the old one.
+
+**HKDF** (RFC 5869) is the standard key derivation built on HMAC. It has two steps. **Extract** turns material that is secret but unevenly random into one good key. **Expand** makes as many subkeys as you need from that key, one per `info` label. Our root is already uniformly random, so Expand does the real work.
+
+### A worked example
+
+The root here is a toy (32 bytes that are all 42), so anyone can reproduce the numbers with `spikes/seed_probe/primer_example.py`. A real root is random. Each step is `HMAC-SHA256(key, message)`; real HKDF adds a little framing, but the idea is the same.
+
+```
+materials key = keyed(root, "materials v1")
+planet key    = keyed(materials key, planet number)
+material key  = keyed(planet key, material number)
+density       = 500 + (first 8 bytes of keyed(material key, "density")) mod 19501
+texture seed  = first 8 bytes of keyed(material key, "texture")
+terrain seed  = first 8 bytes of keyed(keyed(root, "terrain v1"), planet number)
+id            = first 16 bytes of keyed(keyed(root, "ids v1"), planet number, material number)
+```
+
+| | planet 7, material 0 | planet 8, material 0 |
+|---|---|---|
+| Secret: material key (start of it) | `e5031a39a8ca65a5...` | `637a97f086d8ec94...` |
+| Public: density (kg/m³) | 7235 | 18427 |
+| Public: texture seed | `775a5c20d41af443` | `83ef651193d0207a` |
+| Public: terrain seed | `e5096b4b3f8f9412` | `ce904032a6df0cf2` |
+| Public: id | `world:m2054f5937a4068ef82427254f90bad0b` | `world:m87bbb25ddeef177c62e98f0395356f61` |
+
+A client may be given the "Public" rows. From them it cannot work out the material key, the planet key or the root, and cannot tell that planet 8 comes after planet 7. This holds **only because the real root is unguessable**. With the toy root, you can compute all of it.
+
+### Salts
+
+A **salt** is an extra input to a hash that is **not secret**. Its job is to make results differ between places that would otherwise match.
+
+The classic use is stored passwords. Without a salt, two users with the password `hunter2` have the same hash, and an attacker can prepare one table of hashes for common passwords and look everybody up. With a random salt per user, stored beside the hash, the same password gives different hashes and each user must be attacked separately. The salt does not make a weak password strong. Passwords also need a deliberately slow hash (Argon2) so that each guess is expensive.
+
+| | Secret? | Job |
+|---|---|---|
+| **Key** | yes | stops others computing or predicting the output |
+| **Salt** | no | makes equal inputs give different outputs between users or installations |
+| **Purpose label** (`info`, context) | no | makes different uses give unrelated outputs |
+| **Pepper** | yes | a secret added to password hashing, kept apart from the database; a key by another name |
+
+**For this project you will probably not need to manage a salt.** There are no passwords here. Each world draws its own random root, so two worlds already differ. HKDF accepts an optional salt, and it may be left empty when the input is already random. The planet and material numbers go into the message, not into a salt.
+
+Minecraft server files use "salt" for the per-structure constants mixed with the world seed (section 3). They are public by default, which fits the word, but protecting a server then means changing them and keeping them to itself, which makes them act as keys.
+
+### Handling keys: the rules
+
+1. Make the root from the operating system's random source, once per world. Never type one, and never use a timestamp or a world name.
+2. Use at least 128 bits; 256 for the root costs nothing.
+3. Derive with HKDF, HMAC or BLAKE3. Never with a mixer or a game's random generator.
+4. One purpose per key. Do not use one key for two jobs.
+5. Never send, log or print a key, and never put it where a copy or recording of the world would carry it.
+6. Send leaves, not the keys above them.
+7. Do not reuse a root between worlds.
+8. Expect that a leaked key cannot be un-leaked. Materials already discovered keep their definitions; a new root can only protect planets not yet discovered.
+
+### Glossary
+
+| Term | Meaning |
+|---|---|
+| attacker | whoever tries to learn what they should not, here perhaps an ordinary player with a modified client |
+| bijection, invertible | a function that can be undone exactly |
+| brute force | trying every possibility |
+| canary test | plant a recognisable secret, then search everything sent or saved for it |
+| collision | two inputs with one output; with 128-bit ids it takes about 2^64 of them to become likely |
+| constant-time comparison | comparing secrets so that the time taken does not show how much matched |
+| deterministic | the same input always gives the same output |
+| digest | a hash's output |
+| known-answer test, test vector | a published input and its correct output, to check an implementation against |
+| leak | any way a secret, or something about it, reaches someone it should not |
+| oracle | anything that answers questions whose answers depend on the secret |
+| preimage | an input that produces a given hash |
+| truncate | keep only the first part of a hash's output; safe, but fewer bits are easier to guess |
+| zeroize | overwrite a secret in memory once it is no longer needed |
+
 ## 1. In short
 
 - **Every seed crack on record has the same shape**: a *small* secret (Minecraft's effective 48 bits), a *weak, structured* generator (a linear congruential generator), and a *public, deterministic* map from the secret to something the attacker can see, so that each observation is a constraint on the secret. **[web: search summaries; one measurement of the generator below]**
