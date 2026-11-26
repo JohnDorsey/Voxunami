@@ -76,6 +76,12 @@ pub const HIGHEST_CASTER: f32 = (1u64 << 40) as f32;
 /// mountain range has no use for a tree, nor for the bricks of the ground round the camera (a brick is a sphere of 28 voxels).
 pub const SMALLEST_CASTER_TEXELS: f32 = 2.0;
 
+/// The reach of a fitted cascade ([`Cascade::fitted`]): every place is looked up in it.
+pub const FITTED_REACH: f32 = 1.0e30;
+
+/// How many times a fitted cascade's half width may double from [`FIRST_HALF_WIDTH`]: to 2^45 voxels, past what [`HIGHEST_CASTER`] holds.
+const FITTED_OCTAVES: u32 = 40;
+
 /// How many sky cascades there are: maps of the terrain seen from straight above, round the camera, that tell a place how much of the sky is over it. They are the finest few
 /// of the cascades of the sun, because what covers a place from the sky (a roof, a hill over a cave, an overhang) is a thing of the size of a cave and not of a mountain; beyond
 /// the last the sky is taken to be open.
@@ -276,6 +282,87 @@ impl Cascade {
         cascade
     }
 
+    /// The one cascade of a view with no perspective, fitted to what the picture sees: `corners` are the corners of the box it sees, relative to the camera, and `camera` is the
+    /// camera's place across the light ([`LightBasis::coordinates_of`]). The cascades of a perspective view are squares round the camera, chosen for a place by its distance
+    /// from it, because what is far is seen small; in such a view everything is seen at one size and the camera may be far back from all of it, so there is one map, round the
+    /// middle of the box across the light, as small as holds it, and every place is looked up in it ([`FITTED_REACH`]).
+    ///
+    /// Its half width is [`FIRST_HALF_WIDTH`] times a power of two, or that and a quarter, a half or three quarters more, so that a view that is zoomed a little keeps its map
+    /// and a texel's width is a short binary fraction; its middle is on a grid of the world, as every cascade's is; its depth 0 is below the box by the room the box may move
+    /// in ([`Cascade::holds_box`]).
+    pub fn fitted(basis: &LightBasis, camera: [f64; 2], corners: &[Vec3; 8]) -> Self {
+        let (low, high) = Self::box_across_the_light(basis, corners);
+        let needed = ((high[0] - low[0]).max(high[1] - low[1]) * 0.5).max(0.0);
+        let mut octave = FIRST_HALF_WIDTH;
+        let mut half_width = octave;
+        // (A box that is not a number, or has no end, is held to the widest there is a step for.)
+        'octaves: for _ in 0..FITTED_OCTAVES {
+            for quarters in 4..8 {
+                half_width = octave * quarters as f32 * 0.25;
+                if reach_of(half_width) >= needed {
+                    break 'octaves;
+                }
+            }
+            octave *= 2.0;
+        }
+        let texel = texel_of(half_width);
+        let step = f64::from(half_width * SLACK);
+        let snapped = |coordinate: f64, offset: f32| {
+            let wanted = coordinate + f64::from(offset);
+            ((wanted / step).round() * step - coordinate) as f32
+        };
+        let back = low[2] - half_width * SLACK - 4.0 * texel;
+        let mut cascade = Self {
+            half_width,
+            texel,
+            reach: FITTED_REACH,
+            centre: [
+                snapped(camera[0], (low[0] + high[0]) * 0.5),
+                snapped(camera[1], (low[1] + high[1]) * 0.5),
+            ],
+            back,
+            range: 0.0,
+        };
+        cascade.range = (high[2] - back).max(2.0 * half_width);
+        cascade
+    }
+
+    /// The box that holds the corners across the light and along it: the least and the greatest along `right`, `up` and toward the sun.
+    fn box_across_the_light(basis: &LightBasis, corners: &[Vec3; 8]) -> ([f32; 3], [f32; 3]) {
+        let mut low = [f32::INFINITY; 3];
+        let mut high = [f32::NEG_INFINITY; 3];
+        for corner in corners {
+            let along = [
+                corner.dot(basis.right),
+                corner.dot(basis.up),
+                corner.dot(basis.toward_sun),
+            ];
+            for axis in 0..3 {
+                low[axis] = low[axis].min(along[axis]);
+                high[axis] = high[axis].max(along[axis]);
+            }
+        }
+        (low, high)
+    }
+
+    /// Whether a map that was drawn as this cascade can be looked in where `wanted` is asked for: of the same width and the same reach. (A perspective view's finest cascade and a
+    /// fitted one may be of one width, and are not each other's: one is looked in up to its reach from the camera and the other everywhere.)
+    pub fn stands_for(&self, wanted: &Cascade) -> bool {
+        self.half_width == wanted.half_width && self.reach == wanted.reach
+    }
+
+    /// Whether a fitted map, drawn for a camera that has since moved by `moved`, still holds the box whose corners relative to the camera as it is now are `corners`: all of it is
+    /// over the square the map covers, inside the texels kept at the edge, and over the map's depth 0.
+    pub fn holds_box(&self, basis: &LightBasis, moved: Vec3, corners: &[Vec3; 8]) -> bool {
+        let inside = self.half_width - EDGE_TEXELS * self.texel;
+        corners.iter().all(|&corner| {
+            let place = corner + moved;
+            (place.dot(basis.right) - self.centre[0]).abs() <= inside
+                && (place.dot(basis.up) - self.centre[1]).abs() <= inside
+                && place.dot(basis.toward_sun) >= self.back
+        })
+    }
+
     /// Whether something whose bounding sphere has this middle (relative to the camera) and radius can put a place the cascade is for in shadow, so that it is drawn into the
     /// map: it is over the square the map covers (with a texel and its own radius to spare), it is not wholly below the map's depth 0, it is not out of the
     /// highest ([`HIGHEST_CASTER`]), and it is not too small to be a texel ([`SMALLEST_CASTER_TEXELS`]). What is not a number, or has no end, is not wanted.
@@ -386,6 +473,124 @@ mod tests {
     use voxel_space::BrickCoordinate;
 
     use super::*;
+
+    /// The corners of a box of these half sizes round a middle, relative to the camera.
+    fn corners_round(middle: Vec3, half: Vec3) -> [Vec3; 8] {
+        std::array::from_fn(|index| {
+            let side = |bit: usize| if index >> bit & 1 == 1 { 1.0 } else { -1.0 };
+            middle + half * Vec3::new(side(0), side(1), side(2))
+        })
+    }
+
+    #[test]
+    fn a_fitted_cascade_holds_every_corner_of_its_box_whatever_the_sun_and_is_not_much_wider_than_it()
+     {
+        let boxes = [
+            (Vec3::new(0.0, -3_000.0, 0.0), Vec3::new(32.0, 20.0, 32.0)),
+            (
+                Vec3::new(500.0, -100.0, -900.0),
+                Vec3::new(3_000.0, 80.0, 1_700.0),
+            ),
+            (Vec3::new(-7.0, 9.0, 3.0), Vec3::new(1.0, 1.0, 1.0)),
+        ];
+        for sun in sun_directions() {
+            if sun.length() < 1.0e-3 {
+                continue;
+            }
+            let basis = LightBasis::new(sun);
+            for (middle, half) in boxes {
+                let corners = corners_round(middle, half);
+                let cascade = Cascade::fitted(&basis, [12_345.6, -78.9], &corners);
+                assert_eq!(cascade.reach, FITTED_REACH);
+                assert!(
+                    cascade.holds_box(&basis, Vec3::ZERO, &corners),
+                    "{sun} {middle}"
+                );
+                for corner in corners {
+                    let (coordinates, depth) = cascade.lookup(&basis, corner);
+                    let edge = EDGE_TEXELS / CASCADE_RESOLUTION as f32;
+                    assert!(
+                        (edge..=1.0 - edge).contains(&coordinates.x)
+                            && (edge..=1.0 - edge).contains(&coordinates.y),
+                        "{sun} {middle}: {coordinates}"
+                    );
+                    assert!(
+                        (0.0..=1.0 + 1.0e-3).contains(&depth),
+                        "{sun} {middle}: {depth}"
+                    );
+                }
+                // As small as the steps allow: the box is wide enough for the next step down only if this is the first.
+                let (low, high) = Cascade::box_across_the_light(&basis, &corners);
+                let needed = (high[0] - low[0]).max(high[1] - low[1]) * 0.5;
+                assert!(
+                    cascade.half_width == FIRST_HALF_WIDTH
+                        || reach_of(cascade.half_width * 0.75) < needed,
+                    "{sun} {middle}: {} for {needed}",
+                    cascade.half_width
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_map_stands_for_a_cascade_of_its_width_and_reach_only_and_a_fitted_one_never_for_one_of_a_perspective_view()
+     {
+        let basis = LightBasis::new(Vec3::Y);
+        let perspective = Cascade::new(FIRST_HALF_WIDTH, [0.0, 0.0]);
+        let fitted = Cascade::fitted(
+            &basis,
+            [0.0, 0.0],
+            &corners_round(Vec3::ZERO, Vec3::splat(10.0)),
+        );
+        assert_eq!(
+            fitted.half_width, perspective.half_width,
+            "precondition: the same width"
+        );
+        assert!(!perspective.stands_for(&fitted));
+        assert!(!fitted.stands_for(&perspective));
+        assert!(fitted.stands_for(&fitted));
+        assert!(perspective.stands_for(&Cascade::new(FIRST_HALF_WIDTH, [500.0, 7.0])));
+        assert!(!perspective.stands_for(&Cascade::new(2.0 * FIRST_HALF_WIDTH, [0.0, 0.0])));
+    }
+
+    #[test]
+    fn the_middle_of_a_fitted_cascade_is_on_the_grid_of_the_world_wherever_the_camera_is() {
+        let basis = LightBasis::new(Vec3::new(0.3, 0.9, 0.1));
+        let corners = corners_round(Vec3::new(100.0, -2_000.0, 40.0), Vec3::splat(300.0));
+        for camera in [[0.0, 0.0], [1.0e6 + 3.3, -7.7e5], [13.0, 999.9]] {
+            let cascade = Cascade::fitted(&basis, camera, &corners);
+            let step = f64::from(cascade.half_width * SLACK);
+            for axis in 0..2 {
+                let world = camera[axis] + f64::from(cascade.centre[axis]);
+                assert!(
+                    (world / step - (world / step).round()).abs() < 1.0e-4,
+                    "{camera:?}: {world} is not a step of {step}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_fitted_cascade_that_was_drawn_holds_while_the_box_stays_in_it_and_not_after() {
+        let basis = LightBasis::new(Vec3::Y);
+        let corners = corners_round(Vec3::new(0.0, -1_000.0, 0.0), Vec3::new(400.0, 50.0, 400.0));
+        let cascade = Cascade::fitted(&basis, [0.0, 0.0], &corners);
+        let room = cascade.half_width - EDGE_TEXELS * cascade.texel;
+        assert!(cascade.holds_box(&basis, Vec3::ZERO, &corners));
+        // The box has moved with the camera: held while it is within the square, along either way across the light, and above depth 0.
+        for way in [basis.right, basis.up] {
+            assert!(cascade.holds_box(&basis, way * 10.0, &corners));
+            assert!(!cascade.holds_box(&basis, way * room, &corners));
+            assert!(!cascade.holds_box(&basis, way * -room, &corners));
+        }
+        assert!(cascade.holds_box(&basis, basis.toward_sun * 500.0, &corners));
+        assert!(!cascade.holds_box(&basis, basis.toward_sun * -2_000.0, &corners));
+        // A box with no end and one that is not a number do not hang it.
+        for bad in [f32::INFINITY, f32::NAN] {
+            let corners = corners_round(Vec3::ZERO, Vec3::splat(bad));
+            let _ = Cascade::fitted(&basis, [0.0, 0.0], &corners);
+        }
+    }
 
     fn sun_directions() -> Vec<Vec3> {
         let mut directions = vec![

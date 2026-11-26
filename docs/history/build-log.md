@@ -2715,6 +2715,10 @@ The owner saw no LODs in the overworld, in the player's view or the map: by desi
 
 An orthographic camera in the renderer (`Camera::projection`, a far plane, every face drawn, the sky along the view), one level of cubes over a box (`coarse_cells::select_orthographic`, `orthographic_level`), and the map of the overworld made of them (`GameDefinition::orthographic_map`, `LodSettings::orthographic`, `Orbit::orthographic_camera`, the cut chosen from the focus, no fog). From 11,000 voxels up the map is 4,835 nodes, 99 percent of one level, against 9,857 from the ground. Not done: shadows for it (the pictures are grass without relief: one cascade only), a window, the warm map, the server's corrections. Spec 9q.
 
+## Shadows of an orthographic view (2026-11-25)
+
+A correction first: the entry above said the map had no shadows to speak of; shadows were drawn and showed the hills (75 percent of the pixels changed at 06:30), and my reasons for the flat pictures were guesses. What was wrong: the cascades are squares round the camera looked in by distance, and an orthographic camera is far back, so a wide map had texels of 32 voxels in blocky squares and a view from 3,000 voxels back lost small shadows altogether. An orthographic view now has one map of the sun fitted to the box it sees (`Cascade::fitted`), no sky maps. Casters at a picture 3,360 voxels high fell from 13,078 to 3,243; shadows cost at most 1.5 ms a frame in the integrated GPU. Spec 9r.
+
 Follow-up (2026-11-25): the overworld's cut held 46,110 cubes, 38,663 of them buried nodes under the ground, because `may_show` used the field with its caves; a generator with a far field now asks the far field (13,006 cubes by the probe). Three tests; the whole workspace passes, 4,426.
 ## `main` merged into the physics branch (2026-11-21)
 

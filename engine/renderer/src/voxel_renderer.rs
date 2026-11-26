@@ -16,7 +16,7 @@ use voxel_space::{
 use wgpu::util::DeviceExt;
 
 use crate::block_textures::{BlockTextures, PictureSize, words_with_relief};
-use crate::camera::{Camera, Frustum};
+use crate::camera::{Camera, Frustum, Projection};
 use crate::contact_volume::{ContactGpu, WindowUniform, WindowsUniform};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
@@ -892,6 +892,8 @@ struct SeenFromTheCamera<'a> {
     drawables: &'a [Drawable],
     nearest: f32,
     farthest: f32,
+    /// The corners of the box an orthographic camera sees, relative to it; `None` for a perspective one.
+    seen_box: Option<[Vec3; 8]>,
     frame: u64,
 }
 
@@ -932,6 +934,41 @@ struct SizedTarget {
     size: (u32, u32),
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+/// The corners, relative to the camera, of the box that holds what an orthographic camera sees: as wide and high as its picture, and along the way it looks from the nearest to
+/// the farthest of the things seen (`spheres`: the middle relative to the camera and the radius of each), within its near and far planes. `None` for a perspective camera.
+fn box_seen(
+    camera: &Camera,
+    aspect_ratio: f32,
+    spheres: impl Iterator<Item = (Vec3, f32)>,
+) -> Option<[Vec3; 8]> {
+    let Projection::Orthographic { height, depth } = camera.projection else {
+        return None;
+    };
+    let forward = camera.forward();
+    let (mut nearest, mut farthest) = (f32::INFINITY, f32::NEG_INFINITY);
+    for (middle, radius) in spheres {
+        let ahead = middle.dot(forward);
+        nearest = nearest.min(ahead - radius);
+        farthest = farthest.max(ahead + radius);
+    }
+    let end = camera.near_plane + depth;
+    let (nearest, farthest) = (
+        nearest.clamp(camera.near_plane, end),
+        farthest.clamp(camera.near_plane, end),
+    );
+    let right = camera.right() * (height * aspect_ratio * 0.5);
+    let up = camera.up() * (height * 0.5);
+    Some(std::array::from_fn(|index| {
+        let side = |bit: usize| if index >> bit & 1 == 1 { 1.0 } else { -1.0 };
+        let ahead = if index >> 2 & 1 == 1 {
+            farthest
+        } else {
+            nearest
+        };
+        right * side(0) + up * side(1) + forward * ahead
+    }))
 }
 
 /// The matrix the sky is drawn with: from a point of the near plane in clip space to the direction the pixel looks along. For a perspective camera that is the inverse of its
@@ -2582,6 +2619,7 @@ impl VoxelRenderer {
     fn plan_shadows(
         &mut self,
         camera: &Camera,
+        aspect_ratio: f32,
         drawables: &[Drawable],
         seen: &[usize],
     ) -> Option<ShadowPlan> {
@@ -2611,11 +2649,18 @@ impl VoxelRenderer {
             nearest = nearest.min((distance - drawables[index].radius).max(0.0));
             farthest = farthest.max(distance + drawables[index].radius);
         }
+        let seen_box = box_seen(
+            camera,
+            aspect_ratio,
+            seen.iter()
+                .map(|&index| (drawables[index].middle, drawables[index].radius)),
+        );
         let view = SeenFromTheCamera {
             camera,
             drawables,
             nearest,
             farthest,
+            seen_box,
             frame: self.shadow_frame,
         };
         let mut spent = 0usize;
@@ -2630,8 +2675,10 @@ impl VoxelRenderer {
                 &mut spent,
             )
         };
+        // (The sky's maps are squares round the camera looked in by the distance from it, which says nothing of a view with no perspective, whose camera is far from what it
+        // sees: in such a view the sky is taken to be open.)
         let sky = match zenith(&balls, flat_ground) {
-            Some(up) if cover_counted => self.plan_maps(
+            Some(up) if cover_counted && seen_box.is_none() => self.plan_maps(
                 MapKind::Sky,
                 &view,
                 &LightBasis::new(up),
@@ -2663,26 +2710,44 @@ impl VoxelRenderer {
             drawables,
             nearest,
             farthest,
+            seen_box,
             frame,
         } = *view;
         let light = basis.toward_sun;
         let camera_across_the_light = basis.coordinates_of(camera.position);
         let mut previous_reach = 0.0;
         let mut cascades = Vec::new();
+        // A view with no perspective has one map of the sun, fitted to the box it sees.
+        let fitted = seen_box.map(|corners| {
+            (
+                Cascade::fitted(basis, camera_across_the_light, &corners),
+                corners,
+            )
+        });
+        let widths: Vec<f32> = match &fitted {
+            Some((cascade, _)) => vec![cascade.half_width],
+            None => widths.to_vec(),
+        };
         for (index, &half_width) in widths.iter().enumerate() {
             let slot = kind.first_layer() + index;
-            let mut cascade = kind.cascade(half_width, camera_across_the_light);
+            let mut cascade = fitted.map_or_else(
+                || kind.cascade(half_width, camera_across_the_light),
+                |(cascade, _)| cascade,
+            );
             let serves = cascade.serves(previous_reach, nearest, farthest);
             previous_reach = cascade.reach;
             let kept = self.shadow_cache[slot]
                 .as_ref()
-                .filter(|kept| kept.cascade.half_width == half_width);
+                .filter(|kept| kept.cascade.stands_for(&cascade));
             // How the map that is kept stands: where the camera is from where it was, how far the light has turned, what has changed.
             let moved = kept.map_or(Vec3::ZERO, |kept| {
                 crate::camera::gpu_vector(camera.position.relative_to(kept.camera))
             });
             let standing = kept.map(|kept| Standing {
-                holds: kept.cascade.holds_after_moving(&kept.basis, moved),
+                holds: match &fitted {
+                    Some((_, corners)) => kept.cascade.holds_box(&kept.basis, moved, corners),
+                    None => kept.cascade.holds_after_moving(&kept.basis, moved),
+                },
                 turned: if kept.basis.toward_sun.dot(light) > 0.0 {
                     kept.basis.toward_sun.cross(light).length()
                 } else {
@@ -2708,7 +2773,12 @@ impl VoxelRenderer {
                 None => (Vec::new(), f32::NEG_INFINITY),
             };
             if redraw {
+                // (A fitted map has a depth range of its box as well as of what casts into it.)
+                let of_the_box = cascade.range;
                 cascade.fit(highest);
+                if fitted.is_some() {
+                    cascade.range = cascade.range.max(of_the_box);
+                }
                 *spent += self.shadow_cost(drawables, kind, &casters, basis);
                 self.shadow_cache[slot] = Some(CascadeCache {
                     cascade,
@@ -2797,7 +2867,7 @@ impl VoxelRenderer {
             .chain(&visible_boxes)
             .copied()
             .collect();
-        let shadows = self.plan_shadows(camera, &drawables, &seen);
+        let shadows = self.plan_shadows(camera, aspect_ratio, &drawables, &seen);
         if shadows.is_some() && !self.shadow_target.full_size {
             self.shadow_target = ShadowTarget::new(&self.device, true);
             self.remake_frame_bind_group();
@@ -3749,6 +3819,55 @@ pub(crate) fn voxel_pipelines(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_box_an_orthographic_camera_sees_is_as_wide_and_high_as_its_picture_and_as_deep_as_the_things_seen_within_its_planes()
+     {
+        let mut camera = Camera::new(WorldPosition::new(
+            voxel_space::BrickCoordinate::new(0, 0, 0),
+            [0.0; 3],
+        ));
+        let spheres = [
+            (Vec3::new(5.0, 0.0, -100.0), 10.0),
+            (Vec3::new(-9.0, 3.0, -300.0), 20.0),
+        ];
+        assert_eq!(
+            box_seen(&camera, 2.0, spheres.into_iter()),
+            None,
+            "perspective"
+        );
+        camera.projection = Projection::Orthographic {
+            height: 100.0,
+            depth: 1_000.0,
+        };
+        // (The camera looks along -z: right is x, up is y.) 200 wide, 100 high, from 90 to 320 ahead.
+        let corners = box_seen(&camera, 2.0, spheres.into_iter()).unwrap();
+        for corner in corners {
+            assert!((corner.x.abs() - 100.0).abs() < 1e-3, "{corner}");
+            assert!((corner.y.abs() - 50.0).abs() < 1e-3, "{corner}");
+            assert!(
+                (corner.z + 90.0).abs() < 1e-3 || (corner.z + 320.0).abs() < 1e-3,
+                "{corner}"
+            );
+        }
+        // All eight corners, each once.
+        for (index, corner) in corners.iter().enumerate() {
+            assert!(corners[index + 1..].iter().all(|other| other != corner));
+        }
+        // Things behind the near plane or past the far one do not stretch the box beyond them.
+        let wild = [
+            (Vec3::new(0.0, 0.0, 500.0), 10.0),
+            (Vec3::new(0.0, 0.0, -9_000.0), 10.0),
+        ];
+        for corner in box_seen(&camera, 1.0, wild.into_iter()).unwrap() {
+            let ahead = -corner.z;
+            assert!(
+                (ahead - camera.near_plane).abs() < 1e-3
+                    || (ahead - camera.near_plane - 1_000.0).abs() < 1e-2,
+                "{corner}"
+            );
+        }
+    }
+
     #[test]
     fn the_scale_of_a_cell_is_two_to_its_level_exactly_at_every_level_there_is() {
         let mut expected = 1.0f32;
