@@ -1354,6 +1354,7 @@ fn box_at(offset: [f64; 3], size: [u8; 3], material: u32) -> EntityBox {
         size,
         material,
         shape: EntityShape::Box,
+        orientation: Orientation::IDENTITY,
     }
 }
 
@@ -1463,6 +1464,59 @@ fn a_ball_is_drawn_round_in_the_box_it_is_of_and_in_its_own_material_and_has_no_
 }
 
 #[test]
+fn a_cylinder_is_a_whole_square_from_its_side_and_a_cross_from_its_end_wherever_it_is_turned_to() {
+    // The camera looks along -z at a cylinder half a voxel across, with its length along x as it is made: from the side it is a square as big as the box of its size; turned a quarter about
+    // y its length is along z, toward the camera, and it is the ball's cross; and turned about its own length (a quarter about x) it is a square again.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let cylinder = |material, orientation| EntityBox {
+            shape: EntityShape::Cylinder,
+            orientation,
+            ..box_at([16.5, 16.5, 16.5], [4, 4, 4], material)
+        };
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let about_y = Orientation::from_components([0.0, half, 0.0, half]).unwrap();
+        let about_x = Orientation::from_components([half, 0.0, 0.0, half]).unwrap();
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], RED)]);
+        let in_a_box = red_pixels(&render(&mut renderer, &camera));
+        renderer.set_entity_boxes(&[cylinder(RED, Orientation::IDENTITY)]);
+        let from_the_side = render(&mut renderer, &camera);
+        save_image("entity_cylinder_side", &name, &from_the_side);
+        assert!(is_red(pixel(&from_the_side, SIZE / 2, SIZE / 2)), "{name}");
+        let side_on = red_pixels(&from_the_side);
+        assert!(
+            side_on * 100 >= in_a_box * 95 && side_on <= in_a_box,
+            "{name}: {side_on} red pixels from the side, {in_a_box} of its box: a whole square"
+        );
+        renderer.set_entity_boxes(&[cylinder(RED, about_y)]);
+        let from_the_end = render(&mut renderer, &camera);
+        save_image("entity_cylinder_end", &name, &from_the_end);
+        let end_on = red_pixels(&from_the_end);
+        assert!(
+            end_on * 10 < in_a_box * 9 && end_on * 10 > in_a_box * 6,
+            "{name}: {end_on} red pixels end on, {in_a_box} of its box"
+        );
+        // Turned about its own length, it is as it was from the side; and its middle stays where it is whatever the turn.
+        renderer.set_entity_boxes(&[cylinder(RED, about_x)]);
+        let rolled = render(&mut renderer, &camera);
+        let rolled_pixels = red_pixels(&rolled);
+        assert!(
+            rolled_pixels * 100 >= in_a_box * 95 && rolled_pixels <= in_a_box,
+            "{name}: {rolled_pixels} red pixels rolled, {in_a_box} of its box"
+        );
+        for orientation in [about_y, about_x] {
+            renderer.set_entity_boxes(&[cylinder(GREEN, orientation)]);
+            assert!(
+                is_green(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),
+                "{name}: the middle is where the box is"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
     for context in contexts() {
         let name = adapter_name(&context);
@@ -1474,6 +1528,7 @@ fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
             size: [4, 4, 4],
             material: RED,
             shape: EntityShape::Box,
+            orientation: Orientation::IDENTITY,
         }]);
         assert!(
             is_red(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),

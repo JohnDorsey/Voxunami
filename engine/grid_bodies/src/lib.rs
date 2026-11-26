@@ -12,11 +12,11 @@ pub mod joint_desk;
 pub mod joints;
 mod plugin;
 
-pub use docking::{BlockFace, DockedPair, Docking, DockingSettings, UndockError};
+pub use docking::{BlockFace, DockedPair, Docking, DockingSettings, JointKind, UndockError};
 pub use joint_desk::JointDesk;
 pub use joints::JointSettings;
 pub use plugin::{
     BodiesReport, FRAME_RADIUS_BRICKS, GridBodiesConfig, GridBodiesPlugin,
     SETTLING_TERRAIN_BRICKS_PER_TICK, SHIP_BRICKS_PER_TICK,
 };
-pub use plugin::{JointBallRigid, joint_ball_kind};
+pub use plugin::{JointRigid, joint_axle_kind, joint_ball_kind, joint_hinge_kind};

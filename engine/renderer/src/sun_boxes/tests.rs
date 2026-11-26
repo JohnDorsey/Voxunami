@@ -1,4 +1,4 @@
-use voxel_space::{BrickCoordinate, WorldPosition};
+use voxel_space::{BrickCoordinate, Orientation, WorldPosition};
 
 use crate::EntityShape;
 
@@ -14,6 +14,7 @@ fn item(position: WorldPosition, size: [u8; 3]) -> EntityBox {
         size,
         material: 1,
         shape: EntityShape::Box,
+        orientation: Orientation::IDENTITY,
     }
 }
 

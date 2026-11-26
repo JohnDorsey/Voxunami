@@ -21,16 +21,26 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use physics::{BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, PivotPair, SolverDials};
 use server::ServerWorld;
-use voxel_space::{BrickCoordinate, GridId, WorldPosition};
+use voxel_space::{BrickCoordinate, FaceDirection, GridId, WorldPosition};
 use world_storage::MovingGrid;
 
 use super::rail_ports::is_a_rail_pair;
-use super::{Bodies, Frame, FrameKey, Ship};
+use super::{Bodies, Frame, FrameKey};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{Inertia, JointSettings, effective_mass};
+use crate::joints::{Holding, Inertia, JointSettings, effective_mass};
 
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
+
+/// How far from the middle of a hinge's or an axle's end face, in voxels along its line, each of its two pivots is: the two ends of a cylinder half a voxel long (a hinge's runs across the bar, an
+/// axle's along it, from the tip of one bar to the tip of the other).
+const HINGE_PIVOT_OFFSET: f64 = 0.25;
+
+/// The point `distance` voxels from `from` along the way a face looks.
+fn along(from: [f64; 3], face: FaceDirection, distance: f64) -> [f64; 3] {
+    let step = face.offset();
+    [0, 1, 2].map(|axis| from[axis] + distance * step[axis] as f64)
+}
 
 /// A coupling the plugin made, and the ends of the two ships that it is made at.
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +50,9 @@ pub(super) struct Coupled {
     pub(super) frame: FrameKey,
     pub(super) first_end: BlockFace,
     pub(super) second_end: BlockFace,
+    /// What the two ends hold (`JointSettings::holding`, asked when the coupling was made, of the places the ships had then): a ball, or a hinge or an axle with the line of each, as its ship has it. Kept
+    /// with the coupling, so that a joint made again (in another frame) is the joint it was.
+    pub(super) holding: Holding,
     /// Whether the body world's coupling was made rigid at the turn its bodies had (`stiffness.rs`): what the world says of the pair is made true in the tick after it says it.
     pub(super) rigid: bool,
 }
@@ -52,6 +65,15 @@ enum CouplingState {
     Moved(FrameKey),
     /// A ship or an end is gone, or the two are in frames of their own.
     Gone,
+}
+
+/// A ship, or a planet, with ends of joints in a frame.
+struct EndBearer<'a> {
+    id: GridId,
+    ends: &'a BTreeMap<BrickCoordinate, Vec<BlockFace>>,
+    kind: BodyKind,
+    centre_of_mass: [f64; 3],
+    grid: &'a MovingGrid,
 }
 
 /// Two ships with ends that pull on each other: the closest such pair of ends, and what the rules need to know of how the ships go.
@@ -85,17 +107,25 @@ struct Groups {
 
 impl Groups {
     fn of(frame: &Frame, couplings: &BTreeMap<CouplingKey, Coupled>, frame_key: FrameKey) -> Self {
+        // (A planet is in a group that it is coupled to as a body that no pull moves: it weighs nothing here, and the group cannot move.)
         let mut groups = Self {
-            parent: frame.ships.keys().map(|id| (*id, *id)).collect(),
+            parent: frame
+                .ships
+                .keys()
+                .chain(frame.planets.keys())
+                .map(|id| (*id, *id))
+                .collect(),
             mass: frame
                 .ships
                 .iter()
                 .map(|(id, record)| (*id, record.mass))
+                .chain(frame.planets.keys().map(|id| (*id, 0.0)))
                 .collect(),
             movable: frame
                 .ships
                 .iter()
                 .map(|(id, record)| (*id, record.kind != BodyKind::Fixed))
+                .chain(frame.planets.keys().map(|id| (*id, false)))
                 .collect(),
         };
         for ((first, second), _) in couplings
@@ -170,7 +200,19 @@ impl Bodies {
         self.record_couplings(world);
         self.tell_the_desk_the_pivots(world);
         let now = self.couplings.len() as u64;
-        self.count(|report| report.couplings = now);
+        let holding = |wanted: fn(&Holding) -> bool| {
+            self.couplings
+                .values()
+                .filter(|coupled| wanted(&coupled.holding))
+                .count() as u64
+        };
+        let hinges = holding(|holding| matches!(holding, Holding::Hinge(_)));
+        let axles = holding(|holding| matches!(holding, Holding::Axle(_)));
+        self.count(|report| {
+            report.couplings = now;
+            report.hinges = hinges;
+            report.axles = axles;
+        });
     }
 
     /// Parts the pairs that `/joint decouple` asked to be parted in this tick (the joint desk has them), **after the step**, when the world has every ship at the place of the end of the tick
@@ -194,9 +236,26 @@ impl Bodies {
             desk.keep_held_apart_only(|(first, second)| {
                 world.data().grids().get(first).is_some()
                     && world.data().grids().get(second).is_some()
-                    && self.frame_of(first).is_some()
-                    && self.frame_of(first) == self.frame_of(second)
+                    && self.frame_holding_both(first, second).is_some()
             });
+        }
+    }
+
+    /// The frame that has bodies for both of two grids, if there is one: the frame of a ship that holds the other too, or one of a planet, which has a body in every frame
+    /// that is near it (a coupling of a ship and a planet is in the ship's).
+    fn frame_holding_both(&self, first: GridId, second: GridId) -> Option<FrameKey> {
+        let (first_frame, second_frame) = (self.frame_of(first), self.frame_of(second));
+        match (first_frame, second_frame) {
+            (Some(one), Some(other)) => (one == other).then_some(one),
+            (Some(frame), None) => self.frames[&frame]
+                .planets
+                .contains_key(&second)
+                .then_some(frame),
+            (None, Some(frame)) => self.frames[&frame]
+                .planets
+                .contains_key(&first)
+                .then_some(frame),
+            (None, None) => None,
         }
     }
 
@@ -341,27 +400,28 @@ impl Bodies {
         if world.data().grids().get(first).is_none() || world.data().grids().get(second).is_none() {
             return CouplingState::Gone;
         }
-        let (Some(frame_key), Some(second_frame)) = (self.frame_of(first), self.frame_of(second))
-        else {
+        // (A planet is in every frame near it, so the frame of a coupling is the one the ship of it is in: the planet must be in that one too.)
+        let (Some(frame_key), second_frame) = (
+            self.frame_of(first).or_else(|| self.frame_of(second)),
+            self.frame_of(second).or_else(|| self.frame_of(first)),
+        ) else {
             return CouplingState::Gone;
         };
         let Some(frame) = self.frames.get(&frame_key) else {
             return CouplingState::Gone;
         };
-        let (Some(first_record), Some(second_record)) =
-            (frame.ships.get(&first), frame.ships.get(&second))
-        else {
-            return CouplingState::Gone;
-        };
-        let has = |record: &Ship, end: BlockFace| {
-            record
-                .joint_ends
-                .get(&end.voxel.split().0)
+        let has = |id: GridId, end: BlockFace| {
+            frame
+                .ships
+                .get(&id)
+                .map(|record| &record.joint_ends)
+                .or_else(|| self.planet_ends.get(&id).map(|planet| &planet.by_brick))
+                .and_then(|ends| ends.get(&end.voxel.split().0))
                 .is_some_and(|ends| ends.contains(&end))
         };
-        if frame_key != second_frame
-            || !has(first_record, coupled.first_end)
-            || !has(second_record, coupled.second_end)
+        if second_frame != Some(frame_key)
+            || !has(first, coupled.first_end)
+            || !has(second, coupled.second_end)
         {
             return CouplingState::Gone;
         }
@@ -486,18 +546,40 @@ impl Bodies {
         let Some(frame) = self.frames.get(&frame_key) else {
             return pairs;
         };
-        let bearers: Vec<(GridId, &Ship, &MovingGrid)> = frame
+        let mut bearers: Vec<EndBearer> = frame
             .ships
             .iter()
             .filter_map(|(id, record)| {
                 let ship = world.data().grids().get(*id)?;
                 // (A ship that is being made has the joint ends of the bricks made so far: it is coupled when it is made.)
                 (!ship.frozen && !record.joint_ends.is_empty() && record.making.is_none())
-                    .then_some((*id, record, ship))
+                    .then_some(EndBearer {
+                        id: *id,
+                        ends: &record.joint_ends,
+                        kind: record.kind,
+                        centre_of_mass: record.centre_of_mass,
+                        grid: ship,
+                    })
             })
             .collect();
-        for (index, &(first_id, first, first_ship)) in bearers.iter().enumerate() {
-            for &(second_id, second, second_ship) in &bearers[index + 1..] {
+        // (A planet's ends are of the blocks built on it. It cannot be pulled, so it is a fixed body here whatever it does itself, and the middle of its body is its grid's origin.)
+        bearers.extend(frame.planets.keys().filter_map(|id| {
+            let grid = world.data().grids().get(*id)?;
+            let ends = &self.planet_ends.get(id)?.by_brick;
+            (!ends.is_empty()).then_some(EndBearer {
+                id: *id,
+                ends,
+                kind: BodyKind::Fixed,
+                centre_of_mass: [0.0; 3],
+                grid,
+            })
+        }));
+        // (A pair is named by the lower identifier first, as the world and the joint desk have it.)
+        bearers.sort_by_key(|bearer| bearer.id);
+        for (index, first) in bearers.iter().enumerate() {
+            let (first_id, first_ship) = (first.id, first.grid);
+            for second in &bearers[index + 1..] {
+                let (second_id, second_ship) = (second.id, second.grid);
                 // (A pair of which a ship rides a rail is pulled over the rails, and coupled when it touches: `rail_joints.rs`.)
                 if (first.kind == BodyKind::Fixed && second.kind == BodyKind::Fixed)
                     || self.couplings.contains_key(&(first_id, second_id))
@@ -515,12 +597,14 @@ impl Bodies {
                     BlockFaceView,
                     Approach,
                 )> = None;
-                for first_end in first.joint_ends.values().flatten() {
+                for first_end in first.ends.values().flatten() {
                     let first_view = BlockFaceView::of(*first_end, &first_ship.pose, from);
-                    for second_end in second.joint_ends.values().flatten() {
+                    for second_end in second.ends.values().flatten() {
                         let second_view = BlockFaceView::of(*second_end, &second_ship.pose, from);
                         let how = approach(&first_view, &second_view);
-                        if (saved || settings.pulls(&first_view, &second_view, &how))
+                        // (A pair the world has saved is made again whatever the line-up and the speeds, by ends of one kind only.)
+                        if ((saved && first_end.kind() == second_end.kind())
+                            || settings.pulls(&first_view, &second_view, &how))
                             && best
                                 .as_ref()
                                 .is_none_or(|top| how.distance < top.4.distance)
@@ -547,17 +631,14 @@ impl Bodies {
                 };
                 // (The speed of an end is the centre of mass' and what the ship's turning adds at the end's distance from it, worked out from the centre of mass this plugin
                 // keeps, as for docking: Rapier's own is the one before a ship made this tick has a mass.)
-                let arm = |ship: &MovingGrid, record: &Ship, end: BlockFace| {
+                let arm = |bearer: &EndBearer, end: BlockFace| {
                     let at = end.local_centre();
                     turn(
-                        ship.pose.rotation_matrix(),
-                        [0, 1, 2].map(|axis| at[axis] - record.centre_of_mass[axis]),
+                        bearer.grid.pose.rotation_matrix(),
+                        [0, 1, 2].map(|axis| at[axis] - bearer.centre_of_mass[axis]),
                     )
                 };
-                let (first_arm, second_arm) = (
-                    arm(first_ship, first, first_end),
-                    arm(second_ship, second, second_end),
-                );
+                let (first_arm, second_arm) = (arm(first, first_end), arm(second, second_end));
                 let (first_velocity, second_velocity) = (
                     velocity_at(&first_state, first_arm),
                     velocity_at(&second_state, second_arm),
@@ -584,19 +665,24 @@ impl Bodies {
         pairs
     }
 
-    /// Couples two ships at their ends: a ball joint at the middle of the two faces, which are at one place to within the coupling distance and which the solver pulls
-    /// together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
+    /// Couples two ships at their ends: a ball joint at the middle of the two faces, or two pivots on the line through that middle for two hinges or two axles on one line (see
+    /// [`Coupled::holding`]); the faces are at one place to within the coupling distance and the solver pulls the pivots together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
     fn make_coupling(
         &mut self,
         settings: &JointSettings,
         frame_key: FrameKey,
         pair: &JointPair,
     ) -> bool {
+        // (Ends that hold nothing are not coupled, whatever else lets a pair be: hinges whose lines cross.)
+        let Some(holding) = settings.holding(&pair.first_view, &pair.second_view) else {
+            return false;
+        };
         let coupled = Coupled {
             id: CouplingId(self.next_coupling),
             frame: frame_key,
             first_end: pair.first_end,
             second_end: pair.second_end,
+            holding,
             rigid: false,
         };
         let key = (pair.first, pair.second);
@@ -621,10 +707,24 @@ impl Bodies {
             return false;
         };
         let (first, second) = (BodyId(key.0.get()), BodyId(key.1.get()));
-        let pivots = [PivotPair {
-            first: coupled.first_end.local_centre(),
-            second: coupled.second_end.local_centre(),
-        }];
+        let (first_centre, second_centre) = (
+            coupled.first_end.local_centre(),
+            coupled.second_end.local_centre(),
+        );
+        // (A ball is one pivot at the middle of the two faces. A hinge is two, along the line of each end, paired by the end of it that points the same way in the world: two ball joints
+        // that share two points are a hinge about the line through them.)
+        let pivots: Vec<PivotPair> = match coupled.holding {
+            Holding::Ball => vec![PivotPair {
+                first: first_centre,
+                second: second_centre,
+            }],
+            Holding::Hinge(axes) | Holding::Axle(axes) => [1.0, -1.0]
+                .map(|side| PivotPair {
+                    first: along(first_centre, axes.first, side * HINGE_PIVOT_OFFSET),
+                    second: along(second_centre, axes.second, side * HINGE_PIVOT_OFFSET),
+                })
+                .to_vec(),
+        };
         // (Contacts between the two ships stay on: the owner, 2026-11-09.)
         if frame
             .bodies

@@ -59,6 +59,7 @@ fn set_entities(renderer: &mut VoxelRenderer, entities: &[Entity]) {
                 size: *size,
                 material: GREEN,
                 shape: EntityShape::Box,
+                orientation: Orientation::IDENTITY,
             }),
             Entity::Avatar(_) => None,
         })

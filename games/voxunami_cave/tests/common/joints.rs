@@ -5,9 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use game_shell::GameContent;
 use voxel_space::{
-    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, Orientation, WorldPosition,
+    BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LatticeRotation,
+    Orientation, WorldPosition,
 };
-use voxunami_cave::content::{CaveContent, dev_ball_joint_id};
+use voxunami_cave::content::{
+    CaveContent, dev_axle_joint_id, dev_ball_joint_id, dev_hinge_joint_id,
+};
 use voxunami_cave::placement::turn_carrying;
 
 use super::docking::{Look, Placed, make, stones};
@@ -20,6 +23,41 @@ pub fn joint_block() -> u32 {
         .1
         .raw_id_of(&dev_ball_joint_id())
         .expect("Cave has the dev ball joint")
+}
+
+pub fn hinge_block() -> u32 {
+    CaveContent::new().registries()[0]
+        .1
+        .raw_id_of(&dev_hinge_joint_id())
+        .expect("Cave has the dev hinge joint")
+}
+
+/// A dev hinge joint turned so that its end (the face that is its joint face, which is up as it is made) looks `end` and its hinge turns about the line along `line` (and the face opposite it):
+/// the line is across the way the end looks, as it is made (it is east and west when the end is up).
+pub fn hinge_end_toward(end: FaceDirection, line: FaceDirection) -> Look {
+    let orientation = LatticeRotation::all()
+        .into_iter()
+        .position(|turn| {
+            turn.apply_face(FaceDirection::PositiveY) == end
+                && [line, line.opposite()].contains(&turn.apply_face(FaceDirection::PositiveX))
+        })
+        .expect("some turn carries the end and the line where they are wanted");
+    Look {
+        state: 0,
+        orientation: orientation as u32,
+    }
+}
+
+pub fn axle_block() -> u32 {
+    CaveContent::new().registries()[0]
+        .1
+        .raw_id_of(&dev_axle_joint_id())
+        .expect("Cave has the dev axle joint")
+}
+
+/// A dev axle joint turned so that its end (the face that is its joint face, which is up as it is made, and its line) looks this way.
+pub fn axle_end_toward(face: FaceDirection) -> Look {
+    ball_end_toward(face)
 }
 
 /// A dev ball joint turned so that its ball end (the face that is its joint face, which is up as it is made) looks this way.
@@ -84,6 +122,50 @@ pub fn middle_car() -> Vec<Placed> {
     blocks
 }
 
+/// A car of `count` stones in a row along x with a hinge end after them looking east, whose hinge turns about the line along `line` (its pivot is at x = `count` + 1 in the car).
+pub fn east_hinge_car(count: i128, line: FaceDirection) -> Vec<Placed> {
+    let mut blocks = stones(0, count);
+    blocks.push((
+        [count, 0, 0],
+        hinge_block(),
+        hinge_end_toward(FaceDirection::PositiveX, line),
+    ));
+    blocks
+}
+
+/// A car with a hinge end looking west before `count` stones, whose hinge turns about the line along `line` (its pivot is at x = 0 in the car).
+pub fn west_hinge_car(count: i128, line: FaceDirection) -> Vec<Placed> {
+    let mut blocks = vec![(
+        [0, 0, 0],
+        hinge_block(),
+        hinge_end_toward(FaceDirection::NegativeX, line),
+    )];
+    blocks.extend(stones(1, count + 1));
+    blocks
+}
+
+/// A car of `count` stones in a row along x with an axle end after them looking east (its pivot is at x = `count` + 1 in the car).
+pub fn east_axle_car(count: i128) -> Vec<Placed> {
+    let mut blocks = stones(0, count);
+    blocks.push((
+        [count, 0, 0],
+        axle_block(),
+        axle_end_toward(FaceDirection::PositiveX),
+    ));
+    blocks
+}
+
+/// A car with an axle end looking west before `count` stones (its pivot is at x = 0 in the car).
+pub fn west_axle_car(count: i128) -> Vec<Placed> {
+    let mut blocks = vec![(
+        [0, 0, 0],
+        axle_block(),
+        axle_end_toward(FaceDirection::NegativeX),
+    )];
+    blocks.extend(stones(1, count + 1));
+    blocks
+}
+
 /// What the scene's bodies say, as a function.
 pub type Report = Box<dyn Fn() -> grid_bodies::BodiesReport>;
 
@@ -119,6 +201,67 @@ pub fn a_player_at_and_cars_posed(
         make(&mut scene, at, false, blocks);
     }
     (scene, Box::new(report), player)
+}
+
+/// Two cars with hinge ends three metres apart, whose hinges turn about the lines along `east_line` (the east car, made first: ship 0) and `west_line`, and a player beside them.
+pub fn two_hinge_cars(
+    east_line: FaceDirection,
+    west_line: FaceDirection,
+) -> (Scene, Report, Player) {
+    a_player_and_cars(
+        22.0,
+        vec![
+            (20.0, east_hinge_car(3, east_line)),
+            (27.0, west_hinge_car(3, west_line)),
+        ],
+    )
+}
+
+/// Two cars with axle ends three metres apart, in a line along x (the east car made first: ship 0), and a player beside them.
+pub fn two_axle_cars() -> (Scene, Report, Player) {
+    a_player_and_cars(
+        22.0,
+        vec![(20.0, east_axle_car(3)), (27.0, west_axle_car(3))],
+    )
+}
+
+/// How fast the second ship turns against the first, in the world's axes, in radians a second.
+pub fn spin_against(scene: &Scene, first: GridId, second: GridId) -> [f64; 3] {
+    let grids = scene.rig.server.world().grids();
+    let (a, b) = (
+        grids.get(first).unwrap().angular_velocity,
+        grids.get(second).unwrap().angular_velocity,
+    );
+    minus(b, a)
+}
+
+/// How fast the second ship turns against the first, in the first ship's own axes: the line a hinge of the first turns about is one of them, whichever way the first has turned.
+pub fn spin_against_in_the_first(scene: &Scene, first: GridId, second: GridId) -> [f64; 3] {
+    let spin = spin_against(scene, first, second);
+    let turn = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(first)
+        .unwrap()
+        .pose
+        .rotation_matrix();
+    // (The transpose of the first's turn takes the world's axes to its own.)
+    [0, 1, 2].map(|axis| (0..3).map(|row| turn[row][axis] * spin[row]).sum::<f64>())
+}
+
+/// The turn of the second ship in the axes of the first (`[row][column]`): for a pair that bends about one line, a turn about that line and no other.
+pub fn turn_of_the_second_in_the_first(
+    scene: &Scene,
+    first: GridId,
+    second: GridId,
+) -> [[f64; 3]; 3] {
+    let grids = scene.rig.server.world().grids();
+    let a = grids.get(first).unwrap().pose.rotation_matrix();
+    let b = grids.get(second).unwrap().pose.rotation_matrix();
+    [0, 1, 2]
+        .map(|row| [0, 1, 2].map(|column| (0..3).map(|k| a[k][row] * b[k][column]).sum::<f64>()))
 }
 
 /// Two cars with their joint ends three metres apart, and a player beside them: the east car is made first (ship 0).

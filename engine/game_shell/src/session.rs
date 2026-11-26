@@ -921,13 +921,19 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .iter()
             .filter_map(|entity| {
                 let appearance = self.client_host.appearance_of(entity)?;
-                // (Aboard a ship an entity is where the ship puts it; the box stays upright in the world.)
-                let (_, position, _) = self.client.world().entity_in_the_world(entity)?;
+                // (Aboard a ship an entity is where the ship puts it; a box or a ball stays upright in the world, and a cylinder, which has a length, is turned as its ship and it are.)
+                let (_, position, orientation) = self.client.world().entity_in_the_world(entity)?;
                 Some(renderer::EntityBox {
                     position: position.translated(appearance.centre_offset),
                     size: appearance.size,
                     material: appearance.material,
                     shape: appearance.shape,
+                    orientation: match appearance.shape {
+                        renderer::EntityShape::Cylinder => orientation,
+                        renderer::EntityShape::Box | renderer::EntityShape::Ball => {
+                            Orientation::IDENTITY
+                        }
+                    },
                 })
             })
             .collect()

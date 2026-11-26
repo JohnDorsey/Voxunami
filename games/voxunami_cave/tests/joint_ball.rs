@@ -10,7 +10,7 @@ use common::joints::{
 };
 use common::{Player, Scene, length, say, ship_id, tick_and_follow};
 use entities::ComponentBag;
-use grid_bodies::{JointBallRigid, joint_ball_kind};
+use grid_bodies::{JointRigid, joint_ball_kind};
 use protocol::EntityId;
 use voxel_space::{BrickCoordinate, EntityPose, GridId, Orientation, WorldPosition};
 
@@ -268,7 +268,7 @@ fn rigid_balls(scene: &Scene) -> Vec<bool> {
         .map(|entity| {
             entity
                 .components
-                .get::<JointBallRigid>()
+                .get::<JointRigid>()
                 .expect("the component can be read")
                 .expect("a ball has it")
                 .0

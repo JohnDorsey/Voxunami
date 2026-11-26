@@ -7,7 +7,9 @@
 //! All of it is in metres, kilograms and seconds, the world's axes and `f64`; the one transcendental function (the cosine of the angle) is `libm`'s, so the result is the same
 //! on every machine.
 
-use crate::docking::{Approach, BlockFaceView, cross, dot, length, turn};
+use voxel_space::FaceDirection;
+
+use crate::docking::{Approach, BlockFaceView, JointKind, cross, dot, length, turn};
 
 /// How ships with joint ends are drawn together and coupled. The numbers of the owner's choice are marked; the pull itself (how it slows the ends as they come) is mine.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +44,28 @@ pub struct JointSettings {
     pub damping_torque_limit: f64,
     /// The extra substeps of the solver for a car that is coupled (owner, 2026-11-09: yes; four is my number, `loop-probe.md`, section 14).
     pub extra_substeps: usize,
+    /// How far, in degrees, the lines of two hinges may be from being one line for them to be coupled (mine: the snap of a lock, 10). Two joints held at two pivots each, whose lines are not
+    /// one line, are pulled together by the solver, so the lines must be near one line to begin with (see [`JointSettings::holding`]).
+    pub line_degrees: f64,
+}
+
+/// The lines of two ends that hold about one line: the end of the line of the first that is named, and the end of the line of the second that points the way the first's does in the world (both
+/// in the axes of the ship each is of), so that the pivots of the two ends are paired by them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineAxes {
+    pub first: FaceDirection,
+    pub second: FaceDirection,
+}
+
+/// What two ends that are coupled hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holding {
+    /// Two balls: one pivot, about which the cars turn every way.
+    Ball,
+    /// Two hinges on one line: two pivots on it, about which the cars bend and about nothing else.
+    Hinge(LineAxes),
+    /// Two axles on one line, along the joints' own length: two pivots on it, about which the cars spin, with no limit, and about nothing else.
+    Axle(LineAxes),
 }
 
 impl Default for JointSettings {
@@ -58,6 +82,7 @@ impl Default for JointSettings {
             spin_waived_within: 0.01,
             damping_torque_limit: 10_000.0,
             extra_substeps: 4,
+            line_degrees: 10.0,
         }
     }
 }
@@ -65,21 +90,24 @@ impl Default for JointSettings {
 const DEGREES: f64 = std::f64::consts::PI / 180.0;
 
 impl JointSettings {
-    /// Whether two ends can pull on each other: their faces are near enough, each looks toward the other (a little behind it is allowed, by the coupling distance, so that ends
-    /// that have come together still do), and they look against each other.
+    /// Whether two ends can pull on each other: they are of one kind (a ball pulls a ball, a hinge a hinge and an axle an axle; ends of different kinds can never be coupled and do nothing to each
+    /// other),
+    /// their faces are near enough, each looks toward the other (a little behind it is allowed, by the coupling distance, so that ends that have come together still do), and they look
+    /// against each other.
     pub fn pulls(
         &self,
         first: &BlockFaceView,
         second: &BlockFaceView,
         approach: &Approach,
     ) -> bool {
-        approach.distance <= self.range
+        first.block_face.kind() == second.block_face.kind()
+            && approach.distance <= self.range
             && dot(first.normal, approach.gap) >= -self.couple_distance
             && dot(second.normal, approach.gap) <= self.couple_distance
             && dot(first.normal, second.normal) < 0.0
     }
 
-    /// Whether two ends are near enough, in line enough and slow enough against each other to be coupled. `relative_velocity` is the velocity of the second end's pivot against
+    /// Whether two ends are near enough, in line enough and slow enough against each other to be coupled, and hold something together ([`JointSettings::holding`]). `relative_velocity` is the velocity of the second end's pivot against
     /// the first's, `relative_spin` the angular velocity of the second car against the first's.
     pub fn can_couple(
         &self,
@@ -89,11 +117,55 @@ impl JointSettings {
         relative_velocity: [f64; 3],
         relative_spin: [f64; 3],
     ) -> bool {
-        approach.distance <= self.couple_distance
+        self.holding(first, second).is_some()
+            && approach.distance <= self.couple_distance
             && dot(first.normal, second.normal) <= -libm::cos(self.couple_degrees * DEGREES)
             && length(relative_velocity) <= self.max_relative_speed
             && (length(relative_spin) <= self.max_relative_spin
                 || approach.distance <= self.spin_waived_within)
+    }
+
+    /// What two ends hold if they are coupled, and `None` if they cannot be: an end holds only an end of its own kind. Two hinges or two axles hold only if their lines are, to
+    /// `line_degrees`, the same line in the world, whatever the turn of the pair about it (the lines do not move as it turns). Lines that cross hold nothing.
+    pub fn holding(&self, first: &BlockFaceView, second: &BlockFaceView) -> Option<Holding> {
+        let kind = first.block_face.kind();
+        if kind != second.block_face.kind() {
+            return None;
+        }
+        let one_line = || {
+            let (first_line, second_line) = (first.block_face.line?, second.block_face.line?);
+            self.one_line(first, first_line, second, second_line)
+        };
+        match kind {
+            JointKind::Ball => Some(Holding::Ball),
+            JointKind::Hinge => one_line().map(Holding::Hinge),
+            JointKind::Axle => one_line().map(Holding::Axle),
+        }
+    }
+
+    /// The lines of two ends if they are one line in the world, to `line_degrees`.
+    fn one_line(
+        &self,
+        first: &BlockFaceView,
+        first_line: FaceDirection,
+        second: &BlockFaceView,
+        second_line: FaceDirection,
+    ) -> Option<LineAxes> {
+        let world = |view: &BlockFaceView, line: FaceDirection| {
+            turn(view.rotation, line.offset().map(|part| part as f64))
+        };
+        let first_world = world(first, first_line);
+        // The end of the second's line that points the way the first's does.
+        let second_line = if dot(first_world, world(second, second_line)) >= 0.0 {
+            second_line
+        } else {
+            second_line.opposite()
+        };
+        (dot(first_world, world(second, second_line)) >= libm::cos(self.line_degrees * DEGREES))
+            .then_some(LineAxes {
+                first: first_line,
+                second: second_line,
+            })
     }
 
     /// Whether two ends are at one place, to a centimetre ([`JointSettings::spin_waived_within`]): the ends of a pair that the world has as coupled (a saved world's, or one

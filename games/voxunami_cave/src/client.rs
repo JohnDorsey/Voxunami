@@ -11,7 +11,7 @@ use game_shell::client_plugin::{
 };
 use game_shell::session::ViewCommand;
 use game_shell::{GameContent, KeyCode};
-use grid_bodies::{JointBallRigid, joint_ball_kind};
+use grid_bodies::{JointRigid, joint_axle_kind, joint_ball_kind, joint_hinge_kind};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
 use renderer::EntityShape;
@@ -20,7 +20,7 @@ use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_view::{BulkLight, RayHit};
 
-use crate::content::{CaveContent, dev_ball_joint_id};
+use crate::content::{CaveContent, dev_axle_joint_id, dev_ball_joint_id, dev_hinge_joint_id};
 use crate::items::{GameMode, PLACEABLE, dropped_item_kind, state_for, state_name};
 use crate::messages::{FlightReadoutIs, GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
@@ -570,23 +570,37 @@ impl ClientPlugin for ClientItems {
 }
 
 /// The client half of the ball of a joint, and of the plugin that moves ships, which makes it (`engine:grid_bodies`; the ball is `engine:joint_ball`, an entity of the server's: `engine/grid_bodies/src/plugin/balls.rs`): a ball of half a voxel across, of the colour of the
-/// dev ball joint's block, drawn where the entity is (the middle of the face where two joint ends meet, which the ship the entity is aboard carries with it).
+/// dev ball joint's block, drawn where the entity is (the middle of the face where two joint ends meet, which the ship the entity is aboard carries with it). A hinge has a cylinder
+/// (`engine:joint_hinge`, of the colour of the dev hinge joint's block): half a voxel across and long, turned as its ship is and as the entity is, so that its length runs along the hinge's line. An axle
+/// has the same cylinder (`engine:joint_axle`, of the colour of the dev axle joint's block) along the length of its bars.
 #[derive(Clone, Copy, Debug)]
 pub struct ClientJointBalls {
-    /// The number of the joint's block in this game's registry (the palette value it is drawn in).
+    /// The number of the ball joint's block in this game's registry (the palette value its ball is drawn in).
     material: u32,
-    /// The number of the block the ball of a rigid joint looks like (a lamp's warm light colour, which no other part of a joint has).
+    /// The number of the hinge joint's block (the palette value its cylinder is drawn in).
+    hinge_material: u32,
+    /// The number of the axle joint's block (the palette value its cylinder is drawn in).
+    axle_material: u32,
+    /// The number of the block the ball or the cylinder of a rigid joint looks like (a lamp's warm light colour, which no other part of a joint has).
     rigid_material: u32,
 }
 
 impl ClientJointBalls {
     pub fn new(content: &CaveContent) -> Self {
-        let material = content.registries()[0]
-            .1
+        let blocks = content.registries()[0].1;
+        let material = blocks
             .raw_id_of(&dev_ball_joint_id())
             .expect("Cave has the dev ball joint");
+        let hinge_material = blocks
+            .raw_id_of(&dev_hinge_joint_id())
+            .expect("Cave has the dev hinge joint");
+        let axle_material = blocks
+            .raw_id_of(&dev_axle_joint_id())
+            .expect("Cave has the dev axle joint");
         Self {
             material,
+            hinge_material,
+            axle_material,
             rigid_material: content.blocks.lamp,
         }
     }
@@ -598,20 +612,28 @@ impl ClientPlugin for ClientJointBalls {
     }
 
     fn register(&self, registrar: &mut ClientRegistrar<'_>) {
-        let (material, rigid_material) = (self.material, self.rigid_material);
-        registrar.entity_appearance(joint_ball_kind(), move |entity| {
-            // (A ball whose mark cannot be read is drawn as a ball that turns.)
-            let rigid = matches!(
-                entity.component::<JointBallRigid>(),
-                Ok(Some(JointBallRigid(true)))
-            );
-            Some(Appearance {
-                size: [4, 4, 4],
-                material: if rigid { rigid_material } else { material },
-                centre_offset: [0.0; 3],
-                shape: EntityShape::Ball,
-            })
-        });
+        let Self {
+            material,
+            hinge_material,
+            axle_material,
+            rigid_material,
+        } = *self;
+        for (kind, made_of, shape) in [
+            (joint_ball_kind(), material, EntityShape::Ball),
+            (joint_hinge_kind(), hinge_material, EntityShape::Cylinder),
+            (joint_axle_kind(), axle_material, EntityShape::Cylinder),
+        ] {
+            registrar.entity_appearance(kind, move |entity| {
+                // (A ball or a cylinder whose mark cannot be read is drawn as one that turns.)
+                let rigid = matches!(entity.component::<JointRigid>(), Ok(Some(JointRigid(true))));
+                Some(Appearance {
+                    size: [4, 4, 4],
+                    material: if rigid { rigid_material } else { made_of },
+                    centre_offset: [0.0; 3],
+                    shape,
+                })
+            });
+        }
     }
 }
 

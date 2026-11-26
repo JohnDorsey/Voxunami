@@ -311,8 +311,7 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// changed). With the version put back to 11 the old hash, 3_770_636_189_421_880_079, came back.
 /// Free regions in an interest (2026-11-23; protocol 13): the stream is 1 byte longer (58,968 to 58,969: the count of free regions in each of its 1 `InterestChanged`), its hash moved to 13_621_063_276_189_007_546 for that and for the
 /// version in the welcome, and the saved world's did not. Checked by taking the stream apart: with the count taken out of those frames and the welcome's version put back to 12, the old hash, 1_716_639_404_753_635_118, and the old length came back.
-const PINNED: (u64, usize, u64) = (
-    13_621_063_276_189_007_546,
-    58_969,
-    15_563_235_043_056_448_435,
-);
+/// The declaration of `engine:hinge_face` (the dev hinge joint, 2026-11-25): the welcome carries the package, which is 210 bytes longer (`block_golden.rs`), so the stream is 210 longer, 58,969 to 59,179 (predicted as the
+/// package's growth before the run, and seen); the saved world's hash did not move. Windows only.
+/// `engine:joint_line_face` (2026-11-25): the package in the welcome is 24 bytes longer, so is the stream; the saved world did not move. Windows only.
+const PINNED: (u64, usize, u64) = (153_501_504_126_031_653, 59_203, 15_563_235_043_056_448_435);

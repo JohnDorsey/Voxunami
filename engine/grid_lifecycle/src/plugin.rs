@@ -593,8 +593,21 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
         })
         .collect();
     // Ships that are coupled are kept as one, by the nearest of them (a ship in a file counts, one that waits for its pilot too).
+    // (A planet is in no group of cars: it is never put away, and its box reaches as far as its ground does, so a car coupled to it would be near whoever is near the planet. A
+    // car that is coupled to the ground is kept by its own distance, and its pair is remembered while it is in a file: the joint is made again when it is back.)
+    let planets: BTreeSet<GridId> = in_memory
+        .iter()
+        .filter(|(_, _, ship)| ship.terrain.is_some())
+        .map(|(id, ..)| *id)
+        .collect();
+    let couplings: BTreeSet<(GridId, GridId)> = world
+        .coupled_ships()
+        .iter()
+        .filter(|(first, second)| !planets.contains(first) && !planets.contains(second))
+        .copied()
+        .collect();
     let groups = Groups::of(
-        world.coupled_ships(),
+        &couplings,
         in_memory
             .iter()
             .map(|(id, away, ship)| Member {

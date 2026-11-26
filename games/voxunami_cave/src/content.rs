@@ -122,6 +122,50 @@ pub fn dev_ball_joint() -> BlockDefinition {
     definition
 }
 
+/// The identifier of the dev hinge joint.
+pub fn dev_hinge_joint_id() -> NamespacedId {
+    "voxunami_cave:dev_hinge_joint"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The dev hinge joint (creative only): the dev ball joint's bar, with a hinge where that has a ball. It is a bronze gray bar of 0.75 by 0.5 by 0.5 metres whose end is a green face, the end of
+/// the joint (`engine:joint_face`), and whose east and west faces, the ends of the line it turns about (`engine:hinge_face`), are orange; two of them whose green ends look at each other across a cell
+/// boundary with their orange faces on one line, half a metre apart, hold a cylinder between them that the two cars bend about, and about nothing else
+/// (`docs/decisions/joints-and-cars.md`, "The dev hinge joint"). It has one state, made with the green end up and the line along east and west. It is placed like the docking port, with the green
+/// end away from the face that was clicked and an orange face (its front) to the player's side across it. It is data: `data/blocks/dev_hinge_joint.json`, in flat colours, with no pictures yet.
+pub fn dev_hinge_joint() -> BlockDefinition {
+    let (identifier, definition) = block_from_data(
+        "games/voxunami_cave/data/blocks/dev_hinge_joint.json",
+        "dev_hinge_joint",
+        include_str!("../data/blocks/dev_hinge_joint.json"),
+    );
+    assert_eq!(identifier, dev_hinge_joint_id());
+    definition
+}
+
+/// The identifier of the dev axle joint.
+pub fn dev_axle_joint_id() -> NamespacedId {
+    "voxunami_cave:dev_axle_joint"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The dev axle joint (creative only): the dev ball joint's bar, with an axle where that has a ball. It is a blue gray bar of 0.75 by 0.5 by 0.5 metres whose end is a purple face, the end of the
+/// joint (`engine:joint_face`) and one end of the line it turns about (`engine:joint_line_face`), which runs along the bar. Two of them whose purple ends look at each other across a cell
+/// boundary, half a metre apart, hold a cylinder from the tip of one to the tip of the other that the two cars spin about, with no limit, and about nothing else
+/// (`docs/decisions/joints-and-cars.md`, "The dev axle joint"). It has one state, made with the purple end up, and is placed like a log, with that end away from the face that was clicked.
+/// It is data: `data/blocks/dev_axle_joint.json`, in flat colours, with no pictures yet.
+pub fn dev_axle_joint() -> BlockDefinition {
+    let (identifier, definition) = block_from_data(
+        "games/voxunami_cave/data/blocks/dev_axle_joint.json",
+        "dev_axle_joint",
+        include_str!("../data/blocks/dev_axle_joint.json"),
+    );
+    assert_eq!(identifier, dev_axle_joint_id());
+    definition
+}
+
 /// The identifier of the dev command seat.
 pub fn dev_command_seat_id() -> NamespacedId {
     "voxunami_cave:dev_command_seat"
@@ -241,6 +285,12 @@ impl CaveContent {
         blocks
             .register(dev_ball_joint_id(), dev_ball_joint())
             .expect("the name of the dev ball joint is not another block's");
+        blocks
+            .register(dev_hinge_joint_id(), dev_hinge_joint())
+            .expect("the name of the dev hinge joint is not another block's");
+        blocks
+            .register(dev_axle_joint_id(), dev_axle_joint())
+            .expect("the name of the dev axle joint is not another block's");
         let spec = PackageSpec {
             textures: base_blocks::textures(),
             level: overworld_id(),

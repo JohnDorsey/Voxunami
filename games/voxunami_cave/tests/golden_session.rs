@@ -402,8 +402,13 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// `/joint` got an optional argument (2026-11-24, `immobilize [SECONDS]`): the list has " [SECONDS]" more, 10 bytes, 7,222,156 to 7,222,166, predicted from the cause; the saved world's hash did not move. **Control:** with the optional
 /// argument left out of the registration, the old hash and length came back (checked).
 /// Both together (the merge of 2026-11-24): the lengths add, 7,222,146 + 25 = 7,222,171; the hash is measured.
+/// The dev hinge joint (2026-11-25): the engine declares `engine:hinge_face` and Cave has one block more, a placeable item. The stream is 480 bytes longer, 7,222,171 to 7,222,651: the package's 450 (`block_golden.rs`) and
+/// the 30 of the item (its 29 characters and a length), predicted before the run and seen. **The saved world's hash moved** (15_594_210_036_057_493_535 to 13_405_604_663_063_795_900), because the world names the blocks it
+/// knows and the registry has one more; the script does not place the joint. Windows only.
+/// The dev axle joint (2026-11-25): the stream is 255 bytes longer, 7,222,651 to 7,222,906: the package's 226 (`block_golden.rs`) and the 29 of the item (its 28 characters and a length). The saved world's hash moved (the registry has one
+/// more block). Windows only.
 const PINNED: (u64, usize, u64) = (
-    1_686_849_014_710_146_169,
-    7_222_171,
-    15_594_210_036_057_493_535,
+    7_270_485_966_175_806_497,
+    7_222_906,
+    10_072_587_723_607_525_272,
 );

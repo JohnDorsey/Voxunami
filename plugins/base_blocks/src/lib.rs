@@ -865,6 +865,7 @@ mod tests {
                 "engine:docking_face",
                 "engine:front_face",
                 "engine:joint_face",
+                "engine:joint_line_face",
                 "engine:placeable_on_moving_grids"
             ]
         );

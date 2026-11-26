@@ -58,6 +58,17 @@ impl Default for DockingSettings {
     }
 }
 
+/// The kinds of joint end. Ends are coupled, or locked, only with ends of their own kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JointKind {
+    /// Turns every way about the middle of the end's face.
+    Ball,
+    /// Bends about a line across the way its end looks.
+    Hinge,
+    /// Spins about the line along the way its end looks, which is the joint's own length.
+    Axle,
+}
+
 /// A face of a block of a ship that fits the face of another ship's block: the voxel the block is in and the face of it, in the ship's own axes. A docking port is one (the face
 /// `engine:docking_face` names), and so is the end of a joint (`engine:joint_face`); what the two share is where the face is and how it looks, and that is all this and
 /// [`BlockFaceView`] know, so that nothing here takes a joint for a port or a port for a joint (each has its own finder).
@@ -65,9 +76,36 @@ impl Default for DockingSettings {
 pub struct BlockFace {
     pub voxel: VoxelCoordinate,
     pub face: FaceDirection,
+    /// For the end of a joint that turns about a line (`engine:joint_line_face`): one end of that line, in the ship's own axes. It runs through the middle of the face; across the way the
+    /// face looks the joint is a hinge, along it (the face itself or its opposite) an axle. `None` for a ball, and for a port, which has no such thing.
+    pub line: Option<FaceDirection>,
 }
 
 impl BlockFace {
+    /// Whether two joint ends that face each other in one ship fit: two balls, or two hinges or two axles whose lines run the same way in the ship (ends that face each other look along one axis, so
+    /// a hinge's line and an axle's are never the same way). Ends that do not fit are two blocks side by side, with no joint there to be locked or drawn.
+    pub(crate) fn fits(&self, other: &BlockFace) -> bool {
+        self.line.map(FaceDirection::axis) == other.line.map(FaceDirection::axis)
+    }
+
+    /// What kind of joint end this is, by where the line it turns about runs.
+    pub fn kind(&self) -> JointKind {
+        match self.line {
+            None => JointKind::Ball,
+            Some(line) if line.axis() == self.face.axis() => JointKind::Axle,
+            Some(_) => JointKind::Hinge,
+        }
+    }
+
+    /// A face with no line: a port, or the end of a joint that is a ball.
+    pub fn plain(voxel: VoxelCoordinate, face: FaceDirection) -> Self {
+        Self {
+            voxel,
+            face,
+            line: None,
+        }
+    }
+
     /// The middle of the face, in voxels, in the ship's own axes.
     pub fn local_centre(&self) -> [f64; 3] {
         let step = self.face.offset();
@@ -306,6 +344,13 @@ pub struct DockedPair {
     pub second: BlockFace,
 }
 
+/// The pairs of the ends of joints of a ship that are locked: those that face each other and fit ([`BlockFace::fits`]).
+pub(crate) fn locked_joint_pairs(ends: &[BlockFace]) -> Vec<DockedPair> {
+    let mut pairs = facing_pairs(ends);
+    pairs.retain(|pair| pair.first.fits(&pair.second));
+    pairs
+}
+
 /// The pairs among block faces (ports, or the ends of joints) in which a face looks at the block of another that looks back at it, the lower voxel first.
 pub(crate) fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
     let mut pairs = Vec::new();
@@ -314,14 +359,16 @@ pub(crate) fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
         let Some(next) = first.voxel.checked_offset(step[0], step[1], step[2]) else {
             continue;
         };
-        let second = BlockFace {
-            voxel: next,
-            face: first.face.opposite(),
-        };
-        if first.voxel < second.voxel && faces.contains(&second) {
+        // (Found by where it is and which way it looks: the other end's hinge is its own business.)
+        let opposite = first.face.opposite();
+        if let Some(second) = faces
+            .iter()
+            .find(|face| face.voxel == next && face.face == opposite)
+            && first.voxel < second.voxel
+        {
             pairs.push(DockedPair {
                 first: *first,
-                second,
+                second: *second,
             });
         }
     }
@@ -501,10 +548,10 @@ impl Docking {
         facing_pairs(&self.ports_of(ship))
     }
 
-    /// The pairs of joint ends of a ship that are locked: an end whose face looks at the block of another end whose face looks back at it (the cars of a ship that was made of cars by a
-    /// lock, or built so).
+    /// The pairs of joint ends of a ship that are locked: an end whose face looks at the block of another end whose face looks back at it, and that fits it (a ball a ball, a hinge a hinge on the
+    /// same line; the cars of a ship that was made of cars by a lock, or built so).
     pub fn locked_pairs(&self, ship: &MovingGrid) -> Vec<DockedPair> {
-        facing_pairs(&self.joint_ends_of(ship))
+        locked_joint_pairs(&self.joint_ends_of(ship))
     }
 
     /// The voxels of blocks that are joined to `start` without crossing between a pair of voxels of `cuts` (each pair is in `cuts` both ways).
@@ -585,7 +632,7 @@ impl Docking {
             return Err(UndockError::NotLocked);
         }
         if moving.terrain.is_some() {
-            return Err(SplitError::HasTerrain.into());
+            return self.unlock_from_planet(world, ship, pair);
         }
         let crossing = |pair: &DockedPair| {
             [
@@ -690,27 +737,18 @@ impl Docking {
         planet: GridId,
         pair: DockedPair,
     ) -> Result<[GridId; 2], UndockError> {
-        let mut sides: Vec<(BTreeSet<VoxelCoordinate>, bool)> = Vec::new();
-        for (start, other) in [(pair.first, pair.second), (pair.second, pair.first)] {
-            let side = self.built_side(world, planet, start.voxel, other.voxel)?;
-            if side.contains(&other.voxel) {
-                return Err(UndockError::Welded);
-            }
-            let grounded = self.stands_on_the_ground(world, planet, &side)?;
-            sides.push((side, grounded));
-        }
-        let leaving = match (sides[0].1, sides[1].1) {
-            (true, true) => return Err(UndockError::BothSidesOnTheGround),
-            (false, true) => 0,
-            (true, false) => 1,
-            (false, false) => usize::from(sides[1].0.len() < sides[0].0.len()),
-        };
+        let between_the_ports = BTreeSet::from([
+            (pair.first.voxel, pair.second.voxel),
+            (pair.second.voxel, pair.first.voxel),
+        ]);
+        let (leaving, side) =
+            self.side_that_leaves_a_planet(world, planet, pair, &between_the_ports)?;
         let staying_port = if leaving == 0 {
             pair.second
         } else {
             pair.first
         };
-        let voxels: Vec<VoxelCoordinate> = sides[leaving].0.iter().copied().collect();
+        let voxels: Vec<VoxelCoordinate> = side.iter().copied().collect();
         let pose = world
             .data()
             .grids()
@@ -737,13 +775,74 @@ impl Docking {
         })
     }
 
-    /// The voxels with a built block (see above) joined to this one without crossing to the other voxel, which is where the other port is.
+    /// Which side of a pair of ports or joint ends of a planet leaves it (0 for the side of the first, 1 for the second's) and its voxels: the blocks that someone built, joined to the end
+    /// without crossing a pair of voxels in `cuts`, on each side; the side that does not stand on the ground leaves, the smaller if neither does, and nothing leaves if both do.
+    fn side_that_leaves_a_planet(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        pair: DockedPair,
+        cuts: &BTreeSet<(VoxelCoordinate, VoxelCoordinate)>,
+    ) -> Result<(usize, BTreeSet<VoxelCoordinate>), UndockError> {
+        let mut sides: Vec<(BTreeSet<VoxelCoordinate>, bool)> = Vec::new();
+        for (start, other) in [(pair.first, pair.second), (pair.second, pair.first)] {
+            let side = self.built_side(world, planet, start.voxel, cuts)?;
+            if side.contains(&other.voxel) {
+                return Err(UndockError::Welded);
+            }
+            let grounded = self.stands_on_the_ground(world, planet, &side)?;
+            sides.push((side, grounded));
+        }
+        let leaving = match (sides[0].1, sides[1].1) {
+            (true, true) => return Err(UndockError::BothSidesOnTheGround),
+            (false, true) => 0,
+            (true, false) => 1,
+            (false, false) => usize::from(sides[1].0.len() < sides[0].0.len()),
+        };
+        Ok((leaving, sides.swap_remove(leaving).0))
+    }
+
+    /// Unlocks a pair of joint ends of a planet: the side that does not stand on the ground is cut out of the planet as a car, in place and going as the planet's ground there goes,
+    /// and **not set apart**: the end that stays in the ground and the car's are where they were, in line, and the car is coupled to the planet again by the rule that couples
+    /// (a joint is a coupling). Every lock of the planet is a cut between cars (as for a ship). Returns the side of the first end and the side of the second, the planet being the one that stayed.
+    fn unlock_from_planet(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        pair: DockedPair,
+    ) -> Result<[GridId; 2], UndockError> {
+        let moving = world
+            .data()
+            .grids()
+            .get(planet)
+            .ok_or(AccessError::NoSuchGrid(planet))?;
+        let every_lock: BTreeSet<(VoxelCoordinate, VoxelCoordinate)> = self
+            .locked_pairs(moving)
+            .iter()
+            .flat_map(|locked| {
+                [
+                    (locked.first.voxel, locked.second.voxel),
+                    (locked.second.voxel, locked.first.voxel),
+                ]
+            })
+            .collect();
+        let (leaving, side) = self.side_that_leaves_a_planet(world, planet, pair, &every_lock)?;
+        let voxels: Vec<VoxelCoordinate> = side.iter().copied().collect();
+        let ship = world.detach_blocks(planet, &voxels)?;
+        Ok(if leaving == 0 {
+            [ship, planet]
+        } else {
+            [planet, ship]
+        })
+    }
+
+    /// The voxels with a built block (see above) joined to this one without crossing a pair of voxels in `cuts`.
     fn built_side(
         &self,
         world: &mut ServerWorld,
         planet: GridId,
         start: VoxelCoordinate,
-        other: VoxelCoordinate,
+        cuts: &BTreeSet<(VoxelCoordinate, VoxelCoordinate)>,
     ) -> Result<BTreeSet<VoxelCoordinate>, UndockError> {
         let mut view = world.grid(planet)?;
         let mut side: BTreeSet<VoxelCoordinate> = BTreeSet::from([start]);
@@ -754,9 +853,7 @@ impl Docking {
                 let Some(next) = voxel.checked_offset(step[0], step[1], step[2]) else {
                     continue;
                 };
-                let between_the_ports =
-                    (voxel == start && next == other) || (voxel == other && next == start);
-                if between_the_ports || side.contains(&next) {
+                if cuts.contains(&(voxel, next)) || side.contains(&next) {
                     continue;
                 }
                 let now = view.get(self.block_channel, next)?;
@@ -813,10 +910,7 @@ mod tests {
     const WEST: FaceDirection = FaceDirection::NegativeX;
 
     fn port(x: i128, y: i128, z: i128, face: FaceDirection) -> BlockFace {
-        BlockFace {
-            voxel: VoxelCoordinate::new(x, y, z),
-            face,
-        }
+        BlockFace::plain(VoxelCoordinate::new(x, y, z), face)
     }
 
     fn pose(x: f64, y: f64, z: f64, orientation: Orientation) -> GridPose {
