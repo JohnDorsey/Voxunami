@@ -10,6 +10,11 @@ const PIXELS_PER_NOTCH: f64 = 40.0;
 /// The most notches that one event can give (a number that is not a real turn of a wheel, such as a driver's mistake, must not make the game do the same thing a billion times).
 const MOST_NOTCHES_AT_ONCE: f64 = 32.0;
 
+/// A slide of a touchpad in lines of a wheel (the sign as it is).
+pub(crate) fn lines_of_pixels(pixels: f64) -> f64 {
+    pixels / PIXELS_PER_NOTCH
+}
+
 /// The turns of a wheel not yet a whole notch.
 #[derive(Debug, Default)]
 pub(crate) struct WheelNotches {
@@ -36,7 +41,7 @@ impl WheelNotches {
 
     /// The same for a slide of `pixels` (the sign as for lines).
     pub(crate) fn add_pixels(&mut self, pixels: f64) -> i32 {
-        self.add_lines(pixels / PIXELS_PER_NOTCH)
+        self.add_lines(lines_of_pixels(pixels))
     }
 }
 

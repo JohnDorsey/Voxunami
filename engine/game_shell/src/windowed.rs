@@ -36,14 +36,14 @@ use crate::view::{
     hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
     show_screen,
 };
-use crate::wheel::WheelNotches;
+use crate::view_controls::{
+    KeysBelongTo, WheelGoesTo, keys_belong_to, map_zoom_factor, wheel_goes_to,
+};
+use crate::wheel::{WheelNotches, lines_of_pixels};
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f64 = 5.0;
 const MOUSE_SENSITIVITY: f64 = 0.0025; // radians per pixel
-const MAP_TURN_RATE: f64 = 1.5; // radians a second, with a key held
-const MAP_ZOOM_RATE: f64 = 1.0; // e-folds of the distance a second, with a key held
-const MAP_WHEEL_ZOOM: f64 = 0.15; // e-folds of the distance for a notch of the wheel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often what the keys ask is sent again when it has not changed.
@@ -273,6 +273,7 @@ impl<G: GameDefinition> Viewer<G> {
             .ok_or("the display offers no sRGB surface format")?;
         let size = window.inner_size();
         session.set_viewport_height(size.height);
+        session.set_viewport_width(size.width);
         let surface_configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -479,27 +480,19 @@ impl<G: GameDefinition> Viewer<G> {
             } else {
                 1.0
             };
-        match self.session.view_mode() {
-            ViewMode::Body => {
+        // (A map takes no key: see `view_controls`.)
+        match keys_belong_to(self.session.view_mode()) {
+            KeysBelongTo::Body => {
                 let camera = &mut self.session.camera;
                 camera.move_relative(movement.normalize_or_zero() * speed * seconds);
                 camera.move_in_world(DVec3::Y * vertical * speed * seconds);
             }
             // The camera that flew off goes where the keys say, and the player's body stays.
-            ViewMode::Fly => {
+            KeysBelongTo::DetachedCamera => {
                 self.session
                     .fly_move_relative(movement.normalize_or_zero() * speed * seconds);
                 self.session
                     .fly_move_in_world(DVec3::Y * vertical * speed * seconds);
-            }
-            // The map: the sideways keys go round the focus, space and shift raise and lower the camera, and forward and back are nearer and farther.
-            ViewMode::Map => {
-                self.session.orbit_by(
-                    movement.x * MAP_TURN_RATE * seconds,
-                    vertical * MAP_TURN_RATE * seconds,
-                );
-                self.session
-                    .orbit_zoom(libm::exp(movement.z * MAP_ZOOM_RATE * seconds));
             }
         }
     }
@@ -507,12 +500,11 @@ impl<G: GameDefinition> Viewer<G> {
     /// Tells a server that moves the player what the keys ask: when that changes, and now and then so
     /// that the server knows the player is still there.
     fn send_movement(&mut self, now: Instant) {
-        // (The keys move the camera that is drawn when it is not the player's eyes: the body stands.)
+        // (A detached camera takes the keys and the body stands; with a map up they are the body's as ever.)
         let no_keys = HashSet::new();
-        let keys = if self.session.view_mode() == ViewMode::Body {
-            &self.keys
-        } else {
-            &no_keys
+        let keys = match keys_belong_to(self.session.view_mode()) {
+            KeysBelongTo::Body => &self.keys,
+            KeysBelongTo::DetachedCamera => &no_keys,
         };
         let Some(message) = G::movement_message(keys, &self.session.camera) else {
             return;
@@ -530,7 +522,8 @@ impl<G: GameDefinition> Viewer<G> {
     fn follow_server(&mut self, now: Instant, seconds: f64) -> Result<(), ClientError> {
         match self.session.mode() {
             Mode::Playing if G::server_moves_players() => {
-                if self.session.view_mode() != ViewMode::Body {
+                // (The server moves the body; what is moved here is only a camera of the window's own.)
+                if keys_belong_to(self.session.view_mode()) == KeysBelongTo::DetachedCamera {
                     self.move_camera(seconds);
                 }
                 self.send_movement(now);
@@ -790,6 +783,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                     .surface
                     .configure(&viewer.context.device, &viewer.surface_configuration);
                 viewer.session.set_viewport_height(size.height);
+                viewer.session.set_viewport_width(size.width);
             }
             // A press the system makes up when the window gains focus while a key is down belongs
             // to whatever had the focus before; a release is harmless.
@@ -869,39 +863,39 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 (MouseButton::Right, true) => viewer.session.mouse_pressed(GameButton::Secondary),
                 _ => {}
             },
-            // The wheel is two buttons that are pressed a notch at a time, and (like the buttons) the world hears it only while the mouse is captured and no interface has the
-            // input.
-            WindowEvent::MouseWheel { delta, .. }
-                if viewer.mouse_captured && !viewer.modal_has_the_input() =>
-            {
-                let notches = match delta {
-                    MouseScrollDelta::LineDelta(_, lines) => {
-                        viewer.wheel.add_lines(f64::from(lines))
-                    }
-                    MouseScrollDelta::PixelDelta(slide) => viewer.wheel.add_pixels(slide.y),
-                };
-                let button = if notches > 0 {
-                    GameButton::WheelUp
-                } else {
-                    GameButton::WheelDown
-                };
-                for _ in 0..notches.unsigned_abs() {
-                    viewer.session.mouse_pressed(button);
+            // The wheel zooms the map when one is drawn. Otherwise it is two buttons that are pressed a notch at a time, and (like the buttons) the world hears it only while
+            // the mouse is captured. An interface that has the input keeps it from both.
+            WindowEvent::MouseWheel { delta, .. } => match wheel_goes_to(
+                viewer.session.view_mode(),
+                viewer.mouse_captured,
+                viewer.modal_has_the_input(),
+            ) {
+                WheelGoesTo::MapZoom => {
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, lines) => f64::from(lines),
+                        MouseScrollDelta::PixelDelta(slide) => lines_of_pixels(slide.y),
+                    };
+                    viewer.session.orbit_zoom(map_zoom_factor(lines));
                 }
-            }
+                WheelGoesTo::Game => {
+                    let notches = match delta {
+                        MouseScrollDelta::LineDelta(_, lines) => {
+                            viewer.wheel.add_lines(f64::from(lines))
+                        }
+                        MouseScrollDelta::PixelDelta(slide) => viewer.wheel.add_pixels(slide.y),
+                    };
+                    let button = if notches > 0 {
+                        GameButton::WheelUp
+                    } else {
+                        GameButton::WheelDown
+                    };
+                    for _ in 0..notches.unsigned_abs() {
+                        viewer.session.mouse_pressed(button);
+                    }
+                }
+                WheelGoesTo::Nothing => {}
+            },
             WindowEvent::CursorMoved { position, .. } => viewer.cursor = (position.x, position.y),
-            // The wheel brings the map nearer and sends it farther.
-            WindowEvent::MouseWheel { delta, .. }
-                if viewer.session.view_mode() == ViewMode::Map =>
-            {
-                let notches = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, lines) => f64::from(lines),
-                    winit::event::MouseScrollDelta::PixelDelta(position) => position.y / 40.0,
-                };
-                viewer
-                    .session
-                    .orbit_zoom(libm::exp(-notches * MAP_WHEEL_ZOOM));
-            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 viewer.shift = modifiers.state().shift_key()
             }

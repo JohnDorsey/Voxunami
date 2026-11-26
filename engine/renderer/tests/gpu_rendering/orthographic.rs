@@ -123,11 +123,18 @@ fn every_face_that_looks_the_way_an_orthographic_camera_does_is_drawn_whichever_
             "the +x face of the block is past the camera: {cameras_x}"
         );
         solid_block(&mut renderer, block);
-        let with = render(&mut renderer, &camera);
+        let (with, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
         renderer.set_skip_faces_looking_away(false);
         let without = render(&mut renderer, &camera);
         save_image("orthographic_block", &adapter_name(&context), &with);
         assert_eq!(with, without, "{}", adapter_name(&context));
+        // The faces that look away along the way the camera looks (-x, -y and -z: it looks toward -x, down and toward -z) are not drawn: half the block.
+        assert_eq!(
+            statistics.quads_looking_away_skipped,
+            statistics.quads_drawn / 2,
+            "{}: {statistics:?}",
+            adapter_name(&context)
+        );
         // The block is there, and shows more than one shade (its top and its sides).
         let shades: std::collections::BTreeSet<u32> = with
             .chunks(4)
@@ -136,6 +143,49 @@ fn every_face_that_looks_the_way_an_orthographic_camera_does_is_drawn_whichever_
             .map(brightness)
             .collect();
         assert!(shades.len() >= 2, "{}: {shades:?}", adapter_name(&context));
+    }
+}
+
+#[test]
+fn the_faces_an_orthographic_camera_leaves_out_make_no_difference_to_the_picture_whichever_way_it_looks()
+ {
+    for context in contexts() {
+        let adapter = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        // A block that is not alone on its axis: a floor with a wall and a step, so that sides hide and show one another.
+        let mut voxels: Vec<_> = (0..32u8)
+            .flat_map(|x| (0..32u8).map(move |z| ([x, 0, z], RED)))
+            .collect();
+        voxels.extend((1..=8u8).flat_map(|y| (4..28u8).map(move |z| ([16, y, z], GREEN))));
+        voxels.extend((20..26u8).flat_map(|x| (8..14u8).map(move |z| ([x, 1, z], GREEN))));
+        place_voxels(&mut renderer, ORIGIN_BRICK, &voxels);
+        for turn in 0..8 {
+            for pitch in [-1.5, -0.8, -0.2, 0.4] {
+                let mut camera = camera_at(ORIGIN_BRICK, [16.0, 4.0, 16.0]);
+                camera.yaw =
+                    f64::from(turn) * std::f64::consts::FRAC_PI_4 + 0.1 * f64::from(turn % 2);
+                camera.pitch = pitch;
+                camera.projection = Projection::Orthographic {
+                    height: 64.0,
+                    depth: 400.0,
+                };
+                let forward = camera.forward();
+                camera.move_in_world(glam::DVec3::new(
+                    -f64::from(forward.x) * 100.0,
+                    -f64::from(forward.y) * 100.0,
+                    -f64::from(forward.z) * 100.0,
+                ));
+                renderer.set_skip_faces_looking_away(true);
+                let (with, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+                renderer.set_skip_faces_looking_away(false);
+                let without = render(&mut renderer, &camera);
+                assert_eq!(with, without, "{adapter}: yaw {turn}, pitch {pitch}");
+                assert!(
+                    statistics.quads_looking_away_skipped > 0,
+                    "{adapter}: yaw {turn}, pitch {pitch}: {statistics:?}"
+                );
+            }
+        }
     }
 }
 

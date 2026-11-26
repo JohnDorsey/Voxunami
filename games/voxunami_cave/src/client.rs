@@ -639,8 +639,9 @@ impl ClientPlugin for ClientJointBalls {
 
 /// The client half of `voxunami_cave:movement`: the keys that fly and that switch the suit thrusters (`R`, the key that switches RCS in Kerbal Space Program), and the keys of the
 /// picture's camera, which is where the player is looking from and so a kind of movement: `M` draws the map (a camera that goes round the player, or a ship or a planet that
-/// `Tab` locks it on) and draws the player's eyes again; `V` lets the camera go to fly where the mouse points it while the player stands, and takes it back. The movement keys
-/// and the mouse move whichever of them is drawn, and the wheel zooms the map (the window's work, `docs/specs/viewpoints-spec.md`, phase 5).
+/// `Tab` locks it on) and draws the player's eyes again; `V` lets the camera go to fly where the mouse points it while the player stands, and takes it back. A map takes no
+/// key (the mouse turns it and the wheel zooms it, so that a pilot flies with the map up); a detached camera takes the movement keys and the mouse (the window's work,
+/// `docs/specs/viewpoints-spec.md`, phase 5 and 9s).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClientMovement;
 
@@ -667,7 +668,7 @@ impl ClientPlugin for ClientMovement {
             KeyCode::KeyM,
             ActionSpec::new(
                 "voxunami_cave:toggle_map",
-                "draws the map, a camera that goes round you (or the ship or planet Tab locks it on), or your own eyes again",
+                "draws the map, a camera that goes round you (or the ship or planet Tab locks it on), or your own eyes again; the mouse turns it and the wheel zooms it, and your keys still move you or your ship",
             ),
             |context| context.view(ViewCommand::ToggleMap),
         );

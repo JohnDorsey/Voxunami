@@ -21,6 +21,7 @@ pub mod following;
 mod headless;
 pub mod host;
 pub mod options;
+mod orthographic_cut;
 pub mod package;
 mod package_data;
 mod packs;
@@ -39,6 +40,7 @@ mod sun_view_tests;
 #[cfg(test)]
 mod test_support;
 pub mod view;
+mod view_controls;
 pub mod view_rig;
 mod wheel;
 mod windowed;

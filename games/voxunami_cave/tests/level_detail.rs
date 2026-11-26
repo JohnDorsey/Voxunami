@@ -281,22 +281,22 @@ fn the_map_of_the_overworld_is_orthographic_and_is_nodes_of_one_level_over_the_b
         *by_level.entry(cube.level()).or_default() += 1;
     }
     let total = renderer.0.len();
-    // The ball of bricks is where the picture is looked at, the focus, and not where the eye is far back: no node covers the brick the player is in.
+    // From so far a voxel is a tenth of a pixel, and there are no bricks: a node covers the brick the player is in.
     let focus_brick = voxel_space::BrickCoordinate::new(0, 3, 0);
-    assert!(
-        renderer
+    let covers_the_focus = |nodes: &Nodes| {
+        nodes
             .0
             .iter()
-            .all(|cube| region_octree::BrickCube::containing(focus_brick, cube.level()) != *cube),
-        "a node covers the brick at the focus"
-    );
+            .any(|cube| region_octree::BrickCube::containing(focus_brick, cube.level()) == *cube)
+    };
+    assert!(covers_the_focus(&renderer), "no node covers the focus");
     let (level, count) = by_level
         .iter()
         .max_by_key(|(_, count)| **count)
         .map(|(level, count)| (*level, *count))
         .unwrap();
-    // A pixel is 10 voxels: cells of 8 (level 3, 2.6 pixels) to 16 are about 3 pixels.
-    assert!((3..=4).contains(&level), "{by_level:?}");
+    // A pixel is 10 voxels, and the cells of a map are 3 to 6 pixels: 32 voxels, level 5.
+    assert!((4..=5).contains(&level), "{by_level:?}");
     assert!(
         count * 10 >= total * 9,
         "nearly all of one level: {by_level:?}"
@@ -308,6 +308,15 @@ fn the_map_of_the_overworld_is_orthographic_and_is_nodes_of_one_level_over_the_b
     assert!(
         by_level.keys().all(|node_level| *node_level <= level),
         "no node is coarser than the level: {by_level:?}"
+    );
+
+    // Close in (a voxel five pixels or so) the ball of bricks is where the picture is looked at, the focus, and not where the eye is back from it: no node covers it.
+    let height = player.orbit().unwrap().orthographic_height(&player.camera);
+    player.orbit_zoom(200.0 / height);
+    renderer.apply(&settled_view(&mut scene, &mut player));
+    assert!(
+        !covers_the_focus(&renderer),
+        "a node covers the brick at the focus"
     );
 
     // Back in the player's eyes: perspective, and the view of the ground again.

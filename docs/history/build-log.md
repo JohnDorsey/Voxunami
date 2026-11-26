@@ -2824,3 +2824,7 @@ The owner asked for a dev hinge joint: a cylinder where the ball joint has a bal
 ## Joints couple only their own kind, and the dev axle joint (2026-11-25, branch `worktree-joints`)
 
 The owner asked that hinges couple only with hinges and never become balls, and for an axle joint. *Own kind* (`2875eff`): `JointSettings::holding` gives a ball, a hinge or nothing; ends of different kinds do not pull; hinges whose lines cross pull and do not couple; ends facing each other in a ship are a locked pair only if they fit. 4 mutants, all killed. *Axle:* `JointKind`, `engine:hinge_face` renamed `engine:joint_line_face` (Cave 19,619 to 19,845 bytes, 2048 and Eels +24, the streams with them and the saved world of Cave), `Holding::Axle`, block 15, entity `engine:joint_axle`. 8 mutants, all killed. Design and tests: `decisions/joints-and-cars.md`, "The dev axle joint".
+
+## The map's keys and frame rate (2026-11-26)
+
+The owner flew with the map up and found it took the rocket's keys, and ran at 8 fps zoomed out. A map takes no key now (the mouse turns it, the wheel zooms: it never had zoomed while the mouse was captured). The frame rate: a box eight times what was seen (74,355 cubes), swap planning of 80 to 90 ms a frame, 4,000 bricks at every zoom, every face drawn. Bricks only very close in and in a smaller ball, cells twice as large, a fitted box, a cut chosen again only across a node, faces that look away left out. Integrated GPU zoomed out: 92 ms to 8 to 10. Spec 9s.

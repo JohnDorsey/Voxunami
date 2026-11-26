@@ -96,6 +96,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray is told of.)
     let reports_occupancy = std::env::var_os(REPORT_OCCUPANCY).is_some();
     session.set_viewport_height(options.view.height);
+    session.set_viewport_width(options.view.width);
     let started = Instant::now();
     session.send_pose();
     let updates = session
@@ -204,6 +205,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     let shader_packs = prepare_shader_packs(view, &mut session)?;
     apply_shader_pack(&mut renderer, &shader_packs.packs, session.settings())?;
     session.set_viewport_height(view.height);
+    session.set_viewport_width(view.width);
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
     apply_occupancy(&mut renderer, &mut session);

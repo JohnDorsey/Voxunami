@@ -593,6 +593,15 @@ impl GpuBrick {
         Self::faces_where(faces, rotation, toward_light, |facing| facing > 0.0)
     }
 
+    /// The ranges of quads on the faces that look back at an orthographic camera that looks along `forward` (or are edge on to it).
+    fn faces_toward_the_eye(
+        faces: &[u32; 7],
+        rotation: &[[f32; 3]; 3],
+        forward: Vec3,
+    ) -> Vec<std::ops::Range<u32>> {
+        Self::faces_where(faces, rotation, forward, |cosine| cosine < EDGE_ON)
+    }
+
     /// The ranges of quads on the faces whose normal, turned by `rotation`, has a cosine with `direction` that `wanted` says yes to. Neighbouring faces' ranges are joined.
     fn faces_where(
         faces: &[u32; 7],
@@ -674,24 +683,54 @@ impl GpuBrick {
     }
 }
 
-/// Draws the quads of the buffer that is set, in the order of the faces they are on (`faces`): all of them, or (given where the camera is in the cells of the brick) those on
-/// faces that can look at it. Returns how many quads were left out.
-fn draw_quads_facing(
-    pass: &mut wgpu::RenderPass<'_>,
-    faces: &[u32; 7],
-    camera_in_cells: Option<Vec3>,
-) -> usize {
+/// What a face must be able to look at to be drawn.
+#[derive(Clone, Copy)]
+enum SeenFrom {
+    /// Every face is drawn.
+    Anywhere,
+    /// A perspective camera at this place, in the cells of what is drawn.
+    Point(Vec3),
+    /// An orthographic camera looking this way (in the world's axes), at what is turned by `rotation`: it sees the same faces wherever it is.
+    Direction {
+        forward: Vec3,
+        rotation: [[f32; 3]; 3],
+    },
+}
+
+/// How far from edge on a face may be turned from an orthographic camera and still be drawn, as a cosine: what rounding can make of a face that is exactly edge on.
+const EDGE_ON: f32 = 1.0e-4;
+
+/// Draws the quads of the buffer that is set, in the order of the faces they are on (`faces`): those on faces that can be seen from `from`. Returns how many quads were
+/// left out.
+fn draw_quads_facing(pass: &mut wgpu::RenderPass<'_>, faces: &[u32; 7], from: SeenFrom) -> usize {
     let total = faces[6];
-    let Some(camera) = camera_in_cells else {
-        pass.draw(0..6, 0..total);
-        return 0;
-    };
     let mut drawn = 0;
-    GpuBrick::each_range_facing_camera(faces, camera, |range| {
+    let mut draw = |range: std::ops::Range<u32>| {
         drawn += range.len() as u32;
         pass.draw(0..6, range);
-    });
+    };
+    match from {
+        SeenFrom::Anywhere => draw(0..total),
+        SeenFrom::Point(camera) => GpuBrick::each_range_facing_camera(faces, camera, draw),
+        SeenFrom::Direction { forward, rotation } => {
+            GpuBrick::faces_toward_the_eye(faces, &rotation, forward)
+                .into_iter()
+                .for_each(&mut draw);
+        }
+    }
     (total - drawn) as usize
+}
+
+/// What the faces of a thing placed so are seen from: a point, or (`along`, for an orthographic camera) a direction.
+fn seen_from(skip: bool, along: Option<Vec3>, placement: &Placement) -> SeenFrom {
+    match along {
+        _ if !skip => SeenFrom::Anywhere,
+        Some(forward) => SeenFrom::Direction {
+            forward,
+            rotation: placement.rotation,
+        },
+        None => SeenFrom::Point(placement.camera_in_cells()),
+    }
 }
 
 /// Where the things on each face begin, for things in the order of their faces (0 to 5): the number of things before the first of each face, and the total after the last.
@@ -2877,7 +2916,9 @@ impl VoxelRenderer {
         let view_projection = camera.view_projection(aspect_ratio);
         let frustum = Frustum::of_camera(camera, aspect_ratio);
         // (An orthographic camera sees along one direction from everywhere: whether a face looks at it is not a matter of where it is, so every face is drawn.)
-        let skip_faces_looking_away = self.skip_faces_looking_away && !camera.is_orthographic();
+        let skip_faces_looking_away = self.skip_faces_looking_away;
+        // (A camera with perspective sees a face or not by where it is; an orthographic one by the way it looks alone.)
+        let along = camera.is_orthographic().then(|| camera.forward());
 
         self.prepare_volume(camera);
         let volume_frame = self.volume_frame(camera);
@@ -3207,7 +3248,7 @@ impl VoxelRenderer {
                 looking_away_skipped += draw_quads_facing(
                     &mut pass,
                     &brick.quad_faces,
-                    skip_faces_looking_away.then(|| drawables[index].placement.camera_in_cells()),
+                    seen_from(skip_faces_looking_away, along, &drawables[index].placement),
                 );
             }
             // The bricks that have blocks that do not fill their cells, with the other pipeline.
@@ -3222,7 +3263,7 @@ impl VoxelRenderer {
                 looking_away_skipped += draw_quads_facing(
                     &mut pass,
                     &brick.detailed_faces,
-                    skip_faces_looking_away.then(|| drawables[index].placement.camera_in_cells()),
+                    seen_from(skip_faces_looking_away, along, &drawables[index].placement),
                 );
             }
             pass.set_pipeline(whole_pipeline);

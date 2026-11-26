@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
-use coarse_cells::orthographic_level;
 use coarse_streaming::{CoarseNodes, DetailPlace, MAXIMUM_PLACES, SetDetail};
 use identity::Identity;
 use namespaced_id::NamespacedId;
@@ -38,6 +37,7 @@ use crate::client_plugin::{
 use crate::coarse_overrides::CoarseOverrides;
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
+use crate::orthographic_cut::{MapPicture, orthographic_cut};
 use crate::package_data::{PackageData, PackageError, check_materials};
 use crate::sun::{SunView, position_of_voxels, sun_view};
 
@@ -139,8 +139,8 @@ fn lod_settings_of(request: &SetDetail, detail: &CoarseDetail) -> LodSettings {
     }
 }
 
-/// How many times wider than high a picture may be, for the box an orthographic map is drawn over (a screen of 21 to 9 is 2.3).
-const ORTHOGRAPHIC_WIDEST_ASPECT: f64 = 2.5;
+/// How many times as wide as high a picture is taken to be until its width is said: wider than screens commonly are.
+const WIDEST_ASSUMED_ASPECT: f64 = 2.5;
 
 /// The height of the picture, in pixels, until a window or a screenshot says otherwise.
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 1080.0;
@@ -163,6 +163,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     view_settings: ViewSettings,
     /// How many pixels high the picture is, which says how big a pixel is and so how fine the terrain has to be.
     viewport_height: f32,
+    /// The width of the picture in pixels, if it has been said.
+    viewport_width: Option<f64>,
     /// The meshes of the ships the server has told this client of, and what the renderer was last told of where each is.
     grid_mesher: GridMesher,
     /// The bricks around the camera of each planet (a ship with terrain), which the client generates, and the nodes beyond them if the game asks for that; the
@@ -300,6 +302,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             terrain,
             view_settings,
             viewport_height: DEFAULT_VIEWPORT_HEIGHT,
+            viewport_width: None,
             grid_mesher,
             planets: BTreeMap::new(),
             grid_detail: None,
@@ -619,6 +622,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
+    /// Says how wide the picture is, in pixels (a map is chosen for what the picture sees).
+    pub fn set_viewport_width(&mut self, pixels: u32) {
+        self.viewport_width = Some(f64::from(pixels.max(1)));
+    }
+
     /// How many pixels high the picture is: a bigger one has smaller pixels, and terrain is drawn finer to match.
     pub fn set_viewport_height(&mut self, pixels: u32) {
         self.viewport_height = pixels.max(1) as f32;
@@ -688,33 +696,23 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
-    /// The cut of the drawn map when it is orthographic ([`Session::map_is_orthographic`]): the level whose cells are about `cell_pixels` pixels across, in a box that holds the
-    /// picture seen from any side. Both change in steps (the level, and the box by doubling), so that a camera that is turned or zoomed a little chooses the cubes again at
-    /// none of the steps.
+    /// The cut of the drawn map when it is orthographic ([`Session::map_is_orthographic`]): see [`crate::orthographic_cut`].
     fn orthographic_cut(&self, detail: &CoarseDetail) -> Option<OrthographicCut> {
         let orbit = self.orbit().filter(|_| self.map_is_orthographic())?;
-        let height = orbit.orthographic_height(&self.camera);
-        let level = orthographic_level(
-            f64::from(detail.cell_pixels),
-            height / f64::from(self.viewport_height),
-        );
-        // How far the picture reaches over the ground: sideways half its width (a screen is at most this many times wider than high) and along it half its height over the sine
-        // of the way it looks down (a view along the ground sees without end: it is held to a quarter).
-        let sine = libm::sin(orbit.elevation.abs()).max(0.25);
-        let (half_width, half_along) = (
-            height * 0.5 * ORTHOGRAPHIC_WIDEST_ASPECT,
-            height * 0.5 / sine,
-        );
-        let wanted = libm::sqrt(half_width * half_width + half_along * half_along) * 1.25;
-        let edge = f64::from(32u32 << level.min(26));
-        let mut extent = edge * 2.0;
-        while extent < wanted {
-            extent *= 2.0;
-        }
-        Some(OrthographicCut {
-            level,
-            half_extent: extent.min(detail.maximum_distance.max(edge)),
-        })
+        let aspect = self.viewport_width.map_or(WIDEST_ASSUMED_ASPECT, |width| {
+            width / f64::from(self.viewport_height)
+        });
+        let picture = MapPicture {
+            height: orbit.orthographic_height(&self.camera),
+            viewport_height: f64::from(self.viewport_height),
+            aspect,
+            elevation: orbit.elevation,
+        };
+        Some(orthographic_cut(
+            picture,
+            detail.cell_pixels,
+            detail.maximum_distance,
+        ))
     }
 
     /// The places that are kept ready ([`Session::keep_ready`]) in a grid whose nodes this session draws, in each grid's own coordinates: the server is asked for the nodes

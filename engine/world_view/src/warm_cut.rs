@@ -131,7 +131,14 @@ impl Selection<'_> {
         cut: &crate::lod::OrthographicCut,
         may_hold: &dyn Fn(BrickCube) -> bool,
     ) -> Vec<BrickCube> {
-        let reach = cut.half_extent;
+        // (Without bricks the cut is chosen from the middle of a cube of its level, and reaches half a cube farther, so that it holds what the viewer is to see from
+        // anywhere in that cube.)
+        let slop = if cut.brick_radius.is_some() {
+            0.0
+        } else {
+            f64::from(1u32 << cut.level.min(30)) * 16.0
+        };
+        let reach = cut.half_extent + slop;
         // (The box is made along the axes of the grid, from a place `reach` back along the way it looks, so that the viewer is in the middle of it.)
         let view = OrthographicView {
             eye: coarse_cells::brick_centre(self.centre).translated([0.0, 0.0, -reach]),
@@ -142,8 +149,10 @@ impl Selection<'_> {
             half_height: reach,
             depth: reach * 2.0,
         };
-        let region = FineRegion::new(self.centre, self.fine_radius);
-        select_orthographic(&view, cut.level, Some(&region), may_hold)
+        let region = cut
+            .brick_radius
+            .map(|radius| FineRegion::new(self.centre, radius.min(self.fine_radius)));
+        select_orthographic(&view, cut.level, region.as_ref(), may_hold)
     }
 }
 

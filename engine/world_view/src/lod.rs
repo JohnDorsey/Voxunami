@@ -50,6 +50,10 @@ pub struct OrthographicCut {
     pub level: u8,
     /// How far from the viewer, along each axis, the cut reaches, in voxels.
     pub half_extent: f64,
+    /// How many bricks round the viewer are drawn as bricks (never more than the view meshes). `None` for a map that looks from too far for bricks to be worth
+    /// drawing: its ball is nodes like the rest, and it is chosen from the middle of the cube of its level the viewer is in, so that it is chosen again only when the viewer
+    /// crosses one.
+    pub brick_radius: Option<u32>,
 }
 
 /// A place a view is to be ready to draw from: where the viewer is, in the grid's coordinates, and how much it is asked to show
@@ -484,6 +488,13 @@ impl LodView {
         version: u64,
     ) -> BrickCoordinate {
         let live = viewer.brick();
+        // (A cut without bricks has its own steps ([`chosen_from`]), and the bricks that are kept meshed are always those round the viewer.)
+        if settings
+            .orthographic
+            .is_some_and(|cut| cut.brick_radius.is_none())
+        {
+            return live;
+        }
         if self.reselect_slack > 0.0
             && let Some((centre, chosen_with)) = self.wanted_for
             && let Some(at) = self.selected_viewer
@@ -660,12 +671,14 @@ impl LodView {
         self.collect_nodes(&mut updates);
         self.updates_since_selection = self.updates_since_selection.saturating_add(1);
         self.updates_since_warm_selection = self.updates_since_warm_selection.saturating_add(1);
-        let moved = self.wanted_for != Some((centre, *settings))
+        // (The bricks are meshed round the viewer; the cubes may be chosen from a place that changes less often.)
+        let chosen_from = chosen_from(centre, settings);
+        let moved = self.wanted_for != Some((chosen_from, *settings))
             || self.selected_version != Some(source.version());
         let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
         let mut left = None;
         if moved || new_edits {
-            left = self.reselect(centre, viewer, settings, source);
+            left = self.reselect(chosen_from, viewer, settings, source);
         }
         self.update_warm(source, left, &mut updates);
         updates.extend(self.mesher.park_ready());
@@ -1347,6 +1360,21 @@ impl Drop for LodView {
             let _ = worker.join();
         }
     }
+}
+
+/// The brick the cubes of a view are chosen from when the viewer is in `brick`: that brick, and for an orthographic cut without bricks the middle one of the cube of its level
+/// that holds it.
+fn chosen_from(brick: BrickCoordinate, settings: &LodSettings) -> BrickCoordinate {
+    let Some(cut) = settings
+        .orthographic
+        .filter(|cut| cut.brick_radius.is_none())
+    else {
+        return brick;
+    };
+    let cube = BrickCube::containing(brick, cut.level);
+    let origin = cube.origin();
+    let half = (cube.edge_length() / 2) as i128;
+    BrickCoordinate::new(origin.x() + half, origin.y() + half, origin.z() + half)
 }
 
 /// A cube in words: its detail level and where its lowest brick is.

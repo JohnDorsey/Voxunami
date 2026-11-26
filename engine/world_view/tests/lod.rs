@@ -5151,7 +5151,11 @@ fn a_negative_or_unreal_tolerance_is_none() {
 /// The settings of a view that has no perspective: every node of one level in a box of `half_extent` voxels each way from the viewer.
 fn orthographic(level: u8, half_extent: f64) -> LodSettings {
     LodSettings {
-        orthographic: Some(world_view::OrthographicCut { level, half_extent }),
+        orthographic: Some(world_view::OrthographicCut {
+            level,
+            half_extent,
+            brick_radius: Some(u32::MAX),
+        }),
         ..settings()
     }
 }
@@ -5217,6 +5221,136 @@ fn an_orthographic_cut_is_the_nodes_of_one_level_in_a_box_and_the_bricks_of_the_
     assert!(
         view.shown().iter().all(|cube| cube.level() != 3
             || region.touches_cube(BrickCube::containing(cube.origin(), 4)))
+    );
+    assert_nothing_overlaps(view.shown());
+    assert_screen_matches(&screen, &view);
+}
+
+/// The same cut without the bricks: what a map is that looks from so far that a voxel is under a pixel.
+fn orthographic_without_bricks(level: u8, half_extent: f64) -> LodSettings {
+    LodSettings {
+        orthographic: Some(world_view::OrthographicCut {
+            level,
+            half_extent,
+            brick_radius: None,
+        }),
+        ..settings()
+    }
+}
+
+#[test]
+fn an_orthographic_cut_without_bricks_is_nodes_of_its_level_over_the_viewers_own_place_too_and_is_chosen_again_only_across_a_node_of_it()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    // First with bricks, which are on the screen at the viewer.
+    screen.apply(view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &orthographic(3, 600.0),
+    ));
+    assert!(view.shown().iter().any(|cube| cube.level() == 0));
+    // Without them every cube is a node of the level, the ones at the viewer too, and the bricks are taken off the screen.
+    let cut = orthographic_without_bricks(3, 600.0);
+    screen.apply(view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &cut,
+    ));
+    assert!(view.is_settled());
+    assert_eq!(view.shown(), view.wanted());
+    assert!(
+        view.shown().iter().all(|cube| cube.level() == 3),
+        "{:?}",
+        view.shown().iter().find(|cube| cube.level() != 3)
+    );
+    assert!(view.shown().len() > 50, "{}", view.shown().len());
+    assert!(
+        view.shown()
+            .contains(&BrickCube::containing(brick(0, 0, 0), 3))
+    );
+    assert_nothing_overlaps(view.shown());
+    assert_screen_matches(&screen, &view);
+    // The cube of level 3 is 8 bricks: nothing is chosen again within it, and the next one over is chosen once.
+    let selections = view.selections();
+    for x in 0..8 {
+        screen.apply(view.update(
+            GridId::MAIN,
+            scene.world.main(),
+            viewer_in(brick(x, 0, 0)),
+            &cut,
+        ));
+        assert_eq!(view.selections(), selections, "brick {x}");
+    }
+    assert_eq!(view.wanted_centre(), Some(brick(4, 4, 4)));
+    screen.apply(view.update(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(8, 0, 0)),
+        &cut,
+    ));
+    assert_eq!(view.selections(), selections + 1);
+    assert_eq!(view.wanted_centre(), Some(brick(12, 4, 4)));
+}
+
+#[test]
+fn an_orthographic_cut_without_bricks_reaches_as_far_as_it_says_from_anywhere_in_the_viewers_node()
+{
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    // A box of one node (256 voxels) each way. The viewer is at the far end of its node, in brick 7: 256 voxels on is into the cube of bricks 16 to 23, which is two nodes
+    // along from the one the cut is chosen from the middle of.
+    let cut = orthographic_without_bricks(3, 256.0);
+    view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(7, 0, 0)),
+        &cut,
+    );
+    let far = BrickCube::containing(brick(16, 0, 0), 3);
+    assert!(
+        view.wanted().contains(&far),
+        "the cube 256 voxels from the viewer is left out"
+    );
+}
+
+#[test]
+fn an_orthographic_cut_may_have_bricks_in_a_smaller_ball_than_the_view_meshes() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 40);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    // A ball of one brick, in a view that meshes three round the viewer.
+    let small = LodSettings {
+        orthographic: Some(world_view::OrthographicCut {
+            level: 3,
+            half_extent: 600.0,
+            brick_radius: Some(1),
+        }),
+        ..settings()
+    };
+    screen.apply(view.settle(
+        GridId::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &small,
+    ));
+    assert!(view.is_settled());
+    let region = coarse_cells::FineRegion::new(brick(0, 0, 0), 1);
+    let bricks: Vec<&BrickCube> = view
+        .shown()
+        .iter()
+        .filter(|cube| cube.level() == 0)
+        .collect();
+    assert!(!bricks.is_empty());
+    assert!(
+        bricks.iter().all(|cube| region.wants_brick(cube.origin())),
+        "a brick outside the ball of one brick"
     );
     assert_nothing_overlaps(view.shown());
     assert_screen_matches(&screen, &view);
