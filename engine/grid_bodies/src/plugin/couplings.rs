@@ -27,7 +27,7 @@ use world_storage::MovingGrid;
 use super::rail_ports::is_a_rail_pair;
 use super::{Bodies, Frame, FrameKey};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
-use crate::joints::{HingeAxes, Inertia, JointSettings, effective_mass};
+use crate::joints::{Holding, Inertia, JointSettings, effective_mass};
 
 /// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
 pub(super) type CouplingKey = (GridId, GridId);
@@ -50,9 +50,9 @@ pub(super) struct Coupled {
     pub(super) frame: FrameKey,
     pub(super) first_end: BlockFace,
     pub(super) second_end: BlockFace,
-    /// Whether the two ends hold a hinge (`JointSettings::hinge_axes`, asked when the coupling was made, of the places the ships had then) and not a ball: the line of each, as its ship has it.
-    /// Kept with the coupling, so that a joint made again (in another frame) is the joint it was.
-    pub(super) hinge: Option<HingeAxes>,
+    /// What the two ends hold (`JointSettings::holding`, asked when the coupling was made, of the places the ships had then): a ball, or a hinge with the line of each, as its ship has it. Kept
+    /// with the coupling, so that a joint made again (in another frame) is the joint it was.
+    pub(super) holding: Holding,
     /// Whether the body world's coupling was made rigid at the turn its bodies had (`stiffness.rs`): what the world says of the pair is made true in the tick after it says it.
     pub(super) rigid: bool,
 }
@@ -203,7 +203,7 @@ impl Bodies {
         let hinges = self
             .couplings
             .values()
-            .filter(|coupled| coupled.hinge.is_some())
+            .filter(|coupled| matches!(coupled.holding, Holding::Hinge(_)))
             .count() as u64;
         self.count(|report| {
             report.couplings = now;
@@ -598,7 +598,9 @@ impl Bodies {
                     for second_end in second.ends.values().flatten() {
                         let second_view = BlockFaceView::of(*second_end, &second_ship.pose, from);
                         let how = approach(&first_view, &second_view);
-                        if (saved || settings.pulls(&first_view, &second_view, &how))
+                        // (A pair the world has saved is made again whatever the line-up and the speeds, by ends of one kind only.)
+                        if ((saved && first_end.hinge.is_some() == second_end.hinge.is_some())
+                            || settings.pulls(&first_view, &second_view, &how))
                             && best
                                 .as_ref()
                                 .is_none_or(|top| how.distance < top.4.distance)
@@ -660,19 +662,23 @@ impl Bodies {
     }
 
     /// Couples two ships at their ends: a ball joint at the middle of the two faces, or a hinge of two pivots on the line through that middle if both ends are hinges on one line (see
-    /// [`Coupled::hinge`]); the faces are at one place to within the coupling distance and the solver pulls the pivots together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
+    /// [`Coupled::holding`]); the faces are at one place to within the coupling distance and the solver pulls the pivots together. Both ships get the extra substeps of the settings and may not sleep. Whether it was made.
     fn make_coupling(
         &mut self,
         settings: &JointSettings,
         frame_key: FrameKey,
         pair: &JointPair,
     ) -> bool {
+        // (Ends that hold nothing are not coupled, whatever else lets a pair be: hinges whose lines cross.)
+        let Some(holding) = settings.holding(&pair.first_view, &pair.second_view) else {
+            return false;
+        };
         let coupled = Coupled {
             id: CouplingId(self.next_coupling),
             frame: frame_key,
             first_end: pair.first_end,
             second_end: pair.second_end,
-            hinge: settings.hinge_axes(&pair.first_view, &pair.second_view),
+            holding,
             rigid: false,
         };
         let key = (pair.first, pair.second);
@@ -703,12 +709,12 @@ impl Bodies {
         );
         // (A ball is one pivot at the middle of the two faces. A hinge is two, along the line of each end, paired by the end of it that points the same way in the world: two ball joints
         // that share two points are a hinge about the line through them.)
-        let pivots: Vec<PivotPair> = match coupled.hinge {
-            None => vec![PivotPair {
+        let pivots: Vec<PivotPair> = match coupled.holding {
+            Holding::Ball => vec![PivotPair {
                 first: first_centre,
                 second: second_centre,
             }],
-            Some(axes) => [1.0, -1.0]
+            Holding::Hinge(axes) => [1.0, -1.0]
                 .map(|side| PivotPair {
                     first: along(first_centre, axes.first, side * HINGE_PIVOT_OFFSET),
                     second: along(second_centre, axes.second, side * HINGE_PIVOT_OFFSET),

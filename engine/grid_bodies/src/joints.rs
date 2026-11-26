@@ -44,17 +44,26 @@ pub struct JointSettings {
     pub damping_torque_limit: f64,
     /// The extra substeps of the solver for a car that is coupled (owner, 2026-11-09: yes; four is my number, `loop-probe.md`, section 14).
     pub extra_substeps: usize,
-    /// How far, in degrees, the lines of two hinges may be from being one line for the pair to be a hinge (mine: the snap of a lock, 10). Two joints held at two pivots each, whose lines are
-    /// not one line, are pulled together by the solver, so the lines must be near one line to begin with; a pair that is farther is a ball (see [`JointSettings::hinge_axes`]).
-    pub hinge_degrees: f64,
+    /// How far, in degrees, the lines of two hinges may be from being one line for them to be coupled (mine: the snap of a lock, 10). Two joints held at two pivots each, whose lines are not
+    /// one line, are pulled together by the solver, so the lines must be near one line to begin with (see [`JointSettings::holding`]).
+    pub line_degrees: f64,
 }
 
-/// What two hinge ends that make a hinge are about: the end of the line of the first's hinge that is named, and the end of the line of the second's that points the way the first's does
-/// in the world (both in the axes of the ship each is of), so that the pivots of the two ends are paired by them.
+/// The lines of two ends that hold about one line: the end of the line of the first that is named, and the end of the line of the second that points the way the first's does in the world (both
+/// in the axes of the ship each is of), so that the pivots of the two ends are paired by them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HingeAxes {
+pub struct LineAxes {
     pub first: FaceDirection,
     pub second: FaceDirection,
+}
+
+/// What two ends that are coupled hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holding {
+    /// Two balls: one pivot, about which the cars turn every way.
+    Ball,
+    /// Two hinges on one line: two pivots on it, about which the cars bend and about nothing else.
+    Hinge(LineAxes),
 }
 
 impl Default for JointSettings {
@@ -71,7 +80,7 @@ impl Default for JointSettings {
             spin_waived_within: 0.01,
             damping_torque_limit: 10_000.0,
             extra_substeps: 4,
-            hinge_degrees: 10.0,
+            line_degrees: 10.0,
         }
     }
 }
@@ -79,21 +88,23 @@ impl Default for JointSettings {
 const DEGREES: f64 = std::f64::consts::PI / 180.0;
 
 impl JointSettings {
-    /// Whether two ends can pull on each other: their faces are near enough, each looks toward the other (a little behind it is allowed, by the coupling distance, so that ends
-    /// that have come together still do), and they look against each other.
+    /// Whether two ends can pull on each other: they are of one kind (a ball pulls a ball and a hinge a hinge; ends of different kinds can never be coupled and do nothing to each other),
+    /// their faces are near enough, each looks toward the other (a little behind it is allowed, by the coupling distance, so that ends that have come together still do), and they look
+    /// against each other.
     pub fn pulls(
         &self,
         first: &BlockFaceView,
         second: &BlockFaceView,
         approach: &Approach,
     ) -> bool {
-        approach.distance <= self.range
+        first.block_face.hinge.is_some() == second.block_face.hinge.is_some()
+            && approach.distance <= self.range
             && dot(first.normal, approach.gap) >= -self.couple_distance
             && dot(second.normal, approach.gap) <= self.couple_distance
             && dot(first.normal, second.normal) < 0.0
     }
 
-    /// Whether two ends are near enough, in line enough and slow enough against each other to be coupled. `relative_velocity` is the velocity of the second end's pivot against
+    /// Whether two ends are near enough, in line enough and slow enough against each other to be coupled, and hold something together ([`JointSettings::holding`]). `relative_velocity` is the velocity of the second end's pivot against
     /// the first's, `relative_spin` the angular velocity of the second car against the first's.
     pub fn can_couple(
         &self,
@@ -103,36 +114,49 @@ impl JointSettings {
         relative_velocity: [f64; 3],
         relative_spin: [f64; 3],
     ) -> bool {
-        approach.distance <= self.couple_distance
+        self.holding(first, second).is_some()
+            && approach.distance <= self.couple_distance
             && dot(first.normal, second.normal) <= -libm::cos(self.couple_degrees * DEGREES)
             && length(relative_velocity) <= self.max_relative_speed
             && (length(relative_spin) <= self.max_relative_spin
                 || approach.distance <= self.spin_waived_within)
     }
 
-    /// Whether two joint ends that are coupled hold a hinge: both are hinges (`engine:hinge_face`) and the lines they turn about are, to `hinge_degrees`, one line in the world, whatever
-    /// the bend of the pair about it (the lines do not move as a hinge bends). Any other pair is a ball: a ball end is a ball in any pair, and two hinges whose lines cross are a ball
-    /// that is drawn as one, which says so.
-    pub fn hinge_axes(&self, first: &BlockFaceView, second: &BlockFaceView) -> Option<HingeAxes> {
-        let (first_line, second_line) = (first.block_face.hinge?, second.block_face.hinge?);
+    /// What two ends hold if they are coupled, and `None` if they cannot be: a ball holds only a ball. A hinge holds only a hinge whose line is, to `line_degrees`, the same line in the
+    /// world as its own, whatever the bend of the pair about it (the lines do not move as a hinge bends). Hinges whose lines cross hold nothing, and nor do ends of different kinds.
+    pub fn holding(&self, first: &BlockFaceView, second: &BlockFaceView) -> Option<Holding> {
+        match (first.block_face.hinge, second.block_face.hinge) {
+            (None, None) => Some(Holding::Ball),
+            (Some(first_line), Some(second_line)) => self
+                .one_line(first, first_line, second, second_line)
+                .map(Holding::Hinge),
+            _ => None,
+        }
+    }
+
+    /// The lines of two ends if they are one line in the world, to `line_degrees`.
+    fn one_line(
+        &self,
+        first: &BlockFaceView,
+        first_line: FaceDirection,
+        second: &BlockFaceView,
+        second_line: FaceDirection,
+    ) -> Option<LineAxes> {
         let world = |view: &BlockFaceView, line: FaceDirection| {
             turn(view.rotation, line.offset().map(|part| part as f64))
         };
         let first_world = world(first, first_line);
-        let second_world = world(second, second_line);
         // The end of the second's line that points the way the first's does.
-        let second_line = if dot(first_world, second_world) >= 0.0 {
+        let second_line = if dot(first_world, world(second, second_line)) >= 0.0 {
             second_line
         } else {
             second_line.opposite()
         };
-        let second_world = world(second, second_line);
-        (dot(first_world, second_world) >= libm::cos(self.hinge_degrees * DEGREES)).then_some(
-            HingeAxes {
+        (dot(first_world, world(second, second_line)) >= libm::cos(self.line_degrees * DEGREES))
+            .then_some(LineAxes {
                 first: first_line,
                 second: second_line,
-            },
-        )
+            })
     }
 
     /// Whether two ends are at one place, to a centimetre ([`JointSettings::spin_waived_within`]): the ends of a pair that the world has as coupled (a saved world's, or one

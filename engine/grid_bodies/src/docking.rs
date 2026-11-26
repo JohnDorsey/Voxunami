@@ -71,6 +71,12 @@ pub struct BlockFace {
 }
 
 impl BlockFace {
+    /// Whether two joint ends that face each other in one ship fit: two balls, or two hinges whose lines run the same way in the ship. Ends that do not fit are two blocks side by side, with no
+    /// joint there to be locked or drawn.
+    pub(crate) fn fits(&self, other: &BlockFace) -> bool {
+        self.hinge.map(FaceDirection::axis) == other.hinge.map(FaceDirection::axis)
+    }
+
     /// A face with no hinge: a port, or the end of a joint that is a ball.
     pub fn plain(voxel: VoxelCoordinate, face: FaceDirection) -> Self {
         Self {
@@ -318,6 +324,13 @@ pub struct DockedPair {
     pub second: BlockFace,
 }
 
+/// The pairs of the ends of joints of a ship that are locked: those that face each other and fit ([`BlockFace::fits`]).
+pub(crate) fn locked_joint_pairs(ends: &[BlockFace]) -> Vec<DockedPair> {
+    let mut pairs = facing_pairs(ends);
+    pairs.retain(|pair| pair.first.fits(&pair.second));
+    pairs
+}
+
 /// The pairs among block faces (ports, or the ends of joints) in which a face looks at the block of another that looks back at it, the lower voxel first.
 pub(crate) fn facing_pairs(faces: &[BlockFace]) -> Vec<DockedPair> {
     let mut pairs = Vec::new();
@@ -515,10 +528,10 @@ impl Docking {
         facing_pairs(&self.ports_of(ship))
     }
 
-    /// The pairs of joint ends of a ship that are locked: an end whose face looks at the block of another end whose face looks back at it (the cars of a ship that was made of cars by a
-    /// lock, or built so).
+    /// The pairs of joint ends of a ship that are locked: an end whose face looks at the block of another end whose face looks back at it, and that fits it (a ball a ball, a hinge a hinge on the
+    /// same line; the cars of a ship that was made of cars by a lock, or built so).
     pub fn locked_pairs(&self, ship: &MovingGrid) -> Vec<DockedPair> {
-        facing_pairs(&self.joint_ends_of(ship))
+        locked_joint_pairs(&self.joint_ends_of(ship))
     }
 
     /// The voxels of blocks that are joined to `start` without crossing between a pair of voxels of `cuts` (each pair is in `cuts` both ways).

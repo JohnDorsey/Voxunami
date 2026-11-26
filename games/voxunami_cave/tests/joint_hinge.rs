@@ -1,16 +1,17 @@
 //! The dev hinge joint (`docs/decisions/joints-and-cars.md`, "The dev hinge joint"): two hinge ends whose lines are one line are coupled as a hinge, which lets the two cars bend about that line and
-//! about nothing else; any other pair of ends (a ball end, or hinges whose lines are not one line) is a ball. Everything else is the ball joint's: the pull, the commands, the lock.
+//! about nothing else. A hinge couples only with a hinge, whose line is the same line (to ten degrees): hinges whose lines cross are drawn together and not coupled, and a hinge and a ball do nothing to each other.
+//! Everything else is the ball joint's: the pull, the commands, the lock.
 
 mod common;
 
 use common::docking::{make, ships, stones};
 use common::joints::{
-    LEVEL, Report, a_player_and_cars, a_player_at_and_cars_posed, east_car, east_hinge_car,
+    LEVEL, Report, a_player_and_cars, a_player_at_and_cars_posed, east_car, east_hinge_car, minus,
     pairs_the_world_has_as_coupled, pose, spin_against_in_the_first,
     turn_of_the_second_in_the_first, two_cars, two_hinge_cars, until_coupled, weightless, west_car,
     west_hinge_car, world_of,
 };
-use common::{FLOOR, Player, Scene, say, ship_id, tick_and_follow};
+use common::{FLOOR, Player, Scene, length, say, ship_id, tick_and_follow};
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, Orientation, WorldPosition};
 
 const Y: usize = 1;
@@ -126,13 +127,32 @@ fn a_hinge_whose_line_is_along_another_axis_bends_about_that_axis() {
     assert!(along.abs() > 0.05, "{along}");
 }
 
+/// How far apart the two ends' pivots are, for two cars made as `two_hinge_cars` makes them: the first's at (4, 0.5, 0.5) in it, the second's at (0, 0.5, 0.5).
+fn pivots_apart(scene: &Scene) -> f64 {
+    length(minus(
+        world_of(scene, ship_id(0), [4.0, 0.5, 0.5]),
+        world_of(scene, ship_id(1), [0.0, 0.5, 0.5]),
+    ))
+}
+
 #[test]
-fn two_hinges_whose_lines_cross_are_a_ball_and_so_is_a_hinge_with_a_ball() {
+fn two_hinges_whose_lines_cross_are_drawn_together_and_are_not_coupled() {
+    let (mut scene, report, mut player) =
+        two_hinge_cars(FaceDirection::PositiveZ, FaceDirection::PositiveY);
+    let before = pivots_apart(&scene);
+    tick_and_follow(&mut scene, &mut player, 300);
+    assert_eq!((report().couplings, report().couplings_made), (0, 0));
+    assert!(pairs_the_world_has_as_coupled(&mut scene).is_empty());
+    let after = pivots_apart(&scene);
+    assert!(
+        after < 0.5 && before > 2.5,
+        "the ends were {before} apart and are {after}: hinges pull on each other"
+    );
+}
+
+#[test]
+fn a_hinge_and_a_ball_do_not_pull_on_each_other_and_are_not_coupled() {
     for (name, mut cars) in [
-        (
-            "lines along z and along y",
-            two_hinge_cars(FaceDirection::PositiveZ, FaceDirection::PositiveY),
-        ),
         (
             "a hinge and a ball",
             a_player_and_cars(
@@ -154,14 +174,13 @@ fn two_hinges_whose_lines_cross_are_a_ball_and_so_is_a_hinge_with_a_ball() {
             ),
         ),
     ] {
-        until_coupled(&mut cars.0, &mut cars.2, &cars.1, 1, 600);
-        tick_and_follow(&mut cars.0, &mut cars.2, 10);
-        assert_eq!((cars.1)().hinges, 0, "{name}");
-        set_turning(&mut cars.0, &mut cars.2);
-        let (across, _) = spin_across_and_along(&cars.0, Z);
+        let before = pivots_apart(&cars.0);
+        tick_and_follow(&mut cars.0, &mut cars.2, 200);
+        assert_eq!((cars.1)().couplings_made, 0, "{name}");
+        let after = pivots_apart(&cars.0);
         assert!(
-            across > 0.1,
-            "{name}: coupled as a ball, and so free to turn about z: {across}"
+            (after - before).abs() < 1e-6,
+            "{name}: nothing pulls them ({before} to {after})"
         );
     }
 }
@@ -196,8 +215,7 @@ fn two_hinge_cars_one_turned_about_the_bars(degrees: f64) -> (Scene, Report, Pla
 }
 
 #[test]
-fn hinges_whose_lines_are_ten_degrees_apart_or_less_are_a_hinge_and_farther_apart_they_are_a_ball()
-{
+fn hinges_whose_lines_are_ten_degrees_apart_or_less_are_coupled_and_farther_apart_they_are_not() {
     // (A turn about the bars turns the second's line off the first's by that angle.)
     let (mut near, report, mut player) =
         coupled_and_settled(two_hinge_cars_one_turned_about_the_bars(6.0));
@@ -206,12 +224,13 @@ fn hinges_whose_lines_are_ten_degrees_apart_or_less_are_a_hinge_and_farther_apar
     let (across, _) = spin_across_and_along(&near, Z);
     assert!(across < 0.05, "6 degrees off: a hinge ({across})");
 
-    let (mut far, report, mut player) =
-        coupled_and_settled(two_hinge_cars_one_turned_about_the_bars(14.0));
-    assert_eq!((report().couplings, report().hinges), (1, 0));
-    set_turning(&mut far, &mut player);
-    let (across, _) = spin_across_and_along(&far, Z);
-    assert!(across > 0.1, "14 degrees off: a ball ({across})");
+    let (mut far, report, mut player) = two_hinge_cars_one_turned_about_the_bars(14.0);
+    tick_and_follow(&mut far, &mut player, 300);
+    assert_eq!(
+        (report().couplings, report().couplings_made),
+        (0, 0),
+        "14 degrees off: not coupled"
+    );
 }
 
 #[test]

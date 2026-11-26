@@ -1,6 +1,6 @@
 //! The cylinder of a hinge (`docs/decisions/joints-and-cars.md`, "The dev hinge joint"): where two hinge ends whose lines are one line are coupled, or locked, there is an entity of the kind
 //! `engine:joint_hinge` where there would be a ball, aboard the car that has the first of the two ends, at the middle of the face where they meet, turned so that its length runs along the line
-//! of the hinge. Any other pair of ends has the ball. A client draws it as a cylinder, turned as the car is.
+//! of the hinge. Ends that cannot be coupled have nothing between them. A client draws it as a cylinder, turned as the car is.
 
 mod common;
 
@@ -142,7 +142,7 @@ fn the_cylinder_runs_along_the_line_of_whichever_axis_the_hinge_turns_about() {
 }
 
 #[test]
-fn hinges_whose_lines_cross_and_a_hinge_and_a_ball_have_a_ball_and_no_cylinder() {
+fn ends_that_are_not_coupled_have_nothing_drawn_between_them() {
     for (name, mut cars) in [
         (
             "lines along z and along y",
@@ -159,9 +159,8 @@ fn hinges_whose_lines_cross_and_a_hinge_and_a_ball_have_a_ball_and_no_cylinder()
             ),
         ),
     ] {
-        until_coupled(&mut cars.0, &mut cars.2, &cars.1, 1, 600);
-        tick_and_follow(&mut cars.0, &mut cars.2, 5);
-        assert_eq!(balls(&cars.0).len(), 1, "{name}");
+        tick_and_follow(&mut cars.0, &mut cars.2, 200);
+        assert!(balls(&cars.0).is_empty(), "{name}");
         assert!(hinges(&cars.0).is_empty(), "{name}");
     }
 }
@@ -190,7 +189,7 @@ fn the_two_hinge_cars_locked(
 }
 
 #[test]
-fn a_ship_whose_two_hinge_ends_face_each_other_on_one_line_has_a_rigid_cylinder_there_and_one_whose_lines_cross_has_a_ball()
+fn a_ship_whose_two_hinge_ends_face_each_other_on_one_line_has_a_rigid_cylinder_there_and_one_whose_lines_cross_has_no_joint_there()
  {
     let (mut scene, _report, mut player) = a_player_and_cars(
         24.0,
@@ -214,8 +213,13 @@ fn a_ship_whose_two_hinge_ends_face_each_other_on_one_line_has_a_rigid_cylinder_
         )],
     );
     tick_and_follow(&mut crossed, &mut player, 10);
-    assert_eq!(balls(&crossed), vec![(ship_id(0), [4.0, 0.5, 0.5])]);
+    assert!(balls(&crossed).is_empty());
     assert!(hinges(&crossed).is_empty());
+    let reply = say(&mut crossed, &mut player, "/joint unlock");
+    assert!(
+        reply.contains("nothing is locked"),
+        "crossed hinges are two blocks side by side: {reply}"
+    );
 }
 
 #[test]

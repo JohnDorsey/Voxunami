@@ -329,7 +329,7 @@ fn the_end_of_a_hinge_and_the_two_faces_its_line_comes_out_of_have_colours_of_th
 }
 
 #[test]
-fn a_ship_has_the_hinge_of_a_hinge_end_in_its_joint_ends_and_the_pair_of_ends_that_face_each_other_keeps_it()
+fn a_ship_has_the_hinge_of_a_hinge_end_in_its_joint_ends_and_ends_that_face_each_other_are_locked_only_if_they_fit()
  {
     let mut scene = Scene::new();
     scene.run(|world| {
@@ -394,11 +394,65 @@ fn a_ship_has_the_hinge_of_a_hinge_end_in_its_joint_ends_and_the_pair_of_ends_th
             ),
         ]
     );
-    // The two that face each other are a locked pair, and each keeps its own hinge (the lines of the two are not one line, which is for the coupling to say).
-    let pairs = docking.locked_pairs(ship);
-    assert_eq!(pairs.len(), 1);
-    assert_eq!(pairs[0].first.voxel, VoxelCoordinate::new(1, 1, 0));
-    assert_eq!(pairs[0].first.hinge.map(FaceDirection::axis), Some(1));
-    assert_eq!(pairs[0].second.voxel, VoxelCoordinate::new(2, 1, 0));
-    assert_eq!(pairs[0].second.hinge.map(FaceDirection::axis), Some(2));
+    // The two that face each other would be a locked pair, and are not: their lines cross, and a hinge fits only a hinge on its own line.
+    assert!(docking.locked_pairs(ship).is_empty());
+}
+
+#[test]
+fn two_ends_that_face_each_other_in_a_ship_are_a_locked_pair_if_they_are_two_balls_or_two_hinges_on_one_line_and_not_otherwise()
+ {
+    let ball_east = ball_end_toward(FaceDirection::PositiveX);
+    let ball_west = ball_end_toward(FaceDirection::NegativeX);
+    let hinge = |end: FaceDirection, line: FaceDirection| hinge_end_toward(end, line);
+    let east = FaceDirection::PositiveX;
+    let west = FaceDirection::NegativeX;
+    let y = FaceDirection::PositiveY;
+    let z = FaceDirection::PositiveZ;
+    let cases = [
+        (
+            "two balls",
+            (joint_block(), ball_east),
+            (joint_block(), ball_west),
+            1,
+        ),
+        (
+            "two hinges along z, the second's named by the other end",
+            (hinge_block(), hinge(east, z)),
+            (hinge_block(), hinge(west, z.opposite())),
+            1,
+        ),
+        (
+            "two hinges whose lines cross",
+            (hinge_block(), hinge(east, z)),
+            (hinge_block(), hinge(west, y)),
+            0,
+        ),
+        (
+            "a ball and a hinge",
+            (joint_block(), ball_east),
+            (hinge_block(), hinge(west, z)),
+            0,
+        ),
+        (
+            "a hinge and a ball",
+            (hinge_block(), hinge(east, z)),
+            (joint_block(), ball_west),
+            0,
+        ),
+    ];
+    for (name, first, second, expected) in cases {
+        let mut scene = Scene::new();
+        make(
+            &mut scene,
+            pose(20.0, 230.0, 20.0),
+            true,
+            vec![
+                ([0, 0, 0], first.0, first.1),
+                ([1, 0, 0], second.0, second.1),
+            ],
+        );
+        let docking = docking(&CaveContent::new());
+        let ship = scene.rig.server.world().grids().get(ship_id(0)).unwrap();
+        assert_eq!(docking.locked_pairs(ship).len(), expected, "{name}");
+    }
 }

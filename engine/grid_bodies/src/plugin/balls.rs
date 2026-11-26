@@ -4,7 +4,8 @@
 //! comes late; a client draws it as a ball (the game's client plugin gives the kind its appearance).
 //!
 //! **A hinge has a cylinder where a ball joint has a ball:** two hinge ends whose lines are one line (a coupling that holds a hinge, or a locked pair of hinges whose lines run the same way)
-//! have an entity of the kind **`engine:joint_hinge`** at the same place, turned so that its length (its own x axis) runs along the line of the hinge. Any other pair of ends has the ball.
+//! have an entity of the kind **`engine:joint_hinge`** at the same place, turned so that its length (its own x axis) runs along the line of the hinge. Ends that cannot be coupled, or do
+//! not fit, are no joint and have nothing.
 //!
 //! **Aboard the ship, not in the world:** its place in the ship's own coordinates does not change while the ends stay, so nothing moves it as the ship flies, turns on a rail or is
 //! carried by a planet, and the ship's pose puts it where it is drawn. A merge or a split carries what is aboard with the blocks (`ServerWorld::merge_grids`), so a lock keeps the
@@ -26,7 +27,8 @@ use voxel_space::{
 };
 
 use super::Bodies;
-use crate::docking::{BlockFace, facing_pairs};
+use crate::docking::{BlockFace, locked_joint_pairs};
+use crate::joints::Holding;
 
 /// The kind of the entity that is the ball of a joint.
 pub fn joint_ball_kind() -> NamespacedId {
@@ -95,16 +97,16 @@ enum Drawing {
 
 impl Drawing {
     /// What two ends that are held together by a coupling are drawn as: the cylinder of their hinge, or a ball.
-    fn of_a_coupling(hinge: Option<crate::joints::HingeAxes>) -> Self {
-        hinge.map_or(Self::Ball, |axes| Self::Cylinder(axes.first))
+    fn of_a_coupling(holding: Holding) -> Self {
+        match holding {
+            Holding::Ball => Self::Ball,
+            Holding::Hinge(axes) => Self::Cylinder(axes.first),
+        }
     }
 
-    /// What a locked pair of ends of one ship (one that faces the other, in the ship's own axes) is drawn as: a cylinder if both are hinges whose lines run along one axis, and a ball if not.
-    fn of_a_locked_pair(first: &BlockFace, second: &BlockFace) -> Self {
-        match (first.hinge, second.hinge) {
-            (Some(one), Some(other)) if one.axis() == other.axis() => Self::Cylinder(one),
-            _ => Self::Ball,
-        }
+    /// What a locked pair of ends of one ship (they fit: [`locked_joint_pairs`]) is drawn as, by its first end.
+    fn of_a_locked_pair(first: &BlockFace) -> Self {
+        first.hinge.map_or(Self::Ball, Self::Cylinder)
     }
 
     fn kind(self) -> NamespacedId {
@@ -162,7 +164,7 @@ impl Bodies {
             .map(|(key, coupled)| {
                 (
                     (key.0, coupled.first_end.local_centre()),
-                    Drawing::of_a_coupling(coupled.hinge),
+                    Drawing::of_a_coupling(coupled.holding),
                     world.immobilized_ships().contains(key),
                 )
             })
@@ -173,10 +175,10 @@ impl Bodies {
                     continue;
                 }
                 let ends: Vec<BlockFace> = record.joint_ends.values().flatten().copied().collect();
-                places.extend(facing_pairs(&ends).into_iter().map(|pair| {
+                places.extend(locked_joint_pairs(&ends).into_iter().map(|pair| {
                     (
                         (*id, pair.first.local_centre()),
-                        Drawing::of_a_locked_pair(&pair.first, &pair.second),
+                        Drawing::of_a_locked_pair(&pair.first),
                         true,
                     )
                 }));
@@ -185,10 +187,10 @@ impl Bodies {
         }
         for (id, planet) in &self.planet_ends {
             let ends: Vec<BlockFace> = planet.by_brick.values().flatten().copied().collect();
-            places.extend(facing_pairs(&ends).into_iter().map(|pair| {
+            places.extend(locked_joint_pairs(&ends).into_iter().map(|pair| {
                 (
                     (*id, pair.first.local_centre()),
-                    Drawing::of_a_locked_pair(&pair.first, &pair.second),
+                    Drawing::of_a_locked_pair(&pair.first),
                     true,
                 )
             }));

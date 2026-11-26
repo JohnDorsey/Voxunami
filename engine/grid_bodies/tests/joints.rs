@@ -4,8 +4,8 @@
 use grid_bodies::BlockFace;
 use grid_bodies::docking::{Approach, BlockFaceView};
 use grid_bodies::joints::{
-    HingeAxes, Inertia, JointSettings, effective_inertia, effective_mass, inertia_in_the_world,
-    inverse_inertia_along, mass_at_an_end,
+    Holding, Inertia, JointSettings, LineAxes, effective_inertia, effective_mass,
+    inertia_in_the_world, inverse_inertia_along, mass_at_an_end,
 };
 use voxel_space::{FaceDirection, LatticeRotation, VoxelCoordinate};
 
@@ -596,92 +596,104 @@ fn two_hinge_ends_whose_lines_are_one_line_make_a_hinge_and_the_hinge_of_the_sec
     let east = FaceDirection::PositiveX;
     let west = FaceDirection::NegativeX;
     let first = hinge_end(NOT_TURNED, Some(east));
+    let hinge = |first, second| Some(Holding::Hinge(LineAxes { first, second }));
     // The same line, whichever end of it the second's block names: it is given the end that points as the first's does (the pivots are paired by it).
     for named in [east, west] {
         assert_eq!(
-            settings.hinge_axes(&first, &hinge_end(NOT_TURNED, Some(named))),
-            Some(HingeAxes {
-                first: east,
-                second: east
-            }),
+            settings.holding(&first, &hinge_end(NOT_TURNED, Some(named))),
+            hinge(east, east),
             "{named:?}"
         );
     }
     // A second ship turned half way round about the bar (y): its east is the world's west, so the end of its line that points the way the first's does is its west.
     let turned_round = about(1, 180.0);
     assert_eq!(
-        settings.hinge_axes(&first, &hinge_end(turned_round, Some(east))),
-        Some(HingeAxes {
-            first: east,
-            second: west
-        })
+        settings.holding(&first, &hinge_end(turned_round, Some(east))),
+        hinge(east, west)
     );
     // The first named by its west end is told as it is named.
     assert_eq!(
-        settings.hinge_axes(
+        settings.holding(
             &hinge_end(NOT_TURNED, Some(west)),
             &hinge_end(NOT_TURNED, Some(east))
         ),
-        Some(HingeAxes {
-            first: west,
-            second: west
-        })
+        hinge(west, west)
     );
 }
 
 #[test]
-fn a_hinge_is_a_hinge_however_far_it_is_bent_about_its_line_and_not_if_the_lines_are_not_one_line()
-{
+fn two_hinges_hold_however_far_they_are_bent_about_their_line_and_not_at_all_if_the_lines_are_not_one_line()
+ {
     let settings = JointSettings::default();
     let east = FaceDirection::PositiveX;
     let first = hinge_end(NOT_TURNED, Some(east));
+    let held = |second: BlockFaceView| settings.holding(&first, &second);
     // Bent about its own line by any angle: the lines are still the same.
     for degrees in [0.0, 30.0, 90.0, 179.0] {
         assert!(
-            settings
-                .hinge_axes(&first, &hinge_end(about(0, degrees), Some(east)))
-                .is_some(),
+            matches!(
+                held(hinge_end(about(0, degrees), Some(east))),
+                Some(Holding::Hinge(_))
+            ),
             "{degrees}"
         );
     }
-    // Turned about the bar a quarter turn, the second's line goes across the first's (along z): two hinges at right angles are not a hinge.
-    assert_eq!(
-        settings.hinge_axes(&first, &hinge_end(about(1, 90.0), Some(east))),
-        None
-    );
+    // Turned about the bar a quarter turn, the second's line goes across the first's (along z): two hinges at right angles hold nothing, not even a ball.
+    assert_eq!(held(hinge_end(about(1, 90.0), Some(east))), None);
     // The line may be off by 10 degrees (a lock's snap) and not by more: the pivots of the two are brought together by the solver, and that is what it takes to.
-    assert_eq!(settings.hinge_degrees, 10.0);
-    assert!(
-        settings
-            .hinge_axes(&first, &hinge_end(about(1, 9.9), Some(east)))
-            .is_some()
-    );
-    assert!(
-        settings
-            .hinge_axes(&first, &hinge_end(about(1, -9.9), Some(east)))
-            .is_some()
-    );
-    assert_eq!(
-        settings.hinge_axes(&first, &hinge_end(about(1, 10.1), Some(east))),
-        None
-    );
+    assert_eq!(settings.line_degrees, 10.0);
+    assert!(held(hinge_end(about(1, 9.9), Some(east))).is_some());
+    assert!(held(hinge_end(about(1, -9.9), Some(east))).is_some());
+    assert_eq!(held(hinge_end(about(1, 10.1), Some(east))), None);
     // Off by a bend and a turn together: the turn is what counts.
     assert_eq!(
-        settings.hinge_axes(
-            &first,
-            &hinge_end(multiply(about(1, 20.0), about(0, 40.0)), Some(east))
-        ),
+        held(hinge_end(
+            multiply(about(1, 20.0), about(0, 40.0)),
+            Some(east)
+        )),
         None
     );
 }
 
 #[test]
-fn a_joint_end_that_is_a_ball_makes_a_ball_of_any_pair_it_is_in() {
+fn a_ball_holds_a_ball_and_a_ball_and_a_hinge_hold_nothing() {
     let settings = JointSettings::default();
     let east = FaceDirection::PositiveX;
     let hinge = hinge_end(NOT_TURNED, Some(east));
     let ball = hinge_end(NOT_TURNED, None);
-    assert_eq!(settings.hinge_axes(&hinge, &ball), None);
-    assert_eq!(settings.hinge_axes(&ball, &hinge), None);
-    assert_eq!(settings.hinge_axes(&ball, &ball), None);
+    assert_eq!(settings.holding(&ball, &ball), Some(Holding::Ball));
+    assert_eq!(settings.holding(&hinge, &ball), None);
+    assert_eq!(settings.holding(&ball, &hinge), None);
+}
+
+#[test]
+fn ends_of_different_kinds_neither_pull_nor_couple_and_hinges_whose_lines_cross_pull_and_do_not_couple()
+ {
+    let settings = JointSettings::default();
+    let (ball_first, ball_second) = facing_pair(0.1, 0.0);
+    let with_line = |view: BlockFaceView, line: Option<FaceDirection>| BlockFaceView {
+        block_face: BlockFace {
+            hinge: line,
+            ..view.block_face
+        },
+        ..view
+    };
+    let up = Some(FaceDirection::PositiveY);
+    let across = Some(FaceDirection::PositiveZ);
+    let how = between(&ball_first, &ball_second);
+    // A ball and a hinge, either way round.
+    for (first, second) in [
+        (ball_first, with_line(ball_second, up)),
+        (with_line(ball_first, up), ball_second),
+    ] {
+        assert!(!settings.pulls(&first, &second, &how));
+        assert!(!settings.can_couple(&first, &second, &how, [0.0; 3], [0.0; 3]));
+    }
+    // Two hinges on one line: both; two hinges whose lines cross are drawn together (the player turns one) and are not coupled.
+    let (first, second) = (with_line(ball_first, up), with_line(ball_second, up));
+    assert!(settings.pulls(&first, &second, &how));
+    assert!(settings.can_couple(&first, &second, &how, [0.0; 3], [0.0; 3]));
+    let second = with_line(ball_second, across);
+    assert!(settings.pulls(&first, &second, &how));
+    assert!(!settings.can_couple(&first, &second, &how, [0.0; 3], [0.0; 3]));
 }
