@@ -91,7 +91,21 @@ The text label in each step (`"materials v1"`) is its **purpose**. Using a diffe
 
 **HKDF** (RFC 5869) is the standard key derivation built on HMAC. It has two steps. **Extract** turns material that is secret but unevenly random into one good key. **Expand** makes as many subkeys as you need from that key, one per `info` label. Our root is already uniformly random, so Expand does the real work.
 
+### The choice here: BLAKE3
+
+**The owner chose BLAKE3 for this project (2026-11-26).** It has the keyed hash and the key derivation built in, so neither HMAC nor HKDF is needed, and it has no length extension flaw. Its three modes **[recalled]**:
+
+| Mode | Takes | Use here **[believed: a proposal, nothing built]** |
+|---|---|---|
+| `hash(message)` | no key | never for anything that must stay secret |
+| `derive_key(context, key material)` | a **fixed** purpose text and a secret | the root to a branch: `derive_key("voxunami 2026-11-26 materials v1", root)` |
+| `keyed_hash(key, message)` | a 32-byte key and any message | a branch to a planet, a planet to a material, a material to a leaf |
+
+The context of `derive_key` is meant to be written into the program and unique to one use. A planet or material number is never put in it; numbers go in the message of `keyed_hash`, at a fixed width.
+
 ### A worked example
+
+*This example was computed with HMAC-SHA256, before the choice. The shape is the same with BLAKE3; the numbers would not be.*
 
 The root here is a toy (32 bytes that are all 42), so anyone can reproduce the numbers with `spikes/seed_probe/primer_example.py`. A real root is random. Each step is `HMAC-SHA256(key, message)`; real HKDF adds a little framing, but the idea is the same.
 
@@ -136,7 +150,7 @@ Minecraft server files use "salt" for the per-structure constants mixed with the
 
 1. Make the root from the operating system's random source, once per world. Never type one, and never use a timestamp or a world name.
 2. Use at least 128 bits; 256 for the root costs nothing.
-3. Derive with HKDF, HMAC or BLAKE3. Never with a mixer or a game's random generator.
+3. Derive with BLAKE3 (this project's choice). Never with a mixer or a game's random generator.
 4. One purpose per key. Do not use one key for two jobs.
 5. Never send, log or print a key, and never put it where a copy or recording of the world would carry it.
 6. Send leaves, not the keys above them.
