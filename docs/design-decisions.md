@@ -78,6 +78,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The project's cryptographic hash is **BLAKE3** (owner, 2026-11-26): pack archives are hashed with it (built; `specs/pack-archive-spec.md`), and values that
   depend on a server's secret are to be derived with it, never with `terrain::mix` or the engine's noise, which can be run backwards (not built; the other
   rules proposed for secrets are not yet decided, `specs/procedural-materials-spec.md`, section 8).
+- Procedural materials (owner, 2026-11-27; **not built**): one seed a material; far off only a colour of one byte or less; properties are recomputed, not
+  saved, so a material generator stays a dependency of a world that used it; hard-coded definitions may override a generated material in part; each pack says
+  whether it is sent whole or lazily. Gaps and open questions: `specs/procedural-materials-spec.md`, section 10.
 
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.

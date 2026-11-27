@@ -121,3 +121,32 @@ Sizes are **[believed]** and relative; each step ends with tests, clippy, fmt, d
 
 **New questions for the owner:** (a) two seeds (9b)? my pick yes; (b) far colour from the server, coarsely rounded (9c), or colours declared by terrain generators and so public? my pick the first, with a declared trait overriding it; (c) properties saved for ever beside the seeds (9f)? my pick yes.
 
+## 10. The owner's decisions (2026-11-27), and a review of what they open
+
+**Decided.**
+1. The far colour is rounded coarsely: **one byte or less**.
+2. A material's properties are **not saved** (against 9f): a large server running for decades might discover billions of materials. A material generator becomes a mostly permanent dependency of a world that has used it; the only ways off are to rewrite the generator, or to replace its pack with a pack of static block types equal to what was depended on. So `my_generator_pack:m0123456789abcdef` is either **instructions** to the generator or the **id of a hard-coded block** in a drop-in replacement pack.
+3. A hard-coded definition may **override part** of a generated material (a server owner replacing the texture of one that looks like a swastika, say).
+4. A pack must be able to be **sent in part**, as a client needs it, and **every pack says whether it is sent whole or lazily**.
+5. **One seed a material** (against 9b).
+
+This settles questions (a) and (c) of section 9. Question (b), who gives the far colour, is open.
+
+**Gaps found.** Marks: **[read]** the code or reference named; **[computed]** arithmetic; **[believed]** reasoning, nothing built.
+
+- **10a. The id is the seed, so the id is what must be held back.** If the name is the instructions, a far view that holds block ids hands out every property from orbit. A client needs entries that are a **number and a far colour with no name**, named only when the material is revealed. Names must also stay out of everything else sent early (coarse data of edits and ships, messages). **[believed]**
+- **10b. Today every joining client is sent every name.** `WorldData::describe` writes `engine:registries`, every identifier of every registry **[read: `world-file-format.md`]**. With materials as ordinary entries, joining would give all seeds of all materials in the world. **[believed]**
+- **10c. Billions of names do not fit a registry.** A runtime number is a `u32` (4.29 billion, a panic past it); a registry is a list and a hash map in memory that never removes an entry, and the file lists it whole **[read: `content_registry`]**. At a believed 150 to 200 bytes an entry, a billion is 150 to 200 GB of memory. Materials need names kept **with the data that uses them** (a table for each region or brick, as Luanti's map blocks do) and numbers handed out while loaded and reused after. This is the largest engine change here, and a world format change. **[believed]**
+- **10d. The id's length.** Sixteen hex digits are 64 bits: the chance that two materials share one is 2.7% at a billion and 35% at four billion **[computed]**. Use 32 digits (128 bits). Names are lower case only **[read]**.
+- **10e. What else must be in the id.** If nothing is saved, the id must carry everything the generator takes: the **traits** (section 9d) and a **format tag**, so that changed generator code can take a new branch for new materials and leave the old one alone. A name is at most 64 characters a part **[read]**: 33 for the seed leaves 31.
+- **10f. The same bits for ever.** A property that is recomputed must come out equal on every machine, runtime version and rebuild of the module, or a traded item changes. Properties from integer arithmetic only; **each property drawn on its own**, from a hash of the seed and the property's name, so that adding one moves no other; test vectors in the pack, checked at load. **[believed]**
+- **10g. Anyone with the module can try seeds** and see what materials are possible. Harmless while the server accepts only ids it made itself: it must never take a material id from a client, an imported build or a command without checking it against what it has discovered. The same id means the same material on any server with that generator. **[believed]**
+- **10h. The record is itself large.** The server still keeps origin, finder and name for each material found, perhaps 100 bytes, about what the properties would take **[believed]**; not saving properties saves roughly half. The decision stands; the figure is for planning.
+- **10i. The static replacement pack is a way out for small worlds.** It must define every id in use, which is the data not saved, and needs the list of those ids. **[believed]**
+- **10j. A lazy pack's file list is a catalogue.** A pack's identity is the hash of an index of every file, sent whole **[read]**; for a static material pack that index names every material, which is every seed. It would also pass the limits (10,000 files, 1 GiB) **[read: `pack_archive::Limits`]**. Lazy packs need an index that is checked in parts, and **the server pushes** what a client may see; a client does not ask by name for what it was not shown. **[believed]**
+- **10k. Overrides do not fit today's patches.** A patch changes a block that exists when packs load **[read: `pack-format.md`]**; a material does not exist yet. An override must be held and applied when the material is made, be marked as partial (not a whole block with defaults), reach a client **in the same message as the id** so that the original is never drawn, and cover the far colour too. Keep an operator's overrides in the operator's own pack, or an update of the generator's pack loses them. **[believed]**
+- **10l. One seed reveals everything at once**, when the texture is first due: seeing a material is knowing all its numbers. What counts as seeing is open: a radius alone also reveals what is buried, to a changed client. My pick: a face open to air within a radius the server sets. **[believed]**
+- **10m. The far byte** is best a place in a fixed list of 256 colours spread evenly to the eye, with glow taken out of the same byte.
+
+**Questions:** (d) names kept with the data rather than in the world's registry (10b, 10c)? my pick yes. (e) 128-bit ids with traits and a format tag in the name (10d, 10e)? my pick yes. (f) what reveals a material (10l)?
+
