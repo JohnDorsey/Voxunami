@@ -2,6 +2,7 @@ use namespaced_id::NamespacedId;
 use voxel_space::GravitySettings;
 
 use crate::far_ship_settings::FarShipSettings;
+use crate::packs::ServedPack;
 use crate::rail_settings::RailSettings;
 use crate::ship_settings::ShipSettings;
 
@@ -34,6 +35,14 @@ pub struct ServerConfig {
     /// What every client is sent in its welcome besides the world's description: the game's package data, which the
     /// server passes on without reading.
     pub package: Vec<u8>,
+    /// The packs clients keep as files, in load order: every client is told of them right after its welcome, and sent the archive of each it asks for.
+    pub packs: Vec<ServedPack>,
+    /// Whether `packs` is every pack the server runs besides the game's own: `false` if some pack says it is not replicated, or was given to the server in some other
+    /// way. Clients are told, because only when the list is whole can a client load the packs and check that they make the package the server sent.
+    pub packs_whole: bool,
+    /// The most bytes of pack archives one client is sent in a tick (a whole piece is sent at a time, so at least one if a client waits for any): a pack is sent
+    /// over several ticks and never makes one long.
+    pub pack_bytes_per_tick: usize,
     /// What gravity is: the level's pull and which bodies pull besides.
     pub gravity: GravitySettings,
     /// The pull of a level that is not `gravity.base`, by the level's identifier (none in a level in space, say): a level the world does not have is ignored.
@@ -60,6 +69,9 @@ impl ServerConfig {
             handshake_timeout_ticks: 200,
             challenge_seed: None,
             package: Vec::new(),
+            packs: Vec::new(),
+            packs_whole: true,
+            pack_bytes_per_tick: 256 * 1024,
             gravity: GravitySettings::default(),
             level_gravity: Vec::new(),
             ships: ShipSettings::default(),
@@ -70,6 +82,24 @@ impl ServerConfig {
     /// The same, sending clients this package data in their welcome.
     pub fn with_package(mut self, package: Vec<u8>) -> Self {
         self.package = package;
+        self
+    }
+
+    /// The same, telling clients of these packs and sending them on request.
+    pub fn with_packs(mut self, packs: Vec<ServedPack>) -> Self {
+        self.packs = packs;
+        self
+    }
+
+    /// The same, saying that the list of packs is not the whole of what the server runs (see [`ServerConfig::packs_whole`]).
+    pub fn with_packs_whole(mut self, whole: bool) -> Self {
+        self.packs_whole = whole;
+        self
+    }
+
+    /// The same, sending a client at most this many bytes of pack archives a tick.
+    pub fn with_pack_bytes_per_tick(mut self, bytes: usize) -> Self {
+        self.pack_bytes_per_tick = bytes;
         self
     }
 

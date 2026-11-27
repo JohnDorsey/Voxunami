@@ -242,6 +242,10 @@ fn the_scenario_exercises_every_kind_of_message() {
             ServerMessage::GridsSpawned(_)
             | ServerMessage::GridsChanged(_)
             | ServerMessage::GridsDespawned(_) => panic!("this scenario has no ships"),
+            ServerMessage::PackageReplaced { .. } => panic!("this scenario replaces no package"),
+            ServerMessage::Packs { .. } | ServerMessage::PackChunk { .. } => {
+                panic!("this scenario has no packs")
+            }
         }
     }
     assert_eq!(challenges, 1, "the server challenged the recorded player");
@@ -317,7 +321,17 @@ const PINNED_RECORDING_LENGTH: usize = 84_925;
 // Free regions in an interest (2026-11-23; protocol 13): the length moved by two bytes (84,923 to 84,925), the count of free regions that each of the two `InterestChanged` of this recording
 // has, and the checksum for that and for the version in the welcome (13, was 12). Checked by taking the recording apart: with the count taken out of those two frames and the version put back to 12,
 // the old length and the old checksum, 3_889_045_335, came back.
-const PINNED_RECORDING_CHECKSUM: u32 = 74_998_034;
+// (graphics-world-painting's changes, merged into this demo branch:)
+// A replaced package (2026-11-16; protocol 12): the checksum changed once, for the protocol version in the welcome (12, was 11); the length did not, and with the version put
+// back to 11 the old checksum, 4_054_084_584, came back (this scenario replaces no package).
+// Packs a client keeps as files (2026-11-22; protocol 13): the checksum changed once, for the protocol version in the welcome (13, was 12); the length did not, and with the
+// version put back to 12 the old checksum, 3_889_045_335, came back (this server has no packs, so it sends no list: a server without packs says nothing of them).
+// Whether the packs are the whole (2026-11-23; protocol 14): the checksum changed once, for the protocol version in the welcome (14, was 13); the length did not, and with the version
+// put back to 13 the old checksum, 2_776_487_109, came back.
+// Pack hashes are BLAKE3 (2026-11-26; protocol 15): the checksum changed once, for the protocol version in the welcome (15, was 14); the length did not,
+// and the old checksum, 1_655_277_683, passed with the new hashes while the version was still 14.
+// The thanksgiving demo, graphics-world-painting merged (protocol 16): only the version in the welcome changed. Checked: with the version put back to 13 this recording is main's, old checksum and all.
+const PINNED_RECORDING_CHECKSUM: u32 = 2_607_650_017;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

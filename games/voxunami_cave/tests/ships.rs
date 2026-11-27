@@ -88,8 +88,11 @@ fn block_the_player_sees_in_the_ship(scene: &Scene, player: &Player, voxel: [i12
         )
 }
 
-#[test]
-fn a_ship_is_aimed_at_in_its_own_coordinates_wherever_it_is_and_however_it_is_turned() {
+/// (a name, the ship's origin and turn, where the player is, the voxel of the ship the crosshair is on and the one in front of it).
+type AimedCase = (&'static str, GridPose, [f64; 3], [i128; 3], [i128; 3]);
+
+/// The cube of three, seen from three places.
+fn aimed_cases() -> [AimedCase; 3] {
     let half_turn = LatticeRotation::all()
         .into_iter()
         .find(|rotation| {
@@ -99,8 +102,7 @@ fn a_ship_is_aimed_at_in_its_own_coordinates_wherever_it_is_and_however_it_is_tu
         })
         .unwrap()
         .orientation();
-    // (the ship's origin, its turn, where the player is, the voxel of the ship the crosshair is on and the one in front of it)
-    let cases = [
+    [
         (
             "not turned",
             pose_at([20, 300, 16], Orientation::IDENTITY),
@@ -123,8 +125,111 @@ fn a_ship_is_aimed_at_in_its_own_coordinates_wherever_it_is_and_however_it_is_tu
             [1, 1, 2],
             [1, 1, 3],
         ),
-    ];
-    for (name, pose, camera, voxel, previous) in cases {
+    ]
+}
+
+#[test]
+fn the_surface_of_a_ship_is_found_in_its_own_coordinates_and_is_the_side_the_voxel_walk_came_through()
+ {
+    for (name, pose, camera, voxel, previous) in aimed_cases() {
+        let mut scene = Scene::new();
+        let mut player = looking(&mut scene, camera);
+        make_a_cube(&mut scene, pose);
+        scene.rig.settle(&mut [&mut player]);
+        let hit = player
+            .target()
+            .unwrap_or_else(|| panic!("{name}: nothing aimed at"));
+        let found = player
+            .target_surface()
+            .unwrap_or_else(|| panic!("{name}: no surface aimed at"));
+        assert_eq!(found.hit.grid, ship(), "{name}");
+        assert_eq!(
+            [
+                found.hit.voxel.x(),
+                found.hit.voxel.y(),
+                found.hit.voxel.z()
+            ],
+            voxel,
+            "{name}"
+        );
+        // The cube is whole: its surface is the side of the voxel that looks at the voxel in front of it (in the ship's own turn), at the distance the walk found.
+        let toward_previous = [0, 1, 2].map(|axis| previous[axis] - voxel[axis]);
+        assert_eq!(found.hit.surface.face.offset(), toward_previous, "{name}");
+        assert!(
+            (found.hit.surface.distance - hit.distance).abs() < 1e-6,
+            "{name}"
+        );
+        // On that side (its coordinate along the face's axis is 0 or 1), and in the voxel (the other two are between).
+        let face = found.hit.surface.face;
+        assert_eq!(
+            found.hit.surface.point[face.axis()],
+            if face.is_positive() { 1.0 } else { 0.0 },
+            "{name}"
+        );
+        assert!(
+            found
+                .hit
+                .surface
+                .point
+                .iter()
+                .all(|part| (0.0..=1.0).contains(part)),
+            "{name}"
+        );
+        assert_eq!(
+            found.content.block,
+            CaveContent::new().blocks.stone,
+            "{name}"
+        );
+        assert!(found.picture.is_some(), "{name}: stone has pictures");
+    }
+}
+
+#[test]
+fn a_block_of_a_ship_that_is_turned_shows_the_picture_of_its_turn() {
+    let (_, pose, camera, voxel, _) = aimed_cases()[0];
+    let mut scene = Scene::new();
+    let mut player = looking(&mut scene, camera);
+    make_a_cube(&mut scene, pose);
+    // The voxel the crosshair is on becomes a log laid on its side (its top toward +x).
+    let content = CaveContent::new();
+    let (log, turned) = (
+        content.blocks.wood,
+        LatticeRotation::all()
+            .into_iter()
+            .position(|rotation| rotation.apply([0, 1, 0]) == [1, 0, 0])
+            .unwrap() as u32,
+    );
+    scene.run(move |world| {
+        let mut view = world.grid(ship()).unwrap();
+        let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+        view.set(content.block_channel(), at, log).unwrap();
+        view.set(content.orientation_channel(), at, turned).unwrap();
+    });
+    scene.rig.settle(&mut [&mut player]);
+    let found = player
+        .target_surface()
+        .expect("the log is under the crosshair");
+    assert_eq!(found.hit.grid, ship());
+    assert_eq!(found.content.orientation, turned);
+    let table = player.block_table();
+    assert_eq!(
+        found.picture.unwrap().picture,
+        table
+            .face_picture(log, 0, turned, found.hit.surface.face)
+            .unwrap()
+    );
+    assert_ne!(
+        found.picture.unwrap().picture,
+        table
+            .face_picture(log, 0, 0, found.hit.surface.face)
+            .unwrap(),
+        "the turn changes the picture of that face"
+    );
+}
+
+#[test]
+fn a_ship_is_aimed_at_in_its_own_coordinates_wherever_it_is_and_however_it_is_turned() {
+    for (name, pose, camera, voxel, previous) in aimed_cases() {
         let mut scene = Scene::new();
         let mut player = looking(&mut scene, camera);
         make_a_cube(&mut scene, pose);
@@ -422,6 +527,13 @@ fn a_ship_between_the_player_and_the_ground_is_aimed_at_first_and_the_ground_pas
     let ground_hit = player.target().expect("the ground is under the crosshair");
     assert_eq!(ground_hit.grid, GridId::MAIN);
     assert_eq!(ground_hit.voxel.y(), ground);
+    let ground_surface = player
+        .target_surface()
+        .expect("the ground has a surface under the crosshair");
+    assert_eq!(
+        (ground_surface.hit.grid, ground_surface.hit.voxel),
+        (GridId::MAIN, ground_hit.voxel)
+    );
 
     // A ship hangs in the way, between the player and the ground: the crosshair is on it, whatever is behind.
     make_a_cube(
@@ -432,6 +544,12 @@ fn a_ship_between_the_player_and_the_ground_is_aimed_at_first_and_the_ground_pas
     let ship_hit = player.target().expect("the ship is under the crosshair");
     assert_eq!(ship_hit.grid, ship());
     assert!(ship_hit.distance < ground_hit.distance);
+    // The surface is of the same one: the nearer of the two, not the farther.
+    let ship_surface = player
+        .target_surface()
+        .expect("the ship has a surface under the crosshair");
+    assert_eq!(ship_surface.hit.grid, ship());
+    assert!(ship_surface.hit.surface.distance < ground_surface.hit.surface.distance);
     // Moved out of the way, the ground is aimed at again; back, the ship is.
     scene.run(move |world| {
         world
@@ -440,6 +558,10 @@ fn a_ship_between_the_player_and_the_ground_is_aimed_at_first_and_the_ground_pas
     });
     scene.rig.settle(&mut [&mut player]);
     assert_eq!(player.target().map(|hit| hit.grid), Some(GridId::MAIN));
+    assert_eq!(
+        player.target_surface().map(|found| found.hit.grid),
+        Some(GridId::MAIN)
+    );
     scene.run(move |world| {
         world
             .set_grid_pose(ship(), pose_at([15, ground + 3, 15], Orientation::IDENTITY))
@@ -447,6 +569,10 @@ fn a_ship_between_the_player_and_the_ground_is_aimed_at_first_and_the_ground_pas
     });
     scene.rig.settle(&mut [&mut player]);
     assert_eq!(player.target().map(|hit| hit.grid), Some(ship()));
+    assert_eq!(
+        player.target_surface().map(|found| found.hit.grid),
+        Some(ship())
+    );
     // Gone, it leaves the ground.
     scene.run(|world| {
         assert!(world.remove_grid(ship()).is_some());

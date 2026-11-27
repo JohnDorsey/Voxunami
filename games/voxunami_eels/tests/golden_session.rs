@@ -228,4 +228,14 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The declaration of `engine:hinge_face` (the dev hinge joint, 2026-11-25): the welcome carries the package, which is 210 bytes longer (`block_golden.rs`), so the stream is 210 longer, 89,154 to 89,364 (predicted as the
 /// package's growth before the run, and seen); the saved world's hash did not move. Windows only.
 /// `engine:joint_line_face` (2026-11-25): the package in the welcome is 24 bytes longer, so is the stream; the saved world did not move. Windows only.
-const PINNED: (u64, usize, u64) = (2_914_463_751_723_534_863, 89_388, 9_505_268_344_403_703_823);
+/// (graphics-world-painting's changes, merged into this demo branch:)
+/// A replaced package (2026-11-16; protocol 12): the stream hash changed once, for the protocol version in the welcome (12, was 11); the length and the saved world did not,
+/// and with the version put back to 11 the old hash, 3_053_214_642_131_070_801, came back.
+/// Packs a client keeps as files (2026-11-22; protocol 13): the stream hash changed once, for the protocol version in the welcome (13, was 12); the length and the saved world did not,
+/// and with the version put back to 12 the old hash, 14_850_974_223_715_851_973, came back (no pack is replicated here, so no list is sent).
+/// Whether the packs are the whole (2026-11-23; protocol 14): the stream hash changed once, for the protocol version in the welcome (14, was 13); the length and the saved world did not,
+/// and with the version put back to 13 the old hash, 14_316_692_214_916_422_161, came back.
+/// Pack hashes are BLAKE3 (2026-11-26; protocol 15): the stream hash changed once, for the protocol version in the welcome (15, was 14); the length and the saved world did not,
+/// and the old stream hash, 13_086_851_253_479_125_993, passed with the new hashes while the version was still 14.
+/// The thanksgiving demo, graphics-world-painting merged (protocol 16): only the version in the welcome changed. Checked: with the version put back to 13 the stream is main's, old hash and all.
+const PINNED: (u64, usize, u64) = (1_065_768_817_361_597_572, 89_388, 9_505_268_344_403_703_823);

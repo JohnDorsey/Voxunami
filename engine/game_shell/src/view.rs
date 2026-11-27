@@ -1,6 +1,7 @@
 //! Glue between a session and the renderer.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use block_models::BlockTable;
 use data_packs::Tile;
@@ -43,28 +44,45 @@ pub struct ShaderPacks {
     pub files: SettingsFiles,
 }
 
-/// Reads the shader packs the player has (the game data folder's, and the folder `--shader-packs` names) and what they chose of the settings of each (a file next to each pack's
-/// folder, and `default.settings.json` for the game's own shader), tells the session of them and of the one `--shader-pack` chose, and returns them for [`apply_shader_pack`]. A
-/// pack that is no good, and a choice that is no good, are a warning on the error stream and the others are kept; a folder asked for that cannot be read, and a pack asked for
-/// that is not there, are errors.
-pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
-    view: &ViewOptions,
-    session: &mut Session<C, G>,
-) -> Result<ShaderPacks, String> {
-    let directory = crate::shader_packs::default_directory();
-    let shelf = crate::shader_packs::shelf_of(directory.as_deref(), view.shader_packs.as_deref())?;
-    for problem in &shelf.problems {
-        eprintln!("warning: shader pack: {problem}");
+/// Everything read of the shader packs the player has: what [`prepare_shader_packs`] starts with and what a reload ([`swap_shader_packs`]) puts in use.
+#[derive(Debug)]
+pub struct ReadShaderPacks {
+    /// The packs (checked) and what was wrong with the folders that are not packs.
+    pub shelf: crate::shader_packs::ShaderPackShelf,
+    /// What the player can choose among, by id.
+    pub names: Vec<crate::shader_packs::ShaderPackName>,
+    /// The files of the chosen settings, as read.
+    pub files: SettingsFiles,
+    /// What the player chose of the settings of each shader, as the files say.
+    pub choices: crate::shader_pack_settings::PackChoices,
+    /// A text for each thing wrong in the files of settings.
+    pub warnings: Vec<String>,
+}
+
+impl ReadShaderPacks {
+    /// Every thing that was wrong, for the player: a pack that is no good, a choice that is no good.
+    pub fn problems(&self) -> impl Iterator<Item = String> + '_ {
+        self.shelf
+            .problems
+            .iter()
+            .map(|problem| format!("shader pack: {problem}"))
+            .chain(
+                self.warnings
+                    .iter()
+                    .map(|warning| format!("shader settings: {warning}")),
+            )
     }
+}
+
+/// Reads the shader packs the player has (the folder of the game data folder, if it is one, and the folder `--shader-packs` names) and what they chose of the settings of each (a
+/// file next to each pack's folder, and `default.settings.json` for the game's own shader). A pack that is no good, and a choice that is no good, are in the problems and the others
+/// are kept; a folder asked for that cannot be read is an error.
+pub fn read_shader_packs(
+    directory: Option<&std::path::Path>,
+    asked: Option<&std::path::Path>,
+) -> Result<ReadShaderPacks, String> {
+    let shelf = crate::shader_packs::shelf_of(directory, asked)?;
     let names = shelf.names();
-    let chosen = match &view.shader_pack {
-        Some(text) => Some(
-            crate::shader_packs::pick(&names, text)
-                .map(|index| names[index].id.clone())
-                .map_err(|error| format!("--shader-pack: {error}"))?,
-        ),
-        None => None,
-    };
     // The game's own shader has the engine's settings; a pack's are the engine's with its defaults and then its own.
     let mut declared = BTreeMap::from([(None, renderer::engine_settings())]);
     declared.extend(
@@ -77,18 +95,198 @@ pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
         .iter()
         .map(|(id, file)| (Some(id.clone()), file.clone()))
         .collect();
-    if let Some(file) = crate::shader_packs::own_settings_file(directory.as_deref()) {
+    if let Some(file) = crate::shader_packs::own_settings_file(directory) {
         files.insert(None, file);
     }
     let (files, choices, warnings) = SettingsFiles::load(files, &declared);
-    for warning in &warnings {
-        eprintln!("warning: shader settings: {warning}");
-    }
-    session.offer_shader_packs(names, chosen, choices);
-    Ok(ShaderPacks {
-        packs: shelf.packs,
+    Ok(ReadShaderPacks {
+        shelf,
+        names,
         files,
+        choices,
+        warnings,
     })
+}
+
+/// Reads the shader packs the player has ([`read_shader_packs`]), tells the session of them and of the one `--shader-pack` chose, and returns them for [`apply_shader_pack`]. A
+/// problem is a warning on the error stream; a pack asked for that is not there is an error.
+pub fn prepare_shader_packs<C: Connection, G: GameDefinition>(
+    view: &ViewOptions,
+    session: &mut Session<C, G>,
+) -> Result<ShaderPacks, String> {
+    let directory = crate::shader_packs::default_directory();
+    let read = read_shader_packs(directory.as_deref(), view.shader_packs.as_deref())?;
+    for problem in read.problems() {
+        eprintln!("warning: {problem}");
+    }
+    let chosen = match &view.shader_pack {
+        Some(text) => Some(
+            crate::shader_packs::pick(&read.names, text)
+                .map(|index| read.names[index].id.clone())
+                .map_err(|error| format!("--shader-pack: {error}"))?,
+        ),
+        None => None,
+    };
+    session.offer_shader_packs(read.names, chosen, read.choices);
+    Ok(ShaderPacks {
+        packs: read.shelf.packs,
+        files: read.files,
+    })
+}
+
+/// What a reload of shader packs draws with: the renderer, or a stand-in in a test.
+pub trait ShaderApplier {
+    /// As [`renderer::VoxelRenderer::set_shader_pack_with_settings`], with the reason as text. An error leaves what is drawn with as it was.
+    fn apply(
+        &mut self,
+        pack: Option<&ShaderPack>,
+        choices: &renderer::SettingChoices,
+    ) -> Result<(), String>;
+}
+
+impl ShaderApplier for VoxelRenderer {
+    fn apply(
+        &mut self,
+        pack: Option<&ShaderPack>,
+        choices: &renderer::SettingChoices,
+    ) -> Result<(), String> {
+        self.set_shader_pack_with_settings(pack, choices)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// What a reload of the engine's own shaders draws with: the renderer, or a stand-in in a test.
+pub trait EngineShaderApplier {
+    /// As [`renderer::VoxelRenderer::set_engine_shaders`], with the reason as text: whether anything was made. An error leaves what is drawn with as it was.
+    fn apply(&mut self, texts: renderer::EngineShaderTexts) -> Result<bool, String>;
+}
+
+impl EngineShaderApplier for VoxelRenderer {
+    fn apply(&mut self, texts: renderer::EngineShaderTexts) -> Result<bool, String> {
+        self.set_engine_shaders(Some(texts))
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Reads the engine's shaders from this folder (a developer's, `--engine-shaders`) and gives them to the renderer, which makes them at once, for the start and for a reload.
+/// `Ok(None)` says the renderer draws with what the files say already. An error (a file that is not there, or a shader the language or the card refuses) leaves the shaders in use.
+pub fn use_engine_shaders_from(
+    applier: &mut impl EngineShaderApplier,
+    folder: &Path,
+) -> Result<Option<String>, String> {
+    let texts = renderer::EngineShaderTexts::read(folder)?;
+    swap_engine_shaders(applier, folder, texts)
+}
+
+/// Puts the engine's shaders that were read from this folder in use (the swap of a reload): as [`use_engine_shaders_from`], with the files already read.
+pub fn swap_engine_shaders(
+    applier: &mut impl EngineShaderApplier,
+    folder: &Path,
+    texts: renderer::EngineShaderTexts,
+) -> Result<Option<String>, String> {
+    let made = applier.apply(texts).map_err(|error| {
+        format!(
+            "the engine's shaders in {} are refused (the shaders in use stay):\n{error}",
+            folder.display()
+        )
+    })?;
+    Ok(made.then(|| format!("the engine's shaders, read from {}", folder.display())))
+}
+
+/// Starts with the engine's shaders from the folder `--engine-shaders` names, if it names one: what is told of them is printed (the shaders that are not the program's are not to be
+/// taken for them). An error leaves the program's own.
+pub fn start_with_engine_shaders(
+    renderer: &mut VoxelRenderer,
+    view: &ViewOptions,
+) -> Result<(), String> {
+    if let Some(folder) = &view.engine_shaders
+        && let Some(detail) = use_engine_shaders_from(renderer, folder)?
+    {
+        println!("{detail}");
+    }
+    Ok(())
+}
+
+/// Starts with the pictures of the folder `--texture-pack` names, if it names one: what is told of them is printed. An error leaves the world's own pictures.
+pub fn start_with_texture_pack(
+    renderer: &mut VoxelRenderer,
+    package: &PackageData,
+    view: &ViewOptions,
+) -> Result<crate::texture_pack::PicturesInUse, String> {
+    let mut in_use = crate::texture_pack::PicturesInUse::default();
+    if let Some(folder) = &view.texture_pack
+        && let Some(detail) =
+            crate::texture_pack::use_pictures_from(renderer, package, &mut in_use, folder)?
+    {
+        println!("{detail}");
+    }
+    Ok(in_use)
+}
+
+/// Puts shader packs that were read again in use (the swap of a reload): the pack the player has chosen stays chosen if it is still there, and is drawn with as it is now in its
+/// files; if it is gone the game's own shader is drawn with and the player is told. The renderer is given the pack first: if it refuses, nothing is changed and the error says why.
+/// `Ok(None)` says what was read is what was in use (the game wrote the files of settings itself).
+pub fn swap_shader_packs(
+    applier: &mut impl ShaderApplier,
+    current: &mut ShaderPacks,
+    settings: &mut crate::client_commands::ClientSettings,
+    read: ReadShaderPacks,
+) -> Result<Option<String>, String> {
+    let chosen = settings
+        .shader_pack
+        .clone()
+        .filter(|id| read.names.iter().any(|name| &name.id == id));
+    let lost = settings.shader_pack.is_some() && chosen.is_none();
+    // A pack that is no good is not on the shelf, so a chosen pack that cannot be found while something was wrong is most likely the one that was just broken: it is not
+    // taken off. (With nothing wrong it was removed on purpose.)
+    if lost && read.problems().next().is_some() {
+        return Err(format!(
+            "the shader pack in use ({}) is not among the packs read, and something is wrong with the files, so it is kept as it was:\n{}",
+            settings.shader_pack.as_deref().unwrap_or_default(),
+            read.problems().collect::<Vec<_>>().join("\n")
+        ));
+    }
+    let wanted = chosen
+        .as_ref()
+        .and_then(|id| read.shelf.packs.iter().find(|pack| pack.id() == id));
+    let choices = read.choices.get(&chosen).cloned().unwrap_or_default();
+    applier.apply(wanted, &choices).map_err(|error| {
+        format!(
+            "the shader {} with its settings is refused by the graphics card (the shader in use stays):\n{error}",
+            wanted.map_or("the game's own", ShaderPack::name)
+        )
+    })?;
+    let problems = read.problems().count();
+    let unchanged = !lost
+        && read.shelf.packs == current.packs
+        && read.names == settings.shader_packs
+        && read.choices == settings.pack_settings;
+    let using = wanted.map_or("the game's own shader".to_owned(), |pack| {
+        format!("`{}`", pack.name())
+    });
+    current.packs = read.shelf.packs;
+    current.files = read.files;
+    settings.shader_packs = read.names;
+    settings.shader_pack = chosen;
+    settings.pack_settings = read.choices;
+    if unchanged && problems == 0 {
+        return Ok(None);
+    }
+    let mut detail = format!(
+        "{} shader pack{}, drawing with {using}",
+        current.packs.len(),
+        if current.packs.len() == 1 { "" } else { "s" }
+    );
+    if lost {
+        detail.push_str(" (the pack that was chosen is gone)");
+    }
+    if problems > 0 {
+        detail.push_str(&format!(
+            "; {problems} problem{} (on the error stream)",
+            if problems == 1 { "" } else { "s" }
+        ));
+    }
+    Ok(Some(detail))
 }
 
 /// Gives the renderer the shader pack the player's settings choose (or the game's own): at once if it is the one the renderer has. An error says the graphics card refused it,

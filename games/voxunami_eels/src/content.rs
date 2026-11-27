@@ -202,6 +202,18 @@ impl GameContent for ContentEels {
         self.package.body_support()
     }
 
+    fn replicated_packs(&self) -> &[server::ServedPack] {
+        self.package.replicated_packs()
+    }
+
+    fn set_replicated_packs(&mut self, packs: Vec<server::ServedPack>) {
+        self.package.set_replicated_packs(packs);
+    }
+
+    fn packs_whole(&self) -> bool {
+        self.package.packs_whole()
+    }
+
     fn body_names(&self) -> Vec<NamespacedId> {
         self.package.body_names()
     }

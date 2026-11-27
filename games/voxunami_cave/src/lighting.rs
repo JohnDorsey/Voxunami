@@ -25,6 +25,8 @@
 //! step, so that a great deal of light changing at once (many lamps) takes a few ticks longer
 //! instead of one tick too long. The light it settles to is the same.
 
+use std::sync::Arc;
+
 use block_models::{BlockTable, PropertyHandle};
 
 use crate::block_properties;
@@ -72,7 +74,7 @@ pub trait LightWorld {
 /// The light rule and the voxels it has yet to look at.
 #[derive(Debug)]
 pub struct Lighting {
-    table: BlockTable,
+    table: Arc<BlockTable>,
     emission: PropertyHandle<u8>,
     /// Voxels whose light may be out of date, in a fixed order.
     pending: ActiveVoxels,
@@ -81,7 +83,8 @@ pub struct Lighting {
 impl Lighting {
     /// Light for a world of these blocks, with nothing to look at: the world's light is taken to be
     /// settled.
-    pub fn new(table: BlockTable) -> Self {
+    pub fn new(table: impl Into<Arc<BlockTable>>) -> Self {
+        let table = table.into();
         Self {
             emission: block_properties::emission(&table),
             table,
@@ -91,7 +94,8 @@ impl Lighting {
 
     /// Light that carries on from voxels that were still to be looked at, as when a world is
     /// loaded.
-    pub fn with_pending(table: BlockTable, pending: ActiveVoxels) -> Self {
+    pub fn with_pending(table: impl Into<Arc<BlockTable>>, pending: ActiveVoxels) -> Self {
+        let table = table.into();
         Self {
             emission: block_properties::emission(&table),
             table,

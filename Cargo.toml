@@ -24,6 +24,7 @@ grid_lifecycle = { path = "engine/grid_lifecycle" }
 identity = { path = "engine/identity" }
 lattice = { path = "engine/lattice" }
 namespaced_id = { path = "engine/namespaced_id" }
+pack_archive = { path = "engine/pack_archive" }
 physics = { path = "engine/physics" }
 player_presence = { path = "engine/player_presence" }
 plugin_host = { path = "engine/plugin_host" }

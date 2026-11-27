@@ -3442,6 +3442,407 @@ fn bricks_given(messages: &[ServerMessage]) -> Vec<BrickCoordinate> {
         .collect()
 }
 
+// ---- Replacing the package while the world runs (`hot-reload-plan.md`, step 5, phase 4; `specs/package-replacement-spec.md`) ----
+
+/// The block that these tests append to the registry of blocks.
+fn crystal() -> NamespacedId {
+    id("new_mod:crystal")
+}
+
+/// What a client is told when `identifiers` were appended to the registry of blocks.
+fn blocks_appended(identifiers: &[NamespacedId]) -> protocol::RegistryAdditions {
+    protocol::RegistryAdditions {
+        registry: world_storage::test_support::block_kind(),
+        identifiers: identifiers.to_vec(),
+    }
+}
+
+fn is_a_replacement(frame: &[u8]) -> bool {
+    matches!(
+        ServerMessage::decode(frame),
+        Ok(ServerMessage::PackageReplaced { .. })
+    )
+}
+
+#[test]
+fn a_replaced_package_is_the_first_message_of_the_next_tick_for_every_client_that_was_there_and_is_sent_once()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut watching = harness.connect();
+    let mut idle = harness.connect();
+    harness.log_in(&mut [&mut watching, &mut idle]);
+    watching.received();
+    idle.received();
+    watching.watch(BrickCoordinate::ORIGIN, 1);
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![7, 7], &game.registries())
+        .unwrap();
+    assert!(
+        watching.received().is_empty() && idle.received().is_empty(),
+        "nothing is sent until the tick"
+    );
+
+    harness.server.step();
+    let replaced = ServerMessage::PackageReplaced {
+        appended: vec![blocks_appended(&[crystal()])],
+        package: vec![7, 7],
+    };
+    let told = watching.received();
+    assert_eq!(
+        told.first(),
+        Some(&replaced),
+        "before the change of what it watches, so that the rest of the tick is read with the new package: {told:?}"
+    );
+    assert!(
+        matches!(told[1], ServerMessage::InterestChanged { .. }),
+        "{told:?}"
+    );
+    assert!(matches!(
+        idle.received()[..],
+        [
+            ServerMessage::PackageReplaced { .. },
+            ServerMessage::TickCompleted { .. }
+        ]
+    ));
+
+    harness.server.step();
+    for client in [&mut watching, &mut idle] {
+        assert!(
+            client
+                .received()
+                .iter()
+                .all(|message| !matches!(message, ServerMessage::PackageReplaced { .. })),
+            "a package is replaced once"
+        );
+    }
+}
+
+#[test]
+fn the_replacement_is_the_same_bytes_for_every_client_whatever_it_watches() {
+    let (mut game, mut harness) = default_harness();
+    let mut near = harness.connect();
+    let mut far = harness.connect();
+    let mut idle = harness.connect();
+    harness.log_in(&mut [&mut near, &mut far, &mut idle]);
+    near.watch(BrickCoordinate::ORIGIN, 1);
+    far.watch(brick(40, 0, 0), 1);
+    harness.server.step();
+    for client in [&mut near, &mut far, &mut idle] {
+        client.received();
+    }
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![1, 2, 3], &game.registries())
+        .unwrap();
+    harness.server.step();
+    let first_frames: Vec<Vec<u8>> = [&mut near, &mut far, &mut idle]
+        .into_iter()
+        .map(|client| client.raw_frames().remove(0))
+        .collect();
+    assert!(is_a_replacement(&first_frames[0]));
+    assert_eq!(first_frames[0], first_frames[1]);
+    assert_eq!(first_frames[0], first_frames[2]);
+}
+
+#[test]
+fn a_client_that_joins_after_a_replacement_is_welcomed_with_the_new_package_and_the_new_tables_and_is_never_sent_the_message()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut early = harness.connect();
+    harness.log_in(&mut [&mut early]);
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![5], &game.registries())
+        .unwrap();
+    harness.server.step();
+
+    let mut late = harness.connect();
+    harness.log_in(&mut [&mut late]);
+    let told = late.received();
+    let [
+        ServerMessage::Welcome(welcome),
+        ServerMessage::TickCompleted { .. },
+    ] = &told[..]
+    else {
+        panic!("a welcome and a tick, and no replacement: {told:?}");
+    };
+    assert_eq!(welcome.package, vec![5]);
+    assert_eq!(
+        welcome.world_description,
+        harness.server.world().describe(&game.registries()).unwrap(),
+        "the registries it is told of have the block the package gained"
+    );
+    harness.server.step();
+    assert!(
+        late.received()
+            .iter()
+            .all(|message| !matches!(message, ServerMessage::PackageReplaced { .. }))
+    );
+}
+
+#[test]
+fn a_client_welcomed_in_the_tick_of_the_replacement_has_the_new_package_in_its_welcome_and_is_not_told_twice()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut early = harness.connect();
+    harness.log_in(&mut [&mut early]);
+    early.received();
+    let mut joining = harness.connect();
+    joining.hello();
+    harness.server.step();
+    joining.prove();
+    // (The tick that challenged the one was a tick of the other too.)
+    early.received();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![5], &game.registries())
+        .unwrap();
+    // This tick welcomes the one and replaces the package of the other.
+    let report = harness.server.step();
+    assert_eq!(report.joined, [ClientId::new(2)]);
+
+    let told = joining.received();
+    let [
+        ServerMessage::Welcome(welcome),
+        ServerMessage::TickCompleted { .. },
+    ] = &told[..]
+    else {
+        panic!("a welcome that has the package, and nothing to replace: {told:?}");
+    };
+    assert_eq!(welcome.package, vec![5]);
+    assert!(matches!(
+        early.received()[0],
+        ServerMessage::PackageReplaced { .. }
+    ));
+}
+
+#[test]
+fn replacements_made_before_the_same_tick_are_one_message_with_all_that_was_appended_and_the_last_package()
+ {
+    let (mut game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![1], &game.registries())
+        .unwrap();
+    let ruby = id("new_mod:ruby");
+    game.blocks.register(ruby.clone(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![2], &game.registries())
+        .unwrap();
+    harness.server.step();
+    assert_eq!(
+        client.received()[..],
+        [
+            ServerMessage::PackageReplaced {
+                appended: vec![blocks_appended(&[crystal(), ruby])],
+                package: vec![2],
+            },
+            ServerMessage::TickCompleted { tick: Tick::new(3) },
+        ]
+    );
+}
+
+#[test]
+fn a_rule_that_asks_for_a_reload_is_answered_after_the_tick_once_and_only_when_it_asked() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_command(|client, text, world| {
+        if text == "/reload" {
+            world.request_reload();
+            world.reply(client, "reading the packs again");
+        }
+    });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    harness.server.step();
+    assert!(!harness.server.take_reload_request(), "nobody asked");
+
+    client.send(&ClientMessage::Command {
+        text: "/reload".to_owned(),
+    });
+    harness.server.step();
+    assert!(harness.server.take_reload_request());
+    assert!(
+        !harness.server.take_reload_request(),
+        "asked for once, taken once"
+    );
+    harness.server.step();
+    assert!(!harness.server.take_reload_request(), "and not asked again");
+}
+
+#[test]
+fn a_later_replacement_appends_only_what_the_earlier_one_did_not() {
+    let (mut game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![1], &game.registries())
+        .unwrap();
+    harness.server.step();
+    client.received();
+
+    let ruby = id("new_mod:ruby");
+    game.blocks.register(ruby.clone(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![2], &game.registries())
+        .unwrap();
+    harness.server.step();
+    assert_eq!(
+        client.received()[0],
+        ServerMessage::PackageReplaced {
+            appended: vec![blocks_appended(&[ruby])],
+            package: vec![2],
+        },
+        "the crystal was told already"
+    );
+}
+
+#[test]
+fn a_replacement_that_adds_no_entry_still_replaces_the_package_and_appends_nothing() {
+    let (game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    harness
+        .server
+        .replace_package(vec![8], &game.registries())
+        .unwrap();
+    harness.server.step();
+    assert!(matches!(
+        &client.received()[0],
+        ServerMessage::PackageReplaced { appended, package } if appended.is_empty() && package == &vec![8]
+    ));
+}
+
+#[test]
+fn a_replacement_that_drops_renames_or_adds_a_kind_of_registry_is_refused_and_changes_nothing() {
+    use content_registry::Registry;
+
+    let (game, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    let before = harness.server.world().describe(&game.registries()).unwrap();
+
+    // An entry fewer.
+    let mut shorter = Game::new(&ALL_PLUGINS);
+    let mut shortened = Registry::new();
+    for (_, entry) in game.blocks.iter().take(game.blocks.len() - 1) {
+        shortened.register(entry.identifier().clone(), ()).unwrap();
+    }
+    shorter.blocks = shortened;
+    let error = harness
+        .server
+        .replace_package(vec![1], &shorter.registries())
+        .unwrap_err();
+    assert!(error.to_string().contains("voxel_content:block"), "{error}");
+
+    // An entry with another name in its place (the numbers of what was there never change).
+    let mut renamed = Registry::new();
+    for (index, (_, entry)) in game.blocks.iter().enumerate() {
+        let identifier = if index == 3 {
+            id("new_mod:instead")
+        } else {
+            entry.identifier().clone()
+        };
+        renamed.register(identifier, ()).unwrap();
+    }
+    let mut other = Game::new(&ALL_PLUGINS);
+    other.blocks = renamed;
+    let error = harness
+        .server
+        .replace_package(vec![2], &other.registries())
+        .unwrap_err();
+    assert!(error.to_string().contains("new_mod:instead"), "{error}");
+
+    // A registry that clients were not told of.
+    let mut things = Registry::new();
+    things.register(id("new_mod:thing"), ()).unwrap();
+    let mut registries = game.registries();
+    registries.push((id("new_mod:things"), &things));
+    let error = harness
+        .server
+        .replace_package(vec![3], &registries)
+        .unwrap_err();
+    assert!(error.to_string().contains("new_mod:things"), "{error}");
+
+    // Nothing was kept of any of them: no message, and a welcome as it was.
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        matches!(told[..], [ServerMessage::TickCompleted { .. }]),
+        "only the tick completes: {told:?}"
+    );
+    let mut late = harness.connect();
+    harness.log_in(&mut [&mut late]);
+    let told = late.received();
+    let [ServerMessage::Welcome(welcome), ..] = &told[..] else {
+        panic!("a welcome: {told:?}");
+    };
+    assert_eq!(welcome.package, Vec::<u8>::new());
+    assert_eq!(welcome.world_description, before);
+}
+
+// ---- Packs that clients keep as files (`specs/pack-archive-spec.md`, step 4) ----
+
+/// A pack of a few small files and one large one, with `code/secret.py` withheld from clients. The large file is not compressible by design (there is no compression),
+/// so its size is the archive's.
+fn a_served_pack(pack_id: &str, filler: usize) -> server::ServedPack {
+    let big: Vec<u8> = (0..filler)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    let archive = pack_archive::Archive::from_files([
+        (
+            "pack.json".to_owned(),
+            format!("{{\"id\":\"{pack_id}\"}}").into_bytes(),
+        ),
+        ("blocks/a.json".to_owned(), b"A".to_vec()),
+        ("code/secret.py".to_owned(), b"withheld".to_vec()),
+        ("textures/big.bin".to_owned(), big),
+    ])
+    .unwrap();
+    server::ServedPack::new(pack_id, &archive, |path| !path.starts_with("code/")).unwrap()
+}
+
+fn pack_harness(packs: Vec<server::ServedPack>, bytes_per_tick: usize) -> (Game, Harness) {
+    let game = Game::new(&ALL_PLUGINS);
+    let config = ServerConfig::new(game_id())
+        .with_packs(packs)
+        .with_pack_bytes_per_tick(bytes_per_tick);
+    let harness = Harness::new(&game, game.new_world(), config);
+    (game, harness)
+}
+
+/// The pieces of packs among `messages`, as (root, offset, bytes).
+fn pack_chunks_in(messages: &[ServerMessage]) -> Vec<(pack_archive::Hash, u64, Vec<u8>)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::PackChunk {
+                root,
+                offset,
+                bytes,
+            } => Some((*root, *offset, bytes.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A harness whose world has an edited brick in each of these places (voxel coordinates).
 fn a_world_with_edits_at(places: &[[i128; 3]]) -> (Game, Harness) {
     let game = Game::new(&ALL_PLUGINS);
@@ -3696,6 +4097,281 @@ fn the_free_regions_of_a_client_are_limited_in_number_and_in_bricks() {
 }
 
 #[test]
+fn a_server_without_packs_never_sends_a_list_and_asks_for_none_are_answered_with_nothing() {
+    let (_, mut harness) = default_harness();
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter().all(|message| !matches!(
+            message,
+            ServerMessage::Packs { .. } | ServerMessage::PackChunk { .. }
+        )),
+        "{told:?}"
+    );
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![pack_archive::Hash::of(b"nothing")],
+    });
+    harness.server.step();
+    assert!(pack_chunks_in(&client.received()).is_empty());
+}
+
+#[test]
+fn a_server_with_packs_lists_them_in_load_order_right_after_the_welcome_to_every_client() {
+    let packs = vec![a_served_pack("zeta", 10), a_served_pack("alpha", 20)];
+    let listings: Vec<protocol::PackListing> =
+        packs.iter().map(|pack| pack.listing().clone()).collect();
+    let (_, mut harness) = pack_harness(packs, 1 << 20);
+    let mut first = harness.connect();
+    let mut second = harness.connect();
+    harness.log_in(&mut [&mut first, &mut second]);
+    for client in [&mut first, &mut second] {
+        let told = client.received();
+        assert!(
+            matches!(&told[..], [
+                ServerMessage::Welcome(_),
+                ServerMessage::Packs { listings: list, whole: true },
+                ServerMessage::TickCompleted { .. },
+            ] if *list == listings),
+            "{told:?}"
+        );
+    }
+    // The order is the order the server was given (zeta loads before alpha), not the order of the names.
+    assert_eq!(listings[0].id, "zeta");
+}
+
+#[test]
+fn a_client_that_asks_for_a_pack_is_sent_its_archive_without_what_is_withheld_a_piece_a_tick() {
+    use protocol::MAXIMUM_PACK_CHUNK;
+    let pack = a_served_pack("my_pack", MAXIMUM_PACK_CHUNK * 2 + 1_000);
+    let listing = pack.listing().clone();
+    let (_, mut harness) = pack_harness(vec![pack], MAXIMUM_PACK_CHUNK);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![listing.root()],
+    });
+    let mut pieces = Vec::new();
+    let mut ticks_with_pieces = 0;
+    for _ in 0..8 {
+        harness.server.step();
+        let told = client.received();
+        let now = pack_chunks_in(&told);
+        // a tick closes the pieces it carries: the last message of the tick is its completion
+        assert!(matches!(
+            told.last(),
+            Some(ServerMessage::TickCompleted { .. })
+        ));
+        if !now.is_empty() {
+            ticks_with_pieces += 1;
+        }
+        assert!(
+            now.len() <= 1,
+            "the budget is one piece a tick: {}",
+            now.len()
+        );
+        pieces.extend(now);
+    }
+    assert!(pieces.len() >= 3, "{}", pieces.len());
+    assert_eq!(
+        ticks_with_pieces,
+        pieces.len(),
+        "spread over ticks, not sent at once"
+    );
+    let mut archive = Vec::new();
+    for (root, offset, bytes) in &pieces {
+        assert_eq!(*root, listing.root());
+        assert_eq!(*offset as usize, archive.len(), "in order");
+        archive.extend_from_slice(bytes);
+    }
+    assert_eq!(archive.len() as u64, listing.archive_size);
+    let received = pack_archive::Archive::from_bytes(&archive, &pack_archive::Limits::default())
+        .expect("the pieces put together are the canonical archive");
+    listing
+        .index
+        .verify_received(&received)
+        .expect("it holds exactly the files sent, each as the index says");
+    assert!(received.get("code/secret.py").is_none());
+    assert!(
+        listing
+            .index
+            .entries()
+            .iter()
+            .any(|entry| entry.path == "code/secret.py" && !entry.sent)
+    );
+    assert_eq!(listing.index.root_hash(), listing.root());
+}
+
+#[test]
+fn a_request_for_a_pack_that_is_not_listed_is_ignored_and_a_pack_asked_for_twice_is_sent_once() {
+    let one = a_served_pack("one", 100);
+    let two = a_served_pack("two", 200);
+    let (root_one, root_two) = (one.listing().root(), two.listing().root());
+    let (_, mut harness) = pack_harness(vec![one, two], 1 << 20);
+    let mut asking = harness.connect();
+    let mut idle = harness.connect();
+    harness.log_in(&mut [&mut asking, &mut idle]);
+    asking.received();
+    idle.received();
+    asking.send(&ClientMessage::RequestPacks {
+        roots: vec![pack_archive::Hash::of(b"not a pack here"), root_two],
+    });
+    asking.send(&ClientMessage::RequestPacks {
+        roots: vec![root_two],
+    });
+    harness.server.step();
+    let pieces = pack_chunks_in(&asking.received());
+    assert_eq!(pieces.len(), 1, "one small pack, one piece, once");
+    assert_eq!(pieces[0].0, root_two);
+    assert!(
+        pack_chunks_in(&idle.received()).is_empty(),
+        "only to who asked"
+    );
+    // another pack, asked for later, is sent too
+    asking.send(&ClientMessage::RequestPacks {
+        roots: vec![root_one],
+    });
+    harness.server.step();
+    let pieces = pack_chunks_in(&asking.received());
+    assert_eq!(
+        pieces.iter().map(|piece| piece.0).collect::<Vec<_>>(),
+        [root_one]
+    );
+}
+
+#[test]
+fn a_request_before_the_client_is_logged_in_is_refused_like_any_other_message() {
+    let (_, mut harness) = pack_harness(vec![a_served_pack("one", 10)], 1 << 20);
+    let mut client = harness.connect();
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![pack_archive::Hash::of(b"x")],
+    });
+    let report = harness.server.step();
+    assert!(
+        matches!(&report.left[..], [(_, LeaveReason::Refused(_))]),
+        "{:?}",
+        report.left
+    );
+}
+
+#[test]
+fn a_replaced_list_is_told_after_the_replaced_package_only_when_it_changed_and_a_pack_being_sent_goes_on()
+ {
+    use protocol::MAXIMUM_PACK_CHUNK;
+    let kept = a_served_pack("kept", MAXIMUM_PACK_CHUNK * 3);
+    let kept_root = kept.listing().root();
+    let (mut game, mut harness) = pack_harness(vec![kept.clone()], MAXIMUM_PACK_CHUNK);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.send(&ClientMessage::RequestPacks {
+        roots: vec![kept_root],
+    });
+    harness.server.step();
+    assert_eq!(pack_chunks_in(&client.received()).len(), 1);
+
+    // The package is replaced with a new pack in the list: the list follows the replaced package, and the pack that was being sent goes on.
+    let added = a_served_pack("added", 50);
+    let added_listing = added.listing().clone();
+    game.blocks.register(crystal(), ()).unwrap();
+    harness
+        .server
+        .replace_package(vec![5], &game.registries())
+        .unwrap();
+    harness
+        .server
+        .replace_packs(vec![kept.clone(), added], true);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        matches!(told[0], ServerMessage::PackageReplaced { .. }),
+        "{told:?}"
+    );
+    assert!(
+        matches!(&told[1], ServerMessage::Packs { listings: list, .. } if list.len() == 2 && list[1] == added_listing),
+        "{told:?}"
+    );
+    assert_eq!(
+        pack_chunks_in(&told).len(),
+        1,
+        "the second piece of the pack it was being sent"
+    );
+
+    // The same list again is not told again, and the rest of the pack arrives.
+    harness
+        .server
+        .replace_packs(vec![kept.clone(), a_served_pack("added", 50)], true);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter()
+            .all(|message| !matches!(message, ServerMessage::Packs { .. })),
+        "{told:?}"
+    );
+    assert!(!pack_chunks_in(&told).is_empty(), "the next piece");
+
+    // A list that ends empty is told, so that a client forgets what it was told of.
+    harness.server.replace_packs(Vec::new(), true);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter()
+            .any(|message| matches!(message, ServerMessage::Packs { listings: list, .. } if list.is_empty())),
+        "{told:?}"
+    );
+}
+
+#[test]
+fn a_client_that_leaves_while_a_pack_is_sent_stops_it_and_the_server_goes_on() {
+    use protocol::MAXIMUM_PACK_CHUNK;
+    let pack = a_served_pack("big", MAXIMUM_PACK_CHUNK * 4);
+    let root = pack.listing().root();
+    let (_, mut harness) = pack_harness(vec![pack], MAXIMUM_PACK_CHUNK);
+    let mut leaving = harness.connect();
+    let mut staying = harness.connect();
+    harness.log_in(&mut [&mut leaving, &mut staying]);
+    leaving.send(&ClientMessage::RequestPacks { roots: vec![root] });
+    staying.send(&ClientMessage::RequestPacks { roots: vec![root] });
+    harness.server.step();
+    leaving.send(&ClientMessage::Goodbye);
+    drop(leaving);
+    for _ in 0..8 {
+        harness.server.step();
+    }
+    let told = staying.received();
+    let pieces = pack_chunks_in(&told);
+    let archive: usize = pieces.iter().map(|piece| piece.2.len()).sum();
+    assert!(
+        pieces.len() >= 4,
+        "every piece of its own pack: {}",
+        pieces.len()
+    );
+    assert!(archive > MAXIMUM_PACK_CHUNK * 4);
+}
+
+#[test]
+fn a_server_that_runs_packs_it_does_not_replicate_says_its_list_is_not_the_whole_even_when_the_list_is_empty()
+ {
+    // Nothing to replicate and a pack that is not: the client is told that there is more behind the package than it can be sent.
+    let game = Game::new(&ALL_PLUGINS);
+    let config = ServerConfig::new(game_id()).with_packs_whole(false);
+    let mut harness = Harness::new(&game, game.new_world(), config);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    let told = client.received();
+    assert!(
+        matches!(&told[..], [
+            ServerMessage::Welcome(_),
+            ServerMessage::Packs { listings, whole: false },
+            ServerMessage::TickCompleted { .. },
+        ] if listings.is_empty()),
+        "{told:?}"
+    );
+}
+
+#[test]
 fn what_reaches_a_place_reaches_the_body_of_a_client_and_not_its_free_regions() {
     let game = Game::new(&ALL_PLUGINS);
     let logic = ScriptedLogic::new().on_tick(|tick, world| {
@@ -3727,4 +4403,38 @@ fn what_reaches_a_place_reaches_the_body_of_a_client_and_not_its_free_regions() 
     };
     assert!(heard(body_there.received()));
     assert!(!heard(free_there.received()));
+}
+
+#[test]
+fn a_list_that_becomes_the_whole_or_stops_being_it_is_told_though_the_packs_in_it_are_the_same() {
+    let pack = a_served_pack("one", 10);
+    let (_, mut harness) = pack_harness(vec![pack.clone()], 1 << 20);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    // the same packs, and now something besides them is running
+    harness.server.replace_packs(vec![pack.clone()], false);
+    harness.server.step();
+    let told = client.received();
+    assert!(
+        told.iter().any(|message| matches!(message, ServerMessage::Packs { whole: false, listings } if listings.len() == 1)),
+        "{told:?}"
+    );
+    // and the same again says nothing
+    harness.server.replace_packs(vec![pack.clone()], false);
+    harness.server.step();
+    assert!(
+        client
+            .received()
+            .iter()
+            .all(|message| !matches!(message, ServerMessage::Packs { .. }))
+    );
+    harness.server.replace_packs(vec![pack], true);
+    harness.server.step();
+    assert!(
+        client
+            .received()
+            .iter()
+            .any(|message| matches!(message, ServerMessage::Packs { whole: true, .. }))
+    );
 }

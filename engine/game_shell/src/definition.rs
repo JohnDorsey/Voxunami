@@ -8,6 +8,7 @@ use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
 use plugin_host::Plugin;
 use renderer::Camera;
+use server::ServedPack;
 use voxel_space::WorldPosition;
 use winit::keyboard::KeyCode;
 use world_storage::{LoadContext, WorldData};
@@ -55,6 +56,33 @@ pub trait GameContent: Debug + Send {
             message: "this game does not take packs".to_owned(),
         }]))
     }
+
+    /// Makes the content the game's own with these packs, from the game as it was before any pack, while a server runs on it (`/reload`): every block keeps its
+    /// number, one the packs no longer have stays as missing content, a new one takes the next number, and nothing changes if there is an error. A game that does not
+    /// take packs, or whose rules do not follow a replaced package, says so.
+    fn reload_packs(&mut self, _packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
+        Err(PackErrors(vec![data_packs::PackError {
+            file: "/reload".to_owned(),
+            path: String::new(),
+            message: "this game cannot replace its package while it runs".to_owned(),
+        }]))
+    }
+
+    /// The packs this content was made with that clients keep as files (`docs/specs/pack-archive-spec.md`): a server made from this content tells its clients of
+    /// them and sends the archive of each one that asks. None for a game that takes no packs, or when none was loaded.
+    fn replicated_packs(&self) -> &[ServedPack] {
+        &[]
+    }
+
+    /// Whether [`GameContent::replicated_packs`] is every pack this content was made with, which a client is told: only then can it load the packs it is sent and check
+    /// that they make the package the server sends. True for content made of the game's own alone.
+    fn packs_whole(&self) -> bool {
+        true
+    }
+
+    /// Records which packs this content was made with that clients keep as files, after they were applied (and again after a reload). A game that takes no packs
+    /// has nothing to keep them in.
+    fn set_replicated_packs(&mut self, _packs: Vec<ServedPack>) {}
 
     /// What packs may put in the bodies of this game's worlds: the families of terrain generators they may name, and the levels they may put bodies in. A
     /// game with no bodies says nothing.
@@ -226,6 +254,15 @@ pub trait GameDefinition: Sized + 'static {
     /// The plugins that are the server's rules. Each is given the world the server starts from when it
     /// is registered, and so finds any state it saved. The order of the list does not matter.
     fn plugins(content: &Self::Content) -> Vec<Box<dyn Plugin>>;
+
+    /// The same plugins, every one that reads the blocks reading `package`, which the host replaces when the packs are read again (`/reload`); `None` for a game whose
+    /// rules keep their own copy of what the blocks are, which is the default: such a game cannot be reloaded, and says so when it is asked.
+    fn following_plugins(
+        _content: &Self::Content,
+        _package: &crate::SharedPackage,
+    ) -> Option<Vec<Box<dyn Plugin>>> {
+        None
+    }
 
     /// The client halves of the game's plugins: what the client does with the server's messages, what a
     /// key, a mouse button or a typed `.`-command does, and what the HUD says. Made once for each

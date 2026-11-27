@@ -34,7 +34,6 @@ use voxel_space::{
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::Cave;
-use voxunami_cave::plugins::cave_plugins;
 use world_storage::{MemoryShipFiles, ParsedWorld, ShipFileName, ShipFiles};
 
 pub const VIEW_RADIUS: i128 = 3;
@@ -220,6 +219,31 @@ pub fn ground_height(player: &Player, x: i128, z: i128) -> i128 {
         .rev()
         .find(|&y| player.mesher().is_opaque_at(VoxelCoordinate::new(x, y, z)) == Some(true))
         .expect("the column has ground")
+}
+
+/// The number the server has for a block, by its identifier.
+pub fn raw_in(content: &CaveContent, block: &str) -> u32 {
+    content.registries()[0]
+        .1
+        .raw_id_of(&block.parse().expect("an identifier"))
+        .unwrap_or_else(|| panic!("no block {block}"))
+}
+
+/// A player hovering above the ground at the column (16, 16), and the voxel above that ground.
+pub fn above_the_ground(
+    rig: &mut Rig,
+    connection: Option<Box<dyn Connection>>,
+) -> (Player, VoxelCoordinate) {
+    let mut player = match connection {
+        Some(connection) => rig.join_with(connection, [16.5, 110.0, 16.5], 0.0, 0.0),
+        None => rig.join([16.5, 110.0, 16.5], 0.0, 0.0),
+    };
+    rig.settle(&mut [&mut player]);
+    player.camera = above_ground(&player, 16, 16, 2.0);
+    player.teleport_to_camera();
+    rig.settle(&mut [&mut player]);
+    let ground = ground_height(&player, 16, 16);
+    (player, VoxelCoordinate::new(16, ground + 1, 16))
 }
 
 /// A camera `height` voxels above the ground of a column, looking straight down.
@@ -872,10 +896,36 @@ pub fn heavy_planet(scene: &mut Scene) {
     });
 }
 
+/// The package of Cave as it is made, for putting back.
+pub fn original_package() -> game_shell::PackageData {
+    CaveContent::new().package_data()
+}
+
+/// The package of Cave with `change` made to every block that has a definition, by the block's identifier.
+pub fn changed_package(
+    change: impl Fn(&str, &mut block_models::BlockDefinition),
+) -> game_shell::PackageData {
+    let mut package = original_package();
+    for (identifier, definition) in &mut package.blocks {
+        if let Some(definition) = definition {
+            change(identifier.as_str(), definition);
+        }
+    }
+    package
+}
+
+/// The package of the content, as the rules of a server read it.
+fn shared_package_of(content: &CaveContent) -> game_shell::SharedPackage {
+    game_shell::SharedPackage::new(content.package_data())
+        .expect("the blocks of the game can make a table")
+}
+
 /// A server with Cave's plugins and a script, in which a test can do things to the world that no player can: make a ship, move it, remove
 /// it.
 pub struct Scene {
     pub rig: Rig,
+    /// The package of the server's rules, which every rule that reads the blocks reads: replace it, and they are to follow.
+    pub package: game_shell::SharedPackage,
     actions: Arc<Mutex<VecDeque<Action>>>,
     watchers: Arc<Mutex<Vec<Watcher>>>,
     /// What the plugin that moves ships reports, for a scene that was made to report (`reporting`, `reporting_in`): the scene itself can then tell whether a ship is still being made.
@@ -907,7 +957,9 @@ impl Scene {
     ) -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
         let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
-        let (mut plugins, report) = voxunami_cave::plugins::cave_plugins_reporting(&content);
+        let package = shared_package_of(&content);
+        let (mut plugins, report) =
+            voxunami_cave::plugins::cave_plugins_sharing(&content, &package);
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
             watchers: Arc::clone(&watchers),
@@ -920,6 +972,7 @@ impl Scene {
         (
             Self {
                 rig,
+                package,
                 actions,
                 watchers,
                 bodies_report: Some(shared),
@@ -962,7 +1015,8 @@ impl Scene {
     ) -> Self {
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
         let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
-        let mut plugins = cave_plugins(&content);
+        let package = shared_package_of(&content);
+        let mut plugins = voxunami_cave::plugins::cave_plugins_sharing(&content, &package).0;
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
             watchers: Arc::clone(&watchers),
@@ -971,6 +1025,7 @@ impl Scene {
         let disk = disk(files.clone());
         Self {
             rig: Rig::with_plugins_on_disk(content, world, plugins, files, disk),
+            package,
             actions,
             watchers,
             bodies_report: None,
@@ -998,18 +1053,23 @@ impl Scene {
     /// file and a file for each ship that is in memory), and another server is made from what was written, with the same ship files. The
     /// players are not connected to the new one: they join again.
     pub fn restarted(self) -> Self {
-        self.restarted_with(|content| (cave_plugins(content), ())).0
+        self.restarted_with(|content, package| {
+            (
+                voxunami_cave::plugins::cave_plugins_sharing(content, package).0,
+                (),
+            )
+        })
+        .0
     }
 
     /// The same, with a way to ask what the plugin that moves ships has done in the new server.
     pub fn restarted_reporting(self) -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
-        let (scene, report) = self.restarted_with(voxunami_cave::plugins::cave_plugins_reporting);
-        (scene, report)
+        self.restarted_with(voxunami_cave::plugins::cave_plugins_sharing)
     }
 
     fn restarted_with<T>(
         self,
-        plugins_for: impl FnOnce(&CaveContent) -> (Vec<Box<dyn Plugin>>, T),
+        plugins_for: impl FnOnce(&CaveContent, &game_shell::SharedPackage) -> (Vec<Box<dyn Plugin>>, T),
     ) -> (Self, T) {
         let Scene { rig, .. } = self;
         let Rig {
@@ -1031,7 +1091,8 @@ impl Scene {
         let (world, _) = parsed.load(content.load_context(seed)).unwrap();
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
         let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
-        let (mut plugins, extra) = plugins_for(&content);
+        let package = shared_package_of(&content);
+        let (mut plugins, extra) = plugins_for(&content, &package);
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
             watchers: Arc::clone(&watchers),
@@ -1039,6 +1100,7 @@ impl Scene {
         (
             Self {
                 rig: Rig::with_plugins_and_files(content, world, plugins, files),
+                package,
                 actions,
                 watchers,
                 bodies_report: None,

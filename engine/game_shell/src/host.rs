@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use plugin_host::{Plugin, PluginHost};
-use server::{FarShipSettings, Server, ServerConfig, ServerError, ShipSettings};
+use server::{FarShipSettings, ServedPack, Server, ServerConfig, ServerError, ShipSettings};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::tcp::{TcpConnection, TcpServerListener};
 use transport::{ConnectionClosed, Listener, ListenerSet};
@@ -18,6 +18,7 @@ use world_storage::file::write_atomically;
 use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles, WorldData};
 
 use crate::definition::{GameContent, GameDefinition};
+use crate::shared_package::SharedPackage;
 
 /// How far beyond the drawn distance a client watches, so every drawn brick has its neighbours.
 pub const WATCH_MARGIN_BRICKS: i128 = 2;
@@ -38,8 +39,13 @@ fn server_config<G: GameDefinition>(
     counted_challenges: bool,
     ships: ShipSettings,
     far_ships: Option<FarShipSettings>,
+    packs: Vec<ServedPack>,
+    packs_whole: bool,
 ) -> ServerConfig {
-    let mut config = ServerConfig::new(G::id()).with_package(package);
+    let mut config = ServerConfig::new(G::id())
+        .with_package(package)
+        .with_packs(packs)
+        .with_packs_whole(packs_whole);
     config.ships = ships;
     config.far_ships = far_ships;
     if counted_challenges {
@@ -87,6 +93,8 @@ fn new_server<G: GameDefinition>(
             counted_challenges,
             ships.settings,
             ships.far_ships.or_else(G::far_ships),
+            content.replicated_packs().to_vec(),
+            content.packs_whole(),
         ),
         world,
         &content.registries(),
@@ -227,6 +235,10 @@ pub struct HostSettings {
     /// How ships are kept: how near a player has to be for them to move, how far off for them to be put in files, and what a pilot's logout
     /// does to them.
     pub ships: ShipSettings,
+    /// The folder of data packs the content was made with, if there is one: what `/reload` reads again. Without it a server has nothing to reload.
+    pub packs: Option<PathBuf>,
+    /// Read `packs` again by itself, between two ticks, when its files change (`--watch`), as `/reload` does by hand.
+    pub watch_packs: bool,
 }
 
 impl HostSettings {
@@ -239,6 +251,8 @@ impl HostSettings {
             autosave: None,
             announce_players: false,
             ships: ShipSettings::default(),
+            packs: None,
+            watch_packs: false,
         }
     }
 }
@@ -301,7 +315,7 @@ impl<G: GameDefinition> fmt::Debug for ServerThread<G> {
 
 impl<G: GameDefinition> ServerThread<G> {
     pub fn start(
-        content: G::Content,
+        mut content: G::Content,
         world: WorldData,
         settings: HostSettings,
     ) -> Result<Self, ServerError> {
@@ -310,7 +324,31 @@ impl<G: GameDefinition> ServerThread<G> {
         if let Some(network) = settings.network {
             listeners = listeners.with_boxed(network);
         }
-        let plugins = G::plugins(&content);
+        // A game whose rules follow a replaced package is given the one package the host replaces; a game whose rules do not cannot be reloaded.
+        let package = SharedPackage::new(content.package_data())
+            .unwrap_or_else(|error| panic!("the blocks of {} cannot be used: {error}", G::id()));
+        let (plugins, reloading) = match G::following_plugins(&content, &package) {
+            Some(plugins) => (plugins, Some(package)),
+            None => (G::plugins(&content), None),
+        };
+        let packs = settings.packs.clone();
+        let mut pack_watch = match (&packs, &reloading, settings.watch_packs) {
+            (Some(directory), Some(_), true) => match crate::packs::PackWatch::new(directory) {
+                Ok(watch) => Some(watch),
+                Err(problem) => {
+                    eprintln!("watch: {problem}");
+                    None
+                }
+            },
+            (_, None, true) => {
+                eprintln!(
+                    "watch: {} cannot replace its package while it runs, so its packs are not watched",
+                    G::title()
+                );
+                None
+            }
+            _ => None,
+        };
         let ship_files: Box<dyn ShipFiles> = match &settings.world_file {
             Some(path) => Box::new(DirectoryShipFiles::beside(path)),
             None => Box::new(MemoryShipFiles::new()),
@@ -348,6 +386,39 @@ impl<G: GameDefinition> ServerThread<G> {
                         }
                         for (client, reason) in &report.left {
                             println!("{client} left ({reason:?})");
+                        }
+                    }
+                    // (Between two ticks, so that nothing reads the blocks while they are replaced.)
+                    if server.take_reload_request() {
+                        match (&reloading, &packs) {
+                            (None, _) => {
+                                eprintln!(
+                                    "reload: {} cannot replace its package while it runs",
+                                    G::title()
+                                );
+                            }
+                            (Some(_), None) => eprintln!(
+                                "reload: this server was started without --packs, so there is nothing to read again"
+                            ),
+                            (Some(package), Some(directory)) => {
+                                match crate::packs::reload_from_directory(
+                                    &mut content,
+                                    directory,
+                                    package,
+                                    &mut server,
+                                ) {
+                                    Ok(done) => println!("reload: {done}"),
+                                    Err(problem) => eprintln!("reload: {problem}"),
+                                }
+                            }
+                        }
+                    }
+                    if let (Some(watch), Some(package)) = (&mut pack_watch, &reloading)
+                        && let Some(result) = watch.poll(&mut content, package, &mut server)
+                    {
+                        match result {
+                            Ok(done) => println!("reload: {done}"),
+                            Err(problem) => eprintln!("reload: {problem}"),
                         }
                     }
                     if let (Some(autosave), Some(path)) = (&autosave, &world_file)
@@ -434,13 +505,27 @@ mod tests {
 
     #[test]
     fn the_server_is_configured_with_the_gravity_of_the_game() {
-        let plain =
-            server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default(), None);
+        let plain = server_config::<ExampleGame>(
+            Vec::new(),
+            3,
+            true,
+            ShipSettings::default(),
+            None,
+            Vec::new(),
+            true,
+        );
         assert_eq!(plain.gravity, voxel_space::GravitySettings::default());
         assert!(plain.level_gravity.is_empty());
 
-        let space =
-            server_config::<ExampleSpaceGame>(Vec::new(), 3, true, ShipSettings::default(), None);
+        let space = server_config::<ExampleSpaceGame>(
+            Vec::new(),
+            3,
+            true,
+            ShipSettings::default(),
+            None,
+            Vec::new(),
+            true,
+        );
         assert_eq!(space.gravity.base, [0.0, -9.0, 0.0]);
         assert_eq!(space.gravity.pull_mass_threshold, Some(1.0e20));
         assert_eq!(

@@ -179,6 +179,10 @@ fn manifest() -> Value {
                 "type": "string",
                 "minLength": 1,
                 "description": "the author's own version of the pack, as they write it"
+            },
+            "replicate": {
+                "type": "boolean",
+                "description": "whether a client is sent this pack as a file and keeps it (the default), or only what the pack made of the game's package; not a way to keep anything secret"
             }
         }
     })

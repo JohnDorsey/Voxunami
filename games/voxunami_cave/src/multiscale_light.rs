@@ -488,7 +488,7 @@ fn layer_bit(width: usize, axis: usize, local: [usize; 3]) -> usize {
 /// The light rule at every scale, and the cells it has yet to look at.
 #[derive(Debug)]
 pub struct MultiScaleLighting {
-    table: BlockTable,
+    table: Arc<BlockTable>,
     emission: PropertyHandle<u8>,
     scheme: LightScheme,
     /// Cells (by anchor) whose light may be out of date, at each scale, in a fixed order.
@@ -500,7 +500,8 @@ pub struct MultiScaleLighting {
 impl MultiScaleLighting {
     /// Light for a world of these blocks, with nothing to look at: the world's light is taken to be
     /// settled.
-    pub fn new(table: BlockTable, scheme: LightScheme) -> Self {
+    pub fn new(table: impl Into<Arc<BlockTable>>, scheme: LightScheme) -> Self {
+        let table = table.into();
         Self {
             emission: block_properties::emission(&table),
             table,
@@ -513,11 +514,12 @@ impl MultiScaleLighting {
     /// Light that carries on from cells that were still to be looked at, as when a world is loaded
     /// (one set for each of the scheme's scales).
     pub fn with_pending(
-        table: BlockTable,
+        table: impl Into<Arc<BlockTable>>,
         scheme: LightScheme,
         pending: Vec<ActiveVoxels>,
     ) -> Self {
         assert_eq!(pending.len(), scheme.scales());
+        let table = table.into();
         Self {
             emission: block_properties::emission(&table),
             table,

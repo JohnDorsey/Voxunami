@@ -32,6 +32,7 @@ use data_packs::{
     Around, Body, BodyRail, BodySupport, GameTexture, OrbitData, PackErrors, RawPack, Textures,
     Weight, load_packs, read_body, read_family_parameters, settle_game_pictures,
 };
+use server::ServedPack;
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
 /// channels a generator writes.
@@ -105,6 +106,19 @@ pub struct ContentPackage {
     bodies: Vec<(NamespacedId, Body)>,
     /// The pictures the blocks use, settled: which tiles there are and where, with the blocks told their places.
     textures: Textures,
+    /// What the game itself made, before any pack: what a reload patches again, so that a patch is never made twice and one that is gone is undone.
+    base: Base,
+    /// The packs the content was made with that clients keep as files: what a server made from it tells its clients of.
+    replicated: Vec<ServedPack>,
+    /// The ids of the packs that were applied, whether or not they are replicated.
+    applied: Vec<String>,
+}
+
+/// The game's own blocks (with their pictures settled) and bodies, before any pack.
+#[derive(Clone, Debug)]
+struct Base {
+    blocks: Vec<(NamespacedId, BlockDefinition)>,
+    bodies: Vec<(NamespacedId, Body)>,
 }
 
 /// The blocks of a registry with their pictures settled against the game's own pictures: the colours that follow pictures worked out, and each block with a texture
@@ -142,7 +156,7 @@ impl ContentPackage {
     /// Panics if one of the game's own bodies is not a good body file, which is a mistake in the game's declaration.
     pub fn new(blocks: Registry<BlockDefinition>, spec: PackageSpec) -> Self {
         let (blocks, textures) = settle_pictures(blocks, &spec.textures);
-        let bodies = spec
+        let bodies: Vec<(NamespacedId, Body)> = spec
             .builtin_bodies
             .iter()
             .map(|(identifier, text)| {
@@ -164,11 +178,23 @@ impl ContentPackage {
                 (identifier.clone(), body)
             })
             .collect();
+        let base = Base {
+            blocks: blocks
+                .iter()
+                .filter_map(|(_, entry)| {
+                    Some((entry.identifier().clone(), entry.content()?.clone()))
+                })
+                .collect(),
+            bodies: bodies.clone(),
+        };
         Self {
             blocks,
             spec,
             bodies,
             textures,
+            base,
+            replicated: Vec::new(),
+            applied: Vec::new(),
         }
     }
 
@@ -468,9 +494,34 @@ impl ContentPackage {
             .iter()
             .filter_map(|(identifier, definition)| Some((identifier.clone(), definition.clone()?)))
             .collect();
+        let bodies = self.bodies.clone();
+        let (candidate, warnings) = self.with_packs(&base, bodies, packs)?;
+        *self = candidate;
+        Ok(warnings)
+    }
+
+    /// Makes the content the game's own with these packs, as `apply_packs` does, but from the game's blocks as they were before any pack, so that it can be done
+    /// again while a server runs (`hot-reload-plan.md`, step 5): a patch is not made twice, a patch or a pack that is gone from `packs` is undone. Every block keeps
+    /// its number; one the packs no longer have stays where it is as missing content, as a block of a plugin that is not there does; a new one takes the next
+    /// number. Returns what was skipped on purpose, one line each. Nothing changes if there is an error.
+    pub fn reload_packs(&mut self, packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
+        let base = self.base.clone();
+        let (candidate, warnings) = self.with_packs(&base.blocks, base.bodies, packs)?;
+        *self = candidate;
+        Ok(warnings)
+    }
+
+    /// The content this one would be with these packs over `base` (the game's blocks, and its bodies) instead of what it holds; this one is not changed.
+    fn with_packs(
+        &self,
+        base: &[(NamespacedId, BlockDefinition)],
+        base_bodies: Vec<(NamespacedId, Body)>,
+        packs: &[RawPack],
+    ) -> Result<(Self, Vec<String>), PackErrors> {
+        let package = self.package_data();
         let loaded = load_packs(
             packs,
-            &base,
+            base,
             &self.spec.textures,
             &package.properties,
             &self.spec.body_support.context(),
@@ -484,18 +535,16 @@ impl ContentPackage {
             .collect();
         for (_, entry) in self.blocks.iter() {
             let identifier = entry.identifier().clone();
-            match (entry.content(), changed.get(&identifier)) {
-                (Some(_), Some(definition)) => {
+            match changed.get(&identifier) {
+                // (A block that was missing content and that the packs have again is itself again, where it was.)
+                Some(definition) => {
                     blocks
                         .register(identifier, (*definition).clone())
                         .expect("the blocks of a registry are distinct");
                 }
-                (Some(definition), None) => {
-                    blocks
-                        .register(identifier, definition.clone())
-                        .expect("the blocks of a registry are distinct");
-                }
-                (None, _) => {
+                // A block of a pack that the packs no longer have (the game's own are all in `loaded`), or of a plugin that is not there, keeps its number, with
+                // nothing to say what it is.
+                None => {
                     blocks.register_missing(identifier);
                 }
             }
@@ -510,13 +559,14 @@ impl ContentPackage {
         let candidate = Self {
             blocks,
             spec: self.spec.clone(),
-            bodies: self
-                .bodies
-                .iter()
-                .cloned()
+            bodies: base_bodies
+                .into_iter()
                 .chain(loaded.bodies.iter().cloned())
                 .collect(),
             textures: loaded.textures,
+            base: self.base.clone(),
+            replicated: self.replicated.clone(),
+            applied: packs.iter().map(|pack| pack.folder.clone()).collect(),
         };
         // The renderer cannot draw more colours than it has: say so now, not when a window opens.
         let table = candidate
@@ -527,8 +577,7 @@ impl ContentPackage {
         // The bodies must be makeable, which only a world can say (their weight, the names of their generators): in a world of no seed that is thrown away.
         let mut warnings = loaded.warnings;
         warnings.extend(candidate.check_bodies().map_err(pack_problem)?);
-        *self = candidate;
-        Ok(warnings)
+        Ok((candidate, warnings))
     }
 }
 
@@ -654,6 +703,22 @@ impl GameContent for ContentPackage {
 
     fn body_support(&self) -> BodySupport {
         self.spec.body_support.clone()
+    }
+
+    fn replicated_packs(&self) -> &[ServedPack] {
+        &self.replicated
+    }
+
+    fn set_replicated_packs(&mut self, packs: Vec<ServedPack>) {
+        self.replicated = packs;
+    }
+
+    fn packs_whole(&self) -> bool {
+        self.applied.iter().all(|applied| {
+            self.replicated
+                .iter()
+                .any(|pack| pack.listing().id == *applied)
+        })
     }
 
     fn body_names(&self) -> Vec<NamespacedId> {
@@ -1987,5 +2052,214 @@ mod tests {
             ]
         );
         assert_eq!(content.package_data().blocks[2].1, None);
+    }
+
+    // ---- whether the packs that are replicated are all the packs ----
+
+    /// A pack as a server would serve it: the archive of these files.
+    fn served(pack_id: &str) -> ServedPack {
+        let archive = pack_archive::Archive::from_files([(
+            "pack.json".to_owned(),
+            format!("{{\"id\":\"{pack_id}\"}}").into_bytes(),
+        )])
+        .unwrap();
+        ServedPack::new(pack_id, &archive, |_| true).unwrap()
+    }
+
+    #[test]
+    fn the_replicated_packs_are_the_whole_of_what_the_content_runs_when_every_pack_applied_is_among_them()
+     {
+        let mut content = package();
+        // no pack applied: the game's own alone, which is a whole
+        assert!(content.packs_whole());
+        assert!(content.replicated_packs().is_empty());
+        // a pack applied that nobody said is replicated (given in memory, say): not whole
+        content
+            .apply_packs(&[marble_and_more(r#"{ "color": [0.9, 0.9, 1.0] }"#, &[])])
+            .unwrap();
+        assert!(!content.packs_whole());
+        // once it is among the replicated, whole
+        content.set_replicated_packs(vec![served("my_pack")]);
+        assert!(content.packs_whole());
+        // replicated packs that were not applied make no difference
+        content.set_replicated_packs(vec![served("my_pack"), served("other")]);
+        assert!(content.packs_whole());
+        content.set_replicated_packs(vec![served("other")]);
+        assert!(!content.packs_whole(), "the pack applied is not among them");
+        // a reload changes what was applied
+        content.set_replicated_packs(Vec::new());
+        content.reload_packs(&[]).unwrap();
+        assert!(content.packs_whole(), "no pack applied any more");
+    }
+
+    // ---- reloading the packs while a server runs ----
+
+    fn marble_and_more(marble: &str, more: &[(&str, &str)]) -> RawPack {
+        let mut blocks = vec![("marble", marble)];
+        blocks.extend_from_slice(more);
+        pack("my_pack", "", &blocks, &[])
+    }
+
+    const RED_ROCK: &str = r#"{ "target": "test_game:rock", "operations": [
+        { "op": "set", "path": "color", "value": [1, 0, 0] } ] }"#;
+
+    #[test]
+    fn a_reload_keeps_every_number_replaces_what_changed_and_appends_what_is_new() {
+        let mut content = package();
+        content
+            .apply_packs(&[marble_and_more(r#"{ "color": [0.9, 0.9, 1.0] }"#, &[])])
+            .unwrap();
+        let before = content.package_data();
+
+        content
+            .reload_packs(&[marble_and_more(
+                r#"{ "color": [0.1, 0.2, 0.3] }"#,
+                &[("opal", r#"{ "color": [1.0, 1.0, 1.0] }"#)],
+            )])
+            .unwrap();
+        assert_eq!(
+            block_names(&content),
+            [
+                "test_game:air",
+                "test_game:rock",
+                "my_pack:marble",
+                "my_pack:opal"
+            ]
+        );
+        let after = content.package_data();
+        assert_eq!(after.blocks[..2], before.blocks[..2]);
+        assert_eq!(
+            after.blocks[2].1,
+            Some(BlockDefinition::cube([0.1, 0.2, 0.3]))
+        );
+        assert_eq!(
+            after.blocks[3].1,
+            Some(BlockDefinition::cube([1.0, 1.0, 1.0]))
+        );
+        assert_eq!(content.block_table().block_count(), 4);
+        // The registry the world is saved with is the one that grew.
+        assert_eq!(content.blocks.len(), 4);
+    }
+
+    #[test]
+    fn a_patch_that_is_gone_from_the_packs_is_undone_and_one_that_stays_is_made_once() {
+        let rock = || BlockDefinition::cube([0.5; 3]);
+        let red = || BlockDefinition::cube([1.0, 0.0, 0.0]);
+        let patching = || pack("my_pack", r#""test_game""#, &[], &[("a_red", RED_ROCK)]);
+        let mut content = package();
+        content.apply_packs(&[patching()]).unwrap();
+        assert_eq!(content.package_data().blocks[1].1, Some(red()));
+
+        // The same packs again: the game's rock is patched, not a rock that was patched.
+        let patched = content.package_data();
+        content.reload_packs(&[patching()]).unwrap();
+        assert_eq!(content.package_data(), patched);
+
+        // Without the pack the game's own rock is back.
+        content.reload_packs(&[]).unwrap();
+        assert_eq!(content.package_data().blocks[1].1, Some(rock()));
+        assert_eq!(content.package_data().blocks.len(), 2);
+
+        // And with it again.
+        content.reload_packs(&[patching()]).unwrap();
+        assert_eq!(content.package_data(), patched);
+    }
+
+    #[test]
+    fn a_block_the_packs_no_longer_have_keeps_its_number_as_missing_content_and_a_new_one_follows_it()
+     {
+        let mut content = package();
+        content
+            .apply_packs(&[marble_and_more(r#"{ "color": [0, 0, 0] }"#, &[])])
+            .unwrap();
+        content.blocks.register_missing(id("gone_plugin:thing"));
+
+        content.reload_packs(&[]).unwrap();
+        assert_eq!(
+            block_names(&content),
+            [
+                "test_game:air",
+                "test_game:rock",
+                "my_pack:marble",
+                "gone_plugin:thing"
+            ]
+        );
+        assert_eq!(
+            content.package_data().blocks[2].1,
+            None,
+            "the block of a pack that is gone is missing content, as a block of a plugin that is not there is"
+        );
+
+        // When the pack comes back, the block is itself again where it was, and a new block of it goes after.
+        content
+            .reload_packs(&[marble_and_more(
+                r#"{ "color": [0, 0, 0] }"#,
+                &[("opal", r#"{ "color": [1, 1, 1] }"#)],
+            )])
+            .unwrap();
+        assert_eq!(
+            block_names(&content),
+            [
+                "test_game:air",
+                "test_game:rock",
+                "my_pack:marble",
+                "gone_plugin:thing",
+                "my_pack:opal"
+            ]
+        );
+        assert!(content.package_data().blocks[2].1.is_some());
+        assert_eq!(content.package_data().blocks[3].1, None);
+    }
+
+    #[test]
+    fn a_package_reloaded_is_the_package_of_a_fresh_start_with_the_same_packs_to_the_byte() {
+        let first = marble_and_more(r#"{ "color": [0.9, 0.9, 1.0] }"#, &[]);
+        let second = || {
+            pack(
+                "my_pack",
+                r#""test_game""#,
+                &[
+                    ("marble", r#"{ "color": [0.1, 0.2, 0.3] }"#),
+                    ("opal", r#"{ "color": [1.0, 1.0, 1.0] }"#),
+                ],
+                &[("a_red", RED_ROCK)],
+            )
+        };
+        let mut reloaded = package();
+        reloaded.apply_packs(&[first]).unwrap();
+        let first_warnings = reloaded.reload_packs(&[second()]).unwrap();
+        let mut fresh = package();
+        let fresh_warnings = fresh.apply_packs(&[second()]).unwrap();
+        assert_eq!(first_warnings, fresh_warnings);
+        assert_eq!(
+            reloaded.package_data().encode(),
+            fresh.package_data().encode()
+        );
+        assert_eq!(block_names(&reloaded), block_names(&fresh));
+        assert_eq!(reloaded.body_names(), fresh.body_names());
+    }
+
+    #[test]
+    fn a_reload_that_cannot_be_made_changes_nothing() {
+        let mut content = package();
+        content
+            .apply_packs(&[marble_and_more(r#"{ "color": [0.9, 0.9, 1.0] }"#, &[])])
+            .unwrap();
+        let before = content.package_data();
+        let errors = content
+            .reload_packs(&[marble_and_more(r#"{ "colour": [0, 0, 0] }"#, &[])])
+            .unwrap_err();
+        assert!(
+            errors.to_string().contains("my_pack/blocks/marble.json"),
+            "{errors}"
+        );
+        assert_eq!(content.package_data(), before);
+        assert_eq!(content.blocks.len(), 3);
+        // (And the game's own blocks are still what a later reload patches.)
+        content.reload_packs(&[]).unwrap();
+        assert_eq!(
+            content.package_data().blocks[1].1,
+            Some(BlockDefinition::cube([0.5; 3]))
+        );
     }
 }

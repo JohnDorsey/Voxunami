@@ -13,6 +13,7 @@ mod block_textures;
 mod camera;
 mod contact_volume;
 mod crosshair;
+mod engine_shaders;
 mod graphics_context;
 mod mesh_store;
 mod occupancy_volume;
@@ -26,8 +27,11 @@ mod sun;
 mod sun_boxes;
 mod voxel_renderer;
 
-pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
+pub use block_textures::{
+    MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize, PictureWrite, PictureWriteError,
+};
 pub use camera::{Camera, Frustum, Projection};
+pub use engine_shaders::{EngineShaderError, EngineShaderTexts};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };

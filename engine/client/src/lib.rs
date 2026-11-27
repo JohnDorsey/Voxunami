@@ -13,11 +13,13 @@ mod client_entities;
 mod client_grids;
 mod client_world;
 mod error;
+mod packs;
 
 pub use client::{Client, Handshake, HandshakeProgress, TickUpdate, Welcomed};
 pub use client_entities::{ClientEntities, ClientEntity};
 pub use client_grids::{ClientGrid, ClientGridTerrain, ClientGrids};
 pub use client_world::{
-    ClientEvent, ClientWorld, GridSummary, LevelSummary, ServerInfo, ViewSummary,
+    ClientEvent, ClientWorld, GridSummary, LevelSummary, RegistryGrowth, ServerInfo, ViewSummary,
 };
 pub use error::ClientError;
+pub use packs::{ClientPacks, HeldPack, MemoryPackStore, NoPackStore, PackStore};

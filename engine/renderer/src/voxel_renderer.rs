@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
 use bytemuck::{Pod, Zeroable};
@@ -16,10 +17,14 @@ use voxel_space::{
 };
 use wgpu::util::DeviceExt;
 
-use crate::block_textures::{BlockTextures, PictureSize, words_with_relief};
+use crate::block_textures::{
+    BlockTextures, PictureSize, PictureWrite, PictureWriteError, has_relief, relief_of,
+    words_with_relief_flags,
+};
 use crate::camera::{Camera, Frustum, Projection};
 use crate::contact_volume::{ContactGpu, WindowUniform, WindowsUniform};
 use crate::crosshair::Crosshair;
+use crate::engine_shaders::{EngineShaderError, EngineShaderTexts};
 use crate::graphics_context::GraphicsContext;
 use crate::mesh_store::MeshStore;
 use crate::occupancy_volume::{
@@ -1096,6 +1101,11 @@ pub struct VoxelRenderer {
     frame_stride: u64,
     /// Linear RGB of every game material, which the shader reads by material value.
     palette_buffer: wgpu::Buffer,
+    /// What the palette was made from (`set_palette_with_pictures`), kept so that it is made again when a written picture gains or loses its relief ([`VoxelRenderer::set_picture`]):
+    /// the colours, the picture word of each, and whether each picture has a relief, by size and layer.
+    palette_colors: Vec<[f32; 3]>,
+    palette_words: Vec<u32>,
+    picture_relief: Vec<Vec<bool>>,
     /// The pictures of blocks on the GPU, and how far from the camera they are drawn.
     block_textures: BlockTextures,
     picture_distance: f32,
@@ -1425,6 +1435,9 @@ impl VoxelRenderer {
             frame_buffer,
             frame_stride,
             palette_buffer,
+            palette_colors: Vec::new(),
+            palette_words: Vec::new(),
+            picture_relief: Vec::new(),
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
             pixelated_shadows: false,
@@ -1678,8 +1691,14 @@ impl VoxelRenderer {
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
         // (The shader's words say which pictures have a relief to look past: the one bit the renderer adds, `HAS_RELIEF`.)
-        self.palette_buffer =
-            Self::palette_buffer(&self.device, colors, &words_with_relief(words, sizes));
+        self.picture_relief = relief_of(sizes);
+        self.palette_colors = colors.to_vec();
+        self.palette_words = words.to_vec();
+        self.palette_buffer = Self::palette_buffer(
+            &self.device,
+            colors,
+            &words_with_relief_flags(words, &self.picture_relief),
+        );
         self.block_textures = BlockTextures::new(&self.device, &self.queue, sizes);
         self.pictures_in_use = words.iter().any(|&word| word != 0);
         // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
@@ -1719,6 +1738,39 @@ impl VoxelRenderer {
         self.remake_frame_bind_group();
         // The maps that were drawn were drawn with other pictures, and are drawn again.
         self.terrain_version += 1;
+    }
+
+    /// Writes this picture (and its companions) over the one at `layer` among those of the size number `class`, which is the number in the words of the palette
+    /// ([`VoxelRenderer::set_palette_with_pictures`]): from the next picture on, the faces that have it are drawn with it, as if it had been given at the start (the same bytes,
+    /// the smaller levels under it too). The picture is as big as the place it goes to, and a companion that is `None` clears the one that was there. A picture that does not fit
+    /// is an error and nothing is changed.
+    pub fn set_picture(
+        &mut self,
+        class: usize,
+        layer: usize,
+        picture: &PictureWrite<'_>,
+    ) -> Result<(), PictureWriteError> {
+        self.block_textures
+            .write_picture(&self.queue, class, layer, picture)?;
+        // (The shader that walks a relief leaves a face alone unless the word says it has one, so a picture that gains or loses its relief changes its word in the palette.)
+        let relief = has_relief(picture.normal);
+        let known = self
+            .picture_relief
+            .get_mut(class)
+            .and_then(|size| size.get_mut(layer))
+            .expect("write_picture found the place");
+        if *known != relief {
+            *known = relief;
+            self.palette_buffer = Self::palette_buffer(
+                &self.device,
+                &self.palette_colors,
+                &words_with_relief_flags(&self.palette_words, &self.picture_relief),
+            );
+            self.remake_frame_bind_group();
+        }
+        // The maps that were drawn were drawn with the old picture (a cut-out one shades by its holes), and are drawn again.
+        self.terrain_version += 1;
+        Ok(())
     }
 
     /// How far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour (it is gone a quarter of that distance farther). 0 draws no
@@ -2186,6 +2238,7 @@ impl VoxelRenderer {
         let shading = Shading {
             lighting: lighting.to_owned(),
             settings,
+            engine: self.shading.engine.clone(),
         };
         if shading == self.shading {
             // (Other choices that make the same values, such as a default said in words: nothing to make.)
@@ -2193,6 +2246,39 @@ impl VoxelRenderer {
             self.shading_declared = (defaults.clone(), own.to_vec());
             return Ok(());
         }
+        self.make_shaders_from(shading)
+            .map_err(|message| ShaderPackError::refused_by_the_graphics_card(&message))?;
+        self.shading_choices = choices.clone();
+        self.shading_declared = (defaults.clone(), own.to_vec());
+        Ok(())
+    }
+
+    /// Draws with the engine's own shaders made from this text (a developer's, read from the source folder: see [`EngineShaderTexts`]) from now on, or from the program's own for
+    /// `None`; the shader pack and its settings stay as they are. The shaders are made at once, as for a pack, and if the shader language or the graphics card refuses any of them
+    /// this is an error that says why and the renderer draws as it did. The text the program has is the same as `None`. The answer is whether anything was made: `false` when the
+    /// text is what the renderer already draws with.
+    pub fn set_engine_shaders(
+        &mut self,
+        texts: Option<EngineShaderTexts>,
+    ) -> Result<bool, EngineShaderError> {
+        let engine = texts
+            .filter(|texts| texts != EngineShaderTexts::built_in())
+            .map(Arc::new);
+        if engine == self.shading.engine {
+            return Ok(false);
+        }
+        let shading = Shading {
+            engine,
+            ..self.shading.clone()
+        };
+        self.make_shaders_from(shading)
+            .map_err(EngineShaderError)
+            .map(|()| true)
+    }
+
+    /// Makes the shaders of every kind in use from this shading, and uses them if the graphics card takes them all; if it does not, nothing is changed and the error is its
+    /// message.
+    fn make_shaders_from(&mut self, shading: Shading) -> Result<(), String> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = voxel_shader(&self.device, false, SunWalk::None, &shading);
         let pipelines = voxel_pipelines(
@@ -2239,14 +2325,10 @@ impl VoxelRenderer {
                 contact.set_shading(&self.shading);
             }
             self.contact = contact;
-            return Err(ShaderPackError::refused_by_the_graphics_card(
-                &error.to_string(),
-            ));
+            return Err(error.to_string());
         }
         self.contact = contact;
         self.shading = shading;
-        self.shading_choices = choices.clone();
-        self.shading_declared = (defaults.clone(), own.to_vec());
         self.sky_pipeline = sky;
         (self.pipeline, self.detailed_pipeline) = pipelines;
         match pictures {
@@ -3669,40 +3751,38 @@ pub(crate) enum SunWalk {
 /// rest, so that the lines of a pack's errors are the lines of the pack's file plus the length of what comes before (the source with an empty lighting). The constants of the
 /// settings (`crate::shader_settings`) come right after the engine's own shader, which the rest read them in.
 pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading) -> String {
+    let texts = shading.engine_texts();
     let pictures = if with_pictures {
         // (Both read the picture where `parallax_shift` says; the one with no prisms says nowhere else than where the face is.)
         match shading.relief() {
-            Relief::Flat => concat!(
-                include_str!("pictures_on.wgsl"),
-                "\n",
-                include_str!("relief_flat.wgsl")
+            Relief::Flat => format!(
+                "{}
+{}",
+                texts.pictures_on, texts.relief_flat
             ),
-            Relief::Prisms => concat!(
-                include_str!("pictures_on.wgsl"),
-                "\n",
-                include_str!("relief_ray.wgsl"),
-                "\n",
-                include_str!("relief_prisms.wgsl")
+            Relief::Prisms => format!(
+                "{}
+{}
+{}",
+                texts.pictures_on, texts.relief_ray, texts.relief_prisms
             ),
-            Relief::ParallaxOcclusion => concat!(
-                include_str!("pictures_on.wgsl"),
-                "\n",
-                include_str!("relief_ray.wgsl"),
-                "\n",
-                include_str!("relief_parallax_occlusion.wgsl")
+            Relief::ParallaxOcclusion => format!(
+                "{}
+{}
+{}",
+                texts.pictures_on, texts.relief_ray, texts.relief_parallax_occlusion
             ),
         }
     } else {
-        include_str!("pictures_off.wgsl")
+        texts.pictures_off.clone()
     };
     let (contact, shapes, windows, entities) = match walk {
-        SunWalk::None => (include_str!("contact_off.wgsl"), "", "", ""),
+        SunWalk::None => (texts.contact_off.clone(), "", "", ""),
         SunWalk::Shade => (
-            concat!(
-                include_str!("volume_table.wgsl"),
-                "
-",
-                include_str!("contact_none.wgsl")
+            format!(
+                "{}
+{}",
+                texts.volume_table, texts.contact_none
             ),
             "",
             "",
@@ -3713,26 +3793,25 @@ pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading
             other_windows,
             entities,
         } => (
-            concat!(
-                include_str!("volume_table.wgsl"),
-                "
-",
-                include_str!("contact_on.wgsl")
+            format!(
+                "{}
+{}",
+                texts.volume_table, texts.contact_on
             ),
             if shapes {
-                include_str!("shapes_on.wgsl")
+                texts.shapes_on.as_str()
             } else {
-                include_str!("shapes_off.wgsl")
+                texts.shapes_off.as_str()
             },
             if other_windows {
-                include_str!("windows_on.wgsl")
+                texts.windows_on.as_str()
             } else {
-                include_str!("windows_off.wgsl")
+                texts.windows_off.as_str()
             },
             if entities {
-                include_str!("entities_on.wgsl")
+                texts.entities_on.as_str()
             } else {
-                include_str!("entities_off.wgsl")
+                texts.entities_off.as_str()
             },
         ),
     };
@@ -3745,7 +3824,7 @@ pub(crate) fn voxel_source(with_pictures: bool, walk: SunWalk, shading: &Shading
 {windows}
 {entities}
 {}",
-        include_str!("voxel.wgsl"),
+        texts.voxel,
         shading.settings.prelude(),
         shading.lighting
     )

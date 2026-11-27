@@ -1142,6 +1142,66 @@ fn what_stands_on_a_body_on_a_rail_does_not_feel_what_it_goes_round_since_it_fal
 }
 
 #[test]
+fn ships_too_light_to_pull_add_nothing_to_gravity_to_the_last_bit_whatever_their_number() {
+    use voxel_space::{MassPull, gravity_at};
+
+    let mut world = world_for_rails();
+    let settings = GravitySettings {
+        base: [0.0, -9.0, 0.0],
+        pull_strength: 6.674e-11,
+        pull_mass_threshold: Some(1.0e19),
+        softening: 1.0,
+    };
+    world.set_gravity_settings(settings);
+    let planet = world
+        .create_grid(LevelIndex::MAIN, GridPose::identity())
+        .unwrap();
+    world.data.grids_mut().get_mut(planet).unwrap().mass = 6.0e20;
+    let place = at(30_000.0, 7.0, -4_000.0);
+    let alone = world.gravity_at(LevelIndex::MAIN, place);
+    let expected = gravity_at(
+        &settings,
+        [MassPull {
+            position: at(0.0, 0.0, 0.0),
+            mass: 6.0e20,
+        }],
+        place,
+    );
+    assert_eq!(alone, expected, "the one that pulls");
+
+    // Two hundred ships that weigh what a ship does, and one that weighs nothing, all over the place.
+    for number in 0..200 {
+        let ship = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    at(f64::from(number) * 3.0, 5.0, f64::from(number % 7)),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        world.data.grids_mut().get_mut(ship).unwrap().mass = 27_000.0;
+    }
+    world
+        .create_grid(LevelIndex::MAIN, GridPose::identity())
+        .unwrap();
+    assert_eq!(
+        world.gravity_at(LevelIndex::MAIN, place),
+        alone,
+        "ships too light to pull change nothing, to the last bit"
+    );
+
+    // With nothing heavy enough to pull, the pull of the level is all there is.
+    world.data.grids_mut().get_mut(planet).unwrap().mass = 1.0;
+    assert_eq!(world.gravity_at(LevelIndex::MAIN, place), [0.0, -9.0, 0.0]);
+    world.set_gravity_settings(GravitySettings {
+        pull_mass_threshold: None,
+        ..settings
+    });
+    assert_eq!(world.gravity_at(LevelIndex::MAIN, place), [0.0, -9.0, 0.0]);
+}
+
+#[test]
 fn what_stands_on_a_moon_of_a_moon_feels_neither_of_the_bodies_it_goes_round_and_a_rail_in_a_loop_ends()
  {
     let mut world = world_for_rails();

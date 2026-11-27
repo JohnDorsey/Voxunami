@@ -12,6 +12,8 @@ atlas.json:
     }
 coordinates_to_data holds the pixels of a tile that has no PNG file yet. The entry is removed when the tile is
 saved as a file. Unknown top-level keys are kept when the file is rewritten.
+An optional "pbr": "labpbr_1_3" (the default, "none", is not written) makes name_s.png and name_n.png the companion
+files of the tile name.png: its PBR channels (see PBR_PROFILES).
 
 This file is organised in sections: file formats and folder scanning, atlas arrangement rules, painting
 algorithms, edit history, the project (tiles, selection, saving), then the user interface. Everything except the
@@ -20,8 +22,10 @@ drawing is plain logic that can be tested without a window (tools/virtual_atlas/
 
 from __future__ import annotations
 
+import argparse
 import base64
 import binascii
+import contextlib
 import dataclasses
 import io
 import itertools
@@ -31,12 +35,13 @@ import math
 import os
 import random
 import re
+import socket
 import sys
 import tempfile
 from collections import deque
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable, Hashable, Iterable, Optional
+from typing import Callable, Hashable, Iterable, Optional, Union
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 try:
@@ -163,6 +168,446 @@ def copy_name(name: str, taken_names: Iterable[str]) -> str:
 
 
 # ----------------------------------------------------------------------------------------------------------
+# PBR profiles: the channels of a material that are kept in companion files
+# ----------------------------------------------------------------------------------------------------------
+
+NO_PBR_PROFILE = "none"
+LABPBR_1_3 = "labpbr_1_3"
+
+
+@dataclasses.dataclass(frozen=True)
+class PbrChannel:
+    """One kind of data that a PBR texture holds about a material, and where a profile keeps it.
+
+    `identity` says what the data means in every profile (smoothness is smoothness whichever file and byte holds it),
+    so that a later change of profile can move data between files. `suffix` is the ending of the companion file
+    ("_s" for dirt_s.png), `byte` which of the file's red, green, blue and alpha (0 to 3) holds it, and `neutral` the
+    byte of a material that has no data there: what a picture with no companion file has.
+    """
+
+    identity: str
+    suffix: str
+    byte: int
+    neutral: int
+
+
+@dataclasses.dataclass(frozen=True)
+class PbrProfile:
+    """A convention for the companion files of a picture. The channels of a profile are the planes of a tile, in this
+    order. A profile owns every byte of each of its files, so that a file can always be written from the planes."""
+
+    name: str
+    channels: tuple[PbrChannel, ...]
+
+    def __post_init__(self) -> None:
+        identities = [channel.identity for channel in self.channels]
+        if len(identities) != len(set(identities)):
+            raise ValueError(f"{self.name}: two channels have the same identity")
+        owned = [(channel.suffix, channel.byte) for channel in self.channels]
+        if len(owned) != len(set(owned)):
+            raise ValueError(f"{self.name}: two channels are kept in the same byte")
+        for suffix in self.suffixes:
+            if {byte for owned_suffix, byte in owned if owned_suffix == suffix} != {0, 1, 2, 3}:
+                raise ValueError(f"{self.name}: the channels do not fill every byte of the {suffix} file")
+
+    @property
+    def suffixes(self) -> tuple[str, ...]:
+        """The endings of the companion files, in the order of their first channel."""
+        return tuple(dict.fromkeys(channel.suffix for channel in self.channels))
+
+    def channel_indices(self, suffix: str) -> list[int]:
+        """The planes that are kept in the companion file with this ending."""
+        return [index for index, channel in enumerate(self.channels) if channel.suffix == suffix]
+
+
+# LabPBR 1.3 as the public specification and docs/specs/block-textures-spec.md (section 4.4) give it. The same table is
+# in labpbr_channels.json, which a test here and a test of the game both check, so that the two copies do not drift apart.
+PBR_PROFILES: dict[str, PbrProfile] = {
+    NO_PBR_PROFILE: PbrProfile(NO_PBR_PROFILE, ()),
+    LABPBR_1_3: PbrProfile(
+        LABPBR_1_3,
+        (
+            PbrChannel("smoothness", "_s", 0, 0),
+            PbrChannel("reflectance", "_s", 1, 0),
+            PbrChannel("porosity_scattering", "_s", 2, 0),
+            PbrChannel("emission", "_s", 3, 255),
+            PbrChannel("normal_x", "_n", 0, 128),
+            PbrChannel("normal_y", "_n", 1, 128),
+            PbrChannel("ambient_occlusion", "_n", 2, 255),
+            PbrChannel("height", "_n", 3, 255),
+        ),
+    ),
+}
+# The endings the game reads as companions whatever the setting is (the game does not read atlas.json).
+def reserved_companion_suffixes() -> tuple[str, ...]:
+    """The ending of every companion file of every profile, in the order of the profiles."""
+    return tuple(dict.fromkeys(suffix for profile in PBR_PROFILES.values() for suffix in profile.suffixes))
+
+
+def companion_name(base_name: str, suffix: str) -> str:
+    """The companion file of a picture: "dirt.png" and "_n" make "dirt_n.png"."""
+    return f"{base_name[: -len(TILE_FILE_EXTENSION)]}{suffix}{TILE_FILE_EXTENSION}"
+
+
+def _split_ending(name: str, suffixes: Iterable[str]) -> Optional[tuple[str, str]]:
+    """("dirt.png", "_n") for "dirt_n.png" and the endings that count, ignoring letter case; None if no ending fits."""
+    if not name.lower().endswith(TILE_FILE_EXTENSION):
+        return None
+    stem = name[: -len(TILE_FILE_EXTENSION)]
+    for suffix in suffixes:
+        if len(stem) > len(suffix) and stem[-len(suffix):].lower() == suffix:
+            return stem[: -len(suffix)] + TILE_FILE_EXTENSION, suffix
+    return None
+
+
+def split_companion_name(name: str, profile: PbrProfile) -> Optional[tuple[str, str]]:
+    """The picture a file is the companion of, and which companion: ("dirt.png", "_n") for "dirt_n.png" under LabPBR.
+    None if the profile does not read the file as a companion (always, under "none")."""
+    return _split_ending(name, profile.suffixes)
+
+
+def reserved_ending_warning(name: str) -> Optional[str]:
+    """A warning for a tile name that ends as a companion file does, under any setting, or None. The game reads
+    atlas.json never, so it takes such a file for the companion of another picture whatever the setting says."""
+    split = _split_ending(name, reserved_companion_suffixes())
+    if split is None:
+        return None
+    base, suffix = split
+    return f"the game reads {name} as a companion picture ({suffix}) of {base}, not as a picture of its own"
+
+
+def neutral_planes(profile: PbrProfile, size: int) -> numpy.ndarray:
+    """The planes of a tile whose material has no data, as a (size, size, channels) array: each channel's neutral byte."""
+    return numpy.broadcast_to(
+        numpy.array([channel.neutral for channel in profile.channels], dtype=numpy.uint8),
+        (size, size, len(profile.channels)),
+    ).copy()
+
+
+def companions_from_planes(profile: PbrProfile, planes: numpy.ndarray) -> dict[str, numpy.ndarray]:
+    """The picture of each companion file (RGBA, height x width x 4) that holds these planes."""
+    pictures: dict[str, numpy.ndarray] = {}
+    for suffix in profile.suffixes:
+        picture = numpy.zeros(planes.shape[:2] + (4,), dtype=numpy.uint8)
+        for index in profile.channel_indices(suffix):
+            picture[:, :, profile.channels[index].byte] = planes[:, :, index]
+        pictures[suffix] = picture
+    return pictures
+
+
+def planes_from_companions(
+    profile: PbrProfile, pictures: dict[str, numpy.ndarray], size: Optional[int] = None
+) -> numpy.ndarray:
+    """The planes held by companion pictures; the channels of a companion that is not given are neutral. `size` is
+    needed only when no picture is given."""
+    if size is None:
+        if not pictures:
+            raise ValueError("the size of the planes is not known: no companion picture is given")
+        size = next(iter(pictures.values())).shape[0]
+    planes = neutral_planes(profile, size)
+    for suffix, picture in pictures.items():
+        for index in profile.channel_indices(suffix):
+            planes[:, :, index] = picture[:, :, profile.channels[index].byte]
+    return planes
+
+
+def convert_planes(old: PbrProfile, new: PbrProfile, planes: numpy.ndarray) -> tuple[numpy.ndarray, list[str]]:
+    """The planes of a tile under another profile: each channel moves to the channel of the new profile with the same
+    identity, and the others are neutral. Also returns the identities of the channels that have data (not everywhere
+    neutral) and have no place in the new profile. The bytes are copied as they are: two profiles that give one
+    identity different bytes for the same meaning need a conversion of their own, which they must bring with them."""
+    new_planes = neutral_planes(new, planes.shape[0])
+    new_indices = {channel.identity: index for index, channel in enumerate(new.channels)}
+    dropped: list[str] = []
+    for index, channel in enumerate(old.channels):
+        if channel.identity in new_indices:
+            new_planes[:, :, new_indices[channel.identity]] = planes[:, :, index]
+        elif (planes[:, :, index] != channel.neutral).any():
+            dropped.append(channel.identity)
+    return new_planes, dropped
+
+
+# ----------------------------------------------------------------------------------------------------------
+# PBR channels: what a byte means, and how painting changes it
+# ----------------------------------------------------------------------------------------------------------
+#
+# Painting works on the meaning of a channel, not on its byte: a smoothness of 0.2 is added to a smoothness, whatever
+# bytes they are. Each channel has a codec between the byte and a float meaning (the slider shows the meaning). A blend
+# mode combines the old meaning with the painted value, the stroke's coverage says how far the pixel goes from the old
+# meaning toward the result, and the result is written back as a byte. Only pixels with coverage are written again.
+
+BLEND_MODES = ("none", "replace", "add", "subtract", "multiply", "min", "max")
+METAL_FIRST_BYTE = 230  # LabPBR: the bytes of reflectance from 230 are 26 named metals, not levels of a dielectric
+METAL_COUNT = 26
+
+
+@dataclasses.dataclass(frozen=True)
+class Metal:
+    """One of the 26 metals that reflectance can name instead of a level (0 is the first of them)."""
+
+    index: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.index < METAL_COUNT:
+            raise ValueError(f"a metal is 0 to {METAL_COUNT - 1}, not {self.index}")
+
+    @property
+    def byte(self) -> int:
+        return METAL_FIRST_BYTE + self.index
+
+
+@dataclasses.dataclass(frozen=True)
+class ChannelCodec:
+    """Between the bytes of a channel and its meaning (floats). `decode` takes a uint8 array and gives meanings in
+    `lowest` to `highest`; `encode_in_range` takes meanings in that range. `encode` also takes a meaning past the range,
+    which is the end of it."""
+
+    decode: Callable[[numpy.ndarray], numpy.ndarray]
+    encode_in_range: Callable[[numpy.ndarray], numpy.ndarray]
+    lowest: float
+    highest: float
+
+    def encode(self, meaning: numpy.ndarray) -> numpy.ndarray:
+        return self.encode_in_range(numpy.clip(meaning, self.lowest, self.highest))
+
+
+def _to_bytes(values: numpy.ndarray) -> numpy.ndarray:
+    return numpy.clip(numpy.rint(values), 0, 255).astype(numpy.uint8)
+
+
+def _linear_codec() -> ChannelCodec:
+    return ChannelCodec(lambda data: data / 255.0, lambda meaning: _to_bytes(meaning * 255.0), 0.0, 1.0)
+
+
+def _emission_encode(meaning: numpy.ndarray) -> numpy.ndarray:
+    # 255 is "no emission", so the other bytes are one step up from zero: byte 0 is 1/255, byte 254 is 1.
+    return numpy.where(meaning <= 0.0, 255, _to_bytes(numpy.rint(meaning * 255.0) - 1.0)).astype(numpy.uint8)
+
+
+def _normal_decode(data: numpy.ndarray) -> numpy.ndarray:
+    return numpy.maximum((data.astype(numpy.float64) - 128.0) / 127.0, -1.0)
+
+
+CHANNEL_CODECS: dict[str, ChannelCodec] = {
+    "smoothness": _linear_codec(),
+    "porosity_scattering": _linear_codec(),
+    "height": _linear_codec(),
+    # A level of reflectance stops at the last byte of a dielectric: the metals above it are not levels.
+    "reflectance": ChannelCodec(
+        lambda data: data / 255.0,
+        lambda meaning: numpy.minimum(_to_bytes(meaning * 255.0), METAL_FIRST_BYTE - 1).astype(numpy.uint8),
+        0.0,
+        1.0,
+    ),
+    "emission": ChannelCodec(
+        lambda data: numpy.where(data == 255, 0.0, (data.astype(numpy.float64) + 1.0) / 255.0), _emission_encode, 0.0, 1.0
+    ),
+    # Tilt of the surface along one axis, -1 to 1, zero at the neutral byte 128. Byte 0 reads as -1, as byte 1 does.
+    "normal_x": ChannelCodec(_normal_decode, lambda meaning: _to_bytes(128.0 + meaning * 127.0), -1.0, 1.0),
+    "normal_y": ChannelCodec(_normal_decode, lambda meaning: _to_bytes(128.0 + meaning * 127.0), -1.0, 1.0),
+    # How much light is lost, so the neutral byte 255 (all light) is zero.
+    "ambient_occlusion": ChannelCodec(
+        lambda data: (255.0 - data.astype(numpy.float64)) / 255.0,
+        lambda meaning: _to_bytes(255.0 - numpy.rint(meaning * 255.0)),
+        0.0,
+        1.0,
+    ),
+}
+ChannelValue = Union[float, Metal]
+
+
+@dataclasses.dataclass(frozen=True)
+class ChannelBlend:
+    """What a stroke does to one channel: a blend mode and the value it paints (a meaning, or a `Metal`)."""
+
+    mode: str
+    value: ChannelValue
+
+
+def _check_blend(identity: str, value: ChannelValue, mode: str) -> None:
+    if mode not in BLEND_MODES:
+        raise ValueError(f"unknown blend mode {mode!r}")
+    if identity not in CHANNEL_CODECS:
+        raise ValueError(f"unknown channel {identity!r}")
+    if isinstance(value, Metal) and identity != "reflectance":
+        raise ValueError(f"only reflectance has metals, not {identity}")
+
+
+def _combine(mode: str, old: numpy.ndarray, value: float) -> numpy.ndarray:
+    if mode == "replace":
+        return numpy.full_like(old, value)
+    if mode == "add":
+        return old + value
+    if mode == "subtract":
+        return old - value
+    if mode == "multiply":
+        return old * value
+    if mode == "min":
+        return numpy.minimum(old, value)
+    return numpy.maximum(old, value)
+
+
+def blend_channel(
+    identity: str, old_bytes: numpy.ndarray, value: ChannelValue, mode: str, coverage: numpy.ndarray
+) -> numpy.ndarray:
+    """The bytes of one channel after painting `value` with `mode` at `coverage` (0 to 1 per pixel, the shape of the
+    bytes). Where the coverage is 0 the old byte is returned as it was, not read and written again. A metal is written
+    as its byte, whatever the mode but none; the lerp between old and new is made in the meaning, or in bytes for a metal."""
+    _check_blend(identity, value, mode)
+    if mode == "none":
+        return old_bytes.copy()
+    codec = CHANNEL_CODECS[identity]
+    covered = coverage > 0.0
+    if isinstance(value, Metal):
+        mixed = _to_bytes(old_bytes * (1.0 - coverage) + value.byte * coverage)
+    else:
+        old = codec.decode(old_bytes)
+        combined = numpy.clip(_combine(mode, old, float(value)), codec.lowest, codec.highest)
+        mixed = codec.encode(old * (1.0 - coverage) + combined * coverage)
+    return numpy.where(covered, mixed, old_bytes).astype(numpy.uint8)
+
+
+class ChannelStroke:
+    """The channels of the tiles during one stroke. The planes it is given are the planes before the stroke and are never
+    changed; `planes` is what they become, always worked out again from them, so a pixel that the stroke passes over
+    many times is blended once with the strongest coverage any pass gave it (adding 0.2 five times adds 0.2).
+
+    After the blend, the pixels the stroke covered have their normal made no longer than 1: both axes are divided by the
+    length, so the tilt keeps its direction. Pixels the stroke did not cover are never touched. Nothing is shortened if no
+    channel has a mode (a stroke that paints no channel).
+    """
+
+    def __init__(self, profile: PbrProfile, planes_before: numpy.ndarray, blends: dict[str, ChannelBlend]):
+        identities = [channel.identity for channel in profile.channels]
+        for identity, blend in blends.items():
+            if identity not in identities:
+                raise ValueError(f"{profile.name} has no channel {identity!r}")
+            _check_blend(identity, blend.value, blend.mode)
+        self.profile = profile
+        self.planes_before = planes_before.copy()
+        self.blends = dict(blends)
+        self.coverage = numpy.zeros(planes_before.shape[:2], dtype=numpy.float64)
+        self._planes = self.planes_before.copy()
+
+    def add_coverage(self, coverage: numpy.ndarray) -> None:
+        """Pass over pixels with this coverage (0 to 1 per pixel)."""
+        numpy.maximum(self.coverage, coverage, out=self.coverage)
+        self._planes = self._worked_out()
+
+    def set_coverage(self, coverage: numpy.ndarray) -> None:
+        """Say what the whole stroke covers, instead of adding a pass: a line that is still being dragged."""
+        self.coverage = coverage.astype(numpy.float64)
+        self._planes = self._worked_out()
+
+    @property
+    def planes(self) -> numpy.ndarray:
+        return self._planes
+
+    @property
+    def changed(self) -> bool:
+        return not numpy.array_equal(self._planes, self.planes_before)
+
+    def _worked_out(self) -> numpy.ndarray:
+        """The planes after the stroke. Only the box around the pixels with coverage is worked out (the rest cannot
+        change), so a small stroke on a big canvas costs what the small stroke costs."""
+        planes = self.planes_before.copy()
+        covered = self.coverage > 0.0
+        if not covered.any():
+            return planes
+        rows = numpy.flatnonzero(covered.any(axis=1))
+        columns = numpy.flatnonzero(covered.any(axis=0))
+        window = (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(columns[0]), int(columns[-1]) + 1))
+        coverage = self.coverage[window]
+        before = self.planes_before[window]
+        inside = before.copy()
+        identities = [channel.identity for channel in self.profile.channels]
+        painted = False
+        for index, identity in enumerate(identities):
+            blend = self.blends.get(identity)
+            if blend is not None and blend.mode != "none":
+                inside[:, :, index] = blend_channel(identity, before[:, :, index], blend.value, blend.mode, coverage)
+                painted = True
+        if painted and "normal_x" in identities and "normal_y" in identities:
+            self._shorten_normals(inside, coverage, identities.index("normal_x"), identities.index("normal_y"))
+        planes[window] = inside
+        return planes
+
+    @staticmethod
+    def _shorten_normals(planes: numpy.ndarray, coverage: numpy.ndarray, x_index: int, y_index: int) -> None:
+        x_codec, y_codec = CHANNEL_CODECS["normal_x"], CHANNEL_CODECS["normal_y"]
+        x_meaning = x_codec.decode(planes[:, :, x_index])
+        y_meaning = y_codec.decode(planes[:, :, y_index])
+        length = numpy.sqrt(x_meaning * x_meaning + y_meaning * y_meaning)
+        too_long = (coverage > 0.0) & (length > 1.0)
+        if not too_long.any():
+            return
+        divisor = numpy.where(too_long, length, 1.0)
+        planes[:, :, x_index] = numpy.where(too_long, x_codec.encode(x_meaning / divisor), planes[:, :, x_index])
+        planes[:, :, y_index] = numpy.where(too_long, y_codec.encode(y_meaning / divisor), planes[:, :, y_index])
+
+
+def reset_channels(profile: PbrProfile, planes: numpy.ndarray, coverage: numpy.ndarray) -> numpy.ndarray:
+    """A copy of the planes with every channel moved toward its neutral byte by `coverage` (the eraser, Delete and Cut:
+    full coverage is exactly neutral). Bytes, not meanings, are mixed, and pixels with no coverage are not touched."""
+    result = planes.copy()
+    for index, channel in enumerate(profile.channels):
+        mixed = _to_bytes(planes[:, :, index] * (1.0 - coverage) + channel.neutral * coverage)
+        result[:, :, index] = numpy.where(coverage > 0.0, mixed, planes[:, :, index])
+    return result
+
+
+def sample_channel_values(profile: PbrProfile, planes: numpy.ndarray, row: int, column: int) -> dict[str, ChannelValue]:
+    """The value of every channel of one pixel, as a stroke would paint it to get the pixel (the eye dropper): a meaning,
+    or the `Metal` for a reflectance byte that names one."""
+    values: dict[str, ChannelValue] = {}
+    for index, channel in enumerate(profile.channels):
+        byte = planes[row, column, index : index + 1]
+        if channel.identity == "reflectance" and int(byte[0]) >= METAL_FIRST_BYTE:
+            values[channel.identity] = Metal(int(byte[0]) - METAL_FIRST_BYTE)
+        else:
+            values[channel.identity] = float(CHANNEL_CODECS[channel.identity].decode(byte)[0])
+    return values
+
+
+@dataclasses.dataclass(frozen=True)
+class ColorBlend:
+    """The blend modes of the colour of a stroke: one for red, green and blue together, one for alpha. Replace for both
+    is what the tools always did (a color written exactly, or composited over what is there by its alpha)."""
+
+    rgb_mode: str = "replace"
+    alpha_mode: str = "replace"
+
+    def __post_init__(self) -> None:
+        for mode in (self.rgb_mode, self.alpha_mode):
+            if mode not in BLEND_MODES:
+                raise ValueError(f"unknown blend mode {mode!r}")
+
+    @property
+    def is_replace(self) -> bool:
+        return self.rgb_mode == "replace" and self.alpha_mode == "replace"
+
+
+def blend_color(
+    old_pixels: numpy.ndarray, color: Color, rgb_mode: str, alpha_mode: str, coverage: numpy.ndarray
+) -> numpy.ndarray:
+    """The pixels (uint8 RGBA) after painting `color` with a mode for red, green and blue and a mode for alpha, at
+    `coverage` (0 to 1 per pixel). Like the channels, each component is combined with the painted one as a number from 0
+    to 1, and the result goes from the old value toward the combined one by the coverage. Where the coverage is 0, or the
+    mode is none, the bytes come out as they were. Alpha is blended as it is, not composited, so that its mode means what it says."""
+    old = old_pixels.astype(numpy.float64) / 255.0
+    value = numpy.array(color, dtype=numpy.float64) / 255.0
+    blended = old.copy()
+    for components, mode in ((slice(0, 3), rgb_mode), (slice(3, 4), alpha_mode)):
+        if mode not in BLEND_MODES:
+            raise ValueError(f"unknown blend mode {mode!r}")
+        if mode == "none":
+            continue
+        combined = numpy.clip(_combine(mode, old[..., components], value[components]), 0.0, 1.0)
+        blended[..., components] = old[..., components] * (1.0 - coverage[..., None]) + combined * coverage[..., None]
+    return numpy.clip(numpy.rint(blended * 255.0), 0, 255).astype(numpy.uint8)
+
+
+# ----------------------------------------------------------------------------------------------------------
 # atlas.json
 # ----------------------------------------------------------------------------------------------------------
 
@@ -182,6 +627,11 @@ class AtlasFile:
     # Base64 text, not decoded, so that data that cannot be used is preserved when the file is rewritten.
     coordinates_to_data: dict[Coordinate, str] = dataclasses.field(default_factory=dict)
     other_settings: dict[str, object] = dataclasses.field(default_factory=dict)
+    # The name of a profile of PBR_PROFILES: which companion files (dirt_n.png, dirt_s.png) belong to a tile.
+    pbr_profile: str = NO_PBR_PROFILE
+    # Base64 of the channels (the planes) of a tile that has no PNG file yet, kept like its pixels: only for such a tile
+    # whose channels differ from what its companion files hold.
+    coordinates_to_channel_data: dict[Coordinate, str] = dataclasses.field(default_factory=dict)
 
 
 class _DuplicateKeyError(Exception):
@@ -249,6 +699,11 @@ def parse_atlas_file(text: str) -> AtlasFile:
         problems.append(f"tile_size must be a whole number from {MINIMUM_TILE_SIZE} to {MAXIMUM_TILE_SIZE}")
         tile_size = None
 
+    pbr_profile = other_settings.pop("pbr", NO_PBR_PROFILE)
+    if not isinstance(pbr_profile, str) or pbr_profile not in PBR_PROFILES:
+        problems.append(f"pbr must be one of: {', '.join(PBR_PROFILES)}")
+        pbr_profile = NO_PBR_PROFILE
+
     names = _read_coordinate_mapping(
         "coordinates_to_names", other_settings.pop("coordinates_to_names", {}), "file name", problems
     )
@@ -273,9 +728,18 @@ def parse_atlas_file(text: str) -> AtlasFile:
         if coordinate not in names:
             problems.append(f"coordinates_to_data: {format_coordinate(coordinate)} has data but no name")
 
+    channel_data = _read_coordinate_mapping(
+        "coordinates_to_channel_data", other_settings.pop("coordinates_to_channel_data", {}), "channel data", problems
+    )
+    for coordinate in sorted(channel_data, key=reading_order_key):
+        if coordinate not in names:
+            problems.append(f"coordinates_to_channel_data: {format_coordinate(coordinate)} has data but no name")
+
     if problems:
         raise AtlasFileError(problems)
-    return AtlasFile(tile_size, dict(names), dict(data), other_settings)  # type: ignore[arg-type]
+    return AtlasFile(
+        tile_size, dict(names), dict(data), other_settings, pbr_profile, dict(channel_data)  # type: ignore[arg-type]
+    )
 
 
 def serialize_atlas_file(atlas_file: AtlasFile) -> str:
@@ -283,6 +747,8 @@ def serialize_atlas_file(atlas_file: AtlasFile) -> str:
     document: dict[str, object] = {}
     if atlas_file.tile_size is not None:
         document["tile_size"] = atlas_file.tile_size
+    if atlas_file.pbr_profile != NO_PBR_PROFILE:
+        document["pbr"] = atlas_file.pbr_profile
     document["coordinates_to_names"] = {
         format_coordinate(coordinate): atlas_file.coordinates_to_names[coordinate]
         for coordinate in sorted(atlas_file.coordinates_to_names, key=reading_order_key)
@@ -291,6 +757,11 @@ def serialize_atlas_file(atlas_file: AtlasFile) -> str:
         format_coordinate(coordinate): atlas_file.coordinates_to_data[coordinate]
         for coordinate in sorted(atlas_file.coordinates_to_data, key=reading_order_key)
     }
+    if atlas_file.coordinates_to_channel_data:
+        document["coordinates_to_channel_data"] = {
+            format_coordinate(coordinate): atlas_file.coordinates_to_channel_data[coordinate]
+            for coordinate in sorted(atlas_file.coordinates_to_channel_data, key=reading_order_key)
+        }
     document.update(atlas_file.other_settings)
     return json.dumps(document, indent=4, ensure_ascii=False) + "\n"
 
@@ -306,23 +777,85 @@ def read_atlas_file(path: Path) -> Optional[AtlasFile]:
     return parse_atlas_file(text)
 
 
-def write_bytes_atomically(path: Path, content: bytes) -> None:
-    """Write `content` to `path` so that readers see the old file or the new one, never half of it."""
+def _remove_quietly(path: "str | Path") -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _write_temporary_file(directory: Path, content: bytes) -> str:
+    """Write `content` to a new temporary file in `directory` and return its name."""
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=TEMPORARY_FILE_PREFIX, suffix=TEMPORARY_FILE_SUFFIX, dir=path.parent
+        prefix=TEMPORARY_FILE_PREFIX, suffix=TEMPORARY_FILE_SUFFIX, dir=directory
     )
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+    except BaseException:
+        _remove_quietly(temporary_name)
+        raise
+    return temporary_name
+
+
+def write_bytes_atomically(path: Path, content: bytes) -> None:
+    """Write `content` to `path` so that readers see the old file or the new one, never half of it."""
+    temporary_name = _write_temporary_file(path.parent, content)
+    try:
         os.replace(temporary_name, path)
     except BaseException:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
+        _remove_quietly(temporary_name)
         raise
+
+
+def write_files_all_or_none(writes: list[tuple[Path, bytes]], deletions: Iterable[Path] = ()) -> None:
+    """Write several files and delete others so that, if one step cannot be made, nothing has changed: a file that was
+    replaced is given its old content back, one that was new is removed again, and a deleted one comes back. Each file
+    is itself written atomically. Raises the OSError of the first failure. (A crash in the middle can still leave some
+    files new and some old.)"""
+    staged: list[tuple[Path, str]] = []
+    backups: dict[Path, str] = {}
+    replaced: list[Path] = []
+    held_aside: list[tuple[Path, Path]] = []
+    try:
+        for path, content in writes:
+            staged.append((path, _write_temporary_file(path.parent, content)))
+        for path, _ in staged:
+            if path.exists():
+                backups[path] = _write_temporary_file(path.parent, path.read_bytes())
+        for path, temporary_name in staged:
+            os.replace(temporary_name, path)
+            replaced.append(path)
+        for path in deletions:
+            if path.exists():
+                held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+                os.rename(path, held)
+                held_aside.append((path, held))
+    except BaseException:
+        for path, held in reversed(held_aside):
+            try:
+                os.rename(held, path)
+            except OSError:
+                logger.warning("could not give %s back its name %s after a failed change", held.name, path.name)
+        for path in reversed(replaced):
+            try:
+                if path in backups:
+                    os.replace(backups.pop(path), path)
+                else:
+                    os.unlink(path)
+            except OSError:
+                logger.warning("could not put %s back as it was after a failed save", path.name)
+        for _, temporary_name in staged:
+            _remove_quietly(temporary_name)
+        for backup_name in backups.values():
+            _remove_quietly(backup_name)
+        raise
+    for backup_name in backups.values():
+        _remove_quietly(backup_name)
+    for _, held in held_aside:
+        _remove_quietly(held)
 
 
 def write_atlas_file(path: Path, atlas_file: AtlasFile) -> None:
@@ -356,6 +889,24 @@ def decode_tile_data(text: str, tile_size: int) -> numpy.ndarray:
     if len(raw) != expected_length:
         raise TileDataError(f"holds {len(raw)} bytes but a {tile_size}x{tile_size} tile needs {expected_length}")
     return numpy.frombuffer(raw, dtype=numpy.uint8).reshape(tile_size, tile_size, 4).copy()
+
+
+def encode_channel_data(planes: numpy.ndarray) -> str:
+    """Base64 of the raw bytes of the planes of a tile, row by row, the channels of a pixel together."""
+    return base64.b64encode(numpy.ascontiguousarray(planes, dtype=numpy.uint8).tobytes()).decode("ascii")
+
+
+def decode_channel_data(text: str, tile_size: int, channel_count: int) -> numpy.ndarray:
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        raise TileDataError("is not valid base64") from None
+    expected_length = tile_size * tile_size * channel_count
+    if len(raw) != expected_length:
+        raise TileDataError(
+            f"holds {len(raw)} bytes but {channel_count} channels of a {tile_size}x{tile_size} tile need {expected_length}"
+        )
+    return numpy.frombuffer(raw, dtype=numpy.uint8).reshape(tile_size, tile_size, channel_count).copy()
 
 
 def read_image_size(path: Path) -> tuple[int, int]:
@@ -407,6 +958,15 @@ class TileRecord:
     revision: int = 0
     # The stored base64 of an error tile whose data could not be used, kept so that saving does not drop it.
     preserved_data_text: Optional[str] = None
+    # The same for the stored channel data of an error tile.
+    preserved_channel_text: Optional[str] = None
+    # The channels of the PBR profile, as (height, width, channels) bytes (None when the profile has no channels).
+    # disk_planes is what the companion files hold; a companion file that does not exist counts as every channel
+    # neutral, so a tile whose channels are all neutral is the same as its files whether or not they exist.
+    planes: Optional[numpy.ndarray] = None
+    disk_planes: Optional[numpy.ndarray] = None
+    # The endings of the companion files that exist for this tile ("_n", "_s").
+    disk_suffixes: frozenset[str] = frozenset()
 
     @property
     def is_new(self) -> bool:
@@ -415,10 +975,12 @@ class TileRecord:
 
     @property
     def is_modified(self) -> bool:
-        """Has changes that the PNG file does not have, or has no PNG file."""
+        """Has changes that the files do not have, or has no PNG file."""
         if self.error is not None:
             return False
-        return self.disk_pixels is None or not numpy.array_equal(self.pixels, self.disk_pixels)
+        if self.disk_pixels is None or not numpy.array_equal(self.pixels, self.disk_pixels):
+            return True
+        return self.planes is not None and not numpy.array_equal(self.planes, self.disk_planes)
 
     @property
     def can_return_to_unplaced(self) -> bool:
@@ -430,6 +992,13 @@ class TileRecord:
 class UnplacedTile:
     name: str
     pixels: numpy.ndarray
+    # The channels held by its companion files (see TileRecord), and which companion files exist.
+    planes: Optional[numpy.ndarray] = None
+    disk_suffixes: frozenset[str] = frozenset()
+    # False for a picture that has only companion files: its pixels are blank and no PNG file has its name yet.
+    has_file: bool = True
+    # Why it cannot be placed, when a companion file is not usable.
+    companion_error: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -447,7 +1016,13 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
 
     Listed files with a problem become error tiles. Unlisted files of the right size are returned as
     unplaced; unlisted files of any other size, or unreadable, are ignored.
+
+    Under a PBR profile with channels, a file named as a companion of another picture (dirt_n.png) is not a tile of
+    its own: it gives the channels of the picture it goes with. A companion that cannot be used makes its picture an
+    error tile, or an unplaced picture that cannot be placed. A picture that has only companion files is a tile with
+    blank pixels and no PNG file yet.
     """
+    profile = PBR_PROFILES[atlas_file.pbr_profile]
     png_names = sorted(
         entry.name
         for entry in os.scandir(folder)
@@ -456,6 +1031,28 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
     actual_names_by_casefold: dict[str, list[str]] = {}
     for actual_name in png_names:
         actual_names_by_casefold.setdefault(actual_name.casefold(), []).append(actual_name)
+
+    # The companion files of each picture, found by the picture's name (lower-cased): {name: {ending: file name}}.
+    companion_files_of: dict[str, dict[str, str]] = {}
+    base_name_of: dict[str, str] = {}
+    companion_file_names: set[str] = set()
+    for actual_name in png_names:
+        split = split_companion_name(actual_name, profile)
+        if split is not None:
+            base_name, suffix = split
+            companion_files_of.setdefault(base_name.casefold(), {}).setdefault(suffix, actual_name)
+            base_name_of.setdefault(base_name.casefold(), base_name)
+            companion_file_names.add(actual_name)
+    # Files that end as the companions of another profile do, by the picture they go with. A picture that has these and
+    # also files in the format of this profile has no clear channels, so it is an error until one set is removed.
+    other_files_of: dict[str, list[str]] = {}
+    if profile.channels:
+        other_endings = tuple(suffix for suffix in reserved_companion_suffixes() if suffix not in profile.suffixes)
+        for actual_name in png_names:
+            if actual_name not in companion_file_names:
+                other_split = _split_ending(actual_name, other_endings)
+                if other_split is not None:
+                    other_files_of.setdefault(other_split[0].casefold(), []).append(actual_name)
 
     def find_actual_name(listed_name: str) -> Optional[str]:
         if listed_name in png_names:
@@ -474,31 +1071,98 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
         except TileImageError as error:
             return None, str(error)
 
+    def read_companions(picture_name: str) -> tuple[Optional[numpy.ndarray], frozenset[str], Optional[str]]:
+        """(planes, the endings of the files found, None), or (None, no endings, why a companion cannot be used).
+        Without channels in the profile there are no planes and nothing to find."""
+        if not profile.channels:
+            return None, frozenset(), None
+        found = companion_files_of.get(picture_name.casefold(), {})
+        others = other_files_of.get(picture_name.casefold(), [])
+        if found and others:
+            return None, frozenset(), (
+                f"the companion files are in two formats ({', '.join(list(found.values()) + others)}): "
+                f"keep one set, then reload"
+            )
+        pictures: dict[str, numpy.ndarray] = {}
+        for suffix in profile.suffixes:
+            if suffix in found:
+                pixels, problem = read_tile_file(found[suffix])
+                if pixels is None:
+                    return None, frozenset(), f"the companion {found[suffix]} {problem}"
+                pictures[suffix] = pixels
+        return planes_from_companions(profile, pictures, tile_size), frozenset(pictures), None
+
+    def make_record(
+        name: str, pixels: numpy.ndarray, disk_pixels: Optional[numpy.ndarray], planes: Optional[numpy.ndarray],
+        disk_suffixes: frozenset[str],
+    ) -> TileRecord:
+        return TileRecord(
+            name,
+            pixels,
+            disk_pixels,
+            planes=None if planes is None else planes.copy(),
+            disk_planes=None if planes is None else planes.copy(),
+            disk_suffixes=disk_suffixes,
+        )
+
     tiles: dict[Coordinate, TileRecord] = {}
     stale_data_coordinates: list[Coordinate] = []
     for coordinate in sorted(atlas_file.coordinates_to_names, key=reading_order_key):
         name = atlas_file.coordinates_to_names[coordinate]
+        data_text = atlas_file.coordinates_to_data.get(coordinate)
+        channel_text = atlas_file.coordinates_to_channel_data.get(coordinate)
+        split = split_companion_name(name, profile)
+        if split is not None:
+            tiles[coordinate] = TileRecord(
+                name,
+                None,
+                None,
+                f"the name is that of a companion of {split[0]} under {profile.name}, not of a picture of its own",
+                preserved_data_text=data_text,
+                preserved_channel_text=channel_text,
+            )
+            continue
+        planes, disk_suffixes, companion_problem = read_companions(name)
+        if companion_problem is not None:
+            tiles[coordinate] = TileRecord(
+                name, None, None, companion_problem, preserved_data_text=data_text, preserved_channel_text=channel_text
+            )
+            continue
         actual_name = find_actual_name(name)
         if actual_name is None:
             disk_pixels, disk_problem = None, "is missing"
         else:
             disk_pixels, disk_problem = read_tile_file(actual_name)
 
-        data_text = atlas_file.coordinates_to_data.get(coordinate)
         if data_text is None:
-            if disk_pixels is None:
-                tiles[coordinate] = TileRecord(name, None, None, f"the file {disk_problem}")
+            if disk_pixels is not None:
+                tiles[coordinate] = make_record(name, disk_pixels.copy(), disk_pixels, planes, disk_suffixes)
+            elif actual_name is None and disk_suffixes:
+                blank = numpy.zeros((tile_size, tile_size, 4), dtype=numpy.uint8)
+                tiles[coordinate] = make_record(name, blank, None, planes, disk_suffixes)
             else:
-                tiles[coordinate] = TileRecord(name, disk_pixels.copy(), disk_pixels)
+                tiles[coordinate] = TileRecord(name, None, None, f"the file {disk_problem}")
             continue
 
         try:
             data_pixels = decode_tile_data(data_text, tile_size)
         except TileDataError as error:
-            tiles[coordinate] = TileRecord(name, None, None, f"the stored pixel data {error}", preserved_data_text=data_text)
+            tiles[coordinate] = TileRecord(
+                name, None, None, f"the stored pixel data {error}",
+                preserved_data_text=data_text, preserved_channel_text=channel_text,
+            )
             continue
         if actual_name is None:
-            tiles[coordinate] = TileRecord(name, data_pixels, None)
+            record = make_record(name, data_pixels, None, planes, disk_suffixes)
+            if channel_text is not None and record.planes is not None:
+                try:
+                    record.planes = decode_channel_data(channel_text, tile_size, len(profile.channels))
+                except TileDataError as error:
+                    record = TileRecord(
+                        name, None, None, f"the stored channel data {error}",
+                        preserved_data_text=data_text, preserved_channel_text=channel_text,
+                    )
+            tiles[coordinate] = record
         elif disk_pixels is None:
             tiles[coordinate] = TileRecord(
                 name,
@@ -506,12 +1170,13 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
                 None,
                 f"stored pixel data exists, but the file on disk {disk_problem}",
                 preserved_data_text=data_text,
+                preserved_channel_text=channel_text,
             )
         elif numpy.array_equal(data_pixels, disk_pixels):
             stale_data_coordinates.append(coordinate)
-            tiles[coordinate] = TileRecord(name, disk_pixels.copy(), disk_pixels)
+            tiles[coordinate] = make_record(name, disk_pixels.copy(), disk_pixels, planes, disk_suffixes)
         else:
-            tiles[coordinate] = TileRecord(name, data_pixels, disk_pixels)
+            tiles[coordinate] = make_record(name, data_pixels, disk_pixels, planes, disk_suffixes)
 
     for coordinate, record in tiles.items():
         if record.error is not None:
@@ -520,11 +1185,22 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
     listed_casefolded = {name.casefold() for name in atlas_file.coordinates_to_names.values()}
     unplaced: list[UnplacedTile] = []
     for actual_name in png_names:
-        if actual_name.casefold() in listed_casefolded:
+        if actual_name.casefold() in listed_casefolded or actual_name in companion_file_names:
             continue
         pixels, _ = read_tile_file(actual_name)
         if pixels is not None:
-            unplaced.append(UnplacedTile(actual_name, pixels))
+            planes, disk_suffixes, companion_problem = read_companions(actual_name)
+            unplaced.append(
+                UnplacedTile(actual_name, pixels, planes, disk_suffixes, companion_error=companion_problem)
+            )
+    for key, base_name in base_name_of.items():
+        if key in actual_names_by_casefold or key in listed_casefolded:
+            continue
+        planes, disk_suffixes, companion_problem = read_companions(base_name)
+        if companion_problem is None:
+            blank = numpy.zeros((tile_size, tile_size, 4), dtype=numpy.uint8)
+            unplaced.append(UnplacedTile(base_name, blank, planes, disk_suffixes, has_file=False))
+    unplaced.sort(key=lambda tile: tile.name)
 
     return FolderScan(tiles, unplaced, {name.casefold() for name in png_names}, stale_data_coordinates)
 
@@ -684,9 +1360,14 @@ class CanvasLayout:
     first_row: int
     tile_size: int
     tile_coordinates: frozenset[Coordinate]
+    # The channels of the tiles, laid out like the pixels: (height, width, channels), zero over empty places. None when
+    # the tiles have none (the profile has no channels).
+    planes: Optional[numpy.ndarray] = None
 
 
-def compose_canvas(tiles: dict[Coordinate, numpy.ndarray], tile_size: int) -> CanvasLayout:
+def compose_canvas(
+    tiles: dict[Coordinate, numpy.ndarray], tile_size: int, planes: Optional[dict[Coordinate, numpy.ndarray]] = None
+) -> CanvasLayout:
     if not tiles:
         raise ValueError("no tiles to compose")
     first_column = min(column for column, _ in tiles)
@@ -699,7 +1380,14 @@ def compose_canvas(tiles: dict[Coordinate, numpy.ndarray], tile_size: int) -> Ca
         top, left = (row - first_row) * tile_size, (column - first_column) * tile_size
         pixels[top : top + tile_size, left : left + tile_size] = tile_pixels
         editable_mask[top : top + tile_size, left : left + tile_size] = True
-    return CanvasLayout(pixels, editable_mask, first_column, first_row, tile_size, frozenset(tiles))
+    canvas_planes = None
+    if planes:
+        channel_count = next(iter(planes.values())).shape[2]
+        canvas_planes = numpy.zeros((*pixels.shape[:2], channel_count), dtype=numpy.uint8)
+        for (column, row), tile_planes in planes.items():
+            top, left = (row - first_row) * tile_size, (column - first_column) * tile_size
+            canvas_planes[top : top + tile_size, left : left + tile_size] = tile_planes
+    return CanvasLayout(pixels, editable_mask, first_column, first_row, tile_size, frozenset(tiles), canvas_planes)
 
 
 def extract_canvas_tiles(layout: CanvasLayout, canvas_pixels: numpy.ndarray) -> dict[Coordinate, numpy.ndarray]:
@@ -712,6 +1400,11 @@ def extract_canvas_tiles(layout: CanvasLayout, canvas_pixels: numpy.ndarray) -> 
         ].copy()
         for column, row in layout.tile_coordinates
     }
+
+
+def extract_canvas_planes(layout: CanvasLayout, canvas_planes: numpy.ndarray) -> dict[Coordinate, numpy.ndarray]:
+    """The same for the channels: `canvas_planes` is an edited copy of layout.planes. The pieces are copies."""
+    return extract_canvas_tiles(layout, canvas_planes)
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1036,6 +1729,53 @@ def paste_pixels(
     return result
 
 
+def paste_planes(
+    destination: numpy.ndarray,
+    source: numpy.ndarray,
+    column: int,
+    row: int,
+    source_pixels: numpy.ndarray,
+    profile: PbrProfile,
+    editable_mask: Optional[numpy.ndarray] = None,
+) -> numpy.ndarray:
+    """A copy of the channels `destination` with the channels `source` put over it, its top left pixel at (column, row).
+
+    A pasted pixel brings its channels if it is not fully transparent or if it has channel data (is not neutral): a
+    pixel with nothing at all leaves what is under it, as a transparent pixel does. Parts outside the destination, or
+    over cells that are not editable, are dropped."""
+    result = destination.copy()
+    height, width = destination.shape[:2]
+    source_height, source_width = source.shape[:2]
+    left, top = max(column, 0), max(row, 0)
+    right, bottom = min(column + source_width, width), min(row + source_height, height)
+    if left >= right or top >= bottom:
+        return result
+    visible = source[top - row : bottom - row, left - column : right - column]
+    visible_pixels = source_pixels[top - row : bottom - row, left - column : right - column]
+    neutral = numpy.array([channel.neutral for channel in profile.channels], dtype=numpy.uint8)
+    brings = (visible_pixels[..., 3] > 0) | numpy.any(visible != neutral, axis=2)
+    if editable_mask is not None:
+        brings &= editable_mask[top:bottom, left:right]
+    region = result[top:bottom, left:right]
+    region[brings] = visible[brings]
+    return result
+
+
+def clear_planes(
+    profile: PbrProfile,
+    planes: numpy.ndarray,
+    rectangle: tuple[int, int, int, int],
+    editable_mask: Optional[numpy.ndarray] = None,
+) -> numpy.ndarray:
+    """A copy of the channels with a rectangle (left, top, right, bottom) taken back to neutral (Delete and Cut)."""
+    left, top, right, bottom = rectangle
+    coverage = numpy.zeros(planes.shape[:2], dtype=numpy.float64)
+    coverage[top:bottom, left:right] = 1.0
+    if editable_mask is not None:
+        coverage *= editable_mask
+    return reset_channels(profile, planes, coverage)
+
+
 # ----------------------------------------------------------------------------------------------------------
 # Painting: round and square brushes (noise and air brush)
 # ----------------------------------------------------------------------------------------------------------
@@ -1083,8 +1823,8 @@ def noise_stamp(
     random_source: "RandomSource",
     editable_mask: Optional[numpy.ndarray] = None,
     wrap: bool = False,
-) -> None:
-    """One stamp of the noise brush, applied in place.
+) -> numpy.ndarray:
+    """One stamp of the noise brush, applied in place. Returns the mask of the pixels it hit.
 
     Each pixel of the brush area becomes `color` with probability `density`, rolled separately for every stamp,
     so pixels rolled true by several stamps of one stroke build up. At opacity 1 the color is written exactly;
@@ -1107,6 +1847,7 @@ def noise_stamp(
     elif hit.any():
         layer = color_layer((height, width), color, hit * opacity)
         pixels[...] = alpha_over(pixels, layer)
+    return hit
 
 
 class AirbrushStroke:
@@ -1259,6 +2000,35 @@ class EditHistory:
 # ----------------------------------------------------------------------------------------------------------
 
 
+@dataclasses.dataclass
+class PbrConversion:
+    """What changing the PBR setting does to the companion files of one tile: files to write, files to delete."""
+
+    writes: list[tuple[Path, bytes]]
+    deletions: list[Path]
+
+
+@dataclasses.dataclass
+class PbrSwitchPlan:
+    """What changing the PBR setting would do (AtlasProject.plan_pbr_switch). Nothing happens while `problem` is set."""
+
+    profile_name: str
+    problem: Optional[str] = None
+    # Tiles whose names are companion names under the new setting: they leave the atlas, their files stay.
+    ejected: list[Coordinate] = dataclasses.field(default_factory=list)
+    # Tiles with files in the old format, and what happens to them.
+    conversions: dict[Coordinate, PbrConversion] = dataclasses.field(default_factory=dict)
+    # The identities of the channels with data that the new setting has no place for, by tile. Changing needs a confirm.
+    dropped: dict[Coordinate, list[str]] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class PbrSwitchResult:
+    ejected_names: list[str]
+    # What the user should be told: tiles that left the atlas, tiles that became error tiles.
+    warnings: list[str]
+
+
 class AtlasProject:
     """The tiles of one folder, which of them are selected, and the saving of atlas.json after every change.
 
@@ -1274,6 +2044,7 @@ class AtlasProject:
         # Until atlas.json says otherwise the size is provisional, and can be changed.
         self.tile_size = loaded.tile_size if loaded.tile_size is not None else DEFAULT_TILE_SIZE
         self.other_settings = dict(loaded.other_settings)
+        self.pbr_profile = loaded.pbr_profile
         self.selection: set[Coordinate] = set()
         self.tiles: dict[Coordinate, TileRecord] = {}
         self.unplaced: list[UnplacedTile] = []
@@ -1306,19 +2077,44 @@ class AtlasProject:
     def is_empty(self) -> bool:
         return not self.tiles
 
+    @property
+    def profile(self) -> PbrProfile:
+        return PBR_PROFILES[self.pbr_profile]
+
+    def _new_planes(self) -> Optional[numpy.ndarray]:
+        """The planes of a tile with no data in its channels, or None if the profile has no channels."""
+        if not self.profile.channels:
+            return None
+        return neutral_planes(self.profile, self.tile_size)
+
+    def _new_record(self, name: str, pixels: numpy.ndarray) -> TileRecord:
+        """A tile that has no files yet: the given pixels, and channels with no data."""
+        planes = self._new_planes()
+        return TileRecord(
+            name, pixels, None, planes=planes, disk_planes=None if planes is None else planes.copy()
+        )
+
     def build_atlas_file(self) -> AtlasFile:
         """What atlas.json should contain for the current state."""
         data: dict[Coordinate, str] = {}
+        channel_data: dict[Coordinate, str] = {}
         for coordinate, record in self.tiles.items():
             if record.is_new:
                 data[coordinate] = encode_tile_data(record.pixels)
-            elif record.preserved_data_text is not None:
-                data[coordinate] = record.preserved_data_text
+                if record.planes is not None and not numpy.array_equal(record.planes, record.disk_planes):
+                    channel_data[coordinate] = encode_channel_data(record.planes)
+            else:
+                if record.preserved_data_text is not None:
+                    data[coordinate] = record.preserved_data_text
+                if record.preserved_channel_text is not None:
+                    channel_data[coordinate] = record.preserved_channel_text
         return AtlasFile(
             self.tile_size,
             {coordinate: record.name for coordinate, record in self.tiles.items()},
             data,
             dict(self.other_settings),
+            self.pbr_profile,
+            channel_data,
         )
 
     def save_atlas_file(self) -> None:
@@ -1347,6 +2143,158 @@ class AtlasProject:
         self._scan(atlas_file)
         return True
 
+    def reload(self) -> bool:
+        """Read atlas.json and the folder again, as if the program had just been started on it. False (nothing
+        happens) while a tile has unsaved changes, which reading again would lose. Raises AtlasFileError if atlas.json
+        is not usable now. The edit history is forgotten, since its tiles are replaced."""
+        if self.unsaved_tiles():
+            return False
+        atlas_file = read_atlas_file(self.folder / ATLAS_FILE_NAME)
+        loaded = atlas_file if atlas_file is not None else AtlasFile(None)
+        self.atlas_file_exists = atlas_file is not None
+        self.tile_size_is_saved = loaded.tile_size is not None
+        if loaded.tile_size is not None:
+            self.tile_size = loaded.tile_size
+        self.other_settings = dict(loaded.other_settings)
+        self.pbr_profile = loaded.pbr_profile
+        self.history = EditHistory()
+        self._scan(loaded)
+        return True
+
+    def reserved_name_warnings(self) -> list[tuple[str, str]]:
+        """(name, warning) for each tile whose name ends as a companion picture does: the game reads such a file as
+        the companion of another picture, whatever the setting says (it never reads atlas.json)."""
+        found = []
+        for coordinate in sorted(self.tiles, key=reading_order_key):
+            warning = reserved_ending_warning(self.tiles[coordinate].name)
+            if warning is not None:
+                found.append((self.tiles[coordinate].name, warning))
+        return found
+
+    # Changing the PBR setting ------------------------------------------------------------------------------
+
+    def plan_pbr_switch(self, profile_name: str) -> PbrSwitchPlan:
+        """What changing the PBR setting to `profile_name` would do, without doing it (see PbrSwitchPlan)."""
+        plan = PbrSwitchPlan(profile_name)
+        if profile_name not in PBR_PROFILES:
+            plan.problem = f"{profile_name!r} is not a PBR setting"
+            return plan
+        unsaved = self.unsaved_tiles()
+        if unsaved:
+            plan.problem = (
+                f"{len(unsaved)} tile{'s' if len(unsaved) != 1 else ''} have unsaved changes: "
+                "save or discard them before changing the PBR setting"
+            )
+            return plan
+        old, new = self.profile, PBR_PROFILES[profile_name]
+        for coordinate in sorted(self.tiles, key=reading_order_key):
+            record = self.tiles[coordinate]
+            if split_companion_name(record.name, new) is not None:
+                if record.preserved_data_text is not None:
+                    plan.problem = f"{record.name} holds pixel data in atlas.json that leaving the atlas would drop"
+                    return plan
+                plan.ejected.append(coordinate)
+        if old.channels and new.channels:
+            for coordinate in sorted(self.tiles, key=reading_order_key):
+                record = self.tiles[coordinate]
+                if coordinate not in plan.ejected and record.error is None and record.disk_suffixes:
+                    self._plan_conversion(plan, coordinate, record, old, new)
+        return plan
+
+    def _plan_conversion(
+        self, plan: PbrSwitchPlan, coordinate: Coordinate, record: TileRecord, old: PbrProfile, new: PbrProfile
+    ) -> None:
+        """Plan the files of a tile that has files in the old format: written in the new format, the old ones deleted.
+        (A tile that also has files in the new format only is an error tile already, since the scan refuses two formats
+        at once, and error tiles are not planned: no file of it changes.)"""
+        new_planes, dropped = convert_planes(old, new, record.planes)
+        if dropped:
+            plan.dropped[coordinate] = dropped
+        pictures = companions_from_planes(new, new_planes)
+        neutral = neutral_planes(new, self.tile_size)
+        writes: list[tuple[Path, bytes]] = []
+        for suffix in new.suffixes:
+            existing = self._find_tile_file(companion_name(record.name, suffix))
+            if existing is not None:
+                try:
+                    if numpy.array_equal(read_image_pixels(existing), pictures[suffix]):
+                        continue
+                except TileImageError:
+                    pass
+            else:
+                indices = new.channel_indices(suffix)
+                if numpy.array_equal(new_planes[:, :, indices], neutral[:, :, indices]):
+                    continue
+            path = existing or self.folder / companion_name(record.name, suffix)
+            writes.append((path, encode_png(pictures[suffix])))
+        deletions = [
+            found
+            for suffix in old.suffixes
+            if suffix not in new.suffixes
+            for found in [self._find_tile_file(companion_name(record.name, suffix))]
+            if found is not None
+        ]
+        plan.conversions[coordinate] = PbrConversion(writes, deletions)
+
+    def switch_pbr_profile(self, profile_name: str, confirm_dropped: bool = False) -> Optional[PbrSwitchResult]:
+        """Change the PBR setting, and so the companion files that belong to a tile. None if it is that already.
+
+        Raises ValueError (nothing changes) if a tile has unsaved changes, the setting is unknown, or channels with data
+        would be lost and `confirm_dropped` is not set (plan_pbr_switch tells which). OSError (nothing changes) if
+        atlas.json cannot be written. Then, in this order:
+        - tiles named as companions under the new setting leave the atlas (their files stay);
+        - atlas.json is written with the new setting;
+        - the files of each tile that has files in the old format are rewritten in the new one, all of a tile's files
+          or none (a tile whose files cannot be changed becomes an error tile, its files as they were);
+        - the folder is read again. A tile that has files in two formats is an error tile (the scan makes it one,
+          before and after the change, until the user removes one set and reloads), and no file of it is changed.
+        """
+        if profile_name == self.pbr_profile:
+            return None
+        plan = self.plan_pbr_switch(profile_name)
+        if plan.problem is not None:
+            raise ValueError(plan.problem)
+        if plan.dropped and not confirm_dropped:
+            lost = "; ".join(f"{self.tiles[coordinate].name}: {', '.join(names)}" for coordinate, names in plan.dropped.items())
+            raise ValueError(f"{profile_name} has no place for channels that have data ({lost})")
+        names = {coordinate: record.name for coordinate, record in self.tiles.items()}
+        had_error = {coordinate for coordinate, record in self.tiles.items() if record.error is not None}
+        old_profile_name = self.pbr_profile
+
+        def change() -> None:
+            self.pbr_profile = profile_name
+            for coordinate in plan.ejected:
+                del self.tiles[coordinate]
+                self.selection.discard(coordinate)
+
+        try:
+            self._commit(change)
+        except BaseException:
+            self.pbr_profile = old_profile_name
+            raise
+        failures: dict[Coordinate, str] = {}
+        for coordinate, conversion in plan.conversions.items():
+            try:
+                write_files_all_or_none(conversion.writes, conversion.deletions)
+            except OSError as error:
+                failures[coordinate] = str(error)
+        self.history = EditHistory()
+        self._scan(self.build_atlas_file())
+        for coordinate, reason in failures.items():
+            self.tiles[coordinate] = TileRecord(
+                names[coordinate], None, None, f"its companion files could not be changed to {profile_name}: {reason}"
+            )
+        warnings = [
+            f"{names[coordinate]} is a companion file under {profile_name}, so it left the atlas (the file is unchanged)"
+            for coordinate in plan.ejected
+        ]
+        warnings += [
+            f"{record.name}: {record.error}"
+            for coordinate, record in sorted(self.tiles.items(), key=lambda item: reading_order_key(item[0]))
+            if record.error is not None and coordinate not in had_error
+        ]
+        return PbrSwitchResult([names[coordinate] for coordinate in plan.ejected], warnings)
+
     # Editing the pixels --------------------------------------------------------------------------------
 
     def shown_records(self) -> list[TileRecord]:
@@ -1357,28 +2305,46 @@ class AtlasProject:
             if self.tiles[coordinate].error is None
         ]
 
-    def _replace_pixels(self, new_pixels: dict[TileRecord, numpy.ndarray]) -> None:
-        """Give tiles new pixels. New tiles keep their pixels in atlas.json, so it is rewritten; if that fails
-        the old pixels come back and the OSError is raised."""
-        old_pixels = {record: record.pixels for record in new_pixels}
-        for record, pixels in new_pixels.items():
-            record.pixels = pixels.copy()
+    @staticmethod
+    def _content_of(record: TileRecord) -> numpy.ndarray:
+        """What an edit changes and the history keeps of a tile: its pixels, and its channels after them if it has any."""
+        if record.planes is None:
+            return record.pixels
+        return numpy.concatenate([record.pixels, record.planes], axis=2)
+
+    def _replace_pixels(self, new_content: dict[TileRecord, numpy.ndarray]) -> None:
+        """Give tiles new content: pixels (height x width x 4), followed by the channels if the tile has channels and the
+        array has them (an array of pixels alone leaves the channels as they are). New tiles keep their pixels and
+        channels in atlas.json, so it is rewritten; if that fails the old content comes back and the OSError is raised."""
+        old_content = {record: (record.pixels, record.planes) for record in new_content}
+        for record, content in new_content.items():
+            record.pixels = content[:, :, :4].copy()
+            if record.planes is not None and content.shape[2] > 4:
+                record.planes = content[:, :, 4:].copy()
             record.revision += 1
         try:
-            if any(record.is_new for record in new_pixels):
+            if any(record.is_new for record in new_content):
                 self.save_atlas_file()
         except BaseException:
-            for record, pixels in old_pixels.items():
-                record.pixels = pixels
+            for record, (pixels, planes) in old_content.items():
+                record.pixels, record.planes = pixels, planes
             raise
 
-    def apply_canvas_edit(self, layout: CanvasLayout, new_canvas_pixels: numpy.ndarray) -> bool:
-        """Make an edited canvas the new content of its tiles, as one step in the history. False if nothing changed."""
+    def apply_canvas_edit(
+        self, layout: CanvasLayout, new_canvas_pixels: numpy.ndarray, new_canvas_planes: Optional[numpy.ndarray] = None
+    ) -> bool:
+        """Make an edited canvas the new content of its tiles, as one step in the history. False if nothing changed.
+        `new_canvas_planes` is the edited channels of the canvas; left out, the channels stay as they are."""
         changes: dict[TileRecord, tuple[numpy.ndarray, numpy.ndarray]] = {}
+        new_planes = {} if new_canvas_planes is None else extract_canvas_planes(layout, new_canvas_planes)
         for coordinate, pixels in extract_canvas_tiles(layout, new_canvas_pixels).items():
             record = self.tiles[coordinate]
-            if not numpy.array_equal(record.pixels, pixels):
-                changes[record] = (record.pixels, pixels)
+            before = self._content_of(record)
+            after = pixels if record.planes is None else numpy.concatenate(
+                [pixels, new_planes.get(coordinate, record.planes)], axis=2
+            )
+            if not numpy.array_equal(before, after):
+                changes[record] = (before, after)
         if not changes:
             return False
         self._replace_pixels({record: after for record, (_, after) in changes.items()})
@@ -1420,11 +2386,41 @@ class AtlasProject:
         path = self.folder / record.name
         if was_new and (path.exists() or record.name.casefold() in self.existing_names):
             raise FileExistsError(f"{record.name} already exists in the folder")
-        write_png_atomically(path, record.pixels)
+        writes: list[tuple[Path, bytes]] = []
+        if was_new or not numpy.array_equal(record.pixels, record.disk_pixels):
+            writes.append((path, encode_png(record.pixels)))
+        companion_writes = self._companion_writes(record)
+        for suffix, companion_path, _ in companion_writes:
+            if suffix not in record.disk_suffixes and companion_path.exists():
+                raise FileExistsError(f"{companion_path.name} already exists in the folder")
+        writes.extend((companion_path, content) for _, companion_path, content in companion_writes)
+        write_files_all_or_none(writes)
         record.disk_pixels = record.pixels.copy()
+        if record.planes is not None:
+            record.disk_planes = record.planes.copy()
+        record.disk_suffixes = record.disk_suffixes | {suffix for suffix, _, _ in companion_writes}
         self.existing_names.add(record.name.casefold())
+        self.existing_names.update(companion_path.name.casefold() for _, companion_path, _ in companion_writes)
         if was_new:
             self.save_atlas_file()
+
+    def _companion_writes(self, record: TileRecord) -> list[tuple[str, Path, bytes]]:
+        """The companion files that saving the tile must write: (ending, path, content) for each file whose channels
+        differ from what is on disk. A file that does not exist counts as neutral, so a file is created only when one
+        of its channels has data, and one that exists is rewritten when any of its channels changed, even to neutral."""
+        if record.planes is None:
+            return []
+        pictures = companions_from_planes(self.profile, record.planes)
+        writes: list[tuple[str, Path, bytes]] = []
+        for suffix in self.profile.suffixes:
+            indices = self.profile.channel_indices(suffix)
+            if numpy.array_equal(record.planes[:, :, indices], record.disk_planes[:, :, indices]):
+                continue
+            path = self._find_tile_file(companion_name(record.name, suffix)) or self.folder / companion_name(
+                record.name, suffix
+            )
+            writes.append((suffix, path, encode_png(pictures[suffix])))
+        return writes
 
     def save_tiles(self, coordinates: Iterable[Coordinate]) -> tuple[int, list[str]]:
         """Save every modified tile among `coordinates`. Returns how many were saved and a message for each failure."""
@@ -1461,7 +2457,7 @@ class AtlasProject:
         names = default_import_names(tiles, self.existing_names)
 
         def change() -> None:
-            self.tiles = {coordinate: TileRecord(names[coordinate], pixels.copy(), None) for coordinate, pixels in tiles.items()}
+            self.tiles = {coordinate: self._new_record(names[coordinate], pixels.copy()) for coordinate, pixels in tiles.items()}
             self.selection = set()
 
         self._commit(change)
@@ -1476,10 +2472,19 @@ class AtlasProject:
         record = self.tiles[coordinate]
         if record.error is not None:
             return f"this tile cannot be renamed: {record.error}"
-        taken = set(self.existing_names)
-        taken.discard(record.name.casefold())
+        own_files = {record.name.casefold()} | {
+            companion_name(record.name, suffix).casefold() for suffix in record.disk_suffixes
+        }
+        taken = set(self.existing_names) - own_files
         taken |= {other.name.casefold() for other_coordinate, other in self.tiles.items() if other_coordinate != coordinate}
-        return find_name_problem(new_name, taken)
+        problem = find_name_problem(new_name, taken)
+        if problem is not None:
+            return problem
+        for suffix in self.profile.suffixes:
+            companion = companion_name(new_name, suffix)
+            if companion.casefold() in taken:
+                return f"{companion} already exists in the folder and would become a companion file of {new_name}"
+        return None
 
     def rename_tile(self, coordinate: Coordinate, new_name: str) -> bool:
         """Rename a tile now: its file (if it has one) and its entry in atlas.json. False if the name is the same.
@@ -1494,26 +2499,36 @@ class AtlasProject:
         if problem is not None:
             raise ValueError(problem)
         old_name = record.name
-        old_path, new_path = self.folder / old_name, self.folder / new_name
-        has_file = not record.is_new
-        if has_file:
+        # Every file of the tile moves with it: its PNG file, if it has one, and each companion file that exists.
+        moves: list[tuple[Path, Path]] = []
+        if not record.is_new:
+            moves.append((self.folder / old_name, self.folder / new_name))
+        for suffix in self.profile.suffixes:
+            if suffix in record.disk_suffixes:
+                old_file = self._find_tile_file(companion_name(old_name, suffix))
+                if old_file is not None:
+                    moves.append((old_file, self.folder / companion_name(new_name, suffix)))
+        for old_path, new_path in moves:
             if new_path.exists() and not os.path.samefile(old_path, new_path):
-                raise FileExistsError(f"{new_name} already exists in the folder")
-            os.rename(old_path, new_path)
-        record.name = new_name
+                raise FileExistsError(f"{new_path.name} already exists in the folder")
+        done: list[tuple[Path, Path]] = []
         try:
+            for old_path, new_path in moves:
+                os.rename(old_path, new_path)
+                done.append((old_path, new_path))
+            record.name = new_name
             self.save_atlas_file()
         except BaseException:
             record.name = old_name
-            if has_file:
+            for old_path, new_path in reversed(done):
                 try:
                     os.rename(new_path, old_path)
                 except OSError:
-                    logger.warning("could not give %s back its name %s", new_name, old_name)
+                    logger.warning("could not give %s back its name %s", new_path.name, old_path.name)
             raise
-        if has_file:
-            self.existing_names.discard(old_name.casefold())
-            self.existing_names.add(new_name.casefold())
+        for old_path, new_path in moves:
+            self.existing_names.discard(old_path.name.casefold())
+            self.existing_names.add(new_path.name.casefold())
         return True
 
     # Selection ------------------------------------------------------------------------------------------
@@ -1551,7 +2566,26 @@ class AtlasProject:
 
         def change() -> None:
             tile = self.unplaced.pop(index)
-            self.tiles[target] = TileRecord(tile.name, tile.pixels.copy(), tile.pixels)
+            if tile.companion_error is not None:
+                self.tiles[target] = TileRecord(tile.name, None, None, tile.companion_error)
+            elif not tile.has_file:
+                self.tiles[target] = TileRecord(
+                    tile.name,
+                    tile.pixels.copy(),
+                    None,
+                    planes=tile.planes.copy(),
+                    disk_planes=tile.planes.copy(),
+                    disk_suffixes=tile.disk_suffixes,
+                )
+            else:
+                self.tiles[target] = TileRecord(
+                    tile.name,
+                    tile.pixels.copy(),
+                    tile.pixels,
+                    planes=None if tile.planes is None else tile.planes.copy(),
+                    disk_planes=None if tile.planes is None else tile.planes.copy(),
+                    disk_suffixes=tile.disk_suffixes,
+                )
 
         self._commit(change)
         return True
@@ -1569,7 +2603,9 @@ class AtlasProject:
         def change() -> None:
             for coordinate in coordinates:
                 record = self.tiles.pop(coordinate)
-                self.unplaced.append(UnplacedTile(record.name, record.disk_pixels))
+                self.unplaced.append(
+                    UnplacedTile(record.name, record.disk_pixels, record.disk_planes, record.disk_suffixes)
+                )
                 self.selection.discard(coordinate)
             self.unplaced.sort(key=lambda tile: tile.name.casefold())
 
@@ -1614,11 +2650,12 @@ class AtlasProject:
 
         try:
             for record in records:
-                path = self._find_tile_file(record.name)
-                if path is not None:
-                    held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
-                    os.rename(path, held)
-                    held_aside.append((path, held))
+                for file_name in [record.name] + [companion_name(record.name, suffix) for suffix in self.profile.suffixes]:
+                    path = self._find_tile_file(file_name)
+                    if path is not None:
+                        held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+                        os.rename(path, held)
+                        held_aside.append((path, held))
             self._commit(change)
         except BaseException:
             for path, held in reversed(held_aside):
@@ -1629,7 +2666,8 @@ class AtlasProject:
             raise
         for record in records:
             self.history.forget(record)
-            self.existing_names.discard(record.name.casefold())
+        for path, _ in held_aside:
+            self.existing_names.discard(path.name.casefold())
         for path, held in held_aside:
             try:
                 os.unlink(held)
@@ -1638,8 +2676,14 @@ class AtlasProject:
                 logger.warning("%s was purged but its leftover %s could not be deleted: %s", path.name, held.name, error)
 
     def _taken_names(self) -> set[str]:
-        """Lower-cased names a new tile cannot have: every PNG file in the folder and the name of every tile."""
-        return set(self.existing_names) | {record.name.casefold() for record in self.tiles.values()}
+        """Lower-cased names a new tile cannot have: every PNG file in the folder, the name of every tile, and the
+        picture that each companion file in the folder goes with (a tile with that name would take the file over)."""
+        names = set(self.existing_names) | {record.name.casefold() for record in self.tiles.values()}
+        for name in self.existing_names:
+            split = split_companion_name(name, self.profile)
+            if split is not None:
+                names.add(split[0].casefold())
+        return names
 
     def create_tile(self, coordinate: Coordinate) -> str:
         """Add an empty (fully transparent) tile at an empty place and select it. It has no file yet: its pixels are
@@ -1655,7 +2699,7 @@ class AtlasProject:
         name = make_unique_name(NEW_TILE_NAME, self._taken_names())
 
         def change() -> None:
-            self.tiles[coordinate] = TileRecord(name, numpy.zeros((self.tile_size, self.tile_size, 4), dtype=numpy.uint8), None)
+            self.tiles[coordinate] = self._new_record(name, numpy.zeros((self.tile_size, self.tile_size, 4), dtype=numpy.uint8))
             self.selection = {coordinate}
 
         self._commit(change)
@@ -1688,7 +2732,22 @@ class AtlasProject:
             source = self.tiles[original]
             name = copy_name(source.name, taken)
             taken.add(name.casefold())
-            copies[places[original]] = TileRecord(name, source.pixels.copy(), source.pixels.copy())
+            copy = TileRecord(name, source.pixels.copy(), source.pixels.copy())
+            if source.planes is not None:
+                # A companion file is copied when the tile has one or has data in its channels.
+                copy.planes = source.planes.copy()
+                suffixes = [
+                    suffix
+                    for suffix in self.profile.suffixes
+                    if suffix in source.disk_suffixes
+                    or not numpy.array_equal(
+                        source.planes[:, :, self.profile.channel_indices(suffix)],
+                        neutral_planes(self.profile, self.tile_size)[:, :, self.profile.channel_indices(suffix)],
+                    )
+                ]
+                copy.disk_planes = source.planes.copy()
+                copy.disk_suffixes = frozenset(suffixes)
+            copies[places[original]] = copy
 
         def change() -> None:
             self.tiles.update(copies)
@@ -1697,11 +2756,18 @@ class AtlasProject:
         written: list[Path] = []
         try:
             for record in copies.values():
-                path = self.folder / record.name
-                if path.exists():
-                    raise FileExistsError(f"{record.name} already exists in the folder")
-                write_png_atomically(path, record.pixels)
-                written.append(path)
+                pictures = None if record.planes is None else companions_from_planes(self.profile, record.planes)
+                writes = [(self.folder / record.name, record.pixels)]
+                writes += [
+                    (self.folder / companion_name(record.name, suffix), pictures[suffix])
+                    for suffix in self.profile.suffixes
+                    if suffix in record.disk_suffixes
+                ]
+                for path, pixels in writes:
+                    if path.exists():
+                        raise FileExistsError(f"{path.name} already exists in the folder")
+                    write_png_atomically(path, pixels)
+                    written.append(path)
             self._commit(change)
         except BaseException:
             for path in written:
@@ -1710,8 +2776,87 @@ class AtlasProject:
                 except OSError:
                     logger.warning("could not delete %s, which was written for a copy that failed", path.name)
             raise
-        self.existing_names |= {record.name.casefold() for record in copies.values()}
+        self.existing_names |= {path.name.casefold() for path in written}
         return True
+
+
+CHANNEL_NAMES = {
+    "smoothness": "Smoothness",
+    "reflectance": "Reflectance",
+    "porosity_scattering": "Porosity or scattering",
+    "emission": "Emission",
+    "normal_x": "Normal X",
+    "normal_y": "Normal Y",
+    "ambient_occlusion": "Occlusion",
+    "height": "Height",
+}
+
+
+@dataclasses.dataclass
+class DifferenceRow:
+    """One row of the quit dialog: what a part of a tile is on disk (`old`) and now (`new`), and where the two differ
+    (`difference`: bright red on black). Each picture is RGBA, the size of the tile."""
+
+    label: str
+    old: numpy.ndarray
+    new: numpy.ndarray
+    difference: numpy.ndarray
+
+
+def _grey_picture(values: numpy.ndarray) -> numpy.ndarray:
+    picture = numpy.empty(values.shape + (4,), dtype=numpy.uint8)
+    picture[..., :3] = values[..., None]
+    picture[..., 3] = 255
+    return picture
+
+
+def _difference_picture(differs: numpy.ndarray) -> numpy.ndarray:
+    picture = numpy.zeros(differs.shape + (4,), dtype=numpy.uint8)
+    picture[..., 3] = 255
+    picture[differs, 0] = 255
+    return picture
+
+
+def channel_grey(identity: str, plane: numpy.ndarray) -> numpy.ndarray:
+    """The bytes of a channel as grey levels of its meaning: its lowest value black and its highest white."""
+    codec = CHANNEL_CODECS[identity]
+    fraction = (codec.decode(plane) - codec.lowest) / (codec.highest - codec.lowest)
+    return numpy.clip(numpy.rint(fraction * 255.0), 0, 255).astype(numpy.uint8)
+
+
+def tile_difference_rows(profile: PbrProfile, record: TileRecord) -> list[DifferenceRow]:
+    """The rows that the quit dialog shows for a tile: RGB together (alpha not part of it), alpha, then each channel of the
+    profile, and only those that differ from the files (a tile with no file always has its RGB row). A channel is a grey
+    of its meaning from its lowest value to its highest, as the breakout shows it."""
+    pixels = record.pixels
+    has_file = record.disk_pixels is not None
+    old_pixels = record.disk_pixels if has_file else numpy.zeros_like(pixels)
+    rows: list[DifferenceRow] = []
+    colour_differs = (pixels[..., :3] != old_pixels[..., :3]).any(axis=2)
+    if colour_differs.any() or not has_file:
+        old_colour = old_pixels.copy()
+        old_colour[..., 3] = 255 if has_file else 0  # alpha is not part of this row; with no file there is nothing to show
+        new_colour = pixels.copy()
+        new_colour[..., 3] = 255
+        rows.append(DifferenceRow("RGB", old_colour, new_colour, _difference_picture(colour_differs)))
+    alpha_differs = pixels[..., 3] != old_pixels[..., 3]
+    if alpha_differs.any():
+        rows.append(
+            DifferenceRow("Alpha", _grey_picture(old_pixels[..., 3]), _grey_picture(pixels[..., 3]), _difference_picture(alpha_differs))
+        )
+    if record.planes is not None and record.disk_planes is not None:
+        for index, channel in enumerate(profile.channels):
+            differs = record.planes[:, :, index] != record.disk_planes[:, :, index]
+            if differs.any():
+                rows.append(
+                    DifferenceRow(
+                        CHANNEL_NAMES.get(channel.identity, channel.identity),
+                        _grey_picture(channel_grey(channel.identity, record.disk_planes[:, :, index])),
+                        _grey_picture(channel_grey(channel.identity, record.planes[:, :, index])),
+                        _difference_picture(differs),
+                    )
+                )
+    return rows
 
 
 class QuitDialog:
@@ -1736,6 +2881,11 @@ class QuitDialog:
     @property
     def remaining(self) -> int:
         return len(self.coordinates) - self.position
+
+    @property
+    def rows(self) -> list[DifferenceRow]:
+        """What differs in the tile shown, a row each (see tile_difference_rows)."""
+        return tile_difference_rows(self.project.profile, self.record)
 
     @property
     def current_pixels(self) -> numpy.ndarray:
@@ -1852,6 +3002,120 @@ class PurgeDialog:
 
     def cancel(self) -> str:
         return "cancel"
+
+
+def describe_reserved_names(warnings: list[tuple[str, str]]) -> str:
+    """One sentence for the status line about names the game reads as companion pictures; empty if there are none."""
+    if not warnings:
+        return ""
+    names = ", ".join(name for name, _ in warnings[:3]) + (", ..." if len(warnings) > 3 else "")
+    return f"Warning: {len(warnings)} tile name{'s' if len(warnings) != 1 else ''} ({names}) end as companion pictures do, so the game reads them as companions, not as pictures of their own."
+
+
+class SettingsDialog:
+    """The settings window: the PBR setting (choose, apply, confirm if channels with data would be lost) and reading the
+    folder again. apply() and reload() return "done" (the window closes; `done_message` says what happened) or "ask"
+    (it stays; `error` says why, or `stage` is "confirm" and `lost_text` says what would be lost)."""
+
+    NOTE = "Changing the setting cannot be undone, and is refused while a tile has unsaved changes."
+
+    def __init__(self, project: AtlasProject):
+        self.project = project
+        self.choice = project.pbr_profile
+        self.list_open = False
+        self.stage = "choose"
+        self.error = ""
+        self.lost_text = ""
+        self.done_message = ""
+
+    @property
+    def profile_names(self) -> list[str]:
+        return list(PBR_PROFILES)
+
+    @property
+    def note(self) -> str:
+        return self.NOTE
+
+    @property
+    def can_apply(self) -> bool:
+        return self.choice != self.project.pbr_profile
+
+    def choose(self, name: str) -> None:
+        if name not in PBR_PROFILES:
+            raise ValueError(f"{name!r} is not a PBR setting")
+        self.choice = name
+        self.stage = "choose"
+        self.error = ""
+
+    def back(self) -> None:
+        self.stage = "choose"
+        self.error = ""
+
+    def apply(self) -> str:
+        if self.stage == "choose" and not self.can_apply:
+            return "ask"
+        self.error = ""
+        plan = self.project.plan_pbr_switch(self.choice)
+        if plan.problem is not None:
+            self.error = plan.problem
+            return "ask"
+        if plan.dropped and self.stage != "confirm":
+            self.stage = "confirm"
+            self.lost_text = "; ".join(
+                f"{self.project.tiles[coordinate].name}: {', '.join(names)}" for coordinate, names in plan.dropped.items()
+            )
+            return "ask"
+        try:
+            result = self.project.switch_pbr_profile(self.choice, confirm_dropped=True)
+        except (OSError, ValueError) as error:
+            self.error = f"Could not change the setting: {error}"
+            return "ask"
+        warnings = [] if result is None else result.warnings
+        self.done_message = " ".join([f"The PBR setting is now {self.choice}."] + warnings)
+        return "done"
+
+    def reload(self) -> str:
+        self.error = ""
+        try:
+            read = self.project.reload()
+        except AtlasFileError as error:
+            self.error = f"{ATLAS_FILE_NAME} cannot be used: {error}"
+            return "ask"
+        if not read:
+            count = len(self.project.unsaved_tiles())
+            self.error = f"{count} tile{'s' if count != 1 else ''} have unsaved changes: save or discard them before reading the folder again"
+            return "ask"
+        self.done_message = f"Read {ATLAS_FILE_NAME} and the folder again."
+        return "done"
+
+
+def settings_dialog_areas(window_size: tuple[int, int], profile_names: list[str], list_open: bool) -> dict[str, object]:
+    """Where the parts of the settings window are: the panel, the menu of settings and its options (while open), the text,
+    the row for an error and the buttons."""
+    width = min(scaled(540), window_size[0] - scaled(40))
+    height = min(scaled(300), window_size[1] - scaled(40))
+    panel = pygame.Rect(0, 0, width, height)
+    panel.center = (window_size[0] // 2, window_size[1] // 2)
+    margin, gap = scaled(20), scaled(10)
+    row = scaled(30)
+    choice = pygame.Rect(panel.x + margin, panel.y + scaled(84), scaled(220), row)
+    options = (
+        {name: pygame.Rect(choice.x, choice.bottom + index * row, choice.width, row) for index, name in enumerate(profile_names)}
+        if list_open
+        else {}
+    )
+    button_height, button_width = scaled(34), scaled(130)
+    buttons_top = panel.bottom - margin - button_height
+    return {
+        "panel": panel,
+        "choice": choice,
+        "options": options,
+        "note": pygame.Rect(panel.x + margin, choice.bottom + gap, panel.width - 2 * margin, scaled(70)),
+        "error": pygame.Rect(panel.x + margin, buttons_top - gap - scaled(40), panel.width - 2 * margin, scaled(40)),
+        "reload": pygame.Rect(panel.x + margin, buttons_top, button_width, button_height),
+        "apply": pygame.Rect(panel.right - margin - 2 * button_width - gap, buttons_top, button_width, button_height),
+        "cancel": pygame.Rect(panel.right - margin - button_width, buttons_top, button_width, button_height),
+    }
 
 
 def purge_dialog_areas(window_size: tuple[int, int]) -> dict[str, pygame.Rect]:
@@ -1979,26 +3243,47 @@ class SystemFilePicker:
         return Path(chosen) if chosen else None
 
 
-def quit_dialog_areas(window_size: tuple[int, int], show_checkbox: bool) -> dict[str, pygame.Rect]:
-    """Where the parts of the quit dialog are: the panel, the two pictures, the checkbox row (when there is more
-    than one tile to ask about), the row for an error and the three buttons."""
-    width = min(scaled(640), window_size[0] - scaled(40))
-    height = min(scaled(430), window_size[1] - scaled(40))
+def quit_dialog_areas(window_size: tuple[int, int], show_checkbox: bool, row_count: int = 1) -> dict[str, pygame.Rect]:
+    """Where the parts of the quit dialog are: the panel, the column headings, for each row its label and its three pictures
+    (old, new, difference: `label0`, `old0`, `new0`, `difference0`, `label1`, ...), the checkbox row (when there is more than
+    one tile to ask about), the row for an error and the three buttons."""
+    width = min(scaled(680), window_size[0] - scaled(40))
+    height = min(scaled(620), window_size[1] - scaled(40))
     panel = pygame.Rect(0, 0, width, height)
     panel.center = (window_size[0] // 2, window_size[1] // 2)
-    margin, gap = scaled(20), scaled(16)
-    box = max(scaled(60), min(scaled(220), (width - 2 * margin - gap) // 2, height - scaled(228)))
-    left = panel.centerx - (2 * box + gap) // 2
-    top = panel.y + scaled(98)
-    areas = {
-        "panel": panel,
-        "current": pygame.Rect(left, top, box, box),
-        "disk": pygame.Rect(left + box + gap, top, box, box),
-    }
-    row_top = top + box + gap
+    margin, gap = scaled(20), scaled(10)
+    label_width = scaled(120) if width >= scaled(500) else scaled(70)
+    heading_top = panel.y + scaled(74)
+    rows_top = heading_top + scaled(22)
+    bottom_part = (scaled(24) + gap // 2 if show_checkbox else 0) + scaled(20) + gap // 2 + scaled(34) + margin + gap
+    rows_height = max(scaled(30), panel.bottom - bottom_part - rows_top)
+    smallest = scaled(24)
+    # Rows that do not fit at the smallest size are left out, and a line says how many.
+    shown = row_count
+    if row_count * smallest + (row_count - 1) * gap > rows_height:
+        shown = max(1, (rows_height - scaled(18) + gap) // (smallest + gap))
+    more = row_count - shown
+    box = max(
+        smallest,
+        min(scaled(150), (width - 2 * margin - label_width - 3 * gap) // 3, (rows_height - (more > 0) * scaled(18) - (shown - 1) * gap) // shown),
+    )
+    left = panel.x + margin + label_width + gap
+    areas = {"panel": panel}
+    for name, column in (("old", 0), ("new", 1), ("difference", 2)):
+        areas[f"{name}_heading"] = pygame.Rect(left + column * (box + gap), heading_top, box, scaled(18))
+    for index in range(shown):
+        top = rows_top + index * (box + gap)
+        areas[f"label{index}"] = pygame.Rect(panel.x + margin, top, label_width, box)
+        for name, column in (("old", 0), ("new", 1), ("difference", 2)):
+            areas[f"{name}{index}"] = pygame.Rect(left + column * (box + gap), top, box, box)
+    row_top = rows_top + shown * (box + gap)
+    if more:
+        areas["more"] = pygame.Rect(panel.x + margin, row_top - gap + scaled(2), panel.width - 2 * margin, scaled(16))
+        row_top += scaled(18)
     if show_checkbox:
         areas["checkbox"] = pygame.Rect(panel.x + margin, row_top, panel.width - 2 * margin, scaled(24))
-    areas["error"] = pygame.Rect(panel.x + margin, row_top + scaled(24) + gap // 2, panel.width - 2 * margin, scaled(20))
+        row_top += scaled(24) + gap // 2
+    areas["error"] = pygame.Rect(panel.x + margin, row_top, panel.width - 2 * margin, scaled(20))
     button_height = scaled(34)
     button_width = (panel.width - 2 * margin - 2 * gap) // 3
     for index, name in enumerate(("save", "discard", "cancel")):
@@ -2049,6 +3334,18 @@ SLIDERS = {
     "airbrush": (("airbrush_hardness", "Hardness"), ("airbrush_opacity", "Opacity")),
 }
 COLOR_HISTORY_LENGTH = 16
+
+# What the rows of the channel controls are called (by the identity of the channel).
+CHANNEL_LABELS = {
+    "smoothness": "Smooth",
+    "reflectance": "Reflect",
+    "porosity_scattering": "Porosity",
+    "emission": "Emission",
+    "normal_x": "Normal X",
+    "normal_y": "Normal Y",
+    "ambient_occlusion": "Occlusion",
+    "height": "Height",
+}
 MAXIMUM_CANVAS_ZOOM = 64
 
 
@@ -2113,11 +3410,157 @@ def slider_fraction(rectangle: pygame.Rect, x: int) -> float:
     return round(max(0.0, min(1.0, position)), 2)
 
 
+@dataclasses.dataclass(frozen=True)
+class ChannelPaint:
+    """The channels a stroke paints: the profile whose channels the canvas has, and for each channel (by identity) what
+    it paints. A channel with no entry, or the mode none, is not painted."""
+
+    profile: PbrProfile
+    blends: dict[str, ChannelBlend]
+
+
+class ChannelControls:
+    """The state behind the channel controls: for each channel of the profile a blend mode and two values (primary and
+    secondary, like the two colours), and the blend modes of RGB and alpha. The values are meanings (see
+    CHANNEL_CODECS), or a `Metal` for reflectance. The rows follow the profile: a channel that stays when the profile
+    changes keeps its state."""
+
+    SLOTS = ("primary", "secondary")
+    NUMBER = re.compile(r"-?(\d+(\.\d*)?|\.\d+)")
+    METAL = re.compile(r"[mM](\d+)")
+
+    def __init__(self) -> None:
+        self.rows: list[str] = []
+        self._modes: dict[str, str] = {"rgb": "replace", "alpha": "replace"}
+        self._values: dict[str, dict[str, ChannelValue]] = {}
+
+    def follow(self, profile: PbrProfile) -> None:
+        """Make the rows the channels of `profile`; rows that were there keep their mode and values, new ones start with
+        mode none and the neutral meaning of the channel."""
+        modes = {"rgb": self._modes["rgb"], "alpha": self._modes["alpha"]}
+        values: dict[str, dict[str, ChannelValue]] = {}
+        for channel in profile.channels:
+            identity = channel.identity
+            neutral = float(CHANNEL_CODECS[identity].decode(numpy.array([channel.neutral], dtype=numpy.uint8))[0])
+            modes[identity] = self._modes.get(identity, "none")
+            values[identity] = self._values.get(identity, {slot: neutral for slot in self.SLOTS})
+        self.rows = [channel.identity for channel in profile.channels]
+        self._modes, self._values = modes, values
+
+    def _check(self, key: str, slot: Optional[str] = None) -> None:
+        if key not in self._modes or (slot is not None and key not in self._values):
+            raise ValueError(f"no row {key!r}")
+        if slot is not None and slot not in self.SLOTS:
+            raise ValueError(f"no slot {slot!r}")
+
+    def mode(self, key: str) -> str:
+        self._check(key)
+        return self._modes[key]
+
+    def set_mode(self, key: str, mode: str) -> None:
+        self._check(key)
+        if mode not in BLEND_MODES:
+            raise ValueError(f"unknown blend mode {mode!r}")
+        self._modes[key] = mode
+
+    def value(self, identity: str, slot: str) -> ChannelValue:
+        self._check(identity, slot)
+        return self._values[identity][slot]
+
+    def set_value(self, identity: str, slot: str, value: ChannelValue) -> None:
+        """Set a value: a meaning is kept in the range of the channel; a Metal is for reflectance only."""
+        self._check(identity, slot)
+        if isinstance(value, Metal):
+            if identity != "reflectance":
+                raise ValueError(f"only reflectance has metals, not {identity}")
+            self._values[identity][slot] = value
+            return
+        codec = CHANNEL_CODECS[identity]
+        self._values[identity][slot] = max(codec.lowest, min(codec.highest, float(value)))
+
+    def blends(self, slot: str) -> dict[str, ChannelBlend]:
+        """What a stroke made with the button of `slot` paints, for every channel."""
+        return {identity: ChannelBlend(self._modes[identity], self._values[identity][slot]) for identity in self.rows}
+
+    def color_blend(self) -> ColorBlend:
+        return ColorBlend(self._modes["rgb"], self._modes["alpha"])
+
+    def swap(self) -> None:
+        """Exchange the primary and secondary values of every channel (the modes stay)."""
+        for values in self._values.values():
+            values["primary"], values["secondary"] = values["secondary"], values["primary"]
+
+    def load(self, values: dict[str, ChannelValue], slot: str) -> None:
+        """Take the values of a pixel (the eye dropper) into a slot; the modes stay, and unknown channels are ignored."""
+        for identity, value in values.items():
+            if identity in self._values:
+                self.set_value(identity, slot, value)
+
+    def value_text(self, identity: str, slot: str) -> str:
+        value = self.value(identity, slot)
+        return f"m{value.index}" if isinstance(value, Metal) else f"{value:.2f}"
+
+    @classmethod
+    def parse_value(cls, identity: str, text: str) -> Optional[ChannelValue]:
+        """The value a typed text means, or None if it is not one: a number (kept in the range of the channel), or for
+        reflectance m0 to m25 for a metal."""
+        text = text.strip()
+        metal = cls.METAL.fullmatch(text)
+        if metal is not None:
+            number = int(metal.group(1))
+            return Metal(number) if identity == "reflectance" and number < METAL_COUNT else None
+        if cls.NUMBER.fullmatch(text) is None:
+            return None
+        codec = CHANNEL_CODECS[identity]
+        return max(codec.lowest, min(codec.highest, float(text)))
+
+    def fraction(self, identity: str, slot: str) -> float:
+        """Where a slider shows the value, 0 to 1 over the range of the channel (a metal: its place among the 26)."""
+        value = self.value(identity, slot)
+        if isinstance(value, Metal):
+            return value.index / (METAL_COUNT - 1)
+        codec = CHANNEL_CODECS[identity]
+        return (value - codec.lowest) / (codec.highest - codec.lowest)
+
+    @staticmethod
+    def value_at(identity: str, fraction: float) -> float:
+        """The meaning at a place of the slider (0 to 1)."""
+        codec = CHANNEL_CODECS[identity]
+        return codec.lowest + max(0.0, min(1.0, fraction)) * (codec.highest - codec.lowest)
+
+    def step(self, identity: str, slot: str, direction: int, large: bool) -> None:
+        """The arrow keys: a hundredth up or down per step, a tenth with shift; a metal goes to the next metal."""
+        value = self.value(identity, slot)
+        if isinstance(value, Metal):
+            self.set_value(identity, slot, Metal(max(0, min(METAL_COUNT - 1, value.index + direction))))
+            return
+        self.set_value(identity, slot, round(value + direction * (0.1 if large else 0.01), 2))
+
+
+def pick_channel_values(
+    layout: CanvasLayout, pixel: Coordinate, profile: PbrProfile, wrap: bool = False
+) -> Optional[dict[str, ChannelValue]]:
+    """The channel values of a canvas pixel (the eye dropper), or None outside the canvas, over an empty place, or on a
+    canvas with no channels. With `wrap` the canvas repeats, so `pixel` may be in any copy of it."""
+    if layout.planes is None:
+        return None
+    height, width = layout.pixels.shape[:2]
+    column, row = wrap_pixel(pixel, (height, width)) if wrap else pixel
+    if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
+        return None
+    return sample_channel_values(profile, layout.planes, row, column)
+
+
 class CanvasSession:
     """One press, drag and release of a drawing tool on the canvas.
 
     `pixels` is what the canvas should look like now; the layout's own pixels are not touched, so the stroke
     can be shown as a preview and thrown away.
+
+    A layout that has planes (the channels of the tiles) gives the session `planes`, the same for the channels. With
+    `channels` the stroke paints them where it paints the pixels, with the blend modes and values given (a pixel passed
+    over many times is blended once), and the eraser resets them to neutral. The fill stops where a channel differs, and
+    the rotation carries them. Without `channels` they are carried along unchanged.
 
     With `wrap` (wrap-assist) the canvas repeats in every direction: the positions given are positions in that
     endless canvas, and a stroke changes the same pixels of every copy, so it can leave the canvas on one side and
@@ -2133,9 +3576,20 @@ class CanvasSession:
         start: Coordinate,
         random_source: Optional[RandomSource] = None,
         wrap: bool = False,
+        channels: Optional[ChannelPaint] = None,
+        color_blend: ColorBlend = ColorBlend(),
     ):
         if tool not in STROKE_TOOLS:
             raise ValueError(f"{tool!r} does not draw")
+        self.channels = channels
+        # The eraser and the rotation have no colour to blend.
+        self.color_blend = color_blend if tool not in COLORLESS_TOOLS else ColorBlend()
+        self.planes: Optional[numpy.ndarray] = None if layout.planes is None else layout.planes.copy()
+        # How much of each pixel the stroke has covered so far (0 to 1), which is what the channels are painted by.
+        self.coverage = numpy.zeros(layout.pixels.shape[:2], dtype=numpy.float64)
+        self._channel_stroke: Optional[ChannelStroke] = None
+        if layout.planes is not None and channels is not None and tool not in ("eraser", "rotate"):
+            self._channel_stroke = ChannelStroke(channels.profile, layout.planes, channels.blends)
         self.wrap = wrap
         self.layout = layout
         self.tool = tool
@@ -2167,7 +3621,9 @@ class CanvasSession:
             )
             self._stamp_air_path(start, start)
         elif tool == "fill":
-            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask, wrap))
+            # Pixels count as alike only if their channels are alike too.
+            alike = self.base if layout.planes is None else numpy.concatenate([self.base, layout.planes], axis=2)
+            self._paint(flood_fill_mask(alike, start[0], start[1], layout.editable_mask, wrap))
         elif tool == "rotate":
             self._find_rotation_line()
             self._preview_rotation(start)
@@ -2192,19 +3648,47 @@ class CanvasSession:
         when equally far), else its column, by as many pixels as the pointer is away. Always worked out from the
         pixels as they were, so moving back undoes it."""
         self.pixels = self.base.copy()
+        if self.planes is not None:
+            self.planes = self.layout.planes.copy()
         if self._rotated_pixel is None:
             return
         column, row = self._rotated_pixel
         left, top = self._tile_left_top
         size = self.layout.tile_size
         delta_column, delta_row = pixel[0] - self.start[0], pixel[1] - self.start[1]
-        if abs(delta_column) >= abs(delta_row):
-            self.pixels[row, left : left + size] = numpy.roll(self.base[row, left : left + size], delta_column, axis=0)
-        else:
-            self.pixels[top : top + size, column] = numpy.roll(self.base[top : top + size, column], delta_row, axis=0)
+        for before, after in [(self.base, self.pixels)] + ([] if self.planes is None else [(self.layout.planes, self.planes)]):
+            if abs(delta_column) >= abs(delta_row):
+                after[row, left : left + size] = numpy.roll(before[row, left : left + size], delta_column, axis=0)
+            else:
+                after[top : top + size, column] = numpy.roll(before[top : top + size, column], delta_row, axis=0)
 
     def _paint(self, mask: numpy.ndarray) -> None:
-        apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
+        mask = mask & self.layout.editable_mask
+        apply_color_to_mask(self.pixels, mask, self.color)
+        self._cover(mask.astype(numpy.float64))
+
+    def _cover(self, strength: numpy.ndarray) -> None:
+        """The stroke covers pixels with this strength (0 to 1 per pixel); each pixel keeps the strongest it was given."""
+        if not (strength > self.coverage).any():
+            if not self.color_blend.is_replace:
+                self._refresh_planes()  # the tool has drawn the color its own way over the pixels meanwhile
+            return
+        numpy.maximum(self.coverage, strength, out=self.coverage)
+        self._refresh_planes()
+
+    def _refresh_planes(self) -> None:
+        """Work out the colour and the channels again from what the stroke covers."""
+        if not self.color_blend.is_replace:
+            self.pixels = blend_color(
+                self.base, self.color, self.color_blend.rgb_mode, self.color_blend.alpha_mode, self.coverage
+            )
+        if self.planes is None:
+            return
+        if self.tool == "eraser" and self.channels is not None:
+            self.planes = reset_channels(self.channels.profile, self.layout.planes, self.coverage)
+        elif self._channel_stroke is not None:
+            self._channel_stroke.set_coverage(self.coverage)
+            self.planes = self._channel_stroke.planes.copy()
 
     def _mask_between(
         self,
@@ -2237,7 +3721,7 @@ class CanvasSession:
 
     def _stamp_noise(self, pixel: Coordinate) -> None:
         settings = self.settings
-        noise_stamp(
+        hit = noise_stamp(
             self.pixels,
             pixel[0],
             pixel[1],
@@ -2250,11 +3734,13 @@ class CanvasSession:
             self.layout.editable_mask,
             self.wrap,
         )
+        self._cover(hit * min(settings.fractions["noise_opacity"], 1.0))
 
     def _stamp_air_path(self, start: Coordinate, end: Coordinate) -> None:
         assert self.airbrush is not None
         self.airbrush.stamp_path(start, end)
         self.pixels = self.airbrush.result()
+        self._cover(self.airbrush.coverage)
 
     def _shape_mask(self, pixel: Coordinate) -> numpy.ndarray:
         def build(shape: tuple[int, int], start: Coordinate, end: Coordinate) -> numpy.ndarray:
@@ -2276,7 +3762,9 @@ class CanvasSession:
 
     def _preview_shape(self, pixel: Coordinate) -> None:
         self.pixels = self.base.copy()
+        self.coverage[:] = 0.0  # the shape is worked out again from the start, so what it covered before does not count
         self._paint(self._shape_mask(pixel))
+        self._refresh_planes()
 
     def move(self, pixel: Coordinate) -> None:
         if pixel == self.last:
@@ -2297,6 +3785,8 @@ class CanvasSession:
 
     @property
     def changed(self) -> bool:
+        if self.planes is not None and not numpy.array_equal(self.planes, self.layout.planes):
+            return True
         return not numpy.array_equal(self.pixels, self.base)
 
 
@@ -2318,6 +3808,8 @@ class FloatingPaste:
     pixels: numpy.ndarray
     column: int
     row: int
+    # The channels that go with the pixels, when they were copied from tiles of this program.
+    planes: Optional[numpy.ndarray] = None
 
     @property
     def rectangle(self) -> tuple[int, int, int, int]:
@@ -2393,6 +3885,11 @@ class ColorState:
         red, green, blue = (int(round(channel * 255)) for channel in colorsys.hsv_to_rgb(hue, saturation, value))
         self.colors[slot] = (red, green, blue, int(round(alpha * 255)))
         self.hsv[slot] = (hue, saturation, value)
+
+    def swap(self) -> None:
+        """Exchange the primary and the secondary color (the key X)."""
+        self.colors["primary"], self.colors["secondary"] = self.colors["secondary"], self.colors["primary"]
+        self.hsv["primary"], self.hsv["secondary"] = self.hsv["secondary"], self.hsv["primary"]
 
     def remember(self, color: Color) -> None:
         """Add a color that was used to the front of the history of recent colors."""
@@ -3301,11 +4798,12 @@ class AtlasInteraction:
 
 
 # The checkbox buttons in the thin sidebar right of the canvas: their names and what they show on the button.
-SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"}
+SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg", "breakout": "Ch"}
 SIDEBAR_BUTTON_HINTS = {
     "wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges",
     "pixel_grid": "Pixel grid: lines between the pixels (shown when zoomed in far enough)",
     "tile_grid": "Tile grid: lines around the tiles (wrap assist keeps its own setting, off at first)",
+    "breakout": "Channel breakout: show the colour, the alpha and each channel as panels of their own (a stroke paints where it began)",
 }
 # The pixel grid is drawn when the canvas is zoomed in at least this far (screen pixels per canvas pixel).
 PIXEL_GRID_MINIMUM_ZOOM = 6
@@ -3329,6 +4827,10 @@ class EditorAreas:
     secondary_swatch: pygame.Rect
     hex_field: pygame.Rect
     history: list[pygame.Rect]
+    # The blend mode buttons of the colour (RGB, alpha) under the history, and the panel of channel controls.
+    rgb_mode: pygame.Rect
+    alpha_mode: pygame.Rect
+    channel_panel: pygame.Rect
 
 
 def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
@@ -3336,8 +4838,11 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
     margin, gap = scaled(10), scaled(6)
     width = rect.width - 2 * margin
     header = pygame.Rect(rect.x + margin, rect.y + margin, width, scaled(30))
+    # The colour area is as tall as what is stacked right of its square: swatches, hex field, the history of colours, and the
+    # blend modes of RGB and alpha. When the editor is short the history gets fewer rows (or none), the rest stays.
     square_size = scaled(120)
-    color_top = rect.bottom - margin - square_size
+    band_height = max(scaled(150), min(scaled(246), rect.height // 3))
+    color_top = rect.bottom - margin - band_height
     options = pygame.Rect(rect.x + margin, color_top - scaled(30), width, scaled(22))
     # The sliders and the shape menu of the noise brush and the air brush; empty for the other tools.
     controls = pygame.Rect(rect.x + margin, options.y - gap - scaled(24), width, scaled(24))
@@ -3361,35 +4866,91 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         for index, name in enumerate(SIDEBAR_BUTTONS)
     }
     left = rect.x + margin
-    square = pygame.Rect(left, color_top, square_size, square_size)
-    hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), square_size)
-    alpha_bar = pygame.Rect(hue_bar.right + gap, color_top, scaled(16), square_size)
+    square = pygame.Rect(left, color_top, square_size, band_height)
+    hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), band_height)
+    alpha_bar = pygame.Rect(hue_bar.right + gap, color_top, scaled(16), band_height)
     swatch_left = alpha_bar.right + scaled(20)
     swatch_size = scaled(48)
     primary_swatch = pygame.Rect(swatch_left, color_top, swatch_size, swatch_size)
     secondary_swatch = pygame.Rect(primary_swatch.right + gap, color_top, swatch_size, swatch_size)
     hex_field = pygame.Rect(swatch_left, color_top + swatch_size + gap, 2 * swatch_size + gap, scaled(28))
-    history_left = secondary_swatch.right + scaled(16)
+    mode_height = scaled(22)
+    alpha_mode = pygame.Rect(swatch_left, rect.bottom - margin - mode_height, hex_field.width, mode_height)
+    rgb_mode = alpha_mode.move(0, -(mode_height + scaled(4)))
     history_swatch = scaled(22)
-    history_columns = max(2, (rect.right - margin - history_left) // (history_swatch + 4))
+    history_columns = max(1, (hex_field.width + 4) // (history_swatch + 4))
     history = []
+    history_top = hex_field.bottom + gap
     for index in range(COLOR_HISTORY_LENGTH):
         column, row = index % history_columns, index // history_columns
-        if (row + 1) * (history_swatch + 4) > square_size:
+        if history_top + (row + 1) * (history_swatch + 4) - 4 > rgb_mode.top - gap:
             break
-        history.append(pygame.Rect(history_left + column * (history_swatch + 4), color_top + row * (history_swatch + 4), history_swatch, history_swatch))
-    return EditorAreas(header, canvas, sidebar, sidebar_buttons, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
+        history.append(pygame.Rect(swatch_left + column * (history_swatch + 4), history_top + row * (history_swatch + 4), history_swatch, history_swatch))
+    panel_left = hex_field.right + scaled(14)
+    channel_panel = pygame.Rect(panel_left, color_top, max(scaled(40), rect.right - margin - panel_left), band_height)
+    return EditorAreas(
+        header, canvas, sidebar, sidebar_buttons, tool_buttons, options, controls, square, hue_bar, alpha_bar,
+        primary_swatch, secondary_swatch, hex_field, history, rgb_mode, alpha_mode, channel_panel,
+    )
 
 
-def saturation_value_square(hue: float, size: int) -> pygame.Surface:
+def compute_breakout_cells(
+    area: pygame.Rect, count: int, canvas_size: tuple[int, int], copies: int = 1
+) -> list[tuple[pygame.Rect, pygame.Rect]]:
+    """The panels of the channel breakout in `area`: for each a (label, cell) pair of rectangles, the label right above its cell,
+    in reading order. The cells are of one size, and the number of columns is the one that lets the canvas (`canvas_size`
+    wide and high, `copies` of it side by side with wrap-assist) be shown biggest in a cell."""
+    gap, label_height = scaled(6), scaled(16)
+    width, height = max(canvas_size[0] * copies, 1), max(canvas_size[1] * copies, 1)
+    best: Optional[tuple[int, int, int, int]] = None
+    for columns in range(1, count + 1):
+        rows = -(-count // columns)
+        cell_width = (area.width - (columns - 1) * gap) // columns
+        cell_height = (area.height - rows * label_height - (rows - 1) * gap) // rows
+        fit = min(cell_width / width, cell_height / height)
+        if best is None or fit > best[0]:
+            best = (fit, columns, cell_width, cell_height)  # type: ignore[assignment]
+    assert best is not None
+    _, columns, cell_width, cell_height = best
+    cell_width, cell_height = max(1, cell_width), max(1, cell_height)
+    cells = []
+    for index in range(count):
+        row, column = divmod(index, columns)
+        left = area.x + column * (cell_width + gap)
+        top = area.y + row * (label_height + cell_height + gap) + label_height
+        cells.append((pygame.Rect(left, top - label_height, cell_width, label_height), pygame.Rect(left, top, cell_width, cell_height)))
+    return cells
+
+
+def panel_image(key: str, pixels: numpy.ndarray, planes: Optional[numpy.ndarray], profile: PbrProfile) -> numpy.ndarray:
+    """What a panel of the breakout shows: "rgb" the colour with no transparency, "alpha" the alpha as grey levels, and the
+    identity of a channel its meaning as grey levels (lowest black, highest white). RGBA, the size of the canvas."""
+    if key == "rgb":
+        picture = pixels.copy()
+        picture[..., 3] = 255
+        return picture
+    if key == "alpha":
+        return _grey_picture(pixels[..., 3])
+    for index, channel in enumerate(profile.channels):
+        if channel.identity == key and planes is not None:
+            return _grey_picture(channel_grey(key, planes[:, :, index]))
+    raise ValueError(f"no panel {key!r}")
+
+
+def format_channel_value(value: ChannelValue) -> str:
+    return f"m{value.index}" if isinstance(value, Metal) else f"{value:.2f}"
+
+
+def saturation_value_square(hue: float, width: int, height: Optional[int] = None) -> pygame.Surface:
     """The picture of a color picker's square for one hue: saturation grows to the right, value falls downward."""
     import colorsys
 
-    saturation = numpy.linspace(0.0, 1.0, size)[None, :, None]
-    value = numpy.linspace(1.0, 0.0, size)[:, None, None]
+    height = width if height is None else height
+    saturation = numpy.linspace(0.0, 1.0, width)[None, :, None]
+    value = numpy.linspace(1.0, 0.0, height)[:, None, None]
     pure = numpy.array(colorsys.hsv_to_rgb(hue, 1.0, 1.0))
     rgb = (value * ((1.0 - saturation) + saturation * pure) * 255).astype(numpy.uint8)
-    return pygame.image.frombuffer(rgb.tobytes(), (size, size), "RGB")
+    return pygame.image.frombuffer(rgb.tobytes(), (width, height), "RGB")
 
 
 def hue_gradient(width: int, height: int) -> pygame.Surface:
@@ -3426,10 +4987,15 @@ class EditorPanel:
         self.view = CanvasView()
         self.layout: Optional[CanvasLayout] = None
         self.session: Optional[CanvasSession] = None
+        # The blend modes and values of the channels, and the blend modes of the colour; the rows follow the profile.
+        self.controls = ChannelControls()
+        self.controls.follow(project.profile)
+        self._controls_profile = project.pbr_profile
         self.random_source = random.Random()
         self.clipboard = SystemImageClipboard()
         # The pixels of the last copy made here, used when the system clipboard cannot hold or give a picture.
         self.internal_image: Optional[numpy.ndarray] = None
+        self.internal_planes: Optional[numpy.ndarray] = None
         self.internal_is_newer = False
         # The rectangle chosen with the select tool, (left, top, right, bottom) in canvas pixels, and a pasted
         # picture that has not been placed yet.
@@ -3455,6 +5021,22 @@ class EditorPanel:
         self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
         self.hex_focused = False
         self.hex_invalid = False
+        # The channel controls: the row whose mode menu is open ("rgb", "alpha" or a channel), the slider being dragged
+        # (identity, slot), the row whose value is being typed, and how far the rows are scrolled (pixels).
+        # The breakout: the canvas as a grid of panels (see breakout_panels), each a view of its own with the same zoom and pan, the
+        # panel a stroke or a pan began in, and the panel that is being drawn (the kind of picture it shows).
+        self.breakout = False
+        self.panel_cells: list[tuple[pygame.Rect, pygame.Rect]] = []
+        self.panel_views: list[CanvasView] = []
+        self.bound_panel: Optional[int] = None
+        self._panel_key: Optional[str] = None
+        self._outline_pixel: Optional[Coordinate] = None
+        self.mode_menu_open: Optional[str] = None
+        self.channel_drag: Optional[tuple[str, str]] = None
+        self.value_field = TextField("", lambda character: character in "0123456789.-mM", 6)
+        self.value_focus: Optional[str] = None
+        self.value_invalid = False
+        self.channel_scroll = 0
         # The name above the canvas is a text field when a single tile is shown and the name is clicked.
         # The field holds the name without its extension (.png); the extension is shown beside it and cannot be edited.
         self.name_field = TextField(
@@ -3489,7 +5071,106 @@ class EditorPanel:
         if self.layout is None:
             return
         copies = WRAP_PREVIEW_COPIES if self.wrap_assist else 1
+        if self.breakout:
+            self._layout_breakout()
+            for view in self.panel_views:
+                view.fit(self.layout.pixels.shape[1] * copies, self.layout.pixels.shape[0] * copies)
+            return
         self.view.fit(self.layout.pixels.shape[1] * copies, self.layout.pixels.shape[0] * copies)
+
+    # The breakout ------------------------------------------------------------------------------------------
+
+    def breakout_panels(self) -> list[tuple[str, str]]:
+        """The panels: (key, label) for the colour, the alpha, and each channel of the setting."""
+        panels = [("rgb", "RGB"), ("alpha", "Alpha")]
+        panels += [(identity, CHANNEL_NAMES.get(identity, identity)) for identity in self.controls.rows]
+        return panels
+
+    def _layout_breakout(self) -> None:
+        """Place the panels (a view for each, with its own rectangle) in the canvas area."""
+        if self.layout is None:
+            self.panel_cells, self.panel_views = [], []
+            return
+        copies = WRAP_PREVIEW_COPIES if self.wrap_assist else 1
+        height, width = self.layout.pixels.shape[:2]
+        self.panel_cells = compute_breakout_cells(self.areas.canvas, len(self.breakout_panels()), (width, height), copies)
+        self.panel_views = []
+        for _, cell in self.panel_cells:
+            view = CanvasView()
+            view.rect = cell
+            self.panel_views.append(view)
+
+    def panel_at(self, position: tuple[int, int]) -> Optional[int]:
+        for index, (_, cell) in enumerate(self.panel_cells):
+            if cell.collidepoint(position):
+                return index
+        return None
+
+    @contextlib.contextmanager
+    def _in_panel(self, index: int):
+        """Everything that works with `self.view` and the canvas area (the mouse, the tools, the drawing) works in panel
+        `index` for the length of the block."""
+        saved = (self.view, self.areas)
+        self.view = self.panel_views[index]
+        self.areas = dataclasses.replace(self.areas, canvas=self.panel_cells[index][1])
+        try:
+            yield
+        finally:
+            self.view, self.areas = saved
+
+    def _share_view(self, index: int) -> None:
+        """Every panel shows what panel `index` shows: the same zoom, and the canvas at the same place in its cell."""
+        if not (0 <= index < len(self.panel_views)):
+            return
+        view, cell = self.panel_views[index], self.panel_cells[index][1]
+        offset_x, offset_y = view.origin_x - cell.x, view.origin_y - cell.y
+        for other, (_, other_cell) in zip(self.panel_views, self.panel_cells):
+            other.zoom = view.zoom
+            other.origin_x, other.origin_y = other_cell.x + offset_x, other_cell.y + offset_y
+
+    def _press_in_panels(self, button: int, position: tuple[int, int]) -> None:
+        index = self.panel_at(position)
+        if index is None:
+            return
+        self.bound_panel = index
+        with self._in_panel(index):
+            if button == 2:
+                self.panning_from = position
+            elif button in (1, 3) and self.layout is not None:
+                self._press_on_canvas(button, position)
+
+    def hover_text(self) -> Optional[str]:
+        """The pixel under the pointer, its colour and the value of each channel decoded, as one line; None when the
+        pointer is not over a pixel of the canvas (with wrap-assist a pixel of any copy is the pixel of the canvas)."""
+        parts = self.hover_parts()
+        return None if parts is None else "  ".join(parts)
+
+    def hover_parts(self) -> Optional[list[str]]:
+        """The pieces of the read-out: the place, the colour (#RRGGBBAA) and one piece for each channel."""
+        layout = self.layout
+        if layout is None:
+            return None
+        view = self.view
+        if self.breakout:
+            index = self.bound_panel if self.bound_panel is not None else self.panel_at(self.pointer)
+            if index is None or index >= len(self.panel_views):
+                return None
+            view = self.panel_views[index]
+        elif not self.areas.canvas.collidepoint(self.pointer):
+            return None
+        pixel = view.pixel_at(self.pointer)
+        height, width = layout.pixels.shape[:2]
+        column, row = wrap_pixel(pixel, (height, width)) if self.wrap_assist else pixel
+        if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
+            return None
+        pixels = self.session.pixels if self.session is not None else layout.pixels
+        planes = self.session.planes if self.session is not None else layout.planes
+        red, green, blue, alpha = (int(value) for value in pixels[row, column])
+        parts = [f"({column}, {row})", f"#{red:02x}{green:02x}{blue:02x}{alpha:02x}"]
+        if planes is not None:
+            values = sample_channel_values(self.project.profile, planes, row, column)
+            parts += [f"{CHANNEL_LABELS.get(identity, identity)} {format_channel_value(value)}" for identity, value in values.items()]
+        return parts
 
     def toggle_wrap_assist(self) -> None:
         self.wrap_assist = not self.wrap_assist
@@ -3511,13 +5192,20 @@ class EditorPanel:
                 self.wrap_tile_grid = not self.wrap_tile_grid
             else:
                 self.tile_grid = not self.tile_grid
+        elif name == "breakout":
+            self.breakout = not self.breakout
+            self.bound_panel = None
+            self._fit_view()
 
     def sidebar_button_checked(self, name: str) -> bool:
         tile_grid = self.wrap_tile_grid if self.wrap_assist else self.tile_grid
-        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": tile_grid}[name]
+        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": tile_grid, "breakout": self.breakout}[name]
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
+        if self._controls_profile != self.project.pbr_profile:
+            self._controls_profile = self.project.pbr_profile
+            self.controls.follow(self.project.profile)
         entries = [
             (coordinate, self.project.tiles[coordinate])
             for coordinate in sorted(self.project.selection, key=reading_order_key)
@@ -3534,7 +5222,10 @@ class EditorPanel:
             self._coordinate_signature = None
             self._forget_selection()
             return
-        self.layout = compose_canvas({coordinate: record.pixels for coordinate, record in entries}, self.project.tile_size)
+        planes = {coordinate: record.planes for coordinate, record in entries if record.planes is not None}
+        self.layout = compose_canvas(
+            {coordinate: record.pixels for coordinate, record in entries}, self.project.tile_size, planes or None
+        )
         coordinate_signature = tuple(coordinate for coordinate, _ in entries)
         if coordinate_signature != self._coordinate_signature:
             self._coordinate_signature = coordinate_signature
@@ -3577,6 +5268,9 @@ class EditorPanel:
         try:
             if self.project.rename_tile(coordinate, new_name):
                 self.message = f"Renamed to {new_name}."
+                warning = reserved_ending_warning(new_name)
+                if warning is not None:
+                    self.message += f" Warning: {warning}."
         except ValueError as problem:
             self.message = f"Could not rename: {problem}"
             self.name_invalid = True
@@ -3673,6 +5367,24 @@ class EditorPanel:
         if self.name_focused and not (button == 1 and areas.header.collidepoint(position)):
             self.apply_name_field()  # a name that is not allowed is dropped; the message says why
             self.name_focused = False
+        if self.value_focus is not None:
+            row = self.channel_row_areas(self.value_focus)
+            if not (button == 1 and row is not None and row["value"].collidepoint(position)):
+                self.apply_value_field()
+        if self.mode_menu_open is not None:
+            # As with the shape menu: a press closes the menu; choosing an option or pressing its button is all it does,
+            # and a press on the canvas must not also draw.
+            key = self.mode_menu_open
+            options = self.mode_option_rectangles()
+            self.mode_menu_open = None
+            if button == 1:
+                for mode, rectangle in options.items():
+                    if rectangle.collidepoint(position):
+                        self.controls.set_mode(key, mode)
+                        return
+            opener = self.mode_button(key)
+            if (opener is not None and opener.collidepoint(position)) or areas.canvas.collidepoint(position):
+                return
         if self.shape_dropdown_open:
             # A press closes the menu. Choosing an option or pressing the menu itself is all it does; a press on
             # the canvas must not also draw.
@@ -3692,6 +5404,8 @@ class EditorPanel:
                 return
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
+                return
+            if self._press_channels(position):
                 return
             sidebar_button = self.sidebar_button_at(position)
             if sidebar_button is not None:
@@ -3731,28 +5445,80 @@ class EditorPanel:
                     self.colors.set_color(color, "secondary")
                     return
         if areas.canvas.collidepoint(position):
-            if button == 2:
+            if self.breakout:
+                self._press_in_panels(button, position)
+            elif button == 2:
                 self.panning_from = position
             elif button in (1, 3) and self.layout is not None:
                 self._press_on_canvas(button, position)
 
     def _press_on_canvas(self, button: int, position: tuple[int, int]) -> None:
-        slot = "primary" if button == 1 else "secondary"
-        pixel = self.view.pixel_at(position)
-        if self.tool == "eyedropper":
-            color = pick_color(self.layout, pixel, self.wrap_assist)
-            if color is not None:
-                self.colors.set_color(color, slot)
-            self.color_drag = f"dropper_{slot}"
-            return
         if self.tool == "select":
             if button == 1:
-                self._copy_offset = self._offset_of_copy(pixel)
+                self._copy_offset = self._offset_of_copy(self.view.pixel_at(position))
                 self._press_select(self._selection_pixel(position))
             return
+        self._press_pixel(button, self.view.pixel_at(position))
+
+    def _pick(self, pixel: Coordinate, slot: str) -> None:
+        """The eye dropper: the colour of the pixel goes into the slot, and so do its channel values (not the modes)."""
+        if self.layout is None:
+            return
+        color = pick_color(self.layout, pixel, self.wrap_assist)
+        if color is not None:
+            self.colors.set_color(color, slot)
+        values = pick_channel_values(self.layout, pixel, self.project.profile, self.wrap_assist)
+        if values is not None:
+            self.controls.load(values, slot)
+
+    def _press_pixel(self, button: int, pixel: Coordinate) -> None:
+        """Start what the current tool does with a press of `button` on a canvas pixel: a stroke, or picking a color."""
+        slot = "primary" if button == 1 else "secondary"
+        if self.tool == "eyedropper":
+            self._pick(pixel, slot)
+            self.color_drag = f"dropper_{slot}"
+            return
+        channels = None
+        if self.layout is not None and self.layout.planes is not None:
+            channels = ChannelPaint(self.project.profile, self.controls.blends(slot))
         self.session = CanvasSession(
-            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist
+            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist, channels,
+            self.controls.color_blend(),
         )
+
+    # A pointer from elsewhere -----------------------------------------------------------------------------
+    # A program that shows the tiles somewhere else (see "The bridge" below) says where its pointer is as a pixel of the
+    # canvas, and these do what the mouse does on the canvas: the tool, colors and sizes are the ones chosen here.
+
+    def external_press(self, button: int, pixel: Coordinate) -> bool:
+        """Press button 1 (primary color) or 3 (secondary) on a canvas pixel, which may be outside the canvas (with
+        wrap-assist it is a pixel of another copy). Only the drawing tools and the eye dropper work this way. False if
+        nothing started: no tile is shown, or the tool is the select tool."""
+        self.sync()
+        if self.layout is None or self.tool == "select" or button not in (1, 3):
+            return False
+        self._press_pixel(button, pixel)
+        return True
+
+    def external_move(self, pixel: Coordinate) -> None:
+        """Move the pointer, with the button still down, to a canvas pixel."""
+        if self.color_drag is not None and self.color_drag.startswith("dropper_") and self.layout is not None:
+            self._pick(pixel, self.color_drag.removeprefix("dropper_"))
+        elif self.session is not None:
+            self.session.move(pixel)
+
+    def external_release(self, button: int, pixel: Coordinate) -> None:
+        """Let go of the button at a canvas pixel: the stroke ends and is one step of the history."""
+        if self.color_drag is not None and button in (1, 3):
+            self.color_drag = None
+        if self.session is not None and button in (1, 3):
+            self.session.move(pixel)
+            session, self.session = self.session, None
+            self._commit(session)
+
+    def external_active(self) -> bool:
+        """Whether a stroke (or an eye dropper press) from `external_press` is going on."""
+        return self.session is not None or self.color_drag is not None
 
     def _offset_of_copy(self, pixel: Coordinate) -> tuple[int, int]:
         """How far the copy of the canvas that holds `pixel` is from the canvas itself (0, 0 without wrap-assist)."""
@@ -3782,14 +5548,22 @@ class EditorPanel:
         self.selection_rectangle = rectangle if right > left and bottom > top else None
 
     def mouse_move(self, position: tuple[int, int]) -> None:
+        if self.breakout and self.bound_panel is not None and self.bound_panel < len(self.panel_views):
+            with self._in_panel(self.bound_panel):
+                self._mouse_move(position)
+            self._share_view(self.bound_panel)
+        else:
+            self._mouse_move(position)
+
+    def _mouse_move(self, position: tuple[int, int]) -> None:
         self.pointer = position
         if self.color_drag is not None:
             if self.color_drag.startswith("dropper_") and self.layout is not None:
-                color = pick_color(self.layout, self.view.pixel_at(position), self.wrap_assist)
-                if color is not None:
-                    self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
+                self._pick(self.view.pixel_at(position), self.color_drag.removeprefix("dropper_"))
             else:
                 self._drag_color(position)
+        elif self.channel_drag is not None:
+            self._set_slider(self.channel_drag[0], self.channel_drag[1], position[0])
         elif self.slider_drag is not None:
             rectangle = self.control_rectangles().get(self.slider_drag)
             if rectangle is not None:
@@ -3810,6 +5584,17 @@ class EditorPanel:
             self.session.move(self.view.pixel_at(position))
 
     def mouse_up(self, button: int, position: tuple[int, int]) -> None:
+        if self.breakout and self.bound_panel is not None and self.bound_panel < len(self.panel_views):
+            panel = self.bound_panel
+            with self._in_panel(panel):
+                self._mouse_up(button, position)
+            self._share_view(panel)
+            if self.session is None and self.panning_from is None and self.selecting_from is None and self.floating_drag is None:
+                self.bound_panel = None
+        else:
+            self._mouse_up(button, position)
+
+    def _mouse_up(self, button: int, position: tuple[int, int]) -> None:
         self.pointer = position
         if button == 2:
             self.panning_from = None
@@ -3817,6 +5602,7 @@ class EditorPanel:
             self.color_drag = None
         if button == 1:
             self.slider_drag = None
+            self.channel_drag = None
             self.floating_drag = None
             if self.selecting_from is not None:
                 pixel = self._selection_pixel(position)
@@ -3834,7 +5620,7 @@ class EditorPanel:
         if not session.changed:
             return
         try:
-            self.project.apply_canvas_edit(session.layout, session.pixels)
+            self.project.apply_canvas_edit(session.layout, session.pixels, session.planes)
         except OSError as error:
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
             return
@@ -3844,13 +5630,17 @@ class EditorPanel:
 
     # Selection and clipboard ------------------------------------------------------------------------------
 
-    def _apply_pixels(self, new_pixels: numpy.ndarray) -> bool:
-        """Make the canvas look like `new_pixels` as one edit. False if that changes nothing or cannot be saved."""
+    def _apply_pixels(self, new_pixels: numpy.ndarray, new_planes: Optional[numpy.ndarray] = None) -> bool:
+        """Make the canvas look like `new_pixels` (and have the channels `new_planes`, if given) as one edit. False if
+        that changes nothing or cannot be saved."""
         layout = self.layout
-        if layout is None or numpy.array_equal(new_pixels, layout.pixels):
+        if layout is None:
+            return False
+        planes_same = new_planes is None or layout.planes is None or numpy.array_equal(new_planes, layout.planes)
+        if numpy.array_equal(new_pixels, layout.pixels) and planes_same:
             return False
         try:
-            self.project.apply_canvas_edit(layout, new_pixels)
+            self.project.apply_canvas_edit(layout, new_pixels, new_planes)
         except OSError as error:
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
             return False
@@ -3876,7 +5666,15 @@ class EditorPanel:
         paste, self.floating, self.floating_drag = self.floating, None, None
         if paste is None or self.layout is None:
             return
-        self._apply_pixels(paste_pixels(self.layout.pixels, paste.pixels, paste.column, paste.row, self.layout.editable_mask))
+        planes = None
+        if paste.planes is not None and self.layout.planes is not None:
+            planes = paste_planes(
+                self.layout.planes, paste.planes, paste.column, paste.row, paste.pixels, self.project.profile,
+                self.layout.editable_mask,
+            )
+        self._apply_pixels(
+            paste_pixels(self.layout.pixels, paste.pixels, paste.column, paste.row, self.layout.editable_mask), planes
+        )
         left, top, right, bottom = paste.rectangle
         self._set_selection((left, top), (right - 1, bottom - 1))
 
@@ -3892,6 +5690,7 @@ class EditorPanel:
         pixels = crop_pixels(self.layout.pixels, self.selection_rectangle)
         height, width = pixels.shape[:2]
         self.internal_image = pixels
+        self.internal_planes = None if self.layout.planes is None else crop_pixels(self.layout.planes, self.selection_rectangle)
         self.internal_is_newer = not self.clipboard.set_image(pixels)
         self.message = f"{verb} {width} x {height} pixels."
         if self.internal_is_newer:
@@ -3903,7 +5702,10 @@ class EditorPanel:
             return
         pixels = self.layout.pixels.copy()
         clear_rectangle(pixels, self.selection_rectangle, self.layout.editable_mask)
-        self._apply_pixels(pixels)
+        planes = None
+        if self.layout.planes is not None:
+            planes = clear_planes(self.project.profile, self.layout.planes, self.selection_rectangle, self.layout.editable_mask)
+        self._apply_pixels(pixels, planes)
 
     def cut_selection(self) -> None:
         if self.copy_selection("Cut"):
@@ -3923,6 +5725,19 @@ class EditorPanel:
                 return image
         return self.internal_image
 
+    def _planes_of_pasted(self, image: numpy.ndarray) -> Optional[numpy.ndarray]:
+        """The channels of the picture to paste if it is what was copied here (the colors of transparent pixels do not
+        count, since the system clipboard may change them) and the tiles still have the same channels; else None."""
+        copied, planes = self.internal_image, self.internal_planes
+        if copied is None or planes is None or self.layout is None or self.layout.planes is None:
+            return None
+        if image.shape != copied.shape or planes.shape[2] != self.layout.planes.shape[2]:
+            return None
+        if not numpy.array_equal(image[..., 3], copied[..., 3]):
+            return None
+        opaque = copied[..., 3] > 0
+        return planes.copy() if numpy.array_equal(image[opaque], copied[opaque]) else None
+
     def paste(self) -> None:
         self.sync()
         if self.layout is None:
@@ -3941,11 +5756,20 @@ class EditorPanel:
         else:
             height, width = self.layout.pixels.shape[:2]
             column, row = self.view.visible_pixels(width, height)[:2]
-        self.floating = FloatingPaste(image, column, row)
+        self.floating = FloatingPaste(image, column, row, self._planes_of_pasted(image))
         self.message = "Drag the pasted picture to move it. Enter places it, Esc throws it away."
 
     def wheel(self, steps: int, position: tuple[int, int]) -> None:
-        if self.layout is not None and self.areas.canvas.collidepoint(position):
+        if self.areas.channel_panel.collidepoint(position):
+            step = self._channel_row_height()
+            self.channel_scroll = max(0, min(self.channel_scroll_limit(), self.channel_scroll - steps * step))
+        elif self.breakout:
+            index = self.panel_at(position)
+            if index is not None:
+                with self._in_panel(index):
+                    self.view.zoom_by(steps, position)
+                self._share_view(index)
+        elif self.layout is not None and self.areas.canvas.collidepoint(position):
             self.view.zoom_by(steps, position)
 
     def _drag_color(self, position: tuple[int, int]) -> None:
@@ -3970,8 +5794,153 @@ class EditorPanel:
         self.hex_invalid = False
         self.colors.set_color(color)
 
+    # Channel controls ------------------------------------------------------------------------------------
+
+    def channels_enabled(self) -> bool:
+        """The controls are for the tools that paint; the eraser, the rotation and the selection ignore them (the eraser
+        and Delete reset the channels)."""
+        return self.tool not in ("eraser", "rotate", "select")
+
+    def _channel_row_height(self) -> int:
+        return scaled(22)
+
+    def channel_body(self) -> pygame.Rect:
+        """The part of the panel that holds the rows: under a line of column names."""
+        panel = self.areas.channel_panel
+        header = scaled(16)
+        return pygame.Rect(panel.x, panel.y + header, panel.width, max(0, panel.height - header))
+
+    def channel_scroll_limit(self) -> int:
+        """The most the rows can be scrolled: what does not fit under the column names."""
+        return max(0, len(self.controls.rows) * self._channel_row_height() - self.channel_body().height)
+
+    def channel_row_areas(self, identity: str) -> Optional[dict[str, pygame.Rect]]:
+        """The parts of the row of a channel (label, mode, primary and secondary slider, value field), or None if there is
+        no such row or it is not all in view."""
+        if identity not in self.controls.rows:
+            return None
+        body, height = self.channel_body(), self._channel_row_height()
+        top = body.y + self.controls.rows.index(identity) * height - self.channel_scroll
+        if top < body.y or top + height > body.bottom:
+            return None
+        return self._channel_columns(top)
+
+    def _channel_columns(self, top: int) -> dict[str, pygame.Rect]:
+        """The parts of a row whose top is at `top`: label, mode, the two sliders, the value."""
+        body, height = self.channel_body(), self._channel_row_height()
+        gap = scaled(3)
+        inner = body.width - scaled(6) - 4 * gap  # the right edge is left to the scroll bar
+        widths = {"label": inner * 26 // 100, "mode": inner * 21 // 100, "value": inner * 14 // 100}
+        slider = (inner - sum(widths.values())) // 2
+        areas: dict[str, pygame.Rect] = {}
+        left = body.x
+        for name, width in (("label", widths["label"]), ("mode", widths["mode"]), ("primary", slider), ("secondary", slider), ("value", widths["value"])):
+            areas[name] = pygame.Rect(left, top + 1, max(1, width), height - 2)
+            left += width + gap
+        return areas
+
+    def mode_button(self, key: str) -> Optional[pygame.Rect]:
+        if key == "rgb":
+            return self.areas.rgb_mode
+        if key == "alpha":
+            return self.areas.alpha_mode
+        row = self.channel_row_areas(key)
+        return None if row is None else row["mode"]
+
+    def mode_button_text(self, key: str) -> str:
+        mode = self.controls.mode(key).title()
+        return {"rgb": f"RGB: {mode}", "alpha": f"Alpha: {mode}"}.get(key, mode)
+
+    def mode_option_rectangles(self) -> dict[str, pygame.Rect]:
+        """The modes of the open menu, stacked above its button (below it they would run off the window)."""
+        button = self.mode_button(self.mode_menu_open) if self.mode_menu_open is not None else None
+        if button is None:
+            return {}
+        width = max(button.width, scaled(76))
+        count = len(BLEND_MODES)
+        return {
+            mode: pygame.Rect(button.x, button.y - (count - index) * button.height, width, button.height)
+            for index, mode in enumerate(BLEND_MODES)
+        }
+
+    def value_field_text(self, identity: str) -> str:
+        return self.controls.value_text(identity, self.colors.active_slot)
+
+    def _set_slider(self, identity: str, slot: str, x: int) -> None:
+        row = self.channel_row_areas(identity)
+        if row is not None:
+            track = row[slot]
+            self.controls.set_value(identity, slot, self.controls.value_at(identity, (x - track.x) / max(track.width - 1, 1)))
+
+    def _start_value_edit(self, identity: str) -> None:
+        self.apply_value_field()
+        self.value_focus = identity
+        self.value_invalid = False
+        self.value_field.set_text(self.value_field_text(identity))
+        self.value_field.select(0, len(self.value_field.text))
+
+    def apply_value_field(self) -> None:
+        """Take what was typed in the value field as the value of the active slot; text that is not a value is dropped."""
+        identity, self.value_focus = self.value_focus, None
+        if identity is None or identity not in self.controls.rows:
+            return
+        value = self.controls.parse_value(identity, self.value_field.text)
+        if value is None:
+            self.message = f"{self.value_field.text!r} is not a value for {CHANNEL_LABELS.get(identity, identity)}."
+            return
+        self.controls.set_value(identity, self.colors.active_slot, value)
+
+    def value_key_down(self, event: pygame.event.Event) -> None:
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.apply_value_field()
+        elif event.key == pygame.K_ESCAPE:
+            self.value_focus = None
+        elif event.key in (pygame.K_UP, pygame.K_DOWN) and self.value_focus is not None:
+            identity, slot = self.value_focus, self.colors.active_slot
+            value = self.controls.parse_value(identity, self.value_field.text)
+            if value is not None:
+                self.controls.set_value(identity, slot, value)
+            self.controls.step(identity, slot, 1 if event.key == pygame.K_UP else -1, bool(event.mod & pygame.KMOD_SHIFT))
+            self.value_field.set_text(self.value_field_text(identity))
+        else:
+            self.value_field.handle_key_down(event.key, event.mod)
+        self.value_invalid = False
+
+    def _press_channels(self, position: tuple[int, int]) -> bool:
+        """A press of the left button on the channel controls. True if it was on them (a greyed control takes the press
+        and does nothing)."""
+        areas = self.areas
+        enabled = self.channels_enabled()
+        for key in ("rgb", "alpha"):
+            button = self.mode_button(key)
+            if button is not None and button.collidepoint(position):
+                if enabled:
+                    self.mode_menu_open = key
+                return True
+        if not areas.channel_panel.collidepoint(position):
+            return False
+        for identity in self.controls.rows:
+            row = self.channel_row_areas(identity)
+            if row is None or not enabled:
+                continue
+            if row["mode"].collidepoint(position):
+                self.mode_menu_open = identity
+            elif row["primary"].collidepoint(position) or row["secondary"].collidepoint(position):
+                slot = "primary" if row["primary"].collidepoint(position) else "secondary"
+                self.channel_drag = (identity, slot)
+                self._set_slider(identity, slot, position[0])
+            elif row["value"].collidepoint(position):
+                self._start_value_edit(identity)
+            else:
+                continue
+            return True
+        return True
+
     def lose_focus(self) -> None:
         """Called when the user clicks somewhere else: a typed color or name is applied."""
+        self.mode_menu_open = None
+        if self.value_focus is not None:
+            self.apply_value_field()
         if self.hex_focused:
             self.apply_hex_field()
             self.hex_focused = False
@@ -4005,6 +5974,10 @@ class EditorPanel:
             return True
         if control and key == pygame.K_x:
             self.cut_selection()
+            return True
+        if key == pygame.K_x and not (control or alt):
+            self.colors.swap()
+            self.controls.swap()
             return True
         if control and key == pygame.K_v:
             self.paste()
@@ -4069,7 +6042,9 @@ class EditorPanel:
         self.draw_sidebar(surface)
         self.draw_tools(surface)
         self.draw_colors(surface, caret_visible)
+        self.draw_channels(surface, caret_visible)
         self.draw_shape_menu(surface)
+        self.draw_mode_menu(surface)
 
     def message_for_empty_canvas(self) -> str:
         selected = [self.project.tiles[coordinate] for coordinate in self.project.selection]
@@ -4087,11 +6062,53 @@ class EditorPanel:
             for number, line in enumerate(lines):
                 draw_text(surface, self.fonts.normal, line, Theme.TEXT_DIMMED, (area.centerx, area.centery + number * scaled(20)), "midtop")
             return
+        if self.breakout:
+            self._draw_breakout(surface)
+        else:
+            self._draw_canvas_view(surface)
+        self._draw_hover_text(surface)
+
+    def _draw_hover_text(self, surface: pygame.Surface) -> None:
+        """The read-out at the right of the name above the canvas: as many channels as fit beside the name."""
+        parts = self.hover_parts()
+        if parts is None or self.name_focused:
+            return
+        header = self.areas.header
+        start = header.x + scaled(6) + self.fonts.large.size(self.header_text())[0] + scaled(20)
+        available = header.right - start
+        while parts and self.fonts.small.size("  ".join(parts))[0] > available:
+            if len(parts) <= 2:
+                return
+            parts.pop()
+        draw_text(surface, self.fonts.small, "  ".join(parts), Theme.TEXT_DIMMED, header.midright, "midright")
+
+    def _draw_breakout(self, surface: pygame.Surface) -> None:
+        """The panels, each with its label above it. The brush guide is in every panel, where the pointer is (or where the
+        stroke began) in the others."""
+        hovered = self.bound_panel if self.bound_panel is not None else self.panel_at(self.pointer)
+        self._outline_pixel = None
+        if hovered is not None and hovered < len(self.panel_views):
+            self._outline_pixel = self.panel_views[hovered].pixel_at(self.pointer)
+        for index, ((label_rectangle, _), (key, label)) in enumerate(zip(self.panel_cells, self.breakout_panels())):
+            draw_text(surface, self.fonts.small, label, Theme.TEXT, label_rectangle.midleft, "midleft")
+            with self._in_panel(index):
+                self._panel_key = key
+                try:
+                    self._draw_canvas_view(surface)
+                finally:
+                    self._panel_key = None
+
+    def _draw_canvas_view(self, surface: pygame.Surface) -> None:
+        area = self.areas.canvas
+        pygame.draw.rect(surface, Theme.BACKGROUND, area)
         layout, view = self.layout, self.view
         pixels = self.session.pixels if self.session is not None else layout.pixels
         if self.floating is not None:
             paste = self.floating
             pixels = paste_pixels(pixels, paste.pixels, paste.column, paste.row, layout.editable_mask)
+        if self._panel_key is not None:
+            planes = self.session.planes if self.session is not None else layout.planes
+            pixels = panel_image(self._panel_key, pixels, planes, self.project.profile)
         height, width = pixels.shape[:2]
         surface.set_clip(area)
         # With wrap-assist the canvas fills the whole area, as copies of itself.
@@ -4172,7 +6189,10 @@ class EditorPanel:
             left, top, right, bottom = marked
             for offset_column, offset_row in self.copy_offsets(marked):
                 draw_dashed_outline(surface, view.pixel_rectangle(left + offset_column, top + offset_row, right - left, bottom - top))
-        if self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
+        if self.breakout:
+            if self.tool_uses_outline() and self._outline_pixel is not None and self.session is None:
+                self.draw_footprint_outline(surface, self._outline_pixel)
+        elif self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
             self.draw_footprint_outline(surface)
 
     def copy_offsets(self, rectangle: tuple[int, int, int, int]) -> list[tuple[int, int]]:
@@ -4196,8 +6216,8 @@ class EditorPanel:
             and self.tool != "select"
         )
 
-    def draw_footprint_outline(self, surface: pygame.Surface) -> None:
-        column, row = self.view.pixel_at(self.pointer)
+    def draw_footprint_outline(self, surface: pygame.Surface, pixel: Optional[Coordinate] = None) -> None:
+        column, row = pixel if pixel is not None else self.view.pixel_at(self.pointer)
         width, height = self.settings.footprint_size(self.tool)
         left, top = column - width // 2, row - height // 2
         is_round = self.tool == "airbrush" or (self.tool == "noise_brush" and self.settings.noise_shape == "circle")
@@ -4267,6 +6287,74 @@ class EditorPanel:
             if shape == self.settings.noise_shape:
                 pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
 
+    def draw_mode_button(self, surface: pygame.Surface, rectangle: pygame.Rect, key: str, enabled: bool) -> None:
+        hovered = rectangle.collidepoint(self.pointer)
+        draw_button(surface, rectangle, self.mode_button_text(key), self.fonts.small, hovered, enabled)
+        painted = self.controls.mode(key) not in ("none", "replace") if key in ("rgb", "alpha") else self.controls.mode(key) != "none"
+        if painted and enabled:
+            pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=1, border_radius=4)
+
+    def draw_mode_menu(self, surface: pygame.Surface) -> None:
+        if self.mode_menu_open is None:
+            return
+        current = self.controls.mode(self.mode_menu_open)
+        for mode, rectangle in self.mode_option_rectangles().items():
+            draw_button(surface, rectangle, mode.title(), self.fonts.small, rectangle.collidepoint(self.pointer))
+            if mode == current:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
+
+    def draw_channels(self, surface: pygame.Surface, caret_visible: bool) -> None:
+        """The panel of channel controls: a line of column names and a row for each channel of the profile."""
+        enabled = self.channels_enabled()
+        for key, rectangle in (("rgb", self.areas.rgb_mode), ("alpha", self.areas.alpha_mode)):
+            self.draw_mode_button(surface, rectangle, key, enabled)
+        panel, font = self.areas.channel_panel, self.fonts.small
+        pygame.draw.rect(surface, Theme.BACKGROUND, panel)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, panel, width=1)
+        rows = self.controls.rows
+        if not rows:
+            lines = wrap_text(font, "No PBR channels: the setting is none.", panel.width - scaled(20))
+            for number, line in enumerate(lines):
+                draw_text(surface, font, line, Theme.TEXT_DIMMED, (panel.centerx, panel.y + scaled(12) + number * scaled(16)), "midtop")
+            return
+        columns = self._channel_columns(panel.y)
+        for name, label in (("mode", "Mode"), ("primary", "Primary"), ("secondary", "Secondary"), ("value", "Value")):
+            draw_text(surface, font, label, Theme.TEXT_DIMMED, (columns[name].centerx, panel.y + scaled(8)), "center")
+        body, height = self.channel_body(), self._channel_row_height()
+        previous_clip = surface.get_clip()
+        surface.set_clip(body)
+        for index, identity in enumerate(rows):
+            top = body.y + index * height - self.channel_scroll
+            if top + height <= body.y or top >= body.bottom:
+                continue
+            parts = self._channel_columns(top)
+            draw_text(surface, font, CHANNEL_LABELS.get(identity, identity), Theme.TEXT if enabled else Theme.DISABLED_TEXT, parts["label"].midleft, "midleft")
+            self.draw_mode_button(surface, parts["mode"], identity, enabled)
+            for slot in ColorState.SLOTS:
+                track = parts[slot]
+                pygame.draw.rect(surface, Theme.FIELD, track, border_radius=3)
+                filled = track.copy()
+                filled.width = int(round(track.width * self.controls.fraction(identity, slot)))
+                if filled.width > 0:
+                    pygame.draw.rect(surface, Theme.SLIDER_FILL if enabled else Theme.PANEL_BORDER, filled, border_radius=3)
+                active = enabled and slot == self.colors.active_slot
+                pygame.draw.rect(surface, Theme.ACCENT if active else Theme.PANEL_BORDER, track, width=1, border_radius=3)
+            field = parts["value"]
+            if self.value_focus == identity:
+                self.value_field.draw(surface, field, font, True, caret_visible, self.value_invalid)
+            else:
+                pygame.draw.rect(surface, Theme.FIELD, field, border_radius=3)
+                pygame.draw.rect(surface, Theme.PANEL_BORDER, field, width=1, border_radius=3)
+                draw_text(surface, font, self.value_field_text(identity), Theme.TEXT if enabled else Theme.DISABLED_TEXT, field.center, "center")
+        surface.set_clip(previous_clip)
+        limit = self.channel_scroll_limit()
+        if limit > 0:
+            track = pygame.Rect(panel.right - scaled(6), body.y, scaled(4), body.height)
+            pygame.draw.rect(surface, Theme.FIELD, track, border_radius=2)
+            thumb_height = max(scaled(12), track.height * body.height // (body.height + limit))
+            thumb_top = track.y + (track.height - thumb_height) * self.channel_scroll // limit
+            pygame.draw.rect(surface, Theme.TEXT_DIMMED, pygame.Rect(track.x, thumb_top, track.width, thumb_height), border_radius=2)
+
     def draw_swatch(self, surface: pygame.Surface, rectangle: pygame.Rect, color: Color) -> None:
         surface.blit(checkerboard(max(rectangle.size)), rectangle, (0, 0, rectangle.width, rectangle.height))
         swatch = pygame.Surface(rectangle.size, pygame.SRCALPHA)
@@ -4277,11 +6365,11 @@ class EditorPanel:
     def draw_colors(self, surface: pygame.Surface, caret_visible: bool) -> None:
         areas = self.areas
         hue, saturation, value, alpha = self.colors.get_hsva()
-        key = (int(hue * 255), areas.square.width)
+        key = (int(hue * 255), areas.square.width, areas.square.height)
         if key not in self._squares:
             if len(self._squares) > 64:
                 self._squares.clear()
-            self._squares[key] = saturation_value_square(key[0] / 255.0, areas.square.width)
+            self._squares[key] = saturation_value_square(key[0] / 255.0, areas.square.width, areas.square.height)
         surface.blit(self._squares[key], areas.square)
         pygame.draw.rect(surface, Theme.PANEL_BORDER, areas.square, width=1)
         marker = (areas.square.x + int(saturation * (areas.square.width - 1)), areas.square.y + int((1.0 - value) * (areas.square.height - 1)))
@@ -4313,6 +6401,375 @@ class EditorPanel:
         surface.blit(pygame.image.frombuffer(ramp.tobytes(), rectangle.size, "RGBA"), rectangle)
         y = rectangle.y + int((1.0 - alpha) * (rectangle.height - 1))
         pygame.draw.line(surface, (255, 255, 255), (rectangle.x - 2, y), (rectangle.right + 1, y), 2)
+
+
+# ----------------------------------------------------------------------------------------------------------
+# The bridge: painting on tiles that another program shows
+# ----------------------------------------------------------------------------------------------------------
+# A program that draws these tiles somewhere (a game, a viewer) can connect and say which tile its pointer is over and
+# where, and VirtualAtlas paints there with the tool, colors and sizes chosen here, then sends back the tile's pixels
+# as they change so that the program can show them at once. VirtualAtlas knows nothing of any one program: what a
+# message means is in tools/virtual_atlas/BRIDGE.md, and the only thing the program is asked to know is which of the
+# files here a tile of its own is (a list of names, so each program keeps its own naming).
+
+BRIDGE_PROTOCOL = 1
+DEFAULT_BRIDGE_PORT = 47625
+BRIDGE_ADDRESS = "127.0.0.1"
+MAXIMUM_BRIDGE_LINE_BYTES = 4 * 1024 * 1024
+BRIDGE_READ_BYTES = 65536
+
+
+class BridgeMessageError(ValueError):
+    """A line from the program that is not a message."""
+
+
+def encode_bridge_message(message: dict) -> bytes:
+    """One message as one line of JSON."""
+    return json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+class BridgeLineReader:
+    """Cuts a stream of bytes into lines and each line into a message (a JSON object).
+
+    `feed` returns, in order, a dict for each good line and a BridgeMessageError for each bad one. A line longer than
+    MAXIMUM_BRIDGE_LINE_BYTES is one error, and the rest of it is thrown away up to the next end of line."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+        self.skipping = False
+
+    def feed(self, data: bytes) -> list[object]:
+        found: list[object] = []
+        self.buffer.extend(data)
+        while True:
+            end = self.buffer.find(b"\n")
+            if end < 0:
+                if len(self.buffer) > MAXIMUM_BRIDGE_LINE_BYTES and not self.skipping:
+                    found.append(BridgeMessageError("a line is longer than the most the bridge takes"))
+                    self.skipping = True
+                if self.skipping:
+                    self.buffer.clear()
+                return found
+            line = bytes(self.buffer[:end])
+            del self.buffer[: end + 1]
+            if self.skipping:
+                self.skipping = False
+                continue
+            if len(line) > MAXIMUM_BRIDGE_LINE_BYTES:
+                found.append(BridgeMessageError("a line is longer than the most the bridge takes"))
+                continue
+            if not line.strip():
+                continue
+            try:
+                message = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as error:
+                found.append(BridgeMessageError(f"a line is not JSON: {error}"))
+                continue
+            if not isinstance(message, dict) or not isinstance(message.get("type"), str):
+                found.append(BridgeMessageError("a message is an object with a text \"type\""))
+                continue
+            found.append(message)
+
+
+@dataclasses.dataclass
+class BridgeTile:
+    """A tile of the program: what it calls it, the names of the files here that it may be (the first that exists), and its size."""
+
+    identifier: str
+    files: list[str]
+    size: int
+    group: Optional[str] = None
+
+
+def parse_bridge_tiles(message: dict) -> tuple[list[BridgeTile], list[str]]:
+    """The tiles of a "tiles" message that are good, and what is wrong with the others."""
+    tiles: list[BridgeTile] = []
+    problems: list[str] = []
+    entries = message.get("tiles")
+    if not isinstance(entries, list):
+        return [], ["\"tiles\" is a list"]
+    for entry in entries:
+        identifier = entry.get("id") if isinstance(entry, dict) else None
+        files = entry.get("files") if isinstance(entry, dict) else None
+        size = entry.get("size") if isinstance(entry, dict) else None
+        group = entry.get("group") if isinstance(entry, dict) else None
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or not isinstance(files, list)
+            or not files
+            or not all(isinstance(name, str) and name for name in files)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or not MINIMUM_TILE_SIZE <= size <= MAXIMUM_TILE_SIZE
+            or not (group is None or isinstance(group, str))
+        ):
+            problems.append(f"a tile that is not an id, a list of file names and a size: {str(entry)[:80]}")
+            continue
+        tiles.append(BridgeTile(identifier, list(files), size, group))
+    return tiles, problems
+
+
+class BridgeController:
+    """What the messages of a program do to the project and the editor, and what is to be told back. No sockets here:
+    `receive` takes a message, `take_outgoing` gives the messages to send (the pixels of every tile that changed)."""
+
+    def __init__(self, project: AtlasProject, editor: "EditorPanel", group: Optional[str] = None):
+        self.project = project
+        self.editor = editor
+        self.group = group
+        self.host_name: Optional[str] = None
+        # The PBR convention the program says it reads companion pictures in (`profile` of its hello), if it says one.
+        self.host_profile: Optional[str] = None
+        self.tiles: dict[str, BridgeTile] = {}
+        self.outgoing: list[dict] = []
+        # The stroke from the program that is going on: (button, tile id, segment, last pixel).
+        self.active: Optional[tuple[int, str, int, Coordinate]] = None
+        # What each tile was when the program was last told (or already had it): the pixels as bytes, and the companion
+        # pictures as (ending, bytes) in the order of the endings (None when the program is told none).
+        self.told: dict[str, tuple[bytes, Optional[tuple[tuple[str, bytes], ...]]]] = {}
+
+    @property
+    def is_connected(self) -> bool:
+        return self.host_name is not None
+
+    # What comes in ----------------------------------------------------------------------------------------
+
+    def receive(self, message: dict) -> None:
+        kind = message.get("type")
+        if kind == "hello":
+            self._hello(message)
+        elif self.host_name is None:
+            self.outgoing.append({"type": "error", "text": "say hello first"})
+        elif kind == "tiles":
+            self._tiles(message)
+        elif kind == "pointer":
+            self._pointer(message)
+        # (A message of a kind this version does not know is ignored, so that a newer program can still be used.)
+
+    def lost_host(self) -> None:
+        """The program went away: a stroke it had begun ends where it was."""
+        self._end_stroke()
+        self.host_name = None
+        self.host_profile = None
+        self.tiles = {}
+        self.told = {}
+        self.outgoing = []
+
+    def _hello(self, message: dict) -> None:
+        protocol = message.get("protocol")
+        name = message.get("host")
+        if protocol != BRIDGE_PROTOCOL:
+            self.outgoing.append({"type": "error", "text": f"this is protocol {BRIDGE_PROTOCOL}, not {protocol!r}"})
+            return
+        self.host_name = name if isinstance(name, str) and name else "a program"
+        profile = message.get("profile")
+        self.host_profile = profile if isinstance(profile, str) and profile else None
+        welcome: dict = {"type": "welcome", "protocol": BRIDGE_PROTOCOL, "tool": "VirtualAtlas", "tile_size": self.project.tile_size}
+        if self.project.profile.channels:
+            welcome["profile"] = self.project.pbr_profile  # so that the program can see when its convention is not ours
+        self.outgoing.append(welcome)
+
+    def _tiles(self, message: dict) -> None:
+        tiles, problems = parse_bridge_tiles(message)
+        self._end_stroke()
+        self.tiles = {tile.identifier: tile for tile in tiles}
+        self.told = {}
+        known = [identifier for identifier in self.tiles if self.resolve(identifier) is not None]
+        for identifier in known:
+            self.told[identifier] = self._content_of(self.resolve(identifier))
+        self.outgoing.append(
+            {"type": "known", "ids": known, "missing": [identifier for identifier in self.tiles if identifier not in known]}
+        )
+        if problems:
+            self.outgoing.append({"type": "error", "text": "; ".join(problems[:3])})
+
+    def _pointer(self, message: dict) -> None:
+        tile_id = message.get("tile")
+        x, y = message.get("x"), message.get("y")
+        segment = message.get("segment", 0)
+        if (
+            not (tile_id is None or isinstance(tile_id, str))
+            or isinstance(x, bool) or not isinstance(x, int)
+            or isinstance(y, bool) or not isinstance(y, int)
+            or isinstance(segment, bool) or not isinstance(segment, int)
+        ):
+            self.outgoing.append({"type": "error", "text": "a pointer has a tile (or null), whole numbers x and y, and a whole number segment"})
+            return
+        button = 1 if message.get("left") else 3 if message.get("right") else 0
+        coordinate = self.resolve(tile_id) if isinstance(tile_id, str) else None
+        if self.active is not None:
+            active_button, active_tile, active_segment, last = self.active
+            if coordinate is not None and (button, tile_id, segment) == (active_button, active_tile, active_segment):
+                self.editor.external_move((x, y))
+                self.active = (active_button, active_tile, active_segment, (x, y))
+                return
+            self._end_stroke()
+        if coordinate is None:
+            return
+        self._show(coordinate)
+        if button != 0 and self.editor.external_press(button, (x, y)):
+            self.active = (button, tile_id, segment, (x, y))
+
+    def _end_stroke(self) -> None:
+        if self.active is not None:
+            button, _, _, last = self.active
+            self.editor.external_release(button, last)
+            self.active = None
+
+    def _show(self, coordinate: Coordinate) -> None:
+        """Make the editor show this tile and no other, repeating (the tile is the same on every face that has it)."""
+        if self.project.selection != {coordinate}:
+            self.project.select_only(coordinate)
+        self.editor.sync()
+        if not self.editor.wrap_assist:
+            self.editor.toggle_wrap_assist()
+
+    # What goes out ----------------------------------------------------------------------------------------
+
+    def resolve(self, identifier: str) -> Optional[Coordinate]:
+        """The place in the atlas of the tile of the program, if the atlas has a file for it that can be drawn on."""
+        tile = self.tiles.get(identifier)
+        if tile is None or tile.size != self.project.tile_size:
+            return None
+        if self.group is not None and tile.group is not None and tile.group != self.group:
+            return None
+        for name in tile.files:
+            wanted = (name + TILE_FILE_EXTENSION).casefold()
+            for coordinate, record in self.project.tiles.items():
+                if record.name.casefold() == wanted:
+                    return coordinate if record.error is None else None
+        return None
+
+    def _pixels_of(self, coordinate: Coordinate) -> bytes:
+        """The pixels of a tile as they are now, as far as a stroke that is not finished has got."""
+        session = self.editor.session
+        if session is not None and coordinate in session.layout.tile_coordinates:
+            return extract_canvas_tiles(session.layout, session.pixels)[coordinate].tobytes()
+        return self.project.tiles[coordinate].pixels.tobytes()
+
+    def _companions_of(self, coordinate: Coordinate) -> Optional[tuple[tuple[str, bytes], ...]]:
+        """The companion pictures of a tile as they are now, as (ending, bytes of the RGBA picture) for each file that has
+        something in it (a file whose channels are all neutral would not exist, and the program takes a missing one as neutral).
+        None, not even an empty set, when they are not to be told: the program did not say it reads the convention of this
+        atlas, or the atlas has no channels."""
+        profile = self.project.profile
+        if not profile.channels or self.host_profile != self.project.pbr_profile:
+            return None
+        planes = self.project.tiles[coordinate].planes
+        session = self.editor.session
+        if session is not None and session.planes is not None and coordinate in session.layout.tile_coordinates:
+            planes = extract_canvas_planes(session.layout, session.planes)[coordinate]
+        if planes is None:
+            return None
+        pictures = companions_from_planes(profile, planes)
+        return tuple(
+            (suffix, picture.tobytes())
+            for suffix, picture in pictures.items()
+            if any((planes[:, :, index] != profile.channels[index].neutral).any() for index in profile.channel_indices(suffix))
+        )
+
+    def _content_of(self, coordinate: Coordinate) -> tuple[bytes, Optional[tuple[tuple[str, bytes], ...]]]:
+        return self._pixels_of(coordinate), self._companions_of(coordinate)
+
+    def take_outgoing(self) -> list[dict]:
+        """Everything to tell the program: answers, and the pixels of each tile of its that changed since it was last told."""
+        if self.host_name is not None:
+            for identifier, tile in self.tiles.items():
+                coordinate = self.resolve(identifier)
+                if coordinate is None:
+                    continue
+                content = self._content_of(coordinate)
+                if self.told.get(identifier) != content:
+                    self.told[identifier] = content
+                    pixels, companions = content
+                    message = {"type": "tile", "id": identifier, "size": tile.size, "pixels": base64.b64encode(pixels).decode("ascii")}
+                    if companions is not None:
+                        message["companions"] = {suffix: base64.b64encode(data).decode("ascii") for suffix, data in companions}
+                    self.outgoing.append(message)
+        outgoing, self.outgoing = self.outgoing, []
+        return outgoing
+
+
+class BridgeLink:
+    """The loopback socket the program connects to: one program at a time, nothing blocks. `poll` is called once a
+    frame; it takes what has arrived and sends what is waiting."""
+
+    def __init__(self, port: int = DEFAULT_BRIDGE_PORT, address: str = BRIDGE_ADDRESS):
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.listener.bind((address, port))
+            self.listener.listen(1)
+        except OSError:
+            self.listener.close()
+            raise
+        self.listener.setblocking(False)
+        self.port = self.listener.getsockname()[1]
+        self.connection: Optional[socket.socket] = None
+        self.reader = BridgeLineReader()
+        self.waiting = bytearray()
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connection is not None
+
+    def send(self, message: dict) -> None:
+        if self.connection is not None:
+            self.waiting.extend(encode_bridge_message(message))
+
+    def poll(self) -> list[tuple[str, object]]:
+        """What happened: ("connected", None), ("message", dict), ("bad", text) and ("disconnected", None), in order."""
+        events: list[tuple[str, object]] = []
+        try:
+            newcomer, _ = self.listener.accept()
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            pass
+        else:
+            if self.connection is None:
+                newcomer.setblocking(False)
+                self.connection = newcomer
+                self.reader = BridgeLineReader()
+                self.waiting.clear()
+                events.append(("connected", None))
+            else:
+                newcomer.close()  # one program at a time
+        if self.connection is not None:
+            lost = False
+            while True:
+                try:
+                    data = self.connection.recv(BRIDGE_READ_BYTES)
+                except (BlockingIOError, InterruptedError):
+                    break
+                except OSError:
+                    lost = True
+                    break
+                if not data:
+                    lost = True
+                    break
+                for found in self.reader.feed(data):
+                    events.append(("bad", str(found)) if isinstance(found, BridgeMessageError) else ("message", found))
+            if not lost and self.waiting:
+                try:
+                    sent = self.connection.send(bytes(self.waiting))
+                    del self.waiting[:sent]
+                except (BlockingIOError, InterruptedError):
+                    pass
+                except OSError:
+                    lost = True
+            if lost:
+                self.connection.close()
+                self.connection = None
+                self.waiting.clear()
+                events.append(("disconnected", None))
+        return events
+
+    def close(self) -> None:
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+        self.listener.close()
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -4417,10 +6874,177 @@ class Application:
         self.import_dialog: Optional[ImportDialog] = None
         self.context_menu: Optional[ContextMenu] = None
         self.purge_dialog: Optional[PurgeDialog] = None
+        self.settings_dialog: Optional[SettingsDialog] = None
         self.file_picker = SystemFilePicker()
         self.closing = False
+        self.bridge_link: Optional[BridgeLink] = None
+        self.bridge: Optional[BridgeController] = None
         self.layout = compute_layout(surface.get_size())
         self.update_layout()
+        self.message = describe_reserved_names(project.reserved_name_warnings())
+
+    # The gear and the settings window -----------------------------------------------------------------------
+
+    def gear_area(self) -> pygame.Rect:
+        """The button left of the title of the atlas that opens the settings."""
+        title = self.layout.atlas_title
+        size = max(scaled(16), title.height - scaled(4))
+        return pygame.Rect(title.x, title.y + (title.height - size) // 2, size, size)
+
+    def atlas_title_left(self) -> int:
+        return self.gear_area().right + scaled(8)
+
+    def settings_areas(self) -> dict[str, object]:
+        dialog = self.settings_dialog
+        assert dialog is not None
+        return settings_dialog_areas(self.surface.get_size(), dialog.profile_names, dialog.list_open)
+
+    def _handle_settings_event(self, event: pygame.event.Event) -> None:
+        """While the settings window is open it gets every event; the window behind it does nothing."""
+        dialog = self.settings_dialog
+        assert dialog is not None
+        outcome = "ask"
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            areas = self.settings_areas()
+            if dialog.list_open:
+                dialog.list_open = False
+                for name, rectangle in areas["options"].items():  # type: ignore[union-attr]
+                    if rectangle.collidepoint(event.pos):
+                        dialog.choose(name)
+                        return
+                if areas["choice"].collidepoint(event.pos):  # type: ignore[union-attr]
+                    return
+            if areas["choice"].collidepoint(event.pos) and dialog.stage == "choose":  # type: ignore[union-attr]
+                dialog.list_open = True
+            elif areas["apply"].collidepoint(event.pos):  # type: ignore[union-attr]
+                outcome = dialog.apply()
+            elif areas["reload"].collidepoint(event.pos):  # type: ignore[union-attr]
+                outcome = dialog.reload()
+            elif areas["cancel"].collidepoint(event.pos):  # type: ignore[union-attr]
+                if dialog.stage == "confirm":
+                    dialog.back()
+                else:
+                    outcome = "cancel"
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if dialog.list_open:
+                dialog.list_open = False
+            elif dialog.stage == "confirm":
+                dialog.back()
+            else:
+                outcome = "cancel"
+        if outcome == "done":
+            self.message = dialog.done_message
+            warnings = describe_reserved_names(self.project.reserved_name_warnings())
+            if warnings:
+                self.message += " " + warnings
+            self.editor.sync()
+        if outcome in ("done", "cancel"):
+            self.settings_dialog = None
+
+    def draw_settings_dialog(self, dialog: SettingsDialog) -> None:
+        surface = self.surface
+        dimming = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dimming.fill((0, 0, 0, 170))
+        surface.blit(dimming, (0, 0))
+        areas = self.settings_areas()
+        panel = areas["panel"]
+        pygame.draw.rect(surface, Theme.PANEL, panel, border_radius=6)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, panel, width=1, border_radius=6)
+        draw_text(surface, self.fonts.large, "Settings", Theme.TEXT, (panel.x + scaled(20), panel.y + scaled(16)))
+        draw_text(surface, self.fonts.normal, "PBR setting", Theme.TEXT_DIMMED, (panel.x + scaled(20), panel.y + scaled(58)))
+        choice = areas["choice"]
+        draw_button(surface, choice, dialog.choice, self.fonts.normal, choice.collidepoint(self.pointer), dialog.stage == "choose")
+        tip = choice.right - scaled(14)
+        pygame.draw.polygon(surface, Theme.TEXT_DIMMED, [(tip - 5, choice.centery - 3), (tip + 5, choice.centery - 3), (tip, choice.centery + 3)])
+        line_height = self.fonts.normal.get_linesize()
+        if dialog.stage == "confirm":
+            text = f"These channels have data that {dialog.choice} has no place for, and they will be lost: {dialog.lost_text}."
+            color = Theme.ERROR
+        else:
+            text, color = dialog.note, Theme.TEXT_DIMMED
+        for number, line in enumerate(wrap_text(self.fonts.normal, text, areas["note"].width)):
+            draw_text(surface, self.fonts.normal, line, color, (areas["note"].x, areas["note"].y + number * line_height))
+        for number, line in enumerate(wrap_text(self.fonts.small, dialog.error, areas["error"].width)):
+            draw_text(surface, self.fonts.small, line, Theme.ERROR, (areas["error"].x, areas["error"].y + number * self.fonts.small.get_linesize()))
+        enabled = dialog.stage == "confirm" or dialog.can_apply
+        buttons = (
+            ("apply", "Switch anyway" if dialog.stage == "confirm" else "Apply", enabled),
+            ("reload", "Reload folder", dialog.stage == "choose"),
+            ("cancel", "Back" if dialog.stage == "confirm" else "Cancel", True),
+        )
+        for name, label, button_enabled in buttons:
+            draw_button(surface, areas[name], label, self.fonts.normal, areas[name].collidepoint(self.pointer), button_enabled)
+        for name, rectangle in areas["options"].items():  # type: ignore[union-attr]
+            draw_button(surface, rectangle, name, self.fonts.normal, rectangle.collidepoint(self.pointer))
+            if name == dialog.choice:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
+
+    def _draw_gear(self) -> None:
+        area = self.gear_area()
+        hovered = area.collidepoint(self.pointer)
+        color = Theme.TEXT if hovered else Theme.TEXT_DIMMED
+        centre, radius = area.center, area.width // 2 - 2
+        for index in range(8):
+            angle = index * math.pi / 4
+            outer = (centre[0] + radius * math.cos(angle), centre[1] + radius * math.sin(angle))
+            inner = (centre[0] + (radius - scaled(4)) * math.cos(angle), centre[1] + (radius - scaled(4)) * math.sin(angle))
+            pygame.draw.line(self.surface, color, inner, outer, max(2, scaled(3)))
+        pygame.draw.circle(self.surface, color, centre, radius - scaled(3), 2)
+        pygame.draw.circle(self.surface, color, centre, max(2, radius // 3), 2)
+
+    # The bridge -------------------------------------------------------------------------------------------
+
+    def open_bridge(self, port: int = DEFAULT_BRIDGE_PORT, group: Optional[str] = None) -> BridgeLink:
+        """Let a program connect (to this machine only) and paint on the tiles it shows. Raises OSError if the port is taken."""
+        self.bridge_link = BridgeLink(port)
+        self.bridge = BridgeController(self.project, self.editor, group)
+        self.message = f"Bridge: waiting for a program on port {self.bridge_link.port}"
+        return self.bridge_link
+
+    def pump_bridge(self) -> None:
+        """Once a frame: take in what the program said, and tell it what changed."""
+        if self.bridge_link is None or self.bridge is None:
+            return
+        busy = any(
+            dialog is not None
+            for dialog in (self.quit_dialog, self.import_dialog, self.context_menu, self.purge_dialog, self.settings_dialog)
+        )
+        events = self.bridge_link.poll()
+        for kind, content in events:
+            if kind == "message" and isinstance(content, dict):
+                if busy and content.get("type") == "pointer":
+                    continue  # a question is open: the pointer waits
+                self.bridge.receive(content)
+                if content.get("type") == "hello" and self.bridge.is_connected:
+                    self.message = f"Bridge: {self.bridge.host_name} is connected"
+            elif kind == "bad":
+                self.bridge.outgoing.append({"type": "error", "text": str(content)})
+            elif kind == "disconnected":
+                self.bridge.lost_host()
+                self.message = "Bridge: the program went away"
+            elif kind == "connected":
+                self.bridge.lost_host()
+        outgoing = self.bridge.take_outgoing()
+        for message in outgoing:
+            self.bridge_link.send(message)
+        if outgoing or events:
+            self.needs_redraw = True
+        if self.editor.message:
+            self.message, self.editor.message = self.editor.message, ""
+
+    def close_bridge(self) -> None:
+        if self.bridge is not None:
+            self.bridge.lost_host()
+        if self.bridge_link is not None:
+            self.bridge_link.close()
+        self.bridge_link = None
+        self.bridge = None
 
     # Layout -----------------------------------------------------------------------------------------------
 
@@ -4456,7 +7080,7 @@ class Application:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
             # Closing the window gives up an import that has not started, and a purge that has not been confirmed.
-            self.import_dialog = self.context_menu = self.purge_dialog = None
+            self.import_dialog = self.context_menu = self.purge_dialog = self.settings_dialog = None
             if self.quit_dialog is None:
                 if not self.project.unsaved_tiles():
                     return False
@@ -4468,6 +7092,8 @@ class Application:
                 self._handle_dialog_event(event)
             elif self.purge_dialog is not None:
                 self._handle_purge_event(event)
+            elif self.settings_dialog is not None:
+                self._handle_settings_event(event)
             elif self.import_dialog is not None:
                 self._handle_import_event(event)
             elif self.context_menu is not None:
@@ -4488,7 +7114,7 @@ class Application:
 
     def dialog_areas(self) -> dict[str, pygame.Rect]:
         assert self.quit_dialog is not None
-        return quit_dialog_areas(self.surface.get_size(), self.quit_dialog.remaining > 1)
+        return quit_dialog_areas(self.surface.get_size(), self.quit_dialog.remaining > 1, max(1, len(self.quit_dialog.rows)))
 
     def import_dialog_areas(self) -> dict[str, pygame.Rect]:
         return import_dialog_areas(self.surface.get_size())
@@ -4707,11 +7333,21 @@ class Application:
         elif event.type == pygame.TEXTINPUT and self.editor.name_focused:
             self.editor.name_field.insert_text(event.text)
             self.editor.name_invalid = False
+        elif event.type == pygame.TEXTINPUT and self.editor.value_focus is not None:
+            self.editor.value_field.insert_text(event.text)
+            self.editor.value_invalid = False
         elif event.type == pygame.KEYDOWN:
             self._handle_key(event)
 
     def _handle_press(self, position: tuple[int, int]) -> None:
         self.message = ""
+        if self.gear_area().collidepoint(position):
+            if self.project.is_empty:
+                self.message = f"Create {ATLAS_FILE_NAME} first: the settings are kept in it."
+            else:
+                self.editor.lose_focus()
+                self.settings_dialog = SettingsDialog(self.project)
+            return
         if self.project.is_empty:
             rectangles = self.empty_state_rectangles()
             if "field" in rectangles and rectangles["field"].collidepoint(position):
@@ -4761,6 +7397,8 @@ class Application:
             self.editor.hex_key_down(event)
         elif self.editor.name_focused:
             self.editor.name_key_down(event)
+        elif self.editor.value_focus is not None:
+            self.editor.value_key_down(event)
         elif self.editor.key_down(event.key, event.mod, getattr(event, "scancode", 0)):
             pass
         elif event.key == pygame.K_ESCAPE:
@@ -4809,7 +7447,11 @@ class Application:
         surface.fill(Theme.BACKGROUND)
         layout = self.layout
         count = len(self.project.tiles)
-        draw_text(surface, self.fonts.normal, f"Atlas ({count} tile{'' if count == 1 else 's'})", Theme.TEXT, layout.atlas_title.midleft, "midleft")
+        self._draw_gear()
+        draw_text(
+            surface, self.fonts.normal, f"Atlas ({count} tile{'' if count == 1 else 's'})", Theme.TEXT,
+            (self.atlas_title_left(), layout.atlas_title.centery), "midleft",
+        )
         draw_text(
             surface, self.fonts.normal, f"Not in the atlas ({len(self.project.unplaced)})", Theme.TEXT,
             layout.unplaced_title.midleft, "midleft",
@@ -4823,6 +7465,8 @@ class Application:
             self.draw_quit_dialog(self.quit_dialog)
         elif self.purge_dialog is not None:
             self.draw_purge_dialog(self.purge_dialog)
+        elif self.settings_dialog is not None:
+            self.draw_settings_dialog(self.settings_dialog)
         elif self.import_dialog is not None:
             self.draw_import_dialog(self.import_dialog)
         elif self.context_menu is not None:
@@ -4938,7 +7582,8 @@ class Application:
 
     def draw_dialog_picture(self, box: pygame.Rect, pixels: Optional[numpy.ndarray], label: str) -> None:
         surface = self.surface
-        draw_text(surface, self.fonts.normal, label, Theme.TEXT_DIMMED, (box.centerx, box.y - scaled(6)), "midbottom")
+        if label:
+            draw_text(surface, self.fonts.normal, label, Theme.TEXT_DIMMED, (box.centerx, box.y - scaled(6)), "midbottom")
         pygame.draw.rect(surface, Theme.FIELD, box)
         if pixels is None:
             draw_text(surface, self.fonts.normal, "no file yet", Theme.TEXT_DIMMED, box.center, "center")
@@ -4964,8 +7609,20 @@ class Application:
             surface, self.fonts.small, f"Tile {position} of {len(dialog.coordinates)} with unsaved changes",
             Theme.TEXT_DIMMED, (panel.x + scaled(20), panel.y + scaled(44)),
         )
-        self.draw_dialog_picture(areas["current"], dialog.current_pixels, "Current")
-        self.draw_dialog_picture(areas["disk"], dialog.disk_pixels, "On disk")
+        for name, heading in (("old", "Old (on disk)"), ("new", "New"), ("difference", "Difference")):
+            draw_text(surface, self.fonts.small, heading, Theme.TEXT_DIMMED, areas[f"{name}_heading"].midbottom, "midbottom")
+        rows = dialog.rows
+        if "more" in areas:
+            hidden = len(rows) - sum(1 for name in areas if name.startswith("label"))
+            draw_text(surface, self.fonts.small, f"... and {hidden} more that differ (save to keep them all)", Theme.TEXT_DIMMED, areas["more"].midleft, "midleft")
+        for index, row in enumerate(rows):
+            if f"label{index}" not in areas:
+                break
+            draw_text(surface, self.fonts.normal, row.label, Theme.TEXT, areas[f"label{index}"].midleft, "midleft")
+            no_file = dialog.disk_pixels is None and row.label == "RGB"
+            self.draw_dialog_picture(areas[f"old{index}"], None if no_file else row.old, "")
+            self.draw_dialog_picture(areas[f"new{index}"], row.new, "")
+            self.draw_dialog_picture(areas[f"difference{index}"], row.difference, "")
         if "checkbox" in areas:
             box = pygame.Rect(areas["checkbox"].x, areas["checkbox"].y + scaled(3), scaled(18), scaled(18))
             pygame.draw.rect(surface, Theme.FIELD, box, border_radius=3)
@@ -5173,20 +7830,32 @@ def initialise_pygame() -> pygame.Surface:
     return pygame.display.set_mode((scaled(1280), scaled(800)), pygame.RESIZABLE)
 
 
-def run_application(project: AtlasProject, surface: Optional[pygame.Surface] = None) -> None:
+def run_application(
+    project: AtlasProject,
+    surface: Optional[pygame.Surface] = None,
+    bridge_port: Optional[int] = None,
+    bridge_group: Optional[str] = None,
+) -> None:
     surface = surface if surface is not None else initialise_pygame()
     pygame.display.set_caption(f"VirtualAtlas - {project.folder.name}")
     application = Application(project, surface)
+    if bridge_port is not None:
+        try:
+            application.open_bridge(bridge_port, bridge_group)
+        except OSError as error:
+            application.message = f"Bridge: port {bridge_port} cannot be used: {error}"
     clock = pygame.time.Clock()
     running = True
     while running:
         for event in pygame.event.get():
             if not application.handle_event(event):
                 running = False
+        application.pump_bridge()
         if application.wants_redraw():
             application.draw()
             pygame.display.flip()
         clock.tick(60)
+    application.close_bridge()
     pygame.quit()
 
 
@@ -5215,8 +7884,24 @@ def show_refusal_window(problems: list[str]) -> None:
     pygame.quit()
 
 
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Edit a folder of tile images as if they were one texture atlas.")
+    parser.add_argument(
+        "--bridge",
+        nargs="?",
+        const=DEFAULT_BRIDGE_PORT,
+        default=None,
+        type=int,
+        metavar="PORT",
+        help=f"let a program that shows these tiles connect (this machine only) and paint on them; the port is {DEFAULT_BRIDGE_PORT} unless given (docs: tools/virtual_atlas/BRIDGE.md)",
+    )
+    parser.add_argument("--group", default=None, help="with --bridge: only tiles of the program that say they are of this group are used")
+    return parser.parse_args(arguments)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    arguments = parse_arguments(sys.argv[1:])
     folder = Path(__file__).resolve().parent
     try:
         project = AtlasProject.open(folder)
@@ -5225,7 +7910,7 @@ def main() -> int:
             print(f"{ATLAS_FILE_NAME}: {problem}", file=sys.stderr)
         show_refusal_window(error.problems)
         return 1
-    run_application(project)
+    run_application(project, bridge_port=arguments.bridge, bridge_group=arguments.group)
     return 0
 
 

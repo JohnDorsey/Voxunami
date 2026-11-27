@@ -7,6 +7,7 @@ use world_storage::{LoadContext, LoadReport};
 
 use crate::client_world::{ClientEvent, ClientWorld};
 use crate::error::ClientError;
+use crate::packs::{ClientPacks, NoPackStore, PackStore};
 
 /// Connects to a server: sends the hello, answers the server's challenge with a proof that this
 /// install holds the private key of the identity it said it is, then waits for the welcome.
@@ -107,12 +108,22 @@ impl<C: Connection> Welcomed<C> {
     /// Builds the client's view of the world from `context`, the program's own content. Content the
     /// server has and the program lacks becomes placeholders; the report lists it.
     pub fn finish(self, context: LoadContext<'_>) -> Result<(Client<C>, LoadReport), ClientError> {
+        self.finish_with_packs(context, Box::new(NoPackStore))
+    }
+
+    /// As [`Welcomed::finish`], keeping the packs the server replicates in `store`: the client takes from it the ones it has and keeps there the ones it is sent.
+    pub fn finish_with_packs(
+        self,
+        context: LoadContext<'_>,
+        store: Box<dyn PackStore>,
+    ) -> Result<(Client<C>, LoadReport), ClientError> {
         let (world, report) = ClientWorld::from_welcome(self.welcome, context)?;
         Ok((
             Client {
                 connection: self.connection,
                 world,
                 incomplete_tick: Vec::new(),
+                packs: ClientPacks::new(store),
             },
             report,
         ))
@@ -135,11 +146,19 @@ pub struct Client<C: Connection> {
     world: ClientWorld,
     /// Messages of the tick still arriving; applied when its `TickCompleted` comes.
     incomplete_tick: Vec<ServerMessage>,
+    /// The packs the server replicates, as far as the client has them.
+    packs: ClientPacks,
 }
 
 impl<C: Connection> Client<C> {
     pub fn world(&self) -> &ClientWorld {
         &self.world
+    }
+
+    /// The packs the server replicates: the list it told, and the ones this client holds, verified. They are taken in as the messages arrive, not at the end of a
+    /// tick.
+    pub fn packs(&self) -> &ClientPacks {
+        &self.packs
     }
 
     /// The connection, for what only it knows: why a replay ended, or whether a recording failed.
@@ -150,6 +169,16 @@ impl<C: Connection> Client<C> {
     /// Applies the next complete tick the server has sent, if one has fully arrived. Call it until it
     /// returns `None` to catch up. The view never shows half a tick.
     pub fn poll_tick(&mut self) -> Result<Option<TickUpdate>, ClientError> {
+        self.poll_tick_with(&mut |_, _| {
+            Err("this client was not given a way to grow its registries".to_owned())
+        })
+    }
+
+    /// As [`Client::poll_tick`], with a way to grow the program's registries if the server appends entries to them in this tick (see [`crate::RegistryGrowth`]).
+    pub fn poll_tick_with(
+        &mut self,
+        grow: &mut crate::RegistryGrowth<'_>,
+    ) -> Result<Option<TickUpdate>, ClientError> {
         loop {
             let frame = self
                 .connection
@@ -159,20 +188,64 @@ impl<C: Connection> Client<C> {
                 return Ok(None);
             };
             let message = ServerMessage::decode(&frame)?;
-            if !matches!(message, ServerMessage::TickCompleted { .. }) {
-                self.incomplete_tick.push(message);
-                continue;
+            // Packs are not part of a tick's picture of the world: they are taken in as they arrive.
+            match message {
+                ServerMessage::Packs { listings, whole } => {
+                    self.take_in_list(listings, whole)?;
+                    continue;
+                }
+                ServerMessage::PackChunk {
+                    root,
+                    offset,
+                    bytes,
+                } => {
+                    self.packs.chunk(root, offset, &bytes)?;
+                    continue;
+                }
+                message => {
+                    if !matches!(message, ServerMessage::TickCompleted { .. }) {
+                        self.incomplete_tick.push(message);
+                        continue;
+                    }
+                    return self.complete_tick(message, grow);
+                }
             }
-            let mut events = Vec::new();
-            for earlier in std::mem::take(&mut self.incomplete_tick) {
-                events.extend(self.world.apply(earlier)?);
-            }
-            self.world.apply(message)?;
-            return Ok(Some(TickUpdate {
-                tick: self.world.tick(),
-                events,
-            }));
         }
+    }
+
+    /// The server's list of packs: asks for the ones this client lacks, and tells the connection (a recording) of the ones it took from its store.
+    fn take_in_list(
+        &mut self,
+        listings: Vec<protocol::PackListing>,
+        whole: bool,
+    ) -> Result<(), ClientError> {
+        let outcome = self.packs.list(listings, whole);
+        for frame in &outcome.from_store {
+            self.connection.note_frame(frame);
+        }
+        if !outcome.to_request.is_empty() {
+            self.send(&ClientMessage::RequestPacks {
+                roots: outcome.to_request,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// The tick is complete: applies what came in it, in the order the server sent it, and ends with `completed`.
+    fn complete_tick(
+        &mut self,
+        completed: ServerMessage,
+        grow: &mut crate::RegistryGrowth<'_>,
+    ) -> Result<Option<TickUpdate>, ClientError> {
+        let mut events = Vec::new();
+        for earlier in std::mem::take(&mut self.incomplete_tick) {
+            events.extend(self.world.apply_growing(earlier, grow)?);
+        }
+        self.world.apply(completed)?;
+        Ok(Some(TickUpdate {
+            tick: self.world.tick(),
+            events,
+        }))
     }
 
     /// Asks the server to send, and keep up to date, the bricks of `region` of `level`.

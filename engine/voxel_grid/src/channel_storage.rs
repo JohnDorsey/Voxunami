@@ -171,6 +171,60 @@ impl ChannelStorage {
         }
     }
 
+    /// Whether some value `test` says yes to may be stored. Cheap: a channel with a palette asks the palette and does not visit the voxels, so **a yes can be a false
+    /// alarm** (a value written over stays in the palette until [`ChannelStorage::compact`]) and a no is certain. A dense channel looks at every voxel.
+    pub fn may_hold(&self, test: impl Fn(u32) -> bool) -> bool {
+        match &self.representation {
+            Representation::Uniform(value) => test(*value),
+            Representation::Paletted { palette, .. } => palette.iter().any(|&value| test(value)),
+            Representation::Dense(values) => values.iter().any(|&value| test(value)),
+        }
+    }
+
+    /// The voxels that hold a value `test` says yes to, in index order (the order of [`LocalVoxelIndex::all`]: x, then y, then z). Exact. For a channel with a palette it
+    /// asks the palette once for each of its values, and then only looks at which value each voxel holds, so a brick with a ship in it that is a few voxels costs a pass over
+    /// its packed indices, not a look through the grid at each of its 32,768 voxels.
+    pub fn indices_where(&self, test: impl Fn(u32) -> bool) -> Vec<LocalVoxelIndex> {
+        match &self.representation {
+            Representation::Uniform(value) => {
+                if test(*value) {
+                    LocalVoxelIndex::all().collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            Representation::Paletted { palette, indices } => {
+                let wanted: Vec<bool> = palette.iter().map(|&value| test(value)).collect();
+                if !wanted.contains(&true) {
+                    return Vec::new();
+                }
+                // (A word whose slots are all one value that is not wanted holds none: the words of a brick that is mostly air are nearly all so.)
+                let unwanted_words: Vec<u64> = (0..palette.len())
+                    .filter(|&slot| !wanted[slot])
+                    .map(|slot| indices.repeated(slot))
+                    .collect();
+                let per_word = 64 / usize::from(indices.bits_per_index());
+                let mut found = Vec::new();
+                for (number, &word) in indices.words().iter().enumerate() {
+                    if unwanted_words.contains(&word) {
+                        continue;
+                    }
+                    for index in number * per_word..(number + 1) * per_word {
+                        if wanted[indices.get(index)] {
+                            found.push(
+                                LocalVoxelIndex::from_index(index).expect("a slot of a brick"),
+                            );
+                        }
+                    }
+                }
+                found
+            }
+            Representation::Dense(values) => LocalVoxelIndex::all()
+                .filter(|index| test(values[index.index()]))
+                .collect(),
+        }
+    }
+
     /// The largest value stored. Cheap: it does not visit every voxel when a palette is in use.
     pub fn max_value(&self) -> u32 {
         match &self.representation {
@@ -325,6 +379,126 @@ mod tests {
         StorageKind::Paletted {
             palette_length,
             bits_per_index,
+        }
+    }
+
+    #[test]
+    fn what_may_be_held_is_asked_of_the_palette_and_not_of_every_voxel() {
+        // Uniform: the one value.
+        let uniform = ChannelStorage::uniform(7);
+        assert!(uniform.may_hold(|value| value == 7));
+        assert!(!uniform.may_hold(|value| value == 8));
+
+        // Paletted: every value that is in it.
+        let mut paletted = ChannelStorage::uniform(0);
+        paletted.set(voxel(5), 3);
+        paletted.set(voxel(900), 11);
+        assert!(paletted.may_hold(|value| value == 0));
+        assert!(paletted.may_hold(|value| value == 3));
+        assert!(paletted.may_hold(|value| value == 11));
+        assert!(!paletted.may_hold(|value| value == 4));
+
+        // A value that was written over is still in the palette until it is compacted: "may", never "does", so it can be a false alarm and is never a miss.
+        paletted.set(voxel(900), 0);
+        assert!(paletted.may_hold(|value| value == 11), "a stale entry");
+        paletted.compact();
+        assert!(!paletted.may_hold(|value| value == 11));
+        assert!(paletted.may_hold(|value| value == 3));
+
+        // Dense: more than 256 distinct values.
+        let dense = storage_with_distinct_values(300);
+        assert_eq!(dense.kind(), StorageKind::Dense);
+        assert!(dense.may_hold(|value| value == 299));
+        assert!(!dense.may_hold(|value| value == 301));
+    }
+
+    #[test]
+    fn the_voxels_that_hold_what_a_test_says_are_found_in_index_order_whatever_the_representation()
+    {
+        let positions = |storage: &ChannelStorage, test: fn(u32) -> bool| -> Vec<usize> {
+            storage
+                .indices_where(test)
+                .iter()
+                .map(|index| index.index())
+                .collect()
+        };
+        // Uniform: all of them, or none.
+        let uniform = ChannelStorage::uniform(5);
+        assert_eq!(
+            positions(&uniform, |value| value == 5).len(),
+            BRICK_VOXEL_COUNT
+        );
+        assert!(positions(&uniform, |value| value != 5).is_empty());
+
+        // Paletted, at each width: 2 values (1 bit), 3 (2 bits), 9 (4 bits), 40 (8 bits), written in no order.
+        for distinct in [2u32, 3, 9, 40] {
+            let mut storage = ChannelStorage::uniform(0);
+            let wanted: Vec<usize> = (0..BRICK_VOXEL_COUNT)
+                .filter(|index| index % 97 == 3 || index % 1013 == 0)
+                .collect();
+            for (turn, &index) in wanted.iter().enumerate() {
+                storage.set(voxel(index), 1 + (turn as u32 * 7) % (distinct - 1));
+            }
+            assert!(
+                matches!(storage.kind(), StorageKind::Paletted { .. }),
+                "{distinct}: {:?}",
+                storage.kind()
+            );
+            assert_eq!(
+                positions(&storage, |value| value != 0),
+                wanted,
+                "{distinct} values"
+            );
+            assert_eq!(
+                positions(&storage, |value| value == 0).len(),
+                BRICK_VOXEL_COUNT - wanted.len()
+            );
+        }
+
+        // Dense.
+        let dense = storage_with_distinct_values(300);
+        assert_eq!(dense.kind(), StorageKind::Dense);
+        assert_eq!(
+            positions(&dense, |value| value != 0),
+            (1..=300).collect::<Vec<_>>()
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn the_voxels_found_are_exactly_those_a_look_at_every_voxel_finds(
+            writes in proptest::collection::vec((0usize..BRICK_VOXEL_COUNT, 0u32..300), 0..400),
+            wanted in 0u32..300,
+        ) {
+            let mut storage = ChannelStorage::uniform(0);
+            for (index, value) in &writes {
+                storage.set(voxel(*index), *value);
+            }
+            let found: Vec<usize> = storage
+                .indices_where(|value| value == wanted)
+                .iter()
+                .map(|index| index.index())
+                .collect();
+            let every: Vec<usize> = (0..BRICK_VOXEL_COUNT)
+                .filter(|&index| storage.get(voxel(index)) == wanted)
+                .collect();
+            prop_assert_eq!(found, every);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn what_a_voxel_holds_is_never_missed(
+            writes in proptest::collection::vec((0usize..BRICK_VOXEL_COUNT, 0u32..40), 0..60),
+            probe in 0u32..40,
+        ) {
+            let mut storage = ChannelStorage::uniform(0);
+            for (index, value) in &writes {
+                storage.set(voxel(*index), *value);
+            }
+            let held = storage.iter().any(|value| value == probe);
+            // (A miss is the only thing that is wrong: a false alarm is allowed.)
+            prop_assert!(!held || storage.may_hold(|value| value == probe));
         }
     }
 

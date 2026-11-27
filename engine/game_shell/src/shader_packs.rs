@@ -1,6 +1,6 @@
 //! Shader packs at the shell (`docs/specs/shader-pack-spec.md`, step 2): reading the folders a player has, and choosing one by name.
 //!
-//! A pack is a folder with a `pack.json` and a `lighting.wgsl`:
+//! A pack is a folder with a `shaderpack.json` and a `lighting.wgsl`:
 //!
 //! ```json
 //! { "id": "someone:cel", "name": "Cel shading", "interface": 1, "description": "Three steps of sun." }
@@ -19,7 +19,13 @@ use identity::Identity;
 use namespaced_id::NamespacedId;
 use renderer::{SHADER_PACK_INTERFACE, ShaderPack};
 
-/// The keys a `pack.json` may have.
+/// The file that makes a folder a shader pack. (A data pack's is `pack.json`; the two kinds are told apart by the name, and each reader says so when it meets the other's.)
+pub const MANIFEST_FILE: &str = "shaderpack.json";
+
+/// The manifest of a data pack, which this reader never reads and only names when a folder has it and not its own.
+const DATA_PACK_MANIFEST_FILE: &str = "pack.json";
+
+/// The keys a `shaderpack.json` may have.
 const KEYS: [&str; 7] = [
     "id",
     "name",
@@ -132,16 +138,27 @@ pub fn read_pack(folder: &Path) -> Result<ShaderPack, Vec<String>> {
             }
         })
     };
-    let description = read("pack.json").map_err(|error| vec![error])?;
+    let description = read(MANIFEST_FILE).map_err(|mut error| {
+        if folder.join(DATA_PACK_MANIFEST_FILE).is_file() {
+            error.push_str(&format!(
+                " (this folder has a {DATA_PACK_MANIFEST_FILE}, which is the manifest of a data pack: those are the server's, and `--packs` names a folder of them)"
+            ));
+        }
+        vec![error]
+    })?;
     let value: serde_json::Value = serde_json::from_str(&description).map_err(|error| {
         vec![format!(
-            "{shown}{}pack.json: {error}",
+            "{shown}{}{MANIFEST_FILE}: {error}",
             std::path::MAIN_SEPARATOR
         )]
     })?;
     let mut problems = Vec::new();
-    let in_file =
-        |message: String| format!("{shown}{}pack.json: {message}", std::path::MAIN_SEPARATOR);
+    let in_file = |message: String| {
+        format!(
+            "{shown}{}{MANIFEST_FILE}: {message}",
+            std::path::MAIN_SEPARATOR
+        )
+    };
     let Some(object) = value.as_object() else {
         return Err(vec![in_file("the file is not a JSON object".to_owned())]);
     };
@@ -242,7 +259,7 @@ const SETTING_KEYS: [&str; 6] = [
     "options",
 ];
 
-/// The settings of the `"settings"` object of a `pack.json`: each key is a name, each value an object with the type (`float`, `integer`, `switch` or `choice`), a default and, for a
+/// The settings of the `"settings"` object of a `shaderpack.json`: each key is a name, each value an object with the type (`float`, `integer`, `switch` or `choice`), a default and, for a
 /// number, a range, and for a choice its words (`options`). Every problem is added to `problems`, and a setting that has any is left out.
 fn read_own_settings(
     value: &serde_json::Value,
@@ -388,7 +405,7 @@ fn read_setting(
         .map_err(|error| format!("the setting `{name}`: {error}"))
 }
 
-/// The `"engine_settings"` object of a `pack.json`: the defaults the pack sets for the engine's settings, by name, each a number, true or false, or a word of a choice.
+/// The `"engine_settings"` object of a `shaderpack.json`: the defaults the pack sets for the engine's settings, by name, each a number, true or false, or a word of a choice.
 fn read_engine_defaults(
     value: &serde_json::Value,
     in_file: &dyn Fn(String) -> String,
@@ -539,7 +556,7 @@ pub fn run_check_shader_packs(arguments: Vec<String>) -> Result<(), String> {
         return Err("usage: voxunami check-shader-pack DIRECTORY (the folder of a pack, or a folder of packs)".to_owned());
     };
     let path = Path::new(directory);
-    let shelf = if path.join("pack.json").exists() {
+    let shelf = if path.join(MANIFEST_FILE).exists() {
         match read_pack(path) {
             Ok(pack) => ShaderPackShelf {
                 packs: vec![pack],

@@ -5,12 +5,12 @@
 //! player who gets close; and a block can be placed only by a player who has the item, which is used up
 //! ([`BlockPlaced`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::{BlockTable, PropertyHandle};
+use block_models::PropertyHandle;
 use entities::{ComponentBag, Inventory, ItemStack};
-use game_shell::GameContent;
+use game_shell::{PackageData, SharedPackage};
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
 use plugin_host::{
@@ -50,14 +50,8 @@ fn slot_holding(inventory: &Inventory, item: &NamespacedId) -> Option<usize> {
 
 #[derive(Debug)]
 pub struct ItemsPlugin {
-    /// The identifier of each block, by its number in this game's registry.
-    block_names: HashMap<u32, NamespacedId>,
-    /// The blocks that can be placed, and so have items.
-    placeable: Arc<Vec<NamespacedId>>,
-    /// The blocks that exist only in creative: breaking one leaves no item.
-    creative_only: Arc<Vec<NamespacedId>>,
     air: u32,
-    table: BlockTable,
+    package: SharedPackage,
     passable: PropertyHandle<bool>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
@@ -66,20 +60,11 @@ pub struct ItemsPlugin {
 }
 
 impl ItemsPlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
-        let registries = content.registries();
-        let blocks = registries[0].1;
-        let block_names: HashMap<u32, NamespacedId> = (0..blocks.entry_count() as u32)
-            .filter_map(|raw| Some((raw, blocks.identifier_of_raw(raw)?.clone())))
-            .collect();
-        let table = content.block_table();
+    pub fn new(content: &CaveContent, package: &SharedPackage, players: SharedPresence) -> Self {
         Self {
             air: content.blocks.air,
-            passable: block_properties::passable(&table),
-            table,
-            placeable: Arc::new(placeable_blocks(&content.package_data())),
-            creative_only: Arc::new(creative_only_blocks(&content.package_data())),
-            block_names,
+            passable: block_properties::passable(&package.table().current()),
+            package: package.clone(),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
             orientation_channel: content.orientation_channel(),
@@ -109,10 +94,13 @@ impl Plugin for ItemsPlugin {
     }
 
     fn register(&self, registrar: &mut Registrar<'_>) {
-        for spec in item_specs(&self.placeable) {
+        // (The items there are are those of the blocks that can be placed when the server starts: the items of blocks that a replaced package gained are not in the
+        // registry of items yet.)
+        let placeable = placeable_blocks(&self.package.package());
+        for spec in item_specs(&placeable) {
             registrar.item(spec);
         }
-        let default_item = self.placeable.first().cloned().unwrap_or_else(|| {
+        let default_item = placeable.first().cloned().unwrap_or_else(|| {
             "base_blocks:stone"
                 .parse()
                 .expect("constant identifier is valid")
@@ -173,11 +161,10 @@ impl Plugin for ItemsPlugin {
         });
 
         // In survival, a block is placed only by a player who has the item.
-        let (shared, players, names, placeable, air) = (
+        let (shared, players, package, air) = (
             Arc::clone(&rules),
             Arc::clone(&self.players),
-            self.block_names.clone(),
-            Arc::clone(&self.placeable),
+            self.package.clone(),
             self.air,
         );
         registrar.on_ask(
@@ -186,9 +173,10 @@ impl Plugin for ItemsPlugin {
                 if locked(&shared).mode != GameMode::Survival || event.block == air {
                     return Verdict::Allow;
                 }
-                let Some(item) = names
-                    .get(&event.block)
-                    .and_then(|block| item_for_block(block, &placeable))
+                // (The blocks that can be placed are the package's now.)
+                let blocks = package.package();
+                let Some(item) = block_called(&blocks, event.block)
+                    .and_then(|block| item_for_block(block, &placeable_blocks(&blocks)))
                 else {
                     return Verdict::Allow;
                 };
@@ -205,11 +193,10 @@ impl Plugin for ItemsPlugin {
         );
 
         // ...and uses one up.
-        let (shared, players, names, placeable) = (
+        let (shared, players, package) = (
             Arc::clone(&rules),
             Arc::clone(&self.players),
-            self.block_names.clone(),
-            Arc::clone(&self.placeable),
+            self.package.clone(),
         );
         registrar.on::<BlockPlaced>(
             HandlerSpec::new("voxunami_cave:placing_uses_the_item_up"),
@@ -217,9 +204,9 @@ impl Plugin for ItemsPlugin {
                 if locked(&shared).mode != GameMode::Survival {
                     return;
                 }
-                let Some(item) = names
-                    .get(&event.block)
-                    .and_then(|block| item_for_block(block, &placeable))
+                let blocks = package.package();
+                let Some(item) = block_called(&blocks, event.block)
+                    .and_then(|block| item_for_block(block, &placeable_blocks(&blocks)))
                 else {
                     return;
                 };
@@ -238,22 +225,18 @@ impl Plugin for ItemsPlugin {
         );
 
         // A broken block leaves its item where it was (a block that exists only in creative leaves none, so that playing never gives one).
-        let (shared, names, placeable, creative_only) = (
-            Arc::clone(&rules),
-            self.block_names.clone(),
-            Arc::clone(&self.placeable),
-            Arc::clone(&self.creative_only),
-        );
+        let (shared, package) = (Arc::clone(&rules), self.package.clone());
         registrar.on::<BlockBroken>(
             HandlerSpec::new("voxunami_cave:breaking_leaves_the_item"),
             move |event, context| {
                 if locked(&shared).mode != GameMode::Survival {
                     return;
                 }
-                let Some(item) = names
-                    .get(&event.block)
+                let blocks = package.package();
+                let creative_only = creative_only_blocks(&blocks);
+                let Some(item) = block_called(&blocks, event.block)
                     .filter(|block| !creative_only.contains(block))
-                    .and_then(|block| item_for_block(block, &placeable))
+                    .and_then(|block| item_for_block(block, &placeable_blocks(&blocks)))
                 else {
                     return;
                 };
@@ -270,7 +253,7 @@ impl Plugin for ItemsPlugin {
         // Items fall, join and are picked up.
         let this = ItemsRun {
             air: self.air,
-            table: self.table.clone(),
+            package: self.package.clone(),
             passable: self.passable,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
@@ -298,10 +281,18 @@ impl Plugin for ItemsPlugin {
     }
 }
 
+/// The identifier of the block with this number, if the package lists it.
+fn block_called(package: &PackageData, block: u32) -> Option<&NamespacedId> {
+    package
+        .blocks
+        .get(block as usize)
+        .map(|(identifier, _)| identifier)
+}
+
 /// What the per-tick system needs.
 struct ItemsRun {
     air: u32,
-    table: BlockTable,
+    package: SharedPackage,
     passable: PropertyHandle<bool>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
@@ -365,8 +356,10 @@ impl ItemsRun {
         if block == self.air {
             return false;
         }
-        let model = self.table.model_of(block, state, orientation);
-        !(self.table.get(self.passable, model) || self.table.shape(model).is_empty())
+        // (What a block is, as the package says now: the table is taken for each question, and a replacement is seen by the next.)
+        let table = self.package.table().current();
+        let model = table.model_of(block, state, orientation);
+        !(table.get(self.passable, model) || table.shape(model).is_empty())
     }
 
     fn fall(&self, context: &mut Context<'_>) {

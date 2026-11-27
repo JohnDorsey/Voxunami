@@ -9,8 +9,9 @@
 
 use block_models::{BlockDefinition, BlockTable, PropertyDeclaration, PropertyKey, PropertySchema};
 use content_registry::{Registry, RuntimeId};
-use data_packs::{GameTexture, Textures};
+use data_packs::{GameTexture, RawPack, Textures};
 use namespaced_id::NamespacedId;
+use std::sync::OnceLock;
 use voxel_grid::ChannelDefinition;
 
 fn identifier(text: &str) -> NamespacedId {
@@ -116,66 +117,54 @@ pub fn shape_name(state: u32) -> &'static str {
     SHAPE_NAMES.get(state as usize).copied().unwrap_or("whole")
 }
 
-/// The blocks in the order of their numbers, each with the text of the file in `data/blocks` that defines it. The numbers are fixed (air is 0, so a
-/// world whose voxels are all zero is sky), so the order is written here and not left to the order of the files' names.
-const BLOCK_FILES: [(&str, &str); 10] = [
-    ("air", include_str!("../data/blocks/air.json")),
-    ("stone", include_str!("../data/blocks/stone.json")),
-    ("dirt", include_str!("../data/blocks/dirt.json")),
-    ("grass", include_str!("../data/blocks/grass.json")),
-    ("lamp", include_str!("../data/blocks/lamp.json")),
-    ("wood", include_str!("../data/blocks/wood.json")),
-    ("fire", include_str!("../data/blocks/fire.json")),
-    (
-        "great_river_water",
-        include_str!("../data/blocks/great_river_water.json"),
-    ),
-    ("leaves", include_str!("../data/blocks/leaves.json")),
-    ("glass", include_str!("../data/blocks/glass.json")),
+/// The plugin's own pack, as the canonical archive `build.rs` makes of it: every file of the `data` folder (`pack.json`, `blocks/*.json`) and every `.png` of the
+/// `textures` folder, which is the painter's working folder and holds tools and notes beside the pictures (`docs/specs/pack-archive-spec.md`, step 3). A block or a
+/// picture put in those folders is in the archive with no list to forget it in. The archive is also what a server will hand to a client that asks for this pack.
+const PACK_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/base_blocks.pack.zip"));
+
+/// The id of the plugin's pack, which is its namespace.
+const PACK_ID: &str = "base_blocks";
+
+/// The bytes of the plugin's pack, the canonical archive of its files: the same on every machine, so its root hash (`pack_archive::FileIndex`) names the plugin's
+/// content.
+pub fn pack_archive_bytes() -> &'static [u8] {
+    PACK_ARCHIVE
+}
+
+/// The plugin's pack, read once from [`PACK_ARCHIVE`].
+fn pack() -> &'static RawPack {
+    static PACK: OnceLock<RawPack> = OnceLock::new();
+    PACK.get_or_init(|| data_packs::read_builtin(PACK_ID, PACK_ARCHIVE))
+}
+
+/// The blocks in the order of their numbers. The numbers are fixed (air is 0, so a world whose voxels are all zero is sky), so the order is written here and not
+/// left to the order of the files' names; a test keeps this list equal to the blocks the pack has, and the order of the fields of [`BaseBlockIds`].
+const BLOCK_ORDER: [&str; 10] = [
+    "air",
+    "stone",
+    "dirt",
+    "grass",
+    "lamp",
+    "wood",
+    "fire",
+    "great_river_water",
+    "leaves",
+    "glass",
 ];
 
-/// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
-/// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name, and the companions of a picture (`dirt_n` is the normal picture of `dirt`: a
-/// file ending `_s` is a specular picture and one ending `_n` a normal one, `docs/specs/block-textures-spec.md` section 4.4) beside the picture they go with.
-const TEXTURE_FILES: [(&str, &[u8]); 15] = [
-    ("grass", include_bytes!("../textures/grass.png")),
-    ("dirt", include_bytes!("../textures/dirt.png")),
-    // (Noise, made by `textures/make_dirt_normals.py`: bumps in the sun's light.)
-    ("dirt_n", include_bytes!("../textures/dirt_n.png")),
-    ("stone", include_bytes!("../textures/stone.png")),
-    ("still_water", include_bytes!("../textures/still_water.png")),
-    ("log_top", include_bytes!("../textures/log_top.png")),
-    ("log_side", include_bytes!("../textures/log_side.png")),
-    ("leaves", include_bytes!("../textures/leaves.png")),
-    // (Placeholders, made by `textures/make_placeholder_specular.py` from the pictures: the leaves let the sun through, by how thin each pixel looks.)
-    ("leaves_s", include_bytes!("../textures/leaves_s.png")),
-    ("glass", include_bytes!("../textures/glass.png")),
-    ("lamp", include_bytes!("../textures/lamp.png")),
-    // (A placeholder, from the same script: the lamp's bright pixels shine by themselves.)
-    ("lamp_s", include_bytes!("../textures/lamp_s.png")),
-    (
-        "dev_docking_port_top",
-        include_bytes!("../textures/dev_docking_port_top.png"),
-    ),
-    (
-        "dev_docking_port_side",
-        include_bytes!("../textures/dev_docking_port_side.png"),
-    ),
-    (
-        "dev_docking_port_bottom",
-        include_bytes!("../textures/dev_docking_port_bottom.png"),
-    ),
-];
-
-/// The pictures this plugin has, for a game to give its packs (which may replace them by file name) and to settle the colours of the blocks that follow them.
-/// They belong to the blocks of this plugin and to the dev docking port of Cave, which names `base_blocks:dev_docking_port`.
+/// The pictures of the plugin, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`): every picture in the folder, those no
+/// block uses yet as well (a picture is put in a world only if a block uses it). The companions of a picture (`dirt_n` is the normal picture of `dirt`: a file
+/// ending `_s` is a specular picture and one ending `_n` a normal one, `docs/specs/block-textures-spec.md` section 4.4) come with the picture they go with.
+/// For a game to give its packs (which may replace them by file name) and to settle the colours of the blocks that follow them. They belong to the blocks of
+/// this plugin and to the dev docking port of Cave, which names `base_blocks:dev_docking_port`.
 pub fn textures() -> Vec<GameTexture> {
-    TEXTURE_FILES
+    pack()
+        .textures
         .iter()
-        .map(|(name, bytes)| GameTexture {
-            id: identifier(&format!("base_blocks:{name}")),
-            file: format!("plugins/base_blocks/textures/{name}.png"),
-            bytes: bytes.to_vec(),
+        .map(|texture| GameTexture {
+            id: identifier(&format!("{PACK_ID}:{}", texture.name)),
+            file: format!("plugins/base_blocks/textures/{}.png", texture.name),
+            bytes: texture.bytes.clone(),
         })
         .collect()
 }
@@ -253,11 +242,19 @@ impl Default for BaseBlocks {
 impl BaseBlocks {
     pub fn new() -> Self {
         let schema = property_schema();
-        let mut definitions: Vec<(NamespacedId, BlockDefinition)> = BLOCK_FILES
+        let pack = pack();
+        let mut definitions: Vec<(NamespacedId, BlockDefinition)> = BLOCK_ORDER
             .iter()
-            .map(|(name, text)| {
-                let file = format!("plugins/base_blocks/data/blocks/{name}.json");
-                data_packs::read_block(&file, "base_blocks", name, text, &schema)
+            .map(|name| {
+                let file = pack
+                    .blocks
+                    .iter()
+                    .find(|file| file.name == *name)
+                    .unwrap_or_else(|| {
+                        panic!("the pack of the base blocks has no file for {name}")
+                    });
+                let path = format!("plugins/base_blocks/data/blocks/{name}.json");
+                data_packs::read_block(&path, PACK_ID, name, &file.text, &schema)
                     .unwrap_or_else(|errors| panic!("a file of the base blocks is wrong: {errors}"))
             })
             .collect();
@@ -274,7 +271,7 @@ impl BaseBlocks {
                     .raw()
             })
             .collect();
-        // (The order of `BLOCK_FILES`, which a test keeps equal to the order of the fields.)
+        // (The order of `BLOCK_ORDER`, which a test keeps equal to the order of the fields.)
         let [
             air,
             stone,
@@ -351,7 +348,8 @@ mod tests {
     #[test]
     fn every_file_in_the_data_folder_is_a_block_and_every_block_is_a_file_and_the_order_is_that_of_the_ids()
      {
-        // A file added to `data/blocks` and not to the list would be a block nobody gets; a name in the list without a file does not build.
+        // A file added to `data/blocks` and not to the list would be a block nobody gets; a name in the list without a file does not build. The archive is made of
+        // the folder by `build.rs`, so the folder and the archive are compared with the list, each on its own.
         let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/blocks");
         let mut on_disk: Vec<String> = std::fs::read_dir(folder)
             .expect("the data folder is there")
@@ -363,12 +361,13 @@ mod tests {
             })
             .collect();
         on_disk.sort();
-        let mut listed: Vec<String> = BLOCK_FILES
-            .iter()
-            .map(|(name, _)| (*name).to_owned())
-            .collect();
+        let mut in_the_pack: Vec<String> =
+            pack().blocks.iter().map(|file| file.name.clone()).collect();
+        in_the_pack.sort();
+        let mut listed: Vec<String> = BLOCK_ORDER.iter().map(|name| (*name).to_owned()).collect();
         listed.sort();
         assert_eq!(on_disk, listed);
+        assert_eq!(in_the_pack, listed);
         // The list is in the order of the fields of `BaseBlockIds`, which are the numbers.
         let blocks = BaseBlocks::new();
         let numbers = [
@@ -384,7 +383,7 @@ mod tests {
             blocks.glass,
         ];
         assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        for ((name, _), number) in BLOCK_FILES.iter().zip(numbers) {
+        for (name, number) in BLOCK_ORDER.iter().zip(numbers) {
             let wanted = identifier(&format!("base_blocks:{name}"));
             assert_eq!(
                 blocks.block_id(&wanted).map(|id| id.raw()),
@@ -467,17 +466,16 @@ mod tests {
             assert_eq!(entry.content().unwrap().texture(), None);
             assert!(!blocks.pictures().pictures.contains_key(entry.identifier()));
         }
-        // The pictures the plugin embeds are the ones its blocks and Cave's port use, no more and no fewer: the log's two, the port's three, and one each for the rest.
+        // Every picture the plugin's blocks and Cave's port use is one the pack has (the log's two, the port's three, and one each for the rest), and nothing else is
+        // in a world: the pack also has pictures no block uses yet, which are not put in one.
         let mut used: Vec<String> = blocks
             .pictures()
             .tiles
             .keys()
             .map(ToString::to_string)
             .collect();
-        let port =
-            data_packs::resolve_pictures(&identifier("base_blocks:dev_docking_port"), |id| {
-                textures().iter().any(|texture| texture.id == *id)
-            })
+        let has = |id: &NamespacedId| textures().iter().any(|texture| texture.id == *id);
+        let port = data_packs::resolve_pictures(&identifier("base_blocks:dev_docking_port"), has)
             .expect("the port has pictures");
         used.extend(
             [port.top, port.side, port.bottom]
@@ -486,18 +484,42 @@ mod tests {
         );
         used.sort();
         used.dedup();
-        // (A companion is not a picture of a block: it goes with the picture whose name is the rest of its own, which must be one of these.)
-        let (companions, mut embedded): (Vec<String>, Vec<String>) = textures()
+        assert_eq!(
+            used,
+            [
+                "base_blocks:dev_docking_port_bottom",
+                "base_blocks:dev_docking_port_side",
+                "base_blocks:dev_docking_port_top",
+                "base_blocks:dirt",
+                "base_blocks:glass",
+                "base_blocks:grass",
+                "base_blocks:lamp",
+                "base_blocks:leaves",
+                "base_blocks:log_side",
+                "base_blocks:log_top",
+                "base_blocks:still_water",
+                "base_blocks:stone",
+            ]
+        );
+        for id in &used {
+            assert!(
+                has(&identifier(id)),
+                "{id} is used and the pack has no such picture"
+            );
+        }
+        // (A companion is not a picture of a block: it goes with the picture whose name is the rest of its own, which the pack must have.)
+        let ids: Vec<String> = textures()
             .iter()
             .map(|texture| texture.id.to_string())
-            .partition(|id| id.ends_with("_s") || id.ends_with("_n"));
-        embedded.sort();
-        assert_eq!(used, embedded);
-        for companion in companions {
+            .collect();
+        for companion in ids
+            .iter()
+            .filter(|id| id.ends_with("_s") || id.ends_with("_n"))
+        {
             let picture = &companion[..companion.len() - 2];
             assert!(
-                used.iter().any(|id| id == picture),
-                "{companion} goes with {picture}, which no block uses"
+                ids.iter().any(|id| id == picture),
+                "{companion} goes with {picture}, which the pack does not have"
             );
         }
     }
@@ -561,11 +583,13 @@ mod tests {
             }
         }
         // The leaves: every pixel, the holes too (so that the smaller levels keep it), has a blue byte of scatter (from 65: below it is porosity); a leaf lets through at least 0.55;
-        // there is no emission, glint or smoothness.
+        // there is no emission or smoothness, and the reflectance (the green byte) is a level of a dielectric, below the metals' bytes from 230 (the owner painted some pixels at 30 on 2026-11-18;
+        // before that it was 0 everywhere).
         let (leaves, scatter) = (tile("leaves"), tile("leaves_s"));
         assert_eq!(scatter.size(), leaves.size());
         for (colour, specular) in leaves.rgba().chunks(4).zip(scatter.rgba().chunks(4)) {
-            assert_eq!([specular[0], specular[1], specular[3]], [0, 0, 0]);
+            assert_eq!([specular[0], specular[3]], [0, 0]);
+            assert!(specular[1] < 230, "a leaf pixel is a metal: {specular:?}");
             let share = (f64::from(specular[2]) - 64.0) / 191.0;
             assert!(share > 0.0, "a pixel lets nothing through: {specular:?}");
             if colour[3] > 0 {
@@ -576,19 +600,59 @@ mod tests {
     }
 
     #[test]
-    fn each_embedded_picture_is_the_file_of_its_name() {
-        // `TEXTURE_FILES` pairs a name with `include_bytes!` of a path written next to it; the two must say the same file.
+    fn the_pack_holds_every_picture_of_the_textures_folder_as_the_file_has_it_and_nothing_else() {
+        // `build.rs` takes every `.png` of the folder (the folder also holds the painter's tools and notes, which are not in the pack): none is forgotten, none is
+        // changed, and a file of the pack is a file of the folder.
         let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("textures");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&folder)
+            .expect("the textures folder is there")
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter_map(|name| name.strip_suffix(".png").map(str::to_owned))
+            .collect();
+        on_disk.sort();
+        let mut in_the_pack: Vec<String> = textures()
+            .iter()
+            .map(|texture| texture.id.name().to_owned())
+            .collect();
+        in_the_pack.sort();
+        assert_eq!(in_the_pack, on_disk);
+        assert!(on_disk.len() >= 20, "{on_disk:?}");
         for texture in textures() {
             let name = texture.id.name();
-            let on_disk = std::fs::read(folder.join(format!("{name}.png")))
+            let from_disk = std::fs::read(folder.join(format!("{name}.png")))
                 .unwrap_or_else(|error| panic!("{name}.png: {error}"));
-            assert_eq!(texture.bytes, on_disk, "{name}");
+            assert_eq!(texture.bytes, from_disk, "{name}");
             assert_eq!(
                 texture.file,
                 format!("plugins/base_blocks/textures/{name}.png")
             );
         }
+    }
+
+    #[test]
+    fn the_pack_is_the_canonical_archive_of_the_data_folder_and_the_pictures_and_has_its_own_name()
+    {
+        use pack_archive::{Archive, FileIndex, Limits};
+        let archive = Archive::from_bytes(pack_archive_bytes(), &Limits::default())
+            .expect("the plugin's pack is a canonical archive");
+        assert_eq!(archive.to_bytes(), pack_archive_bytes());
+        let paths: Vec<&str> = archive.files().map(|(path, _)| path).collect();
+        assert!(paths.contains(&"pack.json"));
+        assert!(paths.contains(&"blocks/stone.json"));
+        assert!(paths.contains(&"textures/stone.png"));
+        // nothing of the painter's tools: a script or a note is not a picture
+        assert!(
+            paths.iter().all(|path| path.starts_with("blocks/")
+                || path.starts_with("textures/") && path.ends_with(".png")
+                || *path == "pack.json"),
+            "{paths:?}"
+        );
+        // the same bytes give the same identity, however often it is asked
+        let index = FileIndex::of(&archive, |_| true);
+        assert_eq!(
+            index.root_hash(),
+            FileIndex::of(&archive, |_| true).root_hash()
+        );
     }
 
     #[test]

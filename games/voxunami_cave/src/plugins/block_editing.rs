@@ -1,9 +1,6 @@
 //! Players changing blocks: the reach, the states a block has, and whether anyone objects.
 
-use std::collections::HashMap;
-
-use block_models::BlockTable;
-use game_shell::GameContent;
+use game_shell::SharedPackage;
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
 use plugin_host::{Event, Plugin, Registrar, Verdict};
@@ -74,9 +71,8 @@ impl Event for BlockPlaced {
 /// bodies is theirs: they hear of it as a change to the block channels.
 #[derive(Debug)]
 pub struct BlockEditingPlugin {
-    block_ids: HashMap<NamespacedId, u32>,
     air: u32,
-    table: BlockTable,
+    package: SharedPackage,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: ChannelIndex,
@@ -84,16 +80,10 @@ pub struct BlockEditingPlugin {
 }
 
 impl BlockEditingPlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
-        let registries = content.registries();
-        let blocks = registries[0].1;
-        let block_ids = (0..blocks.entry_count() as u32)
-            .filter_map(|raw| Some((blocks.identifier_of_raw(raw)?.clone(), raw)))
-            .collect();
+    pub fn new(content: &CaveContent, package: &SharedPackage, players: SharedPresence) -> Self {
         Self {
-            block_ids,
             air: content.blocks.air,
-            table: content.block_table(),
+            package: package.clone(),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
             orientation_channel: content.orientation_channel(),
@@ -122,8 +112,7 @@ impl Plugin for BlockEditingPlugin {
         registrar.event::<BlockBroken>();
         registrar.event::<BlockPlaced>();
         let air = self.air;
-        let block_ids = self.block_ids.clone();
-        let table = self.table.clone();
+        let package = self.package.clone();
         let (block_channel, state_channel) = (self.block_channel, self.state_channel);
         let orientation_channel = self.orientation_channel;
         let players = std::sync::Arc::clone(&self.players);
@@ -137,8 +126,11 @@ impl Plugin for BlockEditingPlugin {
                     presence.view_in_the_world(world, client),
                 )
             };
-            let (Some(pose), Some((eyes, view)), Some(&raw)) =
-                (pose, eyes, block_ids.get(&request.block))
+            // The blocks there are, and how they are made, as they are now: a package that was replaced has more of them, or others made as they were not.
+            let blocks = package.package();
+            let table = package.table().current();
+            let (Some(pose), Some((eyes, view)), Some(raw)) =
+                (pose, eyes, blocks.raw_of(&request.block))
             else {
                 return; // a player who has not said where they are, or a block this server lacks
             };

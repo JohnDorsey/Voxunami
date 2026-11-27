@@ -27,8 +27,11 @@ use winit::keyboard::KeyCode;
 use world_view::{
     GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange, OccupancyStatistics,
     OrthographicCut, RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings,
-    Viewpoint, WorldMesher, cast_ray,
+    Viewpoint, WorldMesher,
 };
+
+mod surface;
+pub use surface::{PictureTarget, SurfaceTarget, VoxelContent};
 
 use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
@@ -38,8 +41,10 @@ use crate::coarse_overrides::CoarseOverrides;
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
 use crate::orthographic_cut::{MapPicture, orthographic_cut};
+use crate::pack_check::{PackCheck, differences};
 use crate::package_data::{PackageData, PackageError, check_materials};
 use crate::sun::{SunView, position_of_voxels, sun_view};
+use protocol::PackListing;
 
 mod view_modes;
 use view_modes::ViewRig;
@@ -156,6 +161,20 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// What the server said the world looks like, and the table made from it in this client's numbering.
     package: PackageData,
     block_table: Arc<BlockTable>,
+    /// The seed of the world, which the program's content needs to grow its registries (`GameContent::load_context`).
+    world_seed: u64,
+    /// Whether the package was replaced since the program last asked ([`Session::take_package_replaced`]).
+    package_replaced: bool,
+    /// How many times the package has been replaced, which says whether a check of the packs against it is still the check of this package.
+    package_version: u64,
+    /// What loading the packs this client holds made of the package the server sent (`pack_check.rs`), and what it was made for, so that it is made again only when that
+    /// changes.
+    pack_check: PackCheck,
+    pack_check_for: Option<(Vec<pack_archive::Hash>, bool, u64)>,
+    /// Whether a disagreement of the check has been handed to the program ([`Session::take_pack_check_report`]).
+    pack_check_reported: bool,
+    /// What the renderer must change that no update of the view has said yet: the meshes taken down when the package was replaced.
+    pending_updates: Vec<MeshUpdate>,
     /// The channels the view reads, before the client plugins have their say.
     view_channels: ViewChannels,
     terrain: TerrainView,
@@ -237,7 +256,28 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         mode: Mode,
         view_radius_bricks: i128,
         start: Camera,
+        wait: impl FnMut(),
+    ) -> Result<Self, SessionError> {
+        Self::connect_with_packs(
+            connection,
+            identity,
+            mode,
+            view_radius_bricks,
+            start,
+            wait,
+            Box::new(client::NoPackStore),
+        )
+    }
+
+    /// As [`Session::connect`], keeping the packs the server replicates in `packs`: what it has of them it does not ask for again, and what it is sent it keeps there.
+    pub fn connect_with_packs(
+        connection: C,
+        identity: &Identity,
+        mode: Mode,
+        view_radius_bricks: i128,
+        start: Camera,
         mut wait: impl FnMut(),
+        packs: Box<dyn client::PackStore>,
     ) -> Result<Self, SessionError> {
         let mut handshake = Handshake::start(connection, G::id(), identity)?;
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -255,7 +295,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let seed = welcomed.world_seed()?;
         let package =
             PackageData::decode(&welcomed.welcome().package).map_err(PackageError::from)?;
-        let (client, _report) = welcomed.finish(content.load_context(seed))?;
+        let (client, _report) = welcomed.finish_with_packs(content.load_context(seed), packs)?;
 
         let join = G::join_message(start.position);
         let client_plugins = G::client_plugins(&content);
@@ -298,6 +338,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             content,
             package,
             block_table,
+            world_seed: seed,
+            package_replaced: false,
+            package_version: 0,
+            pack_check: PackCheck::Waiting,
+            pack_check_for: None,
+            pack_check_reported: false,
+            pending_updates: Vec::new(),
             view_channels,
             terrain,
             view_settings,
@@ -571,6 +618,24 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         TerrainView::Coarse(Box::new(CoarseTerrain { view, detail }))
     }
 
+    /// A view of the terrain as the game says (`None`: bricks and nothing beyond), made with this session's table.
+    fn terrain_view(&mut self, detail: Option<CoarseDetail>) -> TerrainView {
+        match detail {
+            Some(detail) => self.coarse_terrain(detail),
+            None => {
+                let mut mesher = WorldMesher::new(
+                    self.view_settings,
+                    self.view_channels.clone(),
+                    Arc::clone(&self.block_table),
+                );
+                if self.occupancy_wanted {
+                    mesher.enable_occupancy();
+                }
+                TerrainView::Bricks(Box::new(mesher))
+            }
+        }
+    }
+
     /// Makes the view of the terrain what the game says for this level, if it is not that: what the old one drew is taken down (the updates are returned).
     fn follow_level_detail(&mut self, level: LevelIndex) -> Vec<MeshUpdate> {
         let wanted = self
@@ -588,20 +653,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             return Vec::new();
         }
         let taken_down = self.terrain.reset();
-        self.terrain = match wanted {
-            Some(detail) => self.coarse_terrain(detail),
-            None => {
-                let mut mesher = WorldMesher::new(
-                    self.view_settings,
-                    self.view_channels.clone(),
-                    Arc::clone(&self.block_table),
-                );
-                if self.occupancy_wanted {
-                    mesher.enable_occupancy();
-                }
-                TerrainView::Bricks(Box::new(mesher))
-            }
-        };
+        self.terrain = self.terrain_view(wanted);
         self.watched_center = None;
         self.meshed_level = None;
         taken_down
@@ -768,7 +820,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// Applies the next complete tick the server has sent, if any. Returns whether there was one.
     pub fn advance_one_tick(&mut self) -> Result<bool, ClientError> {
-        let Some(update) = self.client.poll_tick()? else {
+        // (The program's registries grow, if the server appended entries to them in this tick.)
+        let seed = self.world_seed;
+        let content = &mut self.content;
+        let Some(update) = self.client.poll_tick_with(&mut |registry, identifiers| {
+            grow_registry::<G>(content, seed, registry, identifiers)
+        })?
+        else {
             return Ok(false);
         };
         // The players are among the entities and, aboard a ship, where the ship puts them: they are made again when either changed.
@@ -858,6 +916,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 }
                 ClientEvent::EntitiesChanged => players_changed = true,
                 ClientEvent::WatchedRegionChanged { .. } => {}
+                ClientEvent::PackageReplaced { appended, package } => {
+                    self.replace_package(&appended, &package)?;
+                }
             }
         }
         if players_changed {
@@ -874,7 +935,194 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         } else if G::server_moves_players() {
             self.follow_own_pose();
         }
+        self.refresh_pack_check();
         Ok(true)
+    }
+
+    /// What loading the packs this client holds made of the package the server sent: see [`PackCheck`]. It is made once the client holds every pack the server listed,
+    /// at the end of a tick, and again when the list or the package changes. The client draws with the server's package whatever it says.
+    pub fn pack_check(&self) -> &PackCheck {
+        &self.pack_check
+    }
+
+    /// The words to tell the player if the check of the packs found that they do not make the package the server sent, once for each time it found that, else `None`.
+    /// A program prints it where the player will see it: a mismatch is a loader, a schema or an order that differs between this program and the server's, or a server
+    /// whose package is not what its packs make, and it is **not hidden**.
+    pub fn take_pack_check_report(&mut self) -> Option<String> {
+        if self.pack_check_reported {
+            return None;
+        }
+        let PackCheck::Disagrees(lines) = &self.pack_check else {
+            return None;
+        };
+        self.pack_check_reported = true;
+        Some(format!(
+            "the packs of this server do not make the package it sent, which is drawn as it sent it: {}",
+            lines.join("; ")
+        ))
+    }
+
+    fn refresh_pack_check(&mut self) {
+        let packs = self.client.packs();
+        if !packs.is_complete() {
+            self.pack_check = PackCheck::Waiting;
+            self.pack_check_for = None;
+            return;
+        }
+        let key = (
+            packs
+                .listed()
+                .iter()
+                .map(PackListing::root)
+                .collect::<Vec<_>>(),
+            packs.whole(),
+            self.package_version,
+        );
+        if self.pack_check_for.as_ref() == Some(&key) {
+            return;
+        }
+        self.pack_check = if packs.whole() {
+            self.load_the_packs_held()
+        } else {
+            PackCheck::NotApplicable
+        };
+        self.pack_check_reported = false;
+        self.pack_check_for = Some(key);
+    }
+
+    /// Loads the packs this client holds, over its own copy of the game, and compares what that makes with the package the server sent.
+    fn load_the_packs_held(&self) -> PackCheck {
+        let mut raw = Vec::new();
+        for held in self.client.packs().held() {
+            match data_packs::read_archive(&held.id, &held.archive) {
+                Ok(pack) => raw.push(pack),
+                Err(errors) => {
+                    return PackCheck::Disagrees(vec![format!(
+                        "the pack {} cannot be read here: {errors}",
+                        held.id
+                    )]);
+                }
+            }
+        }
+        let mut local = G::new_content();
+        if !raw.is_empty()
+            && let Err(errors) = local.apply_packs(&raw)
+        {
+            return PackCheck::Disagrees(vec![format!(
+                "the packs cannot be loaded here: {errors}"
+            )]);
+        }
+        let lines = differences(&self.package, &local.package_data());
+        if lines.is_empty() {
+            PackCheck::Agrees
+        } else {
+            PackCheck::Disagrees(lines)
+        }
+    }
+
+    /// What the program must do after the package was replaced: draw with the new palette and pictures (`view::configure_renderer`). True once for each replacement.
+    pub fn take_package_replaced(&mut self) -> bool {
+        std::mem::take(&mut self.package_replaced)
+    }
+
+    /// The server replaced the package (`ServerMessage::PackageReplaced`, `docs/specs/package-replacement-spec.md`): the table, the meshes and the settings that follow the
+    /// game are made again from the new one. Everything is built beside what there is and swapped in only if all of it is good; if not, the session is as it was and the
+    /// error says why (the server checks a reload before it sends it, so this is a bug, and the session stops).
+    fn replace_package(
+        &mut self,
+        appended: &[protocol::RegistryAdditions],
+        bytes: &[u8],
+    ) -> Result<(), ClientError> {
+        let refuse = |reason: String| ClientError::PackageReplacement(reason);
+        let package = PackageData::decode(bytes)
+            .map_err(|error| refuse(format!("the package cannot be read: {error}")))?;
+        if package.block_registry != self.package.block_registry {
+            return Err(refuse(format!(
+                "the package is for the block registry {}, and the world's is {}",
+                package.block_registry, self.package.block_registry
+            )));
+        }
+        // Appended only: every block there was is still there, and the new ones are exactly the ones appended to the block registry.
+        let old: BTreeSet<&NamespacedId> = self.package.blocks.iter().map(|(id, _)| id).collect();
+        let new: BTreeSet<&NamespacedId> = package.blocks.iter().map(|(id, _)| id).collect();
+        if let Some(gone) = old.difference(&new).next() {
+            return Err(refuse(format!(
+                "the new package no longer lists the block {gone}, and a registry only grows"
+            )));
+        }
+        let listed: BTreeSet<&NamespacedId> = appended
+            .iter()
+            .filter(|additions| additions.registry == package.block_registry)
+            .flat_map(|additions| &additions.identifiers)
+            .collect();
+        let added: BTreeSet<&NamespacedId> = new.difference(&old).copied().collect();
+        if let Some(difference) = listed.symmetric_difference(&added).next() {
+            return Err(refuse(format!(
+                "the blocks the new package adds are not the ones appended to the registry ({difference} is in one and not the other)"
+            )));
+        }
+        let table = {
+            let registries = self.content.registries();
+            let numbering = registries
+                .iter()
+                .find(|(kind, _)| *kind == package.block_registry)
+                .map(|(_, registry)| *registry)
+                .ok_or_else(|| {
+                    refuse(
+                        PackageError::NoBlockRegistry(package.block_registry.clone()).to_string(),
+                    )
+                })?;
+            package
+                .block_table_numbered_by(numbering)
+                .map_err(|error| refuse(PackageError::from(error).to_string()))?
+        };
+        check_materials(&table).map_err(|error| refuse(error.to_string()))?;
+        let view_channels = package
+            .view_channels(self.client.world().world().main().overrides.layout())
+            .map_err(|error| refuse(error.to_string()))?;
+
+        // All of it is good: swap.
+        if self.settings.ambient_light == self.settings.default_ambient_light {
+            self.settings.ambient_light = package.ambient_light;
+        }
+        self.settings.default_ambient_light = package.ambient_light;
+        self.package = package;
+        self.package_version += 1;
+        self.block_table = Arc::new(table);
+        self.view_channels = view_channels;
+        // The meshes were made with the old table: the terrain's are taken down and made again around the camera, the ships and planets are told to the renderer again.
+        let detail = match &self.terrain {
+            TerrainView::Bricks(_) => None,
+            TerrainView::Coarse(coarse) => Some(coarse.detail),
+        };
+        let mut taken_down = self.terrain.reset();
+        self.terrain = self.terrain_view(detail);
+        let known: BTreeSet<GridId> = self
+            .sent_poses
+            .keys()
+            .chain(self.planets.keys())
+            .copied()
+            .collect();
+        taken_down.extend(known.into_iter().map(MeshUpdate::RemoveGrid));
+        self.sent_poses.clear();
+        self.sent_ground.clear();
+        self.planets.clear();
+        self.grid_mesher =
+            GridMesher::new(self.view_channels.clone(), Arc::clone(&self.block_table));
+        if self.occupancy_wanted {
+            self.grid_mesher.enable_occupancy();
+        }
+        // (A new mesher knows no brick: the ones the client holds of each ship are told to it.)
+        for (id, ship) in self.client.world().grids().iter() {
+            if ship.terrain.is_none() {
+                for (brick, _) in ship.voxels.bricks() {
+                    self.grid_mesher.brick_changed(id, brick);
+                }
+            }
+        }
+        self.pending_updates.extend(taken_down);
+        self.package_replaced = true;
+        Ok(())
     }
 
     /// The players among the entities the client was told of: the ones whose entity says whose it is, where
@@ -1044,7 +1292,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             );
             self.watched_center = Some((self.level, center, free_centres));
         }
-        let mut updates = Vec::new();
+        let mut updates = std::mem::take(&mut self.pending_updates);
         if self.follows_level_detail
             && let Some((level, _)) = self.client.world().watched_level()
         {
@@ -1338,45 +1586,6 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
-    /// The solid voxel under the crosshair, within the game's reach: of the terrain of the level, or of a ship, whichever the ray
-    /// reaches first. A ship is aimed at by turning the ray into the ship's own coordinates.
-    pub fn target(&self) -> Option<RayHit> {
-        // (A map or a camera that flew off is not where the player's hands are.)
-        if self.view_mode() != ViewMode::Body {
-            return None;
-        }
-        let forward = self.camera.forward().to_array().map(f64::from);
-        let terrain = cast_ray(
-            GridId::root(self.level()),
-            self.camera.position,
-            forward,
-            G::reach(),
-            |voxel| self.mesher().is_solid_at(voxel),
-        );
-        let level = self.level();
-        let ships = self
-            .client
-            .world()
-            .grids()
-            .iter()
-            .filter(|(_, ship)| ship.level == level)
-            .filter_map(|(id, ship)| {
-                let start = ship.pose.world_to_local(self.camera.position)?;
-                let direction = ship.pose.direction_to_local(forward);
-                cast_ray(id, start, direction, G::reach(), |voxel| {
-                    match self.planets.get(&id) {
-                        // A planet is what its generator makes where the server has not stored a brick, which the mesher around the camera has.
-                        Some(planet) => planet.is_solid_at(voxel),
-                        None => Some(self.ship_voxel_is_solid(&ship.voxels, voxel)),
-                    }
-                })
-            });
-        terrain
-            .into_iter()
-            .chain(ships)
-            .min_by(|first, second| first.distance.total_cmp(&second.distance))
-    }
-
     /// Whether a voxel of a ship holds anything that fills any part of it. What was not sent is empty.
     fn ship_voxel_is_solid(&self, voxels: &Grid, voxel: VoxelCoordinate) -> bool {
         let block = voxels.get(self.view_channels.blocks, voxel);
@@ -1437,6 +1646,21 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// What the window's own commands change.
     pub fn settings(&self) -> &ClientSettings {
         &self.settings
+    }
+
+    /// What the window's own commands change, for the shell to put right (a reload gives it the packs read again).
+    pub fn settings_mut(&mut self) -> &mut ClientSettings {
+        &mut self.settings
+    }
+
+    /// What `.reload` asked for since the last time this was called (see [`ClientSettings::reload_requested`]).
+    pub fn take_reload_request(&mut self) -> Option<Option<String>> {
+        self.settings.reload_requested.take()
+    }
+
+    /// What `.paint` asked for since the last time this was called (see [`ClientSettings::paint_requested`]).
+    pub fn take_paint_request(&mut self) -> Option<crate::client_commands::PaintRequest> {
+        self.settings.paint_requested.take()
     }
 
     /// Tells the session which shader packs the player has (`.shader` chooses among them), which is chosen to start with (`None`: the game's own), and what the player chose of
@@ -1622,6 +1846,26 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     }
 }
 
+/// Gives the program's registry of this kind an entry for each identifier the server appended to its own (the entry the program has for it, or a new one that holds the
+/// name), and says their numbers, in order.
+fn grow_registry<G: GameDefinition>(
+    content: &mut G::Content,
+    seed: u64,
+    registry: &NamespacedId,
+    identifiers: &[NamespacedId],
+) -> Result<Vec<u32>, String> {
+    let context = content.load_context(seed);
+    let (_, entries) = context
+        .registries
+        .into_iter()
+        .find(|(kind, _)| kind == registry)
+        .ok_or_else(|| format!("this program has no registry {registry}"))?;
+    Ok(identifiers
+        .iter()
+        .map(|identifier| entries.register_missing_raw(identifier.clone()))
+        .collect())
+}
+
 /// What a session makes of the package a server sends, with servers whose package is not the client's own.
 #[cfg(test)]
 mod package_tests {
@@ -1805,5 +2049,465 @@ mod package_tests {
                 "damaged bytes are refused"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // A package replaced while the world runs (`docs/specs/package-replacement-spec.md`)
+    // ---------------------------------------------------------------------------------------
+
+    use protocol::{
+        ClientId, ClientMessage, PROTOCOL_VERSION, RegistryAdditions, ServerMessage, Tick, Welcome,
+    };
+    use transport::loopback::{LoopbackConnection, loopback_pair};
+
+    /// A session joined to a pretend server that the test plays by hand: the handshake is answered (a challenge, then a welcome with `package`), and the server's end is
+    /// given back to send what the test wants the session to follow.
+    fn joined_scripted(
+        package: &PackageData,
+    ) -> (
+        Session<Box<dyn Connection>, ExampleGame>,
+        LoopbackConnection,
+    ) {
+        let welcome = scripted_welcome(package);
+        let (client_end, mut server) = loopback_pair();
+        let connection: Box<dyn Connection> = Box::new(client_end);
+        let session = Session::<_, ExampleGame>::connect(
+            connection,
+            &Identity::from_secret([1; 32]),
+            Mode::Playing,
+            3,
+            camera_at([16.0, 110.0, 16.0], 0.0, 0.0),
+            || {
+                while let Some(frame) = server.receive().unwrap() {
+                    match ClientMessage::decode(&frame).unwrap() {
+                        ClientMessage::Hello { .. } => server
+                            .send(ServerMessage::Challenge { nonce: [1; 32] }.encode())
+                            .unwrap(),
+                        ClientMessage::Prove { .. } => server.send(welcome.encode()).unwrap(),
+                        _ => {}
+                    }
+                }
+            },
+        )
+        .unwrap();
+        (session, server)
+    }
+
+    /// The welcome the pretend server sends: the world of the example game, at tick 0, with this package.
+    fn scripted_welcome(package: &PackageData) -> ServerMessage {
+        let served = content();
+        let description = served
+            .new_world(7)
+            .describe(&served.registries())
+            .expect("the fixture world can be described");
+        ServerMessage::Welcome(Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            game: ExampleGame::id(),
+            client: ClientId::new(1),
+            ticks_per_second: 20,
+            tick: Tick::new(0),
+            world_clock: 0,
+            world_description: description,
+            package: package.encode(),
+        })
+    }
+
+    /// Sends the replacement and the end of the tick, which is `number`.
+    fn replace(
+        server: &mut LoopbackConnection,
+        appended: Vec<RegistryAdditions>,
+        package: &PackageData,
+        number: u64,
+    ) {
+        server
+            .send(
+                ServerMessage::PackageReplaced {
+                    appended,
+                    package: package.encode(),
+                }
+                .encode(),
+            )
+            .unwrap();
+        server
+            .send(
+                ServerMessage::TickCompleted {
+                    tick: Tick::new(number),
+                }
+                .encode(),
+            )
+            .unwrap();
+    }
+
+    fn stone_of(package: &mut PackageData) -> &mut Option<BlockDefinition> {
+        &mut package
+            .blocks
+            .iter_mut()
+            .find(|(identifier, _)| *identifier == id("base_blocks:stone"))
+            .unwrap()
+            .1
+    }
+
+    #[test]
+    fn a_replaced_package_is_what_the_session_draws_with_once_its_tick_is_complete_and_the_program_is_told_once()
+     {
+        let (mut session, mut server) = joined_scripted(&compiled_in());
+        let stone = raw(&session, "base_blocks:stone");
+        assert_eq!(session.block_table().color(stone), [0.5; 3]);
+        assert!(!session.take_package_replaced());
+        let mut changed = compiled_in();
+        *stone_of(&mut changed) = Some(BlockDefinition::cube([0.9, 0.1, 0.2]));
+        changed.ambient_light = 77;
+        replace(&mut server, Vec::new(), &changed, 1);
+        assert!(session.advance_one_tick().unwrap());
+        assert_eq!(session.block_table().color(stone), [0.9, 0.1, 0.2]);
+        assert_eq!(session.package(), &changed);
+        assert_eq!(
+            session.settings().ambient_light,
+            77,
+            "the game's own light, which the player had not changed, follows"
+        );
+        assert!(session.take_package_replaced());
+        assert!(!session.take_package_replaced(), "once");
+    }
+
+    #[test]
+    fn a_player_who_chose_their_own_ambient_light_keeps_it_through_a_replacement() {
+        let (mut session, mut server) = joined_scripted(&compiled_in());
+        session.settings_mut().ambient_light = 200;
+        let mut changed = compiled_in();
+        changed.ambient_light = 77;
+        replace(&mut server, Vec::new(), &changed, 1);
+        session.advance_one_tick().unwrap();
+        assert_eq!(session.settings().ambient_light, 200);
+        assert_eq!(session.settings().default_ambient_light, 77);
+    }
+
+    #[test]
+    fn a_block_the_server_appends_gets_the_clients_next_number_and_its_definition() {
+        let (mut session, mut server) = joined_scripted(&compiled_in());
+        let before = session.block_table().block_count();
+        let mut changed = compiled_in();
+        changed.blocks.push((
+            id("fancy_blocks:marble"),
+            Some(BlockDefinition::cube([0.8, 0.1, 0.1])),
+        ));
+        let appended = vec![RegistryAdditions {
+            registry: changed.block_registry.clone(),
+            identifiers: vec![id("fancy_blocks:marble")],
+        }];
+        replace(&mut server, appended, &changed, 1);
+        session.advance_one_tick().unwrap();
+        let marble = raw(&session, "fancy_blocks:marble");
+        assert_eq!(marble as usize, before, "the next number");
+        assert_eq!(session.block_table().color(marble), [0.8, 0.1, 0.1]);
+        assert_eq!(session.block_table().block_count(), before + 1);
+    }
+
+    #[test]
+    fn a_replacement_that_the_rules_refuse_stops_the_session_with_the_reason_and_leaves_what_it_had()
+     {
+        let refused = |changed: PackageData, appended: Vec<RegistryAdditions>| {
+            let (mut session, mut server) = joined_scripted(&compiled_in());
+            replace(&mut server, appended, &changed, 1);
+            let error = session.advance_one_tick().expect_err("refused");
+            assert_eq!(
+                session.package(),
+                &compiled_in(),
+                "the package it had is kept"
+            );
+            assert!(!session.take_package_replaced());
+            error.to_string()
+        };
+        // A block that was in the package is gone from it.
+        let mut dropped = compiled_in();
+        dropped
+            .blocks
+            .retain(|(identifier, _)| *identifier != id("base_blocks:dirt"));
+        let message = refused(dropped, Vec::new());
+        assert!(message.contains("dirt"), "{message}");
+        // A new block that was not appended, and an appended one that is not in the package.
+        let mut added = compiled_in();
+        added.blocks.push((
+            id("fancy_blocks:marble"),
+            Some(BlockDefinition::cube([0.5; 3])),
+        ));
+        let message = refused(added.clone(), Vec::new());
+        assert!(message.contains("marble"), "{message}");
+        let message = refused(
+            compiled_in(),
+            vec![RegistryAdditions {
+                registry: added.block_registry.clone(),
+                identifiers: vec![id("fancy_blocks:marble")],
+            }],
+        );
+        assert!(message.contains("marble"), "{message}");
+        // Another registry for the blocks, a package that cannot be read, a table the renderer cannot draw.
+        let mut other = compiled_in();
+        other.block_registry = id("other:block");
+        assert!(refused(other, Vec::new()).contains("other:block"));
+        let (mut session, mut server) = joined_scripted(&compiled_in());
+        server
+            .send(
+                ServerMessage::PackageReplaced {
+                    appended: Vec::new(),
+                    package: vec![1, 2, 3],
+                }
+                .encode(),
+            )
+            .unwrap();
+        server
+            .send(ServerMessage::TickCompleted { tick: Tick::new(1) }.encode())
+            .unwrap();
+        let error = session.advance_one_tick().expect_err("damaged");
+        assert!(
+            matches!(error, ClientError::PackageReplacement(_)),
+            "{error}"
+        );
+        let mut too_many = compiled_in();
+        *stone_of(&mut too_many) = Some(
+            BlockDefinition::cube([0.5; 3])
+                .with_state_colors(vec![[0.1; 3]; renderer::MAXIMUM_GAME_MATERIALS]),
+        );
+        assert!(refused(too_many, Vec::new()).contains("colours"));
+    }
+
+    /// What a session shows of the package: what two sessions that are the same must agree on after every tick.
+    fn what_is_drawn(
+        session: &Session<Box<dyn Connection>, ExampleGame>,
+    ) -> (PackageData, Vec<[f32; 3]>, client::ViewSummary) {
+        let table = session.block_table();
+        (
+            session.package().clone(),
+            (0..table.block_count() as u32)
+                .map(|block| table.color(block))
+                .collect(),
+            session.client().world().summary(),
+        )
+    }
+
+    #[test]
+    fn a_recording_of_a_session_whose_package_was_replaced_plays_the_replacements_at_their_ticks_and_equals_the_live_session_after_every_tick()
+     {
+        use replay::{ReplayConnection, ReplayWriter};
+        let first = compiled_in();
+        let mut recorded = ReplayWriter::new(Vec::new()).unwrap();
+        recorded.append(&scripted_welcome(&first).encode()).unwrap();
+        let (mut live, mut server) = joined_scripted(&first);
+        let send = |server: &mut LoopbackConnection,
+                    recorded: &mut ReplayWriter<Vec<u8>>,
+                    message: ServerMessage| {
+            let frame = message.encode();
+            recorded.append(&frame).unwrap();
+            server.send(frame).unwrap();
+        };
+        // Tick 1 changes nothing; tick 2 recolours stone and appends a block; tick 3 changes nothing; tick 4 recolours stone again; tick 5 changes nothing.
+        let mut second = compiled_in();
+        *stone_of(&mut second) = Some(BlockDefinition::cube([0.9, 0.1, 0.2]));
+        second.blocks.push((
+            id("fancy_blocks:marble"),
+            Some(BlockDefinition::cube([0.8, 0.1, 0.1])),
+        ));
+        let mut third = second.clone();
+        *stone_of(&mut third) = Some(BlockDefinition::cube([0.1, 0.9, 0.2]));
+        let appended = vec![RegistryAdditions {
+            registry: first.block_registry.clone(),
+            identifiers: vec![id("fancy_blocks:marble")],
+        }];
+        type Replacement<'a> = Option<(Vec<RegistryAdditions>, &'a PackageData)>;
+        let ticks: [(u64, Replacement<'_>); 5] = [
+            (1, None),
+            (2, Some((appended, &second))),
+            (3, None),
+            (4, Some((Vec::new(), &third))),
+            (5, None),
+        ];
+        let mut live_states = Vec::new();
+        for (number, replacement) in ticks {
+            if let Some((appended, package)) = replacement {
+                send(
+                    &mut server,
+                    &mut recorded,
+                    ServerMessage::PackageReplaced {
+                        appended,
+                        package: package.encode(),
+                    },
+                );
+            }
+            send(
+                &mut server,
+                &mut recorded,
+                ServerMessage::TickCompleted {
+                    tick: Tick::new(number),
+                },
+            );
+            assert!(live.advance_one_tick().unwrap());
+            live_states.push(what_is_drawn(&live));
+        }
+        // The control: the live session did change what it draws, at the ticks that replaced the package.
+        assert_ne!(live_states[0].0, live_states[1].0);
+        assert_eq!(live_states[1].0, live_states[2].0);
+        assert_ne!(live_states[2].0, live_states[3].0);
+        assert_eq!(live_states[4].0, third);
+
+        let bytes = recorded.into_inner();
+        let connection: Box<dyn Connection> =
+            Box::new(ReplayConnection::new(std::io::Cursor::new(bytes)).unwrap());
+        let mut replayed = Session::<_, ExampleGame>::connect(
+            connection,
+            &Identity::from_secret([2; 32]),
+            Mode::Replaying,
+            3,
+            camera_at([16.0, 110.0, 16.0], 0.0, 0.0),
+            || {},
+        )
+        .unwrap();
+        assert_eq!(
+            what_is_drawn(&replayed).0,
+            first,
+            "the recording starts as the world was welcomed"
+        );
+        for (tick, live_state) in live_states.iter().enumerate() {
+            assert!(replayed.advance_one_tick().unwrap());
+            assert_eq!(
+                &what_is_drawn(&replayed),
+                live_state,
+                "after tick {}",
+                tick + 1
+            );
+        }
+    }
+
+    #[test]
+    fn the_ships_the_session_knows_are_taken_down_and_meshed_again_with_the_new_table() {
+        use protocol::{GridContent, GridState};
+        use voxel_space::{BrickBox, GridPose, LocalVoxelIndex, WorldPosition};
+        let (mut session, mut server) = joined_scripted(&compiled_in());
+        // A ship of one brick with one block of stone in it, in a level the client watches.
+        let served = content();
+        let layout = Arc::clone(served.new_world(7).main().overrides.layout());
+        let block_channel = layout.channel_index(&id("core:block")).unwrap();
+        let mut brick = voxel_grid::Brick::new(&layout);
+        brick.set(
+            block_channel,
+            LocalVoxelIndex::new(1, 1, 1),
+            served.game.raw_block("base_blocks:stone"),
+        );
+        let ship = GridId::new(GridId::FIRST_ALLOCATED + 1);
+        let send = |server: &mut LoopbackConnection, message: ServerMessage| {
+            server.send(message.encode()).unwrap();
+        };
+        send(
+            &mut server,
+            ServerMessage::InterestChanged {
+                level: LevelIndex::MAIN,
+                region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                assignments: Vec::new(),
+                free: Vec::new(),
+            },
+        );
+        send(
+            &mut server,
+            ServerMessage::GridsSpawned(vec![GridState {
+                id: ship,
+                level: LevelIndex::MAIN,
+                pose: GridPose::new(
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]),
+                    Orientation::IDENTITY,
+                ),
+                content: GridContent::Bricks,
+            }]),
+        );
+        send(
+            &mut server,
+            ServerMessage::BrickContents {
+                grid: ship,
+                brick: BrickCoordinate::ORIGIN,
+                contents: Arc::new(brick),
+            },
+        );
+        send(
+            &mut server,
+            ServerMessage::TickCompleted { tick: Tick::new(1) },
+        );
+        session.advance_one_tick().unwrap();
+        let uploads_of_the_ship = |updates: &[MeshUpdate]| {
+            updates
+                .iter()
+                .filter(|update| matches!(update, MeshUpdate::UploadGridBrick { grid, .. } if *grid == ship))
+                .count()
+        };
+        let first = session.update_view();
+        assert_eq!(
+            uploads_of_the_ship(&first),
+            1,
+            "the control: the ship's brick is meshed"
+        );
+        assert!(
+            !first
+                .iter()
+                .any(|update| matches!(update, MeshUpdate::RemoveGrid(_)))
+        );
+        // The package is replaced: the renderer is told the ship is gone, and then of it again, with its brick meshed again.
+        let mut changed = compiled_in();
+        *stone_of(&mut changed) = Some(BlockDefinition::cube([0.9, 0.1, 0.2]));
+        replace(&mut server, Vec::new(), &changed, 2);
+        session.advance_one_tick().unwrap();
+        let second = session.update_view();
+        assert!(
+            matches!(second.first(), Some(MeshUpdate::RemoveGrid(gone)) if *gone == ship),
+            "the first thing the renderer is told is that the ship is gone: {:?}",
+            second
+                .iter()
+                .map(std::mem::discriminant)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            uploads_of_the_ship(&second),
+            1,
+            "and its brick is meshed again"
+        );
+        assert!(
+            second
+                .iter()
+                .any(|update| matches!(update, MeshUpdate::GridPose { grid, .. } if *grid == ship))
+        );
+        // Nothing more is made of it, or told, in the next update.
+        let third = session.update_view();
+        assert_eq!(uploads_of_the_ship(&third), 0);
+        assert!(
+            !third
+                .iter()
+                .any(|update| matches!(update, MeshUpdate::RemoveGrid(_)))
+        );
+    }
+
+    #[test]
+    fn the_meshers_are_made_again_with_the_new_table_and_not_left_with_the_old() {
+        let (mut session, mut server) = joined_scripted(&compiled_in());
+        let held_by_the_meshers = |session: &Session<Box<dyn Connection>, ExampleGame>| {
+            (
+                Arc::ptr_eq(session.terrain.mesher().block_table(), &session.block_table),
+                Arc::ptr_eq(session.grid_mesher.block_table(), &session.block_table),
+            )
+        };
+        assert_eq!(
+            held_by_the_meshers(&session),
+            (true, true),
+            "the control: they are made with the session's table"
+        );
+        let before = Arc::clone(&session.block_table);
+        let mut changed = compiled_in();
+        *stone_of(&mut changed) = Some(BlockDefinition::cube([0.9, 0.1, 0.2]));
+        replace(&mut server, Vec::new(), &changed, 1);
+        session.advance_one_tick().unwrap();
+        assert!(
+            !Arc::ptr_eq(&before, &session.block_table),
+            "the session has a new table"
+        );
+        assert_eq!(
+            held_by_the_meshers(&session),
+            (true, true),
+            "and the meshers of the terrain and of the ships have it, not the old one"
+        );
     }
 }

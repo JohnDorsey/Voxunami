@@ -32,6 +32,8 @@ pub fn serve_until<G: GameDefinition>(
     let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
     let mut settings = HostSettings::local(options.view_radius);
     settings.ships = options.ships;
+    settings.packs = options.packs.clone();
+    settings.watch_packs = options.watch;
     settings.network = Some(Box::new(listener));
     settings.announce_players = true;
     if let Some(path) = &options.world_file {
@@ -77,6 +79,7 @@ mod tests {
             seed: 1,
             world_file: Some(world_file.clone()),
             packs: None,
+            watch: false,
             autosave_seconds: 3600.0,
             view_radius: 2,
             ships: server::ShipSettings::default(),

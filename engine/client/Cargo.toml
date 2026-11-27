@@ -11,6 +11,7 @@ binary_codec.workspace = true
 identity.workspace = true
 entities.workspace = true
 namespaced_id.workspace = true
+pack_archive.workspace = true
 protocol.workspace = true
 region_octree.workspace = true
 terrain.workspace = true

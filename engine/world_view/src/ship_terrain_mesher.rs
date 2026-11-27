@@ -422,6 +422,11 @@ impl ShipTerrainMesher {
         self.bricks().state_at(voxel)
     }
 
+    /// The orientation of the block in a voxel of the ship (0 where the game has none), if its brick is loaded.
+    pub fn orientation_at(&self, voxel: VoxelCoordinate) -> Option<u32> {
+        self.bricks().orientation_at(voxel)
+    }
+
     /// Whether a voxel of the ship holds something that fills any part of it, if its brick is loaded.
     pub fn is_solid_at(&self, voxel: VoxelCoordinate) -> Option<bool> {
         self.bricks().is_solid_at(voxel)

@@ -99,7 +99,7 @@ impl Ships {
             world,
             &presence,
             client,
-            &self.table,
+            &self.table.current(),
             [
                 self.block_channel,
                 self.state_channel,

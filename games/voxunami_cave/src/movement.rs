@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::aboard::{Extent, has_left, in_voxels, stands_on};
 use crate::block_properties;
 use crate::frame_terms::{cross, frame_motion, pull_in_a_frame};
-use block_models::BlockTable;
+use block_models::SharedBlockTable;
 use game_shell::PlayerPose;
 use grid_bodies::collision::{BlockCollisions, GeneratedHull, ShipHull, ShipSource, WorldTerrain};
 use physics::{CharacterBody, CharacterSettings, ForeignGrid, MoveInput};
@@ -262,6 +262,9 @@ struct ShipBounds {
 pub struct Movement {
     bodies: BTreeMap<ClientId, PlayerBody>,
     blocks: Blocks,
+    /// The table of the blocks that the colliders of the bodies were made from, and the version of it that they were: the colliders are made again when it moves.
+    table: SharedBlockTable,
+    table_version: u64,
     /// Bricks edited since the last step, by grid, whose colliders near bodies must make again.
     changed: BTreeSet<(GridId, BrickCoordinate)>,
 }
@@ -276,8 +279,9 @@ impl std::fmt::Debug for Movement {
 }
 
 impl Movement {
+    /// The bodies of a game whose blocks are in `table`, which is replaced while it runs: what the blocks are to a body is what the table says when a body is stepped.
     pub fn new(
-        table: BlockTable,
+        table: &SharedBlockTable,
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
         orientation_channel: ChannelIndex,
@@ -286,9 +290,9 @@ impl Movement {
         Self {
             bodies: BTreeMap::new(),
             blocks: Blocks {
-                collisions: BlockCollisions::new(
-                    table.clone(),
-                    Some(block_properties::passable(&table)),
+                collisions: BlockCollisions::following(
+                    table,
+                    Some(block_properties::passable(&table.current())),
                 ),
                 block_channel,
                 state_channel,
@@ -296,6 +300,8 @@ impl Movement {
                 air,
             },
             changed: BTreeSet::new(),
+            table: table.clone(),
+            table_version: table.version(),
         }
     }
 
@@ -464,6 +470,13 @@ impl Movement {
         carried_by_rails: impl Fn(ClientId) -> Option<Carried>,
     ) -> Vec<Moved> {
         let changed = std::mem::take(&mut self.changed);
+        // What the blocks are to a body was changed by a table that replaced the one the colliders were made from: they are made again, from what the table says now.
+        if self.table.version() != self.table_version {
+            self.table_version = self.table.version();
+            for player in self.bodies.values_mut() {
+                player.body.forget_colliders();
+            }
+        }
         let ships = if self.bodies.is_empty() {
             BTreeMap::new()
         } else {

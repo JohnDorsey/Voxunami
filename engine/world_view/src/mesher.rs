@@ -774,6 +774,11 @@ impl WorldMesher {
         }
     }
 
+    /// The table this mesher makes its meshes with.
+    pub fn block_table(&self) -> &Arc<BlockTable> {
+        &self.table
+    }
+
     /// Jobs handed to workers and not yet finished.
     pub fn pending_jobs(&self) -> usize {
         self.states.jobs_in_flight()

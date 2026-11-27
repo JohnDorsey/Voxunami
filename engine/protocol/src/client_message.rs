@@ -1,9 +1,11 @@
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
+use pack_archive::Hash;
 use voxel_space::{BrickBox, LevelIndex};
 
 use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
+use crate::packs::MAXIMUM_PACKS;
 use crate::types::PlayerKey;
 use crate::wire::{
     read_brick_box, read_free_regions, read_level, write_brick_box, write_free_regions, write_level,
@@ -15,6 +17,7 @@ const KIND_GAME_MESSAGE: u8 = 3;
 const KIND_GOODBYE: u8 = 4;
 const KIND_COMMAND: u8 = 5;
 const KIND_PROVE: u8 = 6;
+const KIND_REQUEST_PACKS: u8 = 7;
 
 /// Sent from a client to the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +57,9 @@ pub enum ClientMessage {
     /// [`MAXIMUM_COMMAND_LENGTH`] bytes. The game's server logic decides what it means and answers
     /// with a `CommandReply`.
     Command { text: String },
+    /// The packs of the server's list that this client does not have, by root hash: at least one and at most [`MAXIMUM_PACKS`], each once. The server answers with
+    /// the pack's archive in `PackChunk`s. (Protocol version 13.)
+    RequestPacks { roots: Vec<Hash> },
 }
 
 impl ClientMessage {
@@ -94,6 +100,13 @@ impl ClientMessage {
                 writer.write_u8(KIND_COMMAND);
                 writer.write_string(text);
             }
+            Self::RequestPacks { roots } => {
+                writer.write_u8(KIND_REQUEST_PACKS);
+                writer.write_varint(roots.len() as u64);
+                for root in roots {
+                    writer.write_raw(root.as_bytes());
+                }
+            }
         }
         writer.into_bytes()
     }
@@ -129,6 +142,26 @@ impl ClientMessage {
                 Self::Command {
                     text: text.to_owned(),
                 }
+            }
+            KIND_REQUEST_PACKS => {
+                let count = reader.read_count(32)?;
+                if count == 0 || count > MAXIMUM_PACKS {
+                    return Err(DecodeError::Invalid(
+                        "a request names no pack or more packs than a server may have",
+                    )
+                    .into());
+                }
+                let mut roots: Vec<Hash> = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let root = Hash::from_bytes(
+                        reader.read_raw(32)?.try_into().expect("32 bytes were read"),
+                    );
+                    if roots.contains(&root) {
+                        return Err(DecodeError::Invalid("a pack is requested twice").into());
+                    }
+                    roots.push(root);
+                }
+                Self::RequestPacks { roots }
             }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
@@ -186,7 +219,46 @@ mod tests {
             ClientMessage::Command {
                 text: String::new(),
             },
+            ClientMessage::RequestPacks {
+                roots: vec![Hash::of(b"one")],
+            },
+            ClientMessage::RequestPacks {
+                roots: vec![
+                    Hash::of(b"one"),
+                    Hash::from_bytes([0; 32]),
+                    Hash::from_bytes([255; 32]),
+                ],
+            },
         ]
+    }
+
+    #[test]
+    fn a_request_for_packs_has_its_layout_pinned_and_refuses_none_twice_and_too_many() {
+        let mut request = vec![7, 2];
+        request.extend([1; 32]);
+        request.extend([2; 32]);
+        assert_eq!(
+            ClientMessage::RequestPacks {
+                roots: vec![Hash::from_bytes([1; 32]), Hash::from_bytes([2; 32])]
+            }
+            .encode(),
+            request
+        );
+        let refused = |roots: Vec<Hash>| {
+            matches!(
+                ClientMessage::decode(&ClientMessage::RequestPacks { roots }.encode()),
+                Err(ProtocolError::Malformed(DecodeError::Invalid(_)))
+            )
+        };
+        assert!(refused(Vec::new()));
+        assert!(refused(vec![Hash::of(b"x"), Hash::of(b"x")]));
+        let many = |count: usize| -> Vec<Hash> {
+            (0..count)
+                .map(|number| Hash::of(&number.to_le_bytes()))
+                .collect()
+        };
+        assert!(refused(many(MAXIMUM_PACKS + 1)));
+        assert!(!refused(many(MAXIMUM_PACKS)));
     }
 
     #[test]

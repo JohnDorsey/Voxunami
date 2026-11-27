@@ -15,12 +15,19 @@ packs/                      the folder you give the server: --packs packs
     patches/dim_lamps.json  a change to blocks that already exist
     bodies/moon.json        a planet in the world: my_pack:moon
     textures/marble_top.png the pictures of blocks (see "Pictures")
+    server/rules.py         anything the server keeps to itself (see below); nothing reads it
 ```
 
 Names are lowercase letters, digits and `_`, starting with a letter, at most 64 characters. A file's name without `.json` is
 the block's, patch's or body's name. Names that start with `.` and files that are not `.json` are left alone. A folder
 inside a pack that is not `blocks`, `patches`, `bodies` or `textures` is an error (`check-pack` names it and suggests the nearest), so a
-folder that nothing reads is never reported as fine.
+folder that nothing reads is never reported as fine. The one exception is `server`.
+
+**`server/` is the folder a server keeps to itself.** A server that replicates the pack sends clients every file of it except those in `server/`; they are
+in the pack's file index all the same, with their size and hash, so a client can see that a file exists and **cannot read it**, and a change of one byte of one
+is another pack (another root hash: `check-pack` prints it, and says how many files are kept back). Nothing reads the folder today: it is for code that is not
+WebAssembly, which does not exist yet, and for anything else you do not want in a client's copy. **Not a hiding place for data a client draws with**: what a
+block looks like and a picture's pixels are in the package every client is sent. A file in `server/` that a client needs is a file it will not have.
 
 ## `pack.json`
 
@@ -28,8 +35,8 @@ folder that nothing reads is never reported as fine.
 { "id": "my_pack", "depends_on": ["base_blocks", "other_pack"] }
 ```
 
-`id` must be the folder's name (and not `engine`). Two optional keys: `"format": 1` says which pack format the file is written
-for (1 is the only one so far; a later engine that reads others can tell), and `"version": "0.3.1"` is your own version of the pack, as text.
+`id` must be the folder's name (and not `engine`). Three optional keys: `"format": 1` says which pack format the file is written
+for (1 is the only one so far; a later engine that reads others can tell), and `"version": "0.3.1"` is your own version of the pack, as text. `"replicate": false` says that a client that joins a server running this pack is **not** sent it as a file to keep (it has what the pack made of the game's blocks and pictures, as every client has); without it, or with `true`, the server tells its clients of the pack and sends its whole archive (every file in the folder, a `readme.md` too) to each that lacks it. It is not a way to keep anything secret: what a client draws, it has either way.
 `depends_on` lists what must load before this pack: other packs, or the
 name of a plugin the game has blocks from (`base_blocks`). A pack may change only blocks of its own and of the names it
 depends on (and what those depend on). Packs load in dependency order, ties by id, and the files of a pack in order of their
@@ -283,6 +290,12 @@ voxunami cave --host --packs packs
 A server that finds any problem does not start. Blocks are numbered after the game's own, in the order the packs load; a
 world saved with a pack's blocks loads without the pack (those blocks show as magenta cubes and are kept exactly as they were) and
 the blocks come back when the pack is loaded again.
+
+**Editing while it runs.** `/reload` in the game's chat makes a running server read the folder again. With `--watch` (on `serve`, or on a game that starts its own
+server) the server does it by itself: it looks at the folder a few times a second, waits until the files have been still for a moment (an editor's save is never
+read half done), and reads the packs again only if some file's content really changed. **Every file counts**, a `readme.md` and the files in `server/` too, since each
+is part of the pack's identity; the players are told of the new pack list, and of the new package if it changed. Packs that are no good change nothing, the reason is
+printed on the server, and they are not tried again until a file changes. It happens between two ticks of the server and does not touch a recording's replay.
 
 ## Limits
 

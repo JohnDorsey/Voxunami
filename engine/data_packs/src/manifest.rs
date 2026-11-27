@@ -18,6 +18,9 @@ pub struct PackManifest {
     pub depends_on: Vec<String>,
     /// The author's own version of the pack, as they write it; the engine does not read it as a number.
     pub version: Option<String>,
+    /// Whether a client is sent this pack as a file archive and keeps it (`docs/specs/pack-archive-spec.md`): `true` unless the manifest says `"replicate": false`,
+    /// in which case the client has only what the pack made of the game's package. It is not a secrecy switch: what a client draws it has either way.
+    pub replicate: bool,
 }
 
 /// The only pack format there is. A pack may say `"format": 1` so that a later engine, which reads other formats,
@@ -50,7 +53,11 @@ pub fn read_manifest(file: &str, text: &str) -> Result<PackManifest, PackErrors>
 }
 
 fn read(walk: &mut Walk, value: &Value, path: &Path) -> Option<PackManifest> {
-    let object = walk.object(value, path, &["id", "depends_on", "format", "version"])?;
+    let object = walk.object(
+        value,
+        path,
+        &["id", "depends_on", "format", "version", "replicate"],
+    )?;
     let format_ok = object.get("format").is_none_or(|format| {
         walk.integer(format, &path.key("format"), PACK_FORMAT, PACK_FORMAT)
             .is_some()
@@ -68,6 +75,10 @@ fn read(walk: &mut Walk, value: &Value, path: &Path) -> Option<PackManifest> {
             }
             Some(Some(text.to_owned()))
         }),
+    };
+    let replicate = match object.get("replicate") {
+        None => Some(true),
+        Some(replicate) => walk.boolean(replicate, &path.key("replicate")),
     };
     let id_path = path.key("id");
     let id = walk
@@ -107,5 +118,6 @@ fn read(walk: &mut Walk, value: &Value, path: &Path) -> Option<PackManifest> {
         id: id?,
         depends_on: depends_on?,
         version: version?,
+        replicate: replicate?,
     })
 }

@@ -6,7 +6,7 @@ Blocks that exist today (ids are `base_blocks:<name>`): stone, dirt, grass, lamp
 
 How the game uses them is decided in `docs/specs/block-textures-spec.md`: the files are `name_top.png`, `name_side.png`, `name_bottom.png` or `name.png`
 (a block names `name` in its file, and which faces differ follows from the files that exist), 16 by 16 here but any power of two from 8 to 256. Grass, dirt, stone,
-still water, leaves and glass (their clear pixels are holes), the log (`log_top`, `log_side`), and the dev docking port (`_top`, `_side`, `_bottom`) are used by blocks and embedded in the program; the others are not yet.
+still water, leaves and glass (their clear pixels are holes), the log (`log_top`, `log_side`), and the dev docking port (`_top`, `_side`, `_bottom`) are used by blocks; the others are not yet. **Every `.png` of this folder is in the program's pack** (`build.rs` makes the archive; the folder's other files, the editor and the scripts and this note, are not), used or not; only a picture a block uses is put in a world.
 Companions (`dirt_n`, `lamp_s`, `leaves_s`: `block-textures-spec.md` section 4.4) are made by scripts here: `make_dirt_normals.py` and `make_placeholder_specular.py` (placeholders drawn from the pictures: the lamp's glow and the leaves' scatter, until there is art).
 The editor below is for making them: the game reads the loose PNG files and ignores `atlas.json`.
 
@@ -27,6 +27,46 @@ phases; what works so far:
   is listed at two places or two files at one place.
 - Only PNG files whose size is the tile size are used. A listed file that is missing or has another size shows
   an error symbol; an unlisted file of another size is ignored.
+- Companion files: the optional `"pbr"` setting of `atlas.json` is `"none"` (also when the key is missing) or
+  `"labpbr_1_3"`. Under `labpbr_1_3` the files `name_s.png` and `name_n.png` are not tiles of their own: they hold the eight
+  PBR channels of the tile `name.png` (smoothness, reflectance, porosity or scattering and emission in `_s`; normal x,
+  normal y, ambient occlusion and height in `_n`; the table is `tools/virtual_atlas/labpbr_channels.json`). A tile always
+  has all eight channels in memory; a channel of a file that does not exist is neutral (no smoothness, no emission, no tilt, full
+  occlusion, top height), and saving creates a companion file only for a file with a channel that is not neutral, and rewrites
+  only the files that changed. Renaming, deleting (purging) and copying a tile do the same to all its files, all or none. A companion
+  that cannot be read, or has another size, makes its tile an error tile naming the file; a picture that has only companion
+  files is a tile with blank pixels. The setting is changed in the settings window (the gear button left of "Atlas"; see below); names that end in `_n` or `_s` are what the game reads as companions whatever the setting says, since
+  the game never reads `atlas.json`.
+- Changing the setting (`AtlasProject.switch_pbr_profile`, from the settings window) is refused while any tile has unsaved changes. Tiles
+  whose names are companion names under the new setting leave the atlas first (their files stay, and are read as companions). Each tile that has
+  files in the old format gets them rewritten in the new one by the identity of each channel (smoothness stays smoothness), and the old ones removed:
+  all of a tile's files change or none, and a tile whose files cannot all change becomes an error tile with its files as they were. A channel
+  that has data and has no place in the new setting needs a confirm. A picture that has files in two formats (its own setting's and another's)
+  is an error tile, before and after a change, until one set is removed and the folder is read again (`AtlasProject.reload`).
+- A tile that has no PNG file yet keeps its channels too: `coordinates_to_channel_data` holds them (base64 of the bytes of all eight planes,
+  row by row, a pixel's channels together) for such a tile when they differ from what its companion files hold, and the entry goes when the tile is saved. The key is
+  not written when no tile needs it. An entry that does not fit makes its tile an error tile and is kept as it was. Editing the channels (undo and redo included)
+  is part of the tile's history. Every drawing tool carries the channels (`CanvasSession`): a stroke paints the channels it is given with a blend mode each (none, replace,
+  add, subtract, multiply, min, max, worked out on the meaning of the channel, once per pixel however often the stroke passes it, at the stroke's coverage; a normal
+  longer than 1 is shortened on the pixels the stroke covered), the eraser resets them to neutral, the fill stops where a channel differs, and rotating a row or column
+  rotates them. The colour has blend modes of its own too (`ColorBlend`: one for red, green and blue together, one for alpha, the same seven; replace for both is the old way of every tool, and the eraser ignores them;
+  alpha is blended as a number, not composited). The controls are in the editor: the colour area is taller, with the history of colours under the hex field and, under it, the blend modes of RGB and of alpha (a menu each, opening upward). Right of the
+  colours is the panel of channels, a row for each channel of the setting: its name, a mode menu (none, replace, add, subtract, multiply, min, max), a slider for the primary value and one for the secondary (the
+  button that draws decides which counts), and a number field for the value of the active colour slot: type a number and press Enter, or use the Up and Down arrows (a hundredth, a tenth with Shift); for
+  reflectance `m0` to `m25` is a metal. The sliders show meaning (normals -1 to 1, emission 0 is none, occlusion is light lost). A channel with mode none is not painted; the panel scrolls with the wheel when
+  the rows do not fit, and is greyed for the eraser, the rotation and the selection. The eye dropper loads the values of the pixel into the slot, not the modes. The key X swaps the two colours and the two
+  sets of values. The eraser and the rotation act on the channels as described above.
+  transparent and has no channel data leaves what is under it); a picture from another program leaves the channels alone; Delete and Cut reset them to neutral.
+- Channel breakout: the button "Ch" of the sidebar shows the canvas as a grid of panels (their number and shape follow the space): RGB (alpha not part of it), alpha, then each channel of the setting, in grey levels of its meaning (lowest
+  black, highest white; no tilt is the middle grey); it works under `none` too, with the two panels of the colour. Every panel shows the same canvas at the same zoom and place: the wheel zooms and the middle button pans all of them together
+  (with wrap-assist each panel repeats the canvas). A stroke (or a selection, a pan) is bound to the panel it began in: it goes on with that panel's pixels when the pointer leaves it. The brush guide, the grids and the selection
+  are in every panel. This is simpler than the plan (which had the panels inside a sheet with a zoom of its own, besides the zoom of wrap-assist): there is one zoom, shared.
+- Read-out: above the canvas, right of the name, the pixel under the pointer (a pixel of any copy with wrap-assist), its colour as `#RRGGBBAA` and the decoded value of each channel (as many as fit beside the name), in the breakout too.
+- Closing with unsaved tiles: the dialog shows one tile at a time with a row for what differs (RGB together, alpha, then each channel by name; a row that did not change is left out, rows that do not fit a small window are counted) and for each row the
+  old picture (the files), the new one, and the difference (bright red on black). The orange dot of the atlas and the `*` after a name mean that anything differs, in any channel.
+- Settings: the gear button left of the atlas title opens a window with the PBR setting (a menu: `none`, `labpbr_1_3`), "Apply" and "Reload folder" (`AtlasProject.reload`). Both are refused, with the reason on the window,
+  while a tile has unsaved changes. If the new setting has no place for a channel that has data, the window lists them and needs "Switch anyway". The change cannot be undone. After it the status line says what left the atlas or became an
+  error tile. The gear does nothing until `atlas.json` exists. A tile whose name ends in `_n` or `_s` gets a warning (when the program starts, on renaming, after a change of the setting): the game reads such a file as a companion of another picture.
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
 - The right half edits the selected tiles. With several selected they appear as one canvas in their atlas
@@ -103,5 +143,14 @@ phases; what works so far:
   you save them (Ctrl+Shift+S, or when the program asks while closing). At most 2048 tiles can be made at once.
 
 All of the planned features are built.
+
+- Painting in a program that shows the tiles: `python VirtualAtlas.py --bridge [PORT]` lets a program on this machine (a game, say) connect and say which tile its pointer is
+  over and where; VirtualAtlas then paints there with the tool, colours and sizes chosen here (a stroke that runs off one face onto the next wraps around the tile), and sends
+  each tile's pixels back as they change so that the program shows them at once (with the companion pictures of the tile when the program says it reads the convention the atlas is set to: `BRIDGE.md`). Nothing in it is about one program: the protocol is `tools/virtual_atlas/BRIDGE.md`. In
+  Voxunami: `.paint` in the game's command line (see `docs/world-painting-options.md`).
+
+- Seeing the files in the game: Voxunami started from the repository folder (`cargo run --release -p launcher -- cave`) draws blocks with the pictures of this folder (and their `_s` and `_n`
+  companions) instead of the copies built into the program, because it reads the `plugins` folder when there is one; `.reload pictures` (or `--watch`) reads them again after a save, and
+  `--no-texture-pack` turns it off. This is for now: the folder structures are to be reviewed (`docs/future-goals.md`, Unscheduled).
 
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.

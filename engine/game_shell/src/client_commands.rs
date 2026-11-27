@@ -35,6 +35,21 @@ pub struct ClientSettings {
     /// (`None` for the game's own) and then the name; a setting that is not here is its default. The shell keeps them in files next to the packs
     /// ([`crate::shader_pack_settings`]).
     pub pack_settings: crate::shader_pack_settings::PackChoices,
+    /// What `.reload` asked for and the window has not done yet: `Some(None)` is everything that can be reloaded, `Some(Some(name))` one kind ([`crate::reload`]).
+    pub reload_requested: Option<Option<String>>,
+    /// What `.paint` asked for and the window has not done yet (`crate::paint_bridge`).
+    pub paint_requested: Option<PaintRequest>,
+}
+
+/// What `.paint` asks of the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaintRequest {
+    /// Paint mode if it is off, off if it is on; on means a tool at this port of this machine.
+    Toggle(u16),
+    /// Paint mode with a tool at this port.
+    Start(u16),
+    /// No paint mode.
+    Stop,
 }
 
 impl ClientSettings {
@@ -52,6 +67,8 @@ impl ClientSettings {
             shader_packs: Vec::new(),
             shader_pack: None,
             pack_settings: std::collections::BTreeMap::new(),
+            reload_requested: None,
+            paint_requested: None,
         }
     }
 
@@ -377,6 +394,42 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
     );
     registrar.command(
         CommandSpec::new(
+            "reload",
+            "reads again the files of what can be reloaded while the game runs (shader packs and their settings) and uses them if all of it is good; .reload NAME reloads one kind, .reload alone every kind. --watch does it by itself when a file changes",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("kind").optional()),
+        |context, arguments| {
+            let kind = arguments.present(0).then(|| arguments.word(0).to_owned());
+            context.settings_mut().reload_requested = Some(kind);
+            "reloading".to_owned()
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "paint",
+            "paint mode: a painting tool on this machine (VirtualAtlas started with --bridge) paints on the picture of the block face at the crosshair with the mouse's buttons, and you see it at once on this window only; hold Left Alt to paint with the pointer instead of the crosshair. .paint connects (or stops, if it is on), .paint PORT connects to a tool at that port, .paint off stops",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("port").optional()),
+        |context, arguments| {
+            let default_port = crate::paint_bridge::DEFAULT_PORT;
+            let request = if !arguments.present(0) {
+                PaintRequest::Toggle(default_port)
+            } else if arguments.word(0).eq_ignore_ascii_case("off") {
+                PaintRequest::Stop
+            } else {
+                match arguments.word(0).parse::<u16>() {
+                    Ok(port) if port > 0 => PaintRequest::Start(port),
+                    _ => return "usage: .paint [PORT|off]".to_owned(),
+                }
+            };
+            context.settings_mut().paint_requested = Some(request);
+            "painting".to_owned()
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
             "textures",
             "sets how far away, in voxels, you see the pictures on blocks (the blocks of a farther place are their flat colour, with a fade between); .textures off draws no pictures, .textures default goes back to 64, and .textures alone says what it is",
         )
@@ -601,6 +654,39 @@ mod tests {
             })
             .to_vec();
         settings
+    }
+
+    #[test]
+    fn paint_asks_for_paint_mode_at_the_tools_port_or_a_port_given_or_for_the_end_of_it_and_a_bad_port_asks_for_nothing()
+     {
+        use super::PaintRequest;
+        let default = crate::paint_bridge::DEFAULT_PORT;
+        for (line, wanted) in [
+            (".paint", PaintRequest::Toggle(default)),
+            (".paint 4000", PaintRequest::Start(4000)),
+            (".paint 65535", PaintRequest::Start(65535)),
+            (".paint off", PaintRequest::Stop),
+            (".paint OFF", PaintRequest::Stop),
+        ] {
+            let mut settings = ClientSettings::new(40);
+            assert_eq!(run(line, &mut settings), "painting", "{line}");
+            assert_eq!(settings.paint_requested, Some(wanted), "{line}");
+        }
+        for line in [
+            ".paint x",
+            ".paint 0",
+            ".paint 65536",
+            ".paint -1",
+            ".paint on",
+        ] {
+            let mut settings = ClientSettings::new(40);
+            assert_eq!(
+                run(line, &mut settings),
+                "usage: .paint [PORT|off]",
+                "{line}"
+            );
+            assert_eq!(settings.paint_requested, None, "{line}");
+        }
     }
 
     #[test]
@@ -1054,18 +1140,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .paint [PORT], .pixelshadows [ON|OFF], .reload [KIND], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .paint [PORT], .pixelshadows [ON|OFF], .reload [KIND], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .pixelshadows [ON|OFF], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .maprelease [ON|OFF], .paint [PORT], .pixelshadows [ON|OFF], .reload [KIND], .shader [PACK], .shadersetting [SETTING] [VALUE], .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

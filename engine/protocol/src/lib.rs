@@ -31,6 +31,7 @@
 mod client_message;
 mod error;
 mod message;
+mod packs;
 mod server_message;
 mod types;
 mod wire;
@@ -44,9 +45,10 @@ pub use wire::{
 pub use client_message::ClientMessage;
 pub use error::ProtocolError;
 pub use message::{Message, check_message};
+pub use packs::{MAXIMUM_PACK_CHUNK, MAXIMUM_PACKS, PackListing, maximum_pack_bytes, pack_chunks};
 pub use server_message::{
     EntityChange, EntityState, GeneratorAssignment, GridChange, GridContent, GridState,
-    GridTerrainState, ServerMessage, VoxelChange, Welcome, is_tick_boundary,
+    GridTerrainState, RegistryAdditions, ServerMessage, VoxelChange, Welcome, is_tick_boundary,
 };
 pub use types::{ClientId, EntityId, PlayerKey, Tick};
 
@@ -55,8 +57,8 @@ pub const MAXIMUM_FREE_REGIONS: usize = 8;
 
 /// Bumped whenever a message changes. A recording stores the version it was made with, and a program
 /// plays only recordings of its own version (nothing is kept to read older ones before a first release).
-/// (13: an interest may hold free regions besides the region round the body, and `InterestChanged` says them; 12: a ship may be told of as far, with its box and no bricks; 11: the offset of a position in its brick is three `f64`, not `f32`; 10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
-pub const PROTOCOL_VERSION: u32 = 13;
+/// (16: this demo branch holds main's 12 and 13 and the 12 to 15 of graphics-world-painting together, which each numbered its own way. main's 13: an interest may hold free regions besides the region round the body, and `InterestChanged` says them; main's 12: a ship may be told of as far, with its box and no bricks. From graphics-world-painting: the hashes of packs are BLAKE3 and a file index is version 2; `Packs` says whether its list is every pack the server runs; the packs a server replicates are told (`Packs`), asked for (`RequestPacks`) and sent in pieces (`PackChunk`), `docs/specs/pack-archive-spec.md`; `PackageReplaced` replaces the package and appends entries to registries while the world runs (`docs/specs/package-replacement-spec.md`). 11: the offset of a position in its brick is three `f64`, not `f32`; 10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The most bytes of text a command may have; a longer one is a protocol violation.
 pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;

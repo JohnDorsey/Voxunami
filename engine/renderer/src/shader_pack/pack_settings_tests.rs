@@ -164,7 +164,7 @@ fn a_pack_sets_the_relief_by_setting_the_default_of_the_engines_relief() {
         relief.default_value(),
         SettingValue::Choice("flat".to_owned())
     );
-    // The same by the defaults a `pack.json` says.
+    // The same by the defaults a `shaderpack.json` says.
     let by_defaults = ShaderPack::new("test:x", "X", DEFAULT_LIGHTING)
         .expect("a valid pack")
         .with_engine_defaults(SettingChoices::from([(

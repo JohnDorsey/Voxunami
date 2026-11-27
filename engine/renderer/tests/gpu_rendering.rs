@@ -38,6 +38,8 @@ mod contact_shapes;
 mod contact_trace;
 #[path = "gpu_rendering/emission.rs"]
 mod emission;
+#[path = "gpu_rendering/engine_shaders.rs"]
+mod engine_shaders;
 #[path = "gpu_rendering/facing_cull.rs"]
 mod facing_cull;
 #[path = "gpu_rendering/glints.rs"]
@@ -52,6 +54,10 @@ mod orthographic;
 mod pack_settings;
 #[path = "gpu_rendering/parallax_occlusion.rs"]
 mod parallax_occlusion;
+#[path = "gpu_rendering/picture_places.rs"]
+mod picture_places;
+#[path = "gpu_rendering/picture_writes.rs"]
+mod picture_writes;
 #[path = "gpu_rendering/pixelated_shadows.rs"]
 mod pixelated_shadows;
 #[path = "gpu_rendering/prisms.rs"]

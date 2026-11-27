@@ -41,13 +41,24 @@ Usage: voxunami {command} [options]
                                   .shader changes it while playing
   --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
                                   game data folder
+  --watch                         read shader packs and their settings (and the engine's shaders, with
+                                  --engine-shaders) again when their files change; .reload does it at once.
+                                  A server this starts with --packs reads those again too
+  --texture-pack DIRECTORY        draw blocks with the pictures in this folder where it has them
+                                  (NAMESPACE/textures/NAME.png, as `stone_top.png`, with `_s` and `_n`
+                                  companions); .reload pictures and --watch read it again. Without it,
+                                  a folder named `plugins` in the folder you start from is used (for now,
+                                  so that what is painted in the source shows at once)
+  --no-texture-pack               draw only with the pictures of the world, not the `plugins` folder
+  --engine-shaders DIRECTORY      a developer's: read the engine's own shaders from this folder (the source's
+                                  `engine/renderer/src`) instead of the program
   --screenshot FILE.png           render one image without a window and exit
   --benchmark                     time frames without a window and exit
   --no-vsync                      do not wait for the display refresh
   --exit-after SECONDS            close the window after this long
   --help                          show this text
 
-Controls: click the window to capture the mouse (Esc releases it). / starts typing a command for
+Controls: click the window to capture the mouse (hold Left Alt to use the pointer; coming back to the window takes the mouse again). / starts typing a command for
 the server and . one for the window, which the server never sees (Enter sends it, Esc drops it):
 .ambient 0-255 sets how bright a face is that no light reaches (0 is black), .help lists them.
 {controls}",
@@ -120,6 +131,7 @@ Usage: voxunami serve {command} [options]
   --seed NUMBER                   terrain seed of a new world (default {seed})
   --world FILE                    load this world if it exists, and save to it
   --packs DIRECTORY               load the data packs in this folder
+  --watch                         read the packs again, and tell the players, when their files change
   --autosave SECONDS              save the world this often (default 60 with --world)
   --view-radius BRICKS            the view radius players are expected to use (default 12)
   --ship-simulation-distance N    ships move while a player is within N voxels of them (default 1024)
@@ -153,6 +165,16 @@ Usage: voxunami replay FILE [options]
   --shader-pack NAME              draw with this shader pack (its id or name, or the beginning of one)
   --shader-packs DIRECTORY        shader packs to choose from besides the `shaderpacks` folder of the
                                   game data folder
+  --watch                         read shader packs and their settings (and the engine's shaders, with
+                                  --engine-shaders) again when their files change; .reload does it at once
+  --texture-pack DIRECTORY        draw blocks with the pictures in this folder where it has them
+                                  (NAMESPACE/textures/NAME.png, as `stone_top.png`, with `_s` and `_n`
+                                  companions); .reload pictures and --watch read it again. Without it,
+                                  a folder named `plugins` in the folder you start from is used (for now,
+                                  so that what is painted in the source shows at once)
+  --no-texture-pack               draw only with the pictures of the world, not the `plugins` folder
+  --engine-shaders DIRECTORY      a developer's: read the engine's own shaders from this folder (the source's
+                                  `engine/renderer/src`) instead of the program
   --no-vsync                      do not wait for the display refresh
   --exit-after SECONDS            close the window after this long
   --help                          show this text
@@ -185,6 +207,29 @@ pub struct ViewOptions {
     pub shader_packs: Option<PathBuf>,
     /// The shader pack to start with (`--shader-pack`): an id or a name, or the beginning of one.
     pub shader_pack: Option<String>,
+    /// A folder of loose pictures that override the world's block pictures on this client (`--texture-pack`: `NAMESPACE/textures/NAME.png`, see [`crate::texture_pack`]); read at
+    /// the start, and again by `.reload pictures` and, with `--watch`, when the files change.
+    pub texture_pack: Option<PathBuf>,
+    /// Whether `--no-texture-pack` was given: no folder is read, not even [`DEFAULT_TEXTURE_PACK`] (see [`ViewOptions::use_default_texture_pack`]).
+    pub no_texture_pack: bool,
+    /// The folder to read the engine's own shaders from instead of the program (`--engine-shaders`): a developer's, `engine/renderer/src` of the source, so that a change to a
+    /// shader shows without making the program again (`.reload engine-shaders`, or by itself with `--watch`). `None` is the shaders the program has.
+    pub engine_shaders: Option<PathBuf>,
+    /// Whether what can be reloaded (shader packs and their settings) is reloaded by itself when its files change (`--watch`); off by default. `.reload` always works.
+    pub watch: bool,
+}
+
+/// The folder of pictures a client reads when `--texture-pack` is not given (and `--no-texture-pack` is not): the `plugins` folder of the source, as seen from the folder the
+/// program is started in. Only the commands `play` and `replay` do this, not the option parser, so a test that parses or builds options never reads a folder.
+pub const DEFAULT_TEXTURE_PACK: &str = "plugins";
+
+impl ViewOptions {
+    /// Chooses [`DEFAULT_TEXTURE_PACK`] if no folder was asked for or refused and `default_exists` says that the folder is there.
+    pub fn use_default_texture_pack(&mut self, default_exists: bool) {
+        if self.texture_pack.is_none() && !self.no_texture_pack && default_exists {
+            self.texture_pack = Some(PathBuf::from(DEFAULT_TEXTURE_PACK));
+        }
+    }
 }
 
 impl Default for ViewOptions {
@@ -203,7 +248,11 @@ impl Default for ViewOptions {
             release_map_pictures: true,
             map: None,
             shader_packs: None,
+            engine_shaders: None,
+            texture_pack: None,
+            no_texture_pack: false,
             shader_pack: None,
+            watch: false,
         }
     }
 }
@@ -329,7 +378,17 @@ fn parse_view_flag(
             }
         }
         "--shader-packs" => view.shader_packs = Some(PathBuf::from(value(flag)?)),
+        "--texture-pack" => {
+            view.texture_pack = Some(PathBuf::from(value(flag)?));
+            view.no_texture_pack = false;
+        }
+        "--no-texture-pack" => {
+            view.texture_pack = None;
+            view.no_texture_pack = true;
+        }
+        "--engine-shaders" => view.engine_shaders = Some(PathBuf::from(value(flag)?)),
         "--shader-pack" => view.shader_pack = Some(value(flag)?),
+        "--watch" => view.watch = true,
         "--screenshot" => view.screenshot = Some(PathBuf::from(value(flag)?)),
         "--no-vsync" => view.vsync = false,
         "--exit-after" => view.exit_after_seconds = Some(parse_number(flag, &value(flag)?)?),
@@ -461,6 +520,8 @@ pub struct ServeOptions {
     pub world_file: Option<PathBuf>,
     /// A directory of data packs.
     pub packs: Option<PathBuf>,
+    /// Read `packs` again by itself when its files change (`--watch`).
+    pub watch: bool,
     pub autosave_seconds: f32,
     pub view_radius: i128,
     /// How ships are kept.
@@ -475,6 +536,7 @@ pub fn parse_serve<G: GameDefinition>(
         seed: G::default_seed(),
         world_file: None,
         packs: None,
+        watch: false,
         autosave_seconds: 60.0,
         view_radius: ViewOptions::default().view_radius,
         ships: server::ShipSettings::default(),
@@ -492,6 +554,7 @@ pub fn parse_serve<G: GameDefinition>(
             "--seed" => options.seed = parse_number(&flag, &value(&flag)?)?,
             "--world" => options.world_file = Some(PathBuf::from(value(&flag)?)),
             "--packs" => options.packs = Some(PathBuf::from(value(&flag)?)),
+            "--watch" => options.watch = true,
             "--autosave" => {
                 options.autosave_seconds = parse_number(&flag, &value(&flag)?)?;
                 if options.autosave_seconds <= 0.0 {
@@ -609,6 +672,44 @@ mod tests {
         }
     }
 
+    fn view_after(text: &str, default_exists: bool) -> ViewOptions {
+        let mut view = play(text).view;
+        view.use_default_texture_pack(default_exists);
+        view
+    }
+
+    #[test]
+    fn the_plugins_folder_is_the_texture_pack_when_none_is_named_and_it_is_there() {
+        assert_eq!(
+            view_after("", true).texture_pack,
+            Some(PathBuf::from(DEFAULT_TEXTURE_PACK))
+        );
+        assert_eq!(view_after("", false).texture_pack, None);
+    }
+
+    #[test]
+    fn a_named_texture_pack_beats_the_default_and_no_texture_pack_turns_it_off() {
+        assert_eq!(
+            view_after("--texture-pack mine", true).texture_pack,
+            Some(PathBuf::from("mine"))
+        );
+        assert_eq!(view_after("--no-texture-pack", true).texture_pack, None);
+        // The last of the two wins, either way round.
+        assert_eq!(
+            view_after("--no-texture-pack --texture-pack mine", true).texture_pack,
+            Some(PathBuf::from("mine"))
+        );
+        assert_eq!(
+            view_after("--texture-pack mine --no-texture-pack", true).texture_pack,
+            None
+        );
+    }
+
+    #[test]
+    fn parsing_alone_never_chooses_a_folder() {
+        assert_eq!(play("").view.texture_pack, None);
+    }
+
     #[test]
     fn no_arguments_gives_the_defaults() {
         assert_eq!(play(""), PlayOptions::defaults_for::<ExampleGame>());
@@ -620,7 +721,7 @@ mod tests {
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
              --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off \
-             --map-release off --map-distance 100 --shader-pack cel --shader-packs my_shaders",
+             --map-release off --map-distance 100 --shader-pack cel --shader-packs my_shaders --watch --engine-shaders src_shaders \n             --texture-pack my_pictures",
         );
         assert_eq!(
             parsed,
@@ -643,6 +744,10 @@ mod tests {
                     }),
                     shader_packs: Some(PathBuf::from("my_shaders")),
                     shader_pack: Some("cel".to_owned()),
+                    engine_shaders: Some(PathBuf::from("src_shaders")),
+                    texture_pack: Some(PathBuf::from("my_pictures")),
+                    no_texture_pack: false,
+                    watch: true,
                 },
                 seed: 7,
                 world_file: Some(PathBuf::from("w.voxunami")),
@@ -918,11 +1023,17 @@ mod tests {
                 seed: 5,
                 world_file: Some(PathBuf::from("w.voxunami")),
                 packs: Some(PathBuf::from("mods")),
+                watch: false,
                 autosave_seconds: 10.0,
                 view_radius: 6,
                 ships: server::ShipSettings::default(),
             }
         );
+        let Parsed::Run(watching) = parse("--packs mods --watch").unwrap() else {
+            panic!("expected options")
+        };
+        assert!(watching.watch);
+        assert!(!defaults.watch, "off unless asked for");
         assert_eq!(parse("--help").unwrap(), Parsed::ShowHelp);
         assert!(parse("--bogus").unwrap_err().contains("--bogus"));
         assert!(parse("--autosave -1").unwrap_err().contains("positive"));

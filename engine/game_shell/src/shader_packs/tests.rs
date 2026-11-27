@@ -42,7 +42,7 @@ const LIGHTING: &str = "fn pack_shade(s: Surface) -> vec3<f32> { return s.albedo
 
 fn good_pack(folder: &Folder, at: &str, id: &str, name: &str) {
     folder.write(
-        &format!("{at}/pack.json"),
+        &format!("{at}/shaderpack.json"),
         &format!(r#"{{ "id": "{id}", "name": "{name}" }}"#),
     );
     folder.write(&format!("{at}/lighting.wgsl"), LIGHTING);
@@ -53,9 +53,9 @@ fn problems_of(folder: &Folder) -> Vec<String> {
 }
 
 #[test]
-fn a_folder_with_a_pack_json_and_a_lighting_file_is_a_pack() {
+fn a_folder_with_a_shaderpack_json_and_a_lighting_file_is_a_pack() {
     let folder = Folder::new("good");
-    folder.write("pack.json", PACK_JSON);
+    folder.write("shaderpack.json", PACK_JSON);
     folder.write("lighting.wgsl", LIGHTING);
     let pack = read_pack(folder.path()).expect("a pack");
     assert_eq!(pack.id(), "tester:cel");
@@ -63,7 +63,10 @@ fn a_folder_with_a_pack_json_and_a_lighting_file_is_a_pack() {
     assert_eq!(pack.lighting(), LIGHTING);
     // The interface and the format may be left out (and the description).
     let plain = Folder::new("plain");
-    plain.write("pack.json", r#"{ "id": "tester:plain", "name": "Plain" }"#);
+    plain.write(
+        "shaderpack.json",
+        r#"{ "id": "tester:plain", "name": "Plain" }"#,
+    );
     plain.write("lighting.wgsl", LIGHTING);
     assert!(read_pack(plain.path()).is_ok());
 }
@@ -75,7 +78,7 @@ fn a_pack_says_how_the_relief_of_pictures_is_drawn_as_the_default_of_the_engine_
     folder.write("lighting.wgsl", LIGHTING);
     let relief_of = |text: &str| {
         folder.write(
-            "pack.json",
+            "shaderpack.json",
             &format!(r#"{{ "id": "tester:relief", "name": "Relief"{text} }}"#),
         );
         read_pack(folder.path()).map(|pack| pack.relief())
@@ -114,23 +117,41 @@ fn a_pack_says_how_the_relief_of_pictures_is_drawn_as_the_default_of_the_engine_
     );
 }
 
+/// The owner's decision of 2026-11-20: a data pack's manifest is `pack.json` and a shader pack's is `shaderpack.json`, so that a folder is one kind or the other and each reader can say so.
+#[test]
+fn a_folder_with_the_manifest_of_a_data_pack_is_told_it_is_one_and_the_old_name_is_no_manifest() {
+    let folder = Folder::new("data_pack_manifest");
+    folder.write("lighting.wgsl", LIGHTING);
+    folder.write("pack.json", PACK_JSON);
+    let problems = problems_of(&folder);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("there is no shaderpack.json")
+            && problems[0].contains("has a pack.json, which is the manifest of a data pack"),
+        "{problems:?}"
+    );
+    // A folder of the new name is read as before, and the old file beside it is not looked at.
+    folder.write("shaderpack.json", PACK_JSON);
+    assert!(read_pack(folder.path()).is_ok());
+}
+
 #[test]
 fn a_folder_that_is_not_a_pack_is_told_what_is_missing_or_wrong_in_which_file() {
     let folder = Folder::new("missing");
     let problems = problems_of(&folder);
     assert_eq!(problems.len(), 1);
     assert!(
-        problems[0].contains("there is no pack.json"),
+        problems[0].contains("there is no shaderpack.json"),
         "{problems:?}"
     );
-    folder.write("pack.json", "{ not json");
+    folder.write("shaderpack.json", "{ not json");
     let problems = problems_of(&folder);
-    assert!(problems[0].contains("pack.json"), "{problems:?}");
-    folder.write("pack.json", r#"[1, 2]"#);
+    assert!(problems[0].contains("shaderpack.json"), "{problems:?}");
+    folder.write("shaderpack.json", r#"[1, 2]"#);
     assert!(problems_of(&folder)[0].contains("not a JSON object"));
     // Everything wrong at once: a key that is not one, a name missing, an id that is not namespaced, and no lighting file.
     folder.write(
-        "pack.json",
+        "shaderpack.json",
         r#"{ "id": "plain", "color": 3, "format": 2, "interface": 9 }"#,
     );
     let problems = problems_of(&folder);
@@ -147,7 +168,10 @@ fn a_folder_that_is_not_a_pack_is_told_what_is_missing_or_wrong_in_which_file() 
     }
     assert_eq!(problems.len(), 6, "{all}");
     // Text that is not text.
-    folder.write("pack.json", r#"{ "id": 4, "name": "", "description": 5 }"#);
+    folder.write(
+        "shaderpack.json",
+        r#"{ "id": 4, "name": "", "description": 5 }"#,
+    );
     let all = problems_of(&folder).join("\n");
     assert!(all.contains("`id` is a text that is not empty"), "{all}");
     assert!(all.contains("`name` is a text that is not empty"), "{all}");
@@ -157,7 +181,7 @@ fn a_folder_that_is_not_a_pack_is_told_what_is_missing_or_wrong_in_which_file() 
 #[test]
 fn a_mistake_in_the_lighting_is_told_with_the_file_and_the_line() {
     let folder = Folder::new("mistake");
-    folder.write("pack.json", PACK_JSON);
+    folder.write("shaderpack.json", PACK_JSON);
     folder.write(
         "lighting.wgsl",
         "// a pack\nfn pack_shade(s: Surface) -> vec3<f32> {\n    for (;;) {}\n    return s.albedo;\n}\n",
@@ -183,7 +207,7 @@ fn a_folder_of_packs_gives_the_good_ones_by_id_and_the_problems_of_the_others_an
     good_pack(&folder, "zebra", "tester:zebra", "Zebra");
     good_pack(&folder, "apple", "tester:apple", "Apple");
     good_pack(&folder, "copy", "tester:apple", "Another apple");
-    folder.write("broken/pack.json", "{}");
+    folder.write("broken/shaderpack.json", "{}");
     folder.write("README.txt", "not a pack");
     let shelf = read_directory(folder.path()).expect("a folder");
     let ids: Vec<&str> = shelf.packs.iter().map(ShaderPack::id).collect();
@@ -347,7 +371,10 @@ fn checking_shader_packs_says_ok_for_each_and_every_problem_of_the_rest_and_take
     assert!(run_check_shader_packs(vec![examples().join("cel").display().to_string()]).is_ok());
     let folder = Folder::new("checked");
     good_pack(&folder, "fine", "tester:fine", "Fine");
-    folder.write("bad/pack.json", r#"{ "id": "tester:bad", "name": "Bad" }"#);
+    folder.write(
+        "bad/shaderpack.json",
+        r#"{ "id": "tester:bad", "name": "Bad" }"#,
+    );
     folder.write(
         "bad/lighting.wgsl",
         "fn pack_shade(s: Surface) -> vec3<f32> {\n  loop {}\n  return s.albedo;\n}",

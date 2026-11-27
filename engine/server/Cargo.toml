@@ -16,6 +16,7 @@ identity.workspace = true
 entities.workspace = true
 content_registry.workspace = true
 namespaced_id.workspace = true
+pack_archive.workspace = true
 protocol.workspace = true
 region_octree.workspace = true
 terrain.workspace = true
@@ -28,6 +29,7 @@ thiserror.workspace = true
 libm = "0.2"
 
 [dev-dependencies]
+pack_archive.workspace = true
 server = { workspace = true, features = ["test-support"] }
 voxel_grid = { workspace = true, features = ["test-support"] }
 world_storage = { workspace = true, features = ["test-support"] }

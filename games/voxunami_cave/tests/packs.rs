@@ -5,7 +5,7 @@
 mod common;
 
 use base_blocks::EMISSION;
-use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height};
+use common::{Player, Rig, SEED, VIEW_RADIUS, above_the_ground, raw_in};
 use entities::Inventory;
 use game_shell::client_plugin::MouseButton;
 use game_shell::files::{open_recording, record_connection};
@@ -13,14 +13,12 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, Identity, KeyCode, RawFile, RawPack, RawTexture};
 use namespaced_id::NamespacedId;
+use pack_archive::{Archive, FileIndex};
 use player_presence::player_kind;
 use transport::Connection;
-use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{Cave, request_block};
 use world_storage::ParsedWorld;
-
-use common::PlayerExt;
 
 fn id(text: &str) -> NamespacedId {
     text.parse().unwrap()
@@ -105,12 +103,12 @@ fn a_pack_may_repaint_a_picture_of_the_game_and_the_colours_that_follow_it_follo
             assert!((component - 1.0).abs() < 1e-5, "{block}: {colour:?}");
         }
     }
-    // A block whose colour was its own is left alone, and the replacement is said.
+    // A block whose colour was its own is left alone, and the replacement is said, with the loss of the stone's companions (it has a specular and a normal picture since 2026-11-18).
     assert_eq!(colour_of(&content, "base_blocks:lamp"), [1.0, 0.92, 0.65]);
     assert_eq!(
         warnings,
         [
-            "repaint/textures/base_blocks/stone.png: replaces base_blocks:stone from plugins/base_blocks/textures/stone.png"
+            "repaint/textures/base_blocks/stone.png: replaces base_blocks:stone from plugins/base_blocks/textures/stone.png (its specular and normal pictures go; the pack brings its own)"
         ]
     );
 }
@@ -126,31 +124,6 @@ fn rig_with_the_pack() -> Rig {
     let content = content_with_the_pack();
     let world = content.new_overworld_world(SEED);
     Rig::with_world(content, world)
-}
-
-/// The number the server has for a block.
-fn raw_in(content: &CaveContent, block: &str) -> u32 {
-    content.registries()[0]
-        .1
-        .raw_id_of(&id(block))
-        .unwrap_or_else(|| panic!("no block {block}"))
-}
-
-/// A player hovering above the ground at the column (16, 16), and the voxel above that ground.
-fn above_the_ground(
-    rig: &mut Rig,
-    connection: Option<Box<dyn Connection>>,
-) -> (Player, VoxelCoordinate) {
-    let mut player = match connection {
-        Some(connection) => rig.join_with(connection, [16.5, 110.0, 16.5], 0.0, 0.0),
-        None => rig.join([16.5, 110.0, 16.5], 0.0, 0.0),
-    };
-    rig.settle(&mut [&mut player]);
-    player.camera = above_ground(&player, 16, 16, 2.0);
-    player.teleport_to_camera();
-    rig.settle(&mut [&mut player]);
-    let ground = ground_height(&player, 16, 16);
-    (player, VoxelCoordinate::new(16, ground + 1, 16))
 }
 
 #[test]
@@ -486,4 +459,395 @@ fn the_hotbar_of_a_player_who_has_never_heard_of_a_pack_has_a_swatch_for_its_pla
         ui::Color([204, 26, 51]),
         "ruby is [0.8, 0.1, 0.2]"
     );
+}
+
+// ---- Packs a client keeps as files (`specs/pack-archive-spec.md`, step 4), in the real game ----
+
+/// A folder of packs on disk: `my_pack`, which clients keep (with a note beside its files), and `quiet`, which says they do not.
+fn a_folder_of_packs(name: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    for (path, text) in [
+        (
+            "my_pack/pack.json",
+            r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#,
+        ),
+        (
+            "my_pack/blocks/marble.json",
+            r#"{ "color": [0.9, 0.9, 0.95] }"#,
+        ),
+        ("my_pack/readme.md", "carried to clients too"),
+        (
+            "quiet/pack.json",
+            r#"{ "id": "quiet", "replicate": false }"#,
+        ),
+        ("quiet/blocks/ember.json", r#"{ "color": [0.9, 0.3, 0.1] }"#),
+    ] {
+        let file = directory.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    directory
+}
+
+/// A player who joins `rig` over `connection`, keeping the packs it is sent in `store`.
+fn join_keeping_packs(
+    rig: &mut Rig,
+    connection: Box<dyn Connection>,
+    store: &client::MemoryPackStore,
+) -> common::Player {
+    let server = &mut rig.server;
+    Session::<_, Cave>::connect_with_packs(
+        connection,
+        &Identity::from_secret([9; 32]),
+        game_shell::session::Mode::Playing,
+        VIEW_RADIUS,
+        camera_at([0.0, 40.0, 0.0], 0.0, 0.0),
+        || {
+            server.step();
+        },
+        Box::new(store.clone()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_server_made_from_a_folder_of_packs_sends_the_ones_that_clients_keep_and_a_recording_and_a_cache_both_hold_them()
+ {
+    let directory = a_folder_of_packs("replicated");
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    // only the pack that does not say no is replicated, in the identity every tool prints
+    let listed: Vec<String> = content
+        .replicated_packs()
+        .iter()
+        .map(|pack| pack.listing().id.clone())
+        .collect();
+    assert_eq!(listed, ["my_pack"]);
+    let (_, identity) = data_packs::pack_identities(&directory)
+        .unwrap()
+        .into_iter()
+        .find(|(name, _)| name == "my_pack")
+        .unwrap();
+    let root = identity.unwrap();
+    assert_eq!(content.replicated_packs()[0].root(), root);
+    let archive_bytes = content.replicated_packs()[0].archive_bytes().to_vec();
+
+    let world = content.new_overworld_world(SEED);
+    let mut rig = Rig::with_world(content, world);
+    let recordings =
+        std::env::temp_dir().join(format!("voxunami_cave_recordings_{}", std::process::id()));
+    std::fs::create_dir_all(&recordings).unwrap();
+
+    // A first player, with nothing in its store, is sent the pack and keeps it.
+    let store = client::MemoryPackStore::new();
+    let first_path = recordings.join("first.voxreplay");
+    let recorded = record_connection(rig.connector.connect().unwrap(), &first_path).unwrap();
+    let mut first = join_keeping_packs(&mut rig, recorded, &store);
+    for _ in 0..4 {
+        rig.settle(&mut [&mut first]);
+    }
+    assert!(first.client().packs().is_complete());
+    let held = first.client().packs().get(&root).expect("the pack is held");
+    assert_eq!(held.archive.to_bytes(), archive_bytes);
+    assert!(
+        held.archive.get("readme.md").is_some(),
+        "the note is carried too"
+    );
+    assert_eq!(
+        store.get("my_pack", &root),
+        Some(archive_bytes.clone()),
+        "kept for the next time"
+    );
+    drop(first);
+
+    // A second player whose store has it is not sent it, and its recording has it all the same.
+    let second_path = recordings.join("second.voxreplay");
+    let recorded = record_connection(rig.connector.connect().unwrap(), &second_path).unwrap();
+    let mut second = join_keeping_packs(&mut rig, recorded, &store);
+    for _ in 0..2 {
+        rig.settle(&mut [&mut second]);
+    }
+    assert!(second.client().packs().is_complete());
+    drop(second);
+
+    // Both recordings replay with the pack, and nothing installed.
+    for path in [&first_path, &second_path] {
+        let connection: Box<dyn Connection> = Box::new(open_recording(path).unwrap());
+        let mut replay = Session::<_, Cave>::connect(
+            connection,
+            &Identity::generate(),
+            game_shell::session::Mode::Replaying,
+            VIEW_RADIUS,
+            camera_at([0.0; 3], 0.0, 0.0),
+            || {},
+        )
+        .unwrap();
+        while replay.advance_one_tick().is_ok() {}
+        replay.settle(|| {}).unwrap();
+        let held = replay
+            .client()
+            .packs()
+            .get(&root)
+            .unwrap_or_else(|| panic!("{path:?} replays with the pack"));
+        assert_eq!(held.archive.to_bytes(), archive_bytes, "{path:?}");
+    }
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+// ---- The client loads the packs it was sent and checks that they make the package the server sent (step 5) ----
+
+use game_shell::PackCheck;
+
+/// A server for the content a folder of packs makes, and a player over a recorded connection that keeps what it is sent in `store`.
+fn server_and_player(
+    content: CaveContent,
+    store: &client::MemoryPackStore,
+    recording: &std::path::Path,
+) -> (Rig, common::Player) {
+    let world = content.new_overworld_world(SEED);
+    let mut rig = Rig::with_world(content, world);
+    let recorded = record_connection(rig.connector.connect().unwrap(), recording).unwrap();
+    let player = join_keeping_packs(&mut rig, recorded, store);
+    (rig, player)
+}
+
+fn settle_a_few(rig: &mut Rig, player: &mut common::Player) {
+    for _ in 0..4 {
+        rig.settle(&mut [&mut *player]);
+    }
+}
+
+/// The recording replayed as a client with nothing installed, to its end.
+fn replayed(path: &std::path::Path) -> common::Player {
+    let connection: Box<dyn Connection> = Box::new(open_recording(path).unwrap());
+    let mut replay = Session::<_, Cave>::connect(
+        connection,
+        &Identity::generate(),
+        game_shell::session::Mode::Replaying,
+        VIEW_RADIUS,
+        camera_at([0.0; 3], 0.0, 0.0),
+        || {},
+    )
+    .unwrap();
+    while replay.advance_one_tick().is_ok() {}
+    replay.settle(|| {}).unwrap();
+    replay
+}
+
+#[test]
+fn a_client_that_holds_every_pack_loads_them_over_its_own_game_and_makes_the_package_the_server_sent()
+ {
+    let directory = a_folder_of_packs_that_all_replicate("check_agrees");
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    assert!(content.packs_whole());
+    let recordings =
+        std::env::temp_dir().join(format!("voxunami_cave_check_{}", std::process::id()));
+    std::fs::create_dir_all(&recordings).unwrap();
+    let path = recordings.join("agrees.voxreplay");
+    let (mut rig, mut player) = server_and_player(content, &client::MemoryPackStore::new(), &path);
+    assert_eq!(
+        player.pack_check(),
+        &PackCheck::Waiting,
+        "before it has any tick"
+    );
+    settle_a_few(&mut rig, &mut player);
+    assert_eq!(player.pack_check(), &PackCheck::Agrees);
+    // the packs made blocks that the client's own game does not have, so this was a real load, and not the game's own compared with itself
+    assert!(
+        player
+            .package()
+            .blocks
+            .iter()
+            .any(|(block, definition)| *block == id("my_pack:marble") && definition.is_some())
+    );
+    drop(player);
+    // a replay of the recording loads the packs it holds, and agrees as the live client did
+    assert_eq!(replayed(&path).pack_check(), &PackCheck::Agrees);
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// A folder with the one pack `my_pack`, which clients keep.
+fn a_folder_of_packs_that_all_replicate(name: &str) -> std::path::PathBuf {
+    let directory = a_folder_of_packs(name);
+    std::fs::remove_dir_all(directory.join("quiet")).unwrap();
+    directory
+}
+
+#[test]
+fn a_server_that_runs_only_the_games_own_content_is_checked_too_and_one_with_a_pack_it_does_not_replicate_cannot_be()
+ {
+    let recordings =
+        std::env::temp_dir().join(format!("voxunami_cave_check_none_{}", std::process::id()));
+    std::fs::create_dir_all(&recordings).unwrap();
+    // no packs: the client's own copy of the game against the package the server sent
+    let (mut rig, mut player) = server_and_player(
+        CaveContent::new(),
+        &client::MemoryPackStore::new(),
+        &recordings.join("none.voxreplay"),
+    );
+    settle_a_few(&mut rig, &mut player);
+    assert_eq!(player.pack_check(), &PackCheck::Agrees);
+    drop(player);
+    // `quiet` says it is not replicated: there is more behind the package than the client was sent, and it says so
+    let directory = a_folder_of_packs("check_quiet");
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    assert!(!content.packs_whole());
+    let path = recordings.join("quiet.voxreplay");
+    let (mut rig, mut player) = server_and_player(content, &client::MemoryPackStore::new(), &path);
+    settle_a_few(&mut rig, &mut player);
+    assert!(
+        player.client().packs().is_complete(),
+        "it still keeps the pack that is replicated"
+    );
+    assert_eq!(player.pack_check(), &PackCheck::NotApplicable);
+    drop(player);
+    assert_eq!(replayed(&path).pack_check(), &PackCheck::NotApplicable);
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn packs_that_do_not_make_the_package_the_server_sent_are_told_block_by_block_and_the_client_goes_on_with_the_servers()
+ {
+    // The server's package was made from one marble and its packs say another: a loader, a schema or an order that differs between two programs would look like this.
+    let made_from = a_folder_of_packs_that_all_replicate("check_made_from");
+    let says = a_folder_of_packs_that_all_replicate("check_says");
+    std::fs::write(
+        says.join("my_pack/blocks/marble.json"),
+        r#"{ "color": [0.1, 0.2, 0.3] }"#,
+    )
+    .unwrap();
+    let mut content = game_shell::content_with_packs::<Cave>(Some(&made_from)).unwrap();
+    let other = game_shell::content_with_packs::<Cave>(Some(&says)).unwrap();
+    content.set_replicated_packs(other.replicated_packs().to_vec());
+    let recordings =
+        std::env::temp_dir().join(format!("voxunami_cave_check_bad_{}", std::process::id()));
+    std::fs::create_dir_all(&recordings).unwrap();
+    let path = recordings.join("bad.voxreplay");
+    let (mut rig, mut player) = server_and_player(content, &client::MemoryPackStore::new(), &path);
+    settle_a_few(&mut rig, &mut player);
+    let PackCheck::Disagrees(lines) = player.pack_check() else {
+        panic!(
+            "the packs and the package differ: {:?}",
+            player.pack_check()
+        );
+    };
+    assert!(
+        lines.iter().any(|line| line.contains("my_pack:marble")),
+        "{lines:?}"
+    );
+    // told once to the program, which says it where the player will see it, and the client draws what the server sent
+    let report = player.take_pack_check_report().expect("a report");
+    assert!(report.contains("my_pack:marble"), "{report}");
+    assert_eq!(player.take_pack_check_report(), None, "once");
+    let marble = raw_in(&rig.content, "my_pack:marble");
+    assert_eq!(player.block_table().color(marble), MARBLE);
+    drop(player);
+    assert!(matches!(
+        replayed(&path).pack_check(),
+        PackCheck::Disagrees(_)
+    ));
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&made_from).unwrap();
+    std::fs::remove_dir_all(&says).unwrap();
+}
+
+// ---- Files a server keeps to itself: the `server` folder of a pack (step 6), in the real game ----
+
+#[test]
+fn a_client_is_never_sent_the_server_folder_of_a_pack_yet_holds_the_pack_the_server_has_the_identity_of_and_agrees_with_it()
+ {
+    let directory = a_folder_of_packs_that_all_replicate("withheld");
+    let secret = directory.join("my_pack/server/rules.py");
+    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    std::fs::write(&secret, "SECRET_RULES = 1").unwrap();
+    let content = game_shell::content_with_packs::<Cave>(Some(&directory)).unwrap();
+    let served = &content.replicated_packs()[0];
+    let root = served.root();
+    // the identity is the one `check-pack` prints, and it has the code in it
+    let (_, identity) = data_packs::pack_identities(&directory)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(identity.unwrap(), root);
+    let whole = Archive::from_files(
+        [
+            (
+                "pack.json",
+                &br#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#[..],
+            ),
+            ("blocks/marble.json", br#"{ "color": [0.9, 0.9, 0.95] }"#),
+            ("readme.md", b"carried to clients too"),
+            ("server/rules.py", b"SECRET_RULES = 1"),
+        ]
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec())),
+    )
+    .unwrap();
+    assert_eq!(
+        served.root(),
+        FileIndex::of(&whole, |path| path != "server/rules.py").root_hash()
+    );
+    assert_ne!(
+        served.root(),
+        FileIndex::of(&whole, |_| true).root_hash(),
+        "the code is in the identity"
+    );
+    let sent_bytes = served.archive_bytes().to_vec();
+    assert!(
+        !sent_bytes
+            .windows(16)
+            .any(|window| window == b"SECRET_RULES = 1"),
+        "the bytes that go over the wire do not hold the code"
+    );
+
+    let recordings = std::env::temp_dir().join(format!(
+        "voxunami_cave_withheld_recordings_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&recordings).unwrap();
+    let path = recordings.join("withheld.voxreplay");
+    let store = client::MemoryPackStore::new();
+    let (mut rig, mut player) = server_and_player(content, &store, &path);
+    settle_a_few(&mut rig, &mut player);
+    let held = player
+        .client()
+        .packs()
+        .get(&root)
+        .expect("the pack is held");
+    assert_eq!(held.archive.to_bytes(), sent_bytes);
+    assert!(held.archive.get("server/rules.py").is_none());
+    assert!(held.archive.get("readme.md").is_some());
+    assert_eq!(
+        held.index
+            .entries()
+            .iter()
+            .find(|entry| !entry.sent)
+            .map(|entry| entry.path.as_str()),
+        Some("server/rules.py"),
+        "the client can see that a file is not sent, and not what it says"
+    );
+    // the pack without its code makes what the server sent
+    assert_eq!(player.pack_check(), &PackCheck::Agrees);
+    // kept for the next join under the same name, checked against the index when it is read again
+    assert_eq!(store.get("my_pack", &root), Some(sent_bytes.clone()));
+    drop(player);
+    // a replay holds the pack as it was sent, and agrees
+    let replay = replayed(&path);
+    assert_eq!(
+        replay
+            .client()
+            .packs()
+            .get(&root)
+            .unwrap()
+            .archive
+            .to_bytes(),
+        sent_bytes
+    );
+    assert_eq!(replay.pack_check(), &PackCheck::Agrees);
+    std::fs::remove_dir_all(&recordings).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
 }

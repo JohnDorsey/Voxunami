@@ -25,6 +25,11 @@ pub trait Connection: Debug + Send {
     /// The next frame the other end sent, or `None` if none has arrived yet. After the other end
     /// goes, frames it already sent are still delivered; then this fails.
     fn receive(&mut self) -> Result<Option<Vec<u8>>, ConnectionClosed>;
+
+    /// Tells the connection of a frame that did not come over it and belongs in the stream it carries, as the next frame of that stream: a client that takes a
+    /// pack from its own cache tells it of the pieces a server would have sent, so that a connection that records the stream holds the pack too and a replay needs
+    /// nothing installed. The default does nothing, which is right for every connection that does not record.
+    fn note_frame(&mut self, _frame: &[u8]) {}
 }
 
 impl Connection for Box<dyn Connection> {
@@ -34,6 +39,10 @@ impl Connection for Box<dyn Connection> {
 
     fn receive(&mut self) -> Result<Option<Vec<u8>>, ConnectionClosed> {
         (**self).receive()
+    }
+
+    fn note_frame(&mut self, frame: &[u8]) {
+        (**self).note_frame(frame);
     }
 }
 

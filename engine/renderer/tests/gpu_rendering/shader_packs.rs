@@ -415,7 +415,7 @@ pub(super) fn example(name: &str) -> ShaderPack {
         .join(name);
     let lighting =
         std::fs::read_to_string(folder.join("lighting.wgsl")).expect("the example's lighting file");
-    // (The renderer's tests do not read `pack.json`: the settings an example declares are written here, and the shell's tests check that its file says the same.)
+    // (The renderer's tests do not read `shaderpack.json`: the settings an example declares are written here, and the shell's tests check that its file says the same.)
     ShaderPack::new_with_settings(
         &format!("voxunami:{name}"),
         name,
@@ -425,7 +425,7 @@ pub(super) fn example(name: &str) -> ShaderPack {
     .expect("an example is a good pack")
 }
 
-/// The settings the example pack of this name declares in its `pack.json`.
+/// The settings the example pack of this name declares in its `shaderpack.json`.
 pub(super) fn example_settings(name: &str) -> Vec<renderer::SettingDeclaration> {
     match name {
         "cel" => vec![

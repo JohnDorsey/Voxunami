@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::generators::GreatRivers;
-use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, Presence, SharedPresence, lock};
 use plugin_host::{
@@ -36,9 +35,13 @@ pub struct MovementPlugin {
 pub type SharedMovement = Arc<Mutex<Movement>>;
 
 impl MovementPlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
+    pub fn new(
+        content: &CaveContent,
+        table: &block_models::SharedBlockTable,
+        players: SharedPresence,
+    ) -> Self {
         let movement = Movement::new(
-            content.block_table(),
+            table,
             content.block_channel(),
             content.state_channel(),
             content.orientation_channel(),

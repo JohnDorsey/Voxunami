@@ -240,6 +240,13 @@ impl Fixture {
         Self::build_with(game, world, false, false, true)
     }
 
+    /// A server for an empty world of the pretend game that replicates these packs (the list is the server's from the start: no client is told twice).
+    pub fn with_packs(packs: Vec<server::ServedPack>) -> Self {
+        let mut fixture = Self::new();
+        fixture.server.replace_packs(packs, true);
+        fixture
+    }
+
     pub fn with_world(game: Game, world: WorldData) -> Self {
         Self::build(game, world, false, false)
     }
@@ -404,6 +411,42 @@ impl Fixture {
         let buffer = SharedBuffer::default();
         let recording = RecordingConnection::new(connection, buffer.clone()).unwrap();
         (self.complete_join(recording, plugins), buffer)
+    }
+
+    /// As [`Fixture::join_recorded`], keeping the packs the server replicates in `store`.
+    pub fn join_recorded_with_store(
+        &mut self,
+        plugins: &[Plugin],
+        store: Box<dyn client::PackStore>,
+    ) -> (
+        Player<RecordingConnection<LoopbackConnection, SharedBuffer>>,
+        SharedBuffer,
+    ) {
+        let connection = self.connector.connect().expect("the server is running");
+        let buffer = SharedBuffer::default();
+        let recording = RecordingConnection::new(connection, buffer.clone()).unwrap();
+        self.joined += 1;
+        let identity = Identity::from_secret([self.joined; 32]);
+        let mut handshake = Handshake::start(recording, game_id(), &identity).unwrap();
+        loop {
+            self.server.step();
+            handshake = match handshake.poll().unwrap() {
+                HandshakeProgress::Waiting(waiting) => waiting,
+                HandshakeProgress::Welcomed(welcomed) => {
+                    let mut game = Game::new(plugins);
+                    let (client, _) = welcomed
+                        .finish_with_packs(game.load_context(), store)
+                        .unwrap();
+                    let player = Player {
+                        client,
+                        game,
+                        updates: Vec::new(),
+                        summaries: Vec::new(),
+                    };
+                    return (player, buffer);
+                }
+            };
+        }
     }
 
     /// Joins takes the server two ticks: it challenges the player's identity, and welcomes them once they

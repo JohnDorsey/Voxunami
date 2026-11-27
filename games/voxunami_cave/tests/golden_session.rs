@@ -407,8 +407,25 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// knows and the registry has one more; the script does not place the joint. Windows only.
 /// The dev axle joint (2026-11-25): the stream is 255 bytes longer, 7,222,651 to 7,222,906: the package's 226 (`block_golden.rs`) and the 29 of the item (its 28 characters and a length). The saved world's hash moved (the registry has one
 /// more block). Windows only.
+/// (graphics-world-painting's changes, merged into this demo branch:)
+/// A replaced package (2026-11-16; protocol 12): the stream hash changed once, for the protocol version in the welcome (12, was 11); the length and the saved world did not,
+/// and with the version put back to 11 the old hash, 15_826_922_587_325_389_508, came back.
+/// `/reload` (2026-11-16): the reply to an unknown command lists the commands, and `, /reload` is 9 bytes: the stream is exactly 9 longer, its hash moved to 2_788_844_366_013_613_380,
+/// the saved world's did not, and with the plugin taken out the old hash, 139_190_248_021_624_789, came back (run).
+/// The leaves' specular picture painted again (owner, 2026-11-18; see `block_golden.rs`): the package is in the stream, with the same length, so the stream hash moved to
+/// 4_187_105_416_434_774_926, and the stream's length and the saved world's hash did not.
+/// The owner's five companions in the package (2026-11-18; see `block_golden.rs`): the stream is exactly 5,120 bytes longer (7,222,150 to 7,227,270), its hash moved to 2_646_309_225_932_220_837,
+/// and the saved world's did not.
+/// Packs a client keeps as files (2026-11-22; protocol 13): the stream hash changed once, for the protocol version in the welcome (13, was 12); the length and the saved world did not,
+/// and with the version put back to 12 the old hash, 2_646_309_225_932_220_837, came back (no pack is replicated here, so no list is sent).
+/// Whether the packs are the whole (2026-11-23; protocol 14): the stream hash changed once, for the protocol version in the welcome (14, was 13); the length and the saved world did not,
+/// and with the version put back to 13 the old hash, 8_352_820_050_690_785_866, came back.
+/// Pack hashes are BLAKE3 (2026-11-26; protocol 15): the stream hash changed once, for the protocol version in the welcome (15, was 14); the length and the saved world did not,
+/// and the old stream hash, 13_343_156_623_870_405_502, passed with the new hashes while the version was still 14.
+/// The thanksgiving demo, graphics-world-painting merged (protocol 16): the length is main's plus 9 bytes (`, /reload` in the reply to an unknown command) plus 5,120 (the owner's five companion
+/// pictures in the package): 7,228,035, predicted before the run and seen; the saved world's hash did not move.
 const PINNED: (u64, usize, u64) = (
-    7_270_485_966_175_806_497,
-    7_222_906,
+    1_061_135_670_948_654_239,
+    7_228_035,
     10_072_587_723_607_525_272,
 );

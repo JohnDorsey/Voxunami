@@ -2,6 +2,7 @@
 //! window playing a recording back in real time.
 
 use std::collections::{BTreeMap, HashSet};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::client_commands::is_client_command;
+use crate::client_commands::{PaintRequest, is_client_command};
 use crate::client_plugin::MouseButton as GameButton;
 use crate::command_entry::{CommandEntry, opens_a_command};
 use crate::definition::GameDefinition;
@@ -29,12 +30,15 @@ use crate::files::{open_recording, open_world, record_connection, recorded_game,
 use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
+use crate::paint_bridge::{Buttons, Painter};
+use crate::pointer_hold::PointerHold;
+use crate::reload::{DiskSource, DiskSources, Reloadable, Reloads, Watcher};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session, ViewMode};
 use crate::view::{
     apply_occupancy, apply_shader_pack, apply_updates, camera_at, configure_renderer,
     hexadecimal_voxel_coordinates, light_the_scene, prepare_shader_packs, show_entity_boxes,
-    show_screen,
+    show_screen, start_with_engine_shaders, start_with_texture_pack, swap_engine_shaders,
 };
 use crate::view_controls::{
     KeysBelongTo, WheelGoesTo, keys_belong_to, map_zoom_factor, wheel_goes_to,
@@ -69,6 +73,8 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
                 settings.announce_players = true;
             }
             settings.world_file = options.world_file.clone();
+            settings.packs = options.packs.clone();
+            settings.watch_packs = view.watch;
             if let (Some(seconds), Some(_)) = (options.autosave_seconds, &options.world_file) {
                 settings.autosave = Some(Autosave {
                     interval: Duration::from_secs_f32(seconds),
@@ -85,7 +91,12 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         None => connection,
     };
     let start = camera_at(options.camera, options.yaw_degrees, options.pitch_degrees);
-    let mut session = Session::<_, G>::connect(
+    // The packs of a server joined over the network are kept in the folder for that server; a server of this process sends its own and nothing is kept.
+    let packs: Box<dyn client::PackStore> = match &options.join {
+        Some(address) => crate::remote_world::pack_store_for_joining(&G::id(), address),
+        None => Box::new(client::NoPackStore),
+    };
+    let mut session = Session::<_, G>::connect_with_packs(
         connection,
         &identity,
         Mode::Playing,
@@ -94,6 +105,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         || {
             std::thread::sleep(Duration::from_millis(1));
         },
+        packs,
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
@@ -199,6 +211,18 @@ struct Viewer<G: GameDefinition> {
     renderer: VoxelRenderer,
     /// The shader packs the player has, which `.shader` chooses among (see `crate::shader_packs`), and the files that keep what they chose of the settings.
     shader_packs: crate::view::ShaderPacks,
+    /// The places the renderer draws with a picture of `--texture-pack` and not the world's.
+    pictures_in_use: crate::texture_pack::PicturesInUse,
+    /// The folder of loose pictures (`--texture-pack`), written again over the pictures if the server replaces the package.
+    texture_pack: Option<std::path::PathBuf>,
+    /// What can be reloaded while the game runs (`.reload`, `--watch`): taken out while it reloads, since a reload changes the viewer it belongs to.
+    reloads: Option<Reloads<Viewer<G>>>,
+    /// Paint mode (`.paint`): a tool that paints on the pictures of the blocks, at the crosshair while the mouse is captured and at the pointer while Left Alt holds it free,
+    /// with the buttons of the mouse that are down.
+    painter: Option<Painter>,
+    paint_buttons: Buttons,
+    /// What is owed to the capture of the mouse: Left Alt gave it back, or the window was left with it captured.
+    pointer_hold: PointerHold,
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
@@ -299,6 +323,18 @@ impl<G: GameDefinition> Viewer<G> {
             session.fog_radius_bricks(),
         );
         let shader_packs = prepare_shader_packs(view, &mut session)?;
+        if let Err(error) = start_with_engine_shaders(&mut renderer, view) {
+            eprintln!("warning: the program's own engine shaders are used: {error}");
+        }
+        let pictures_in_use = match start_with_texture_pack(&mut renderer, session.package(), view)
+        {
+            Ok(in_use) => in_use,
+            Err(error) => {
+                eprintln!("warning: the world's own pictures are used: {error}");
+                Default::default()
+            }
+        };
+        let reloads = what_can_be_reloaded::<G>(view);
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
         let ticks_per_second = session.client().world().server_info().ticks_per_second;
@@ -309,6 +345,12 @@ impl<G: GameDefinition> Viewer<G> {
             context,
             renderer,
             shader_packs,
+            pictures_in_use,
+            texture_pack: view.texture_pack.clone(),
+            reloads: Some(reloads),
+            painter: None,
+            paint_buttons: Buttons::default(),
+            pointer_hold: PointerHold::default(),
             session,
             keys: HashSet::new(),
             mouse_captured: false,
@@ -337,6 +379,33 @@ impl<G: GameDefinition> Viewer<G> {
             ticks_played: 0,
             recording_ended: false,
         })
+    }
+
+    /// Does what `.reload` asked, and, with `--watch`, what the files that changed ask: the replies are told in the window and on the output.
+    fn run_reloads(&mut self, now: Instant) {
+        let request = self.session.take_reload_request();
+        let Some(mut reloads) = self.reloads.take() else {
+            return;
+        };
+        let mut lines = Vec::new();
+        if let Some(kind) = request {
+            match reloads.reload(kind.as_deref(), self) {
+                Ok(reports) => lines.extend(reports.iter().map(|report| report.line())),
+                Err(error) => lines.push(error),
+            }
+        }
+        let elapsed = now.duration_since(self.started);
+        lines.extend(
+            reloads
+                .poll(elapsed, self)
+                .iter()
+                .map(|report| report.line()),
+        );
+        self.reloads = Some(reloads);
+        for line in lines {
+            println!("{line}");
+            self.reply = Some((line, now));
+        }
     }
 
     /// Runs what was typed on the command line: a line that starts with a period is the window's own
@@ -436,6 +505,13 @@ impl<G: GameDefinition> Viewer<G> {
         );
         if let Some(action) = screen.click(&laid, self.cursor.0 as i32, self.cursor.1 as i32) {
             self.session.apply_screen_action(action);
+        }
+    }
+
+    /// Captures the mouse again when the player is back in the window and Left Alt is up (see `PointerHold`), unless a form that takes the pointer is open.
+    fn follow_the_pointer_hold(&mut self) {
+        if self.pointer_hold.recapture_due(self.mouse_captured) && !self.modal_has_the_input() {
+            self.set_mouse_captured(true);
         }
     }
 
@@ -575,6 +651,134 @@ impl<G: GameDefinition> Viewer<G> {
         Ok(())
     }
 
+    /// Does what `.paint` asked, and in paint mode tells the tool where the pointer is and writes what the tool sends: the replies are told in the window and on the output.
+    fn run_paint(&mut self, now: Instant) {
+        let mut lines = Vec::new();
+        if let Some(request) = self.session.take_paint_request() {
+            let start = match request {
+                PaintRequest::Start(_) => true,
+                PaintRequest::Toggle(_) => self.painter.is_none(),
+                PaintRequest::Stop => false,
+            };
+            if !start {
+                lines.push(if self.painter.is_some() {
+                    self.stop_painting();
+                    "paint mode is off".to_owned()
+                } else {
+                    "paint mode was not on".to_owned()
+                });
+            } else {
+                let (PaintRequest::Start(port) | PaintRequest::Toggle(port)) = request else {
+                    unreachable!("only a request to start gets here");
+                };
+                let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+                match Painter::connect(address, G::title(), self.session.package()) {
+                    Ok(painter) => {
+                        self.painter = Some(painter);
+                        self.paint_buttons = Buttons::default();
+                        self.set_mouse_captured(true);
+                        lines.push(format!("paint mode: talking to the tool at {address}; left and right buttons paint at the crosshair, Left Alt held gives you the pointer to paint with instead, .paint off ends it"));
+                    }
+                    Err(error) => lines.push(format!(
+                        "paint mode: no tool at {address} ({error}); start VirtualAtlas with --bridge first"
+                    )),
+                }
+            }
+        }
+        if self.painter.is_some() {
+            let (width, height) = self.size();
+            let cursor = self.cursor;
+            // The brush is at the crosshair, in the middle of the picture, while the mouse turns the camera, and where the pointer is while it does not.
+            let (x, y) = if self.mouse_captured {
+                (0.0, 0.0)
+            } else {
+                (
+                    (cursor.0 / f64::from(width) * 2.0 - 1.0) as f32,
+                    (1.0 - cursor.1 / f64::from(height) * 2.0) as f32,
+                )
+            };
+            self.renderer.set_crosshair(
+                self.mouse_captured && self.session.mode() == Mode::Playing && G::shows_crosshair(),
+            );
+            let target = (x.abs() <= 1.0 && y.abs() <= 1.0)
+                .then(|| {
+                    let direction =
+                        self.session
+                            .camera
+                            .direction_through(x, y, width as f32 / height as f32);
+                    self.session
+                        .target_surface_toward(direction.to_array().map(f64::from))
+                })
+                .flatten();
+            if let Some(painter) = self.painter.as_mut() {
+                lines.extend(painter.step(
+                    self.session.package(),
+                    target.as_ref(),
+                    self.paint_buttons,
+                    &mut self.renderer,
+                ));
+                if !painter.is_connected() {
+                    self.stop_painting();
+                    lines.push("paint mode is off".to_owned());
+                }
+            }
+        }
+        for line in lines {
+            println!("{line}");
+            self.reply = Some((line, now));
+        }
+    }
+
+    fn stop_painting(&mut self) {
+        self.painter = None;
+        self.paint_buttons = Buttons::default();
+        self.renderer
+            .set_crosshair(self.session.mode() == Mode::Playing && G::shows_crosshair());
+    }
+
+    /// A button of the mouse went down or up in paint mode.
+    fn paint_button(&mut self, button: MouseButton, down: bool) {
+        match button {
+            MouseButton::Left => self.paint_buttons.left = down,
+            MouseButton::Right => self.paint_buttons.right = down,
+            _ => {}
+        }
+    }
+
+    /// The server replaced the package: the palette and the pictures of the renderer are made from the new one, and the pictures of `--texture-pack` are written over them
+    /// again (the textures were made again, and what was written over the old ones is gone with them).
+    fn package_was_replaced(&mut self, now: Instant) {
+        configure_renderer(
+            &mut self.renderer,
+            self.session.block_table(),
+            self.session.package(),
+            self.session.fog_radius_bricks(),
+        );
+        self.pictures_in_use = Default::default();
+        let mut told = vec!["the server replaced the package".to_owned()];
+        if let Some(folder) = &self.texture_pack {
+            match crate::texture_pack::use_pictures_from(
+                &mut self.renderer,
+                self.session.package(),
+                &mut self.pictures_in_use,
+                folder,
+            ) {
+                Ok(Some(detail)) => told.push(detail),
+                Ok(None) => {}
+                Err(error) => told.push(format!(
+                    "the pictures of the folder were not written again: {error}"
+                )),
+            }
+        }
+        // What the painting tool changed was lost with the textures too.
+        if let Some(painter) = self.painter.as_mut() {
+            told.extend(painter.package_replaced(self.session.package(), &mut self.renderer));
+        }
+        let line = told.join("; ");
+        println!("{line}");
+        self.reply = Some((line, now));
+    }
+
     /// When the newest tick the picture has seen is taken to have come (see [`TickClock`]).
     fn tick_seen(&mut self, now: Instant) -> Instant {
         let tick = self.session.client().world().world_clock();
@@ -634,8 +838,15 @@ impl<G: GameDefinition> Viewer<G> {
             return Ok(false);
         }
 
+        self.follow_the_pointer_hold();
         self.follow_server(now, seconds)
             .map_err(|error| error.to_string())?;
+        if self.session.take_package_replaced() {
+            self.package_was_replaced(now);
+        }
+        if let Some(report) = self.session.take_pack_check_report() {
+            eprintln!("warning: {report}");
+        }
         for text in self.session.take_command_replies() {
             println!("{text}");
             self.reply = Some((text, now));
@@ -647,6 +858,8 @@ impl<G: GameDefinition> Viewer<G> {
         // The light of the picture: the terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe), so
         // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.
         light_the_scene(&mut self.renderer, &self.session);
+        self.run_reloads(now);
+        self.run_paint(now);
         // The shader the player chose (`.shader`): at once if it is the one drawn with. A pack the graphics card refuses is taken off, and the player is told.
         if let Err(error) = apply_shader_pack(
             &mut self.renderer,
@@ -748,6 +961,125 @@ fn screen_key(code: KeyCode, shift: bool) -> Option<ScreenKey> {
     })
 }
 
+/// The folders of shader packs, as a reload reads them again (the same as at the start).
+struct ShaderPackFolders {
+    directory: Option<std::path::PathBuf>,
+    asked: Option<std::path::PathBuf>,
+}
+
+impl<G: GameDefinition> Reloadable<Viewer<G>> for ShaderPackFolders {
+    type Loaded = crate::view::ReadShaderPacks;
+
+    fn load(&self, _viewer: &Viewer<G>) -> Result<Self::Loaded, String> {
+        crate::view::read_shader_packs(self.directory.as_deref(), self.asked.as_deref())
+    }
+
+    fn swap(&self, viewer: &mut Viewer<G>, loaded: Self::Loaded) -> Result<Option<String>, String> {
+        for problem in loaded.problems() {
+            eprintln!("warning: {problem}");
+        }
+        crate::view::swap_shader_packs(
+            &mut viewer.renderer,
+            &mut viewer.shader_packs,
+            viewer.session.settings_mut(),
+            loaded,
+        )
+    }
+}
+
+/// The folder the engine's own shaders are read from, as a reload reads them again (the same as at the start).
+struct EngineShaderFolder(std::path::PathBuf);
+
+impl<G: GameDefinition> Reloadable<Viewer<G>> for EngineShaderFolder {
+    type Loaded = renderer::EngineShaderTexts;
+
+    fn load(&self, _viewer: &Viewer<G>) -> Result<Self::Loaded, String> {
+        renderer::EngineShaderTexts::read(&self.0)
+    }
+
+    fn swap(&self, viewer: &mut Viewer<G>, loaded: Self::Loaded) -> Result<Option<String>, String> {
+        swap_engine_shaders(&mut viewer.renderer, &self.0, loaded)
+    }
+}
+
+/// The folder of loose pictures, as a reload reads it again (the same as at the start).
+struct PictureFolder(std::path::PathBuf);
+
+impl<G: GameDefinition> Reloadable<Viewer<G>> for PictureFolder {
+    type Loaded = crate::texture_pack::ReadPictures;
+
+    fn load(&self, viewer: &Viewer<G>) -> Result<Self::Loaded, String> {
+        crate::texture_pack::read_pictures(&self.0, viewer.session.package())
+    }
+
+    fn swap(&self, viewer: &mut Viewer<G>, loaded: Self::Loaded) -> Result<Option<String>, String> {
+        crate::texture_pack::swap_pictures(
+            &mut viewer.renderer,
+            viewer.session.package(),
+            &mut viewer.pictures_in_use,
+            &self.0,
+            loaded,
+        )
+    }
+}
+
+/// The kinds of content this window can reload (`.reload`), watched for changes if `--watch` was given. A kind whose folders are not there is not offered.
+fn what_can_be_reloaded<G: GameDefinition>(view: &ViewOptions) -> Reloads<Viewer<G>> {
+    let mut reloads = Reloads::new(view.watch);
+    let directory = crate::shader_packs::default_directory();
+    let places: Vec<DiskSource> = directory
+        .iter()
+        .chain(view.shader_packs.iter())
+        .filter(|folder| folder.is_dir())
+        .map(DiskSource::new)
+        .collect();
+    if !places.is_empty() {
+        let added = reloads.add(
+            "shaders",
+            DiskSources::new(places),
+            Watcher::<DiskSources>::DEFAULT_SETTLE,
+            Watcher::<DiskSources>::DEFAULT_INTERVAL,
+            ShaderPackFolders {
+                directory,
+                asked: view.shader_packs.clone(),
+            },
+        );
+        if let Err(error) = added {
+            eprintln!("warning: shader packs will not be reloaded: {error}");
+        }
+    }
+    if let Some(folder) = &view.texture_pack {
+        let added = reloads.add(
+            "pictures",
+            DiskSource::new(folder),
+            Watcher::<DiskSource>::DEFAULT_SETTLE,
+            Watcher::<DiskSource>::DEFAULT_INTERVAL,
+            PictureFolder(folder.clone()),
+        );
+        if let Err(error) = added {
+            eprintln!("warning: the pictures will not be reloaded: {error}");
+        }
+    }
+    if let Some(folder) = &view.engine_shaders {
+        // (Only the files the shaders are made of: the rest of the folder is Rust.)
+        let places = renderer::EngineShaderTexts::FILES
+            .iter()
+            .map(|file| DiskSource::new(folder.join(file)))
+            .collect();
+        let added = reloads.add(
+            "engine-shaders",
+            DiskSources::new(places),
+            Watcher::<DiskSources>::DEFAULT_SETTLE,
+            Watcher::<DiskSources>::DEFAULT_INTERVAL,
+            EngineShaderFolder(folder.clone()),
+        );
+        if let Err(error) = added {
+            eprintln!("warning: the engine's shaders will not be reloaded: {error}");
+        }
+    }
+    reloads
+}
+
 impl<G: GameDefinition> ApplicationHandler for App<G> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.viewer.is_some() {
@@ -786,12 +1118,31 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 viewer.session.set_viewport_width(size.width);
             }
             // A press the system makes up when the window gains focus while a key is down belongs
-            // to whatever had the focus before; a release is harmless.
+            // to whatever had the focus before; a release is harmless. (That Left Alt is down is
+            // worth knowing, though: the mouse is not captured again until it comes up.)
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: true,
                 ..
-            } if event.state == ElementState::Pressed => {}
+            } if event.state == ElementState::Pressed => {
+                if event.physical_key == PhysicalKey::Code(KeyCode::AltLeft) {
+                    viewer.pointer_hold.alt_found_down();
+                }
+            }
+            // Left Alt, held, gives the pointer back: the mouse moves the pointer and not the camera until it comes up (and the next frame captures it again).
+            WindowEvent::KeyboardInput { event, .. }
+                if event.physical_key == PhysicalKey::Code(KeyCode::AltLeft) =>
+            {
+                match event.state {
+                    ElementState::Pressed if !event.repeat => {
+                        if viewer.pointer_hold.alt_pressed(viewer.mouse_captured) {
+                            viewer.set_mouse_captured(false);
+                        }
+                    }
+                    ElementState::Released => viewer.pointer_hold.alt_released(),
+                    ElementState::Pressed => {}
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
@@ -835,7 +1186,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                                 viewer.entry.begin(first);
                                 println!("command line open: Enter sends it, Esc drops it");
                             } else if code == KeyCode::Escape {
-                                viewer.set_mouse_captured(false);
+                                // (Left Alt gives the pointer back; Escape is not for that.)
                                 viewer.keys.insert(code);
                             } else {
                                 if !viewer.keys.contains(&code) {
@@ -848,6 +1199,16 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                             viewer.keys.remove(&code);
                         }
                     }
+                }
+            }
+            // In paint mode the buttons are the tool's, and nothing else of the game hears them.
+            // (A click on a window that is owed the mouse, back with Left Alt up, is the click that brought it back: it captures the mouse and paints nothing.)
+            WindowEvent::MouseInput { state, button, .. } if viewer.painter.is_some() => {
+                let pressed = state == ElementState::Pressed;
+                if pressed && viewer.pointer_hold.recapture_due(viewer.mouse_captured) {
+                    viewer.set_mouse_captured(true);
+                } else {
+                    viewer.paint_button(button, pressed);
                 }
             }
             WindowEvent::MouseInput {
@@ -903,8 +1264,14 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 // Keys held, and a command half typed, belong to the window that had the focus.
                 viewer.keys.clear();
                 viewer.entry.cancel();
-                if !focused {
+                if focused {
+                    viewer.pointer_hold.focus_gained();
+                } else {
+                    // The mouse is let go of, and owed back when the player is.
+                    viewer.pointer_hold.focus_lost(viewer.mouse_captured);
                     viewer.set_mouse_captured(false);
+                    // (A button, or Left Alt, let go of in another window is not heard here.)
+                    viewer.paint_buttons = Buttons::default();
                 }
             }
             WindowEvent::RedrawRequested => match viewer.frame() {

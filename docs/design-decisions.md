@@ -40,7 +40,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Voxels are strictly cubic. Real-time rendering is rasterized; a path-traced offline renderer for replay export comes later.
 - The grid is always cubic (owner, 2026-10-16), apart from coarser levels of detail in the distance. A block may fill only
   part of its cell, using a block shape chosen by the block's *state*, so that shapes do not multiply the number of block
-  types and run into the renderer's palette cap (256 material values, 16 of them used by avatars). So a voxel carries
+  types and run into the renderer's palette cap (then 256 material values, 16 of them used by avatars; **since Phase 31 a buffer of up to 1,048,576 materials**,
+  with the 16 avatar colours the last values of a 24-bit quad: `MAXIMUM_GAME_MATERIALS`). So a voxel carries
   a block and a state, as two channels (built; see `build-log.md`, Phase 7). A game without states leaves the second channel out.
 - Worlds have several levels (built; see `build-log.md`, Phase 6). Each level has its own grid, terrain assignments and edited
   bricks. All levels of a world share its channels, content registries, terrain generator versions and **seed**: a level
@@ -74,6 +75,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Workflow: Claude commits and pushes finished phases (rule lifted by the owner after Phase 1f); each phase ends with
   passing checks.
 - Ships (airships, spacecraft; Phase 32): the decisions are in `decisions/players-and-ships.md`.
+- The project's cryptographic hash is **BLAKE3** (owner, 2026-11-26): pack archives are hashed with it (built; `specs/pack-archive-spec.md`), and values that
+  depend on a server's secret are to be derived with it, never with `terrain::mix` or the engine's noise, which can be run backwards (not built; the other
+  rules proposed for secrets are not yet decided, `specs/procedural-materials-spec.md`, section 8).
+- Procedural materials (owner, 2026-11-27; **not built**): one seed a material; far off only a colour of one byte or less; properties are recomputed, not
+  saved, so a material generator stays a dependency of a world that used it; hard-coded definitions may override a generated material in part; each pack says
+  whether it is sent whole or lazily. Gaps and open questions: `specs/procedural-materials-spec.md`, section 10.
 
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.

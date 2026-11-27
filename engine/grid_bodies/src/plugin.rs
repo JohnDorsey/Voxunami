@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::{BlockTable, PropertyHandle};
+use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use namespaced_id::NamespacedId;
 use physics::{
     BodyColliders, BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments,
@@ -10,7 +10,7 @@ use physics::{
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
 use region_octree::{BrickCube, RegionOctree};
 use server::{MergePlan, ServerWorld, SplitPart};
-use voxel_grid::{ChannelIndex, Grid};
+use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
     AlignmentTolerance, BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, Displacement, GridId,
     GridPose, LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
@@ -95,7 +95,8 @@ const SAME_PLACE_VOXELS: f64 = 1e-3;
 /// What the plugin needs to know of a game's blocks.
 #[derive(Debug)]
 pub struct GridBodiesConfig {
-    pub table: BlockTable,
+    /// The table of the blocks, which the server may replace while it runs: the plugin works out again what it made of the old one (see `Bodies::table_replaced`).
+    pub table: SharedBlockTable,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
     /// Where the game keeps the orientation of its blocks, if it has any.
@@ -1070,6 +1071,9 @@ impl StoredBricks {
 
 struct Bodies {
     config: GridBodiesConfig,
+    /// The table of the blocks that the bodies were made from, and its version: when the version of the table is another, they are made again.
+    table: Arc<BlockTable>,
+    table_version: u64,
     collisions: BlockCollisions,
     frames: BTreeMap<FrameKey, Frame>,
     /// The number the next frame is given.
@@ -1154,9 +1158,12 @@ fn farther_than(radius: i128, first: BrickCoordinate, second: BrickCoordinate) -
 
 impl Bodies {
     fn new(config: GridBodiesConfig, report: Arc<Mutex<BodiesReport>>) -> Self {
-        let collisions = BlockCollisions::new(config.table.clone(), config.passable);
+        let collisions = BlockCollisions::following(&config.table, config.passable);
+        let (table, table_version) = config.table.snapshot();
         Self {
             config,
+            table,
+            table_version,
             collisions,
             frames: BTreeMap::new(),
             stored_bricks: BTreeMap::new(),
@@ -1179,6 +1186,75 @@ impl Bodies {
             corrected_frames: BTreeSet::new(),
             rail_frames_left_for_the_step: BTreeSet::new(),
             report,
+        }
+    }
+
+    /// The table of the blocks was replaced since the bodies were made from it: what a block weighs, what it is to a body and where the ports and the ends of joints are
+    /// may all be other, and are all kept in the bodies (the colliders of every brick, the mass and the ports of every ship). What is made again is what holds a block that
+    /// behaves other now (`BlockTable::behaves_as`: the colour of a block is not behaviour, so a reload that only repaints makes nothing again):
+    ///
+    /// - **the ground**: the colliders of the terrain of the level and of the planets' ground are dropped, and `keep_terrain` makes the ones that are wanted again, a few a
+    ///   tick (what is generated is not looked through for the blocks that changed);
+    /// - **a ship that holds one of those blocks**: every brick of it, and its mass, from its voxels, in the place it is (a ship that holds none is not touched: it goes on as
+    ///   it would have, to the last bit);
+    /// - **the couplings** are not touched: they are worked out from the ends of joints that the ships have, every tick (`couple_joints`), and the ends of a ship that is made
+    ///   again are worked out again with it, so a block that stopped being a joint ends its coupling and a ship's other blocks changing does not.
+    ///
+    /// A ship's place and speed are not changed by any of it. (Every replacement before this made every body again, which moved a ship by up to 1e-6 of a voxel, and cost a
+    /// brick scan for each ship whether or not it held what changed.) What the world is told of the weight of a ship that is made again is told again.
+    fn table_replaced(&mut self, world: &ServerWorld) {
+        let (table, version) = self.config.table.snapshot();
+        let earlier = std::mem::replace(&mut self.table, table);
+        self.table_version = version;
+        let changed: BTreeSet<u32> = earlier
+            .blocks_that_behave_otherwise_in(&self.table)
+            .into_iter()
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        let block_channel = self.config.block_channel;
+        let holders: Vec<(FrameKey, GridId)> = self
+            .frames
+            .iter()
+            .flat_map(|(key, frame)| frame.ships.keys().map(|id| (*key, *id)))
+            .filter(|(_, id)| {
+                world.data().grids().get(*id).is_some_and(|ship| {
+                    ship.voxels
+                        .sorted_brick_coordinates()
+                        .into_iter()
+                        .any(|brick| {
+                            ship.voxels.brick(brick).is_some_and(|contents| {
+                                contents
+                                    .channel(block_channel)
+                                    .may_hold(|block| changed.contains(&block))
+                            })
+                        })
+                })
+            })
+            .collect();
+        self.refused.clear();
+        for frame in self.frames.values_mut() {
+            for brick in std::mem::take(&mut frame.terrain) {
+                frame.bodies.remove_terrain_brick(brick);
+            }
+            for (id, planet) in &mut frame.planets {
+                for brick in std::mem::take(&mut planet.bricks) {
+                    let _ = frame.bodies.remove_brick(BodyId(id.get()), brick);
+                }
+                planet.ports.clear();
+                planet.scanned = false;
+            }
+        }
+        self.planet_ends.clear();
+        for (key, id) in holders {
+            let Some(ship) = world.data().grids().get(id) else {
+                continue;
+            };
+            for brick in ship.voxels.sorted_brick_coordinates() {
+                self.remake_brick(key, id, brick, ship);
+            }
+            self.set_mass(key, id);
         }
     }
 
@@ -1225,9 +1301,10 @@ impl Bodies {
     ) {
         self.count(|report| report.ship_bricks_made += 1);
         // (The table the faces are read by: the game's docking has one, and a game with joints and no docking uses the game's own.)
-        let faces_by = match &self.config.docking {
-            Some(docking) => Some(docking.table()),
-            None => self.config.joints.is_some().then_some(&self.config.table),
+        let docking_table = self.config.docking.as_ref().map(Docking::table);
+        let faces_by = match &docking_table {
+            Some(table) => Some(table.as_ref()),
+            None => self.config.joints.is_some().then_some(self.table.as_ref()),
         };
         let BrickScan {
             moments,
@@ -1546,7 +1623,7 @@ impl Bodies {
     /// What it takes to weigh the voxels of a ship.
     fn weigher(&self) -> Weigher<'_> {
         Weigher {
-            table: &self.config.table,
+            table: &self.table,
             density: self.config.density,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
@@ -1649,6 +1726,9 @@ impl Bodies {
     /// One tick: what changed is made again, the ships are carried to where the world has them, the forces are applied, the bodies move and
     /// the ships are put where they went.
     fn step(&mut self, world: &mut ServerWorld) {
+        if self.config.table.version() != self.table_version {
+            self.table_replaced(world);
+        }
         self.tick += 1;
         let tick = self.tick;
         let ship_bricks_before = self.report().ship_bricks_made;
@@ -2251,8 +2331,9 @@ impl Bodies {
         let Some(docking) = &self.config.docking else {
             return;
         };
+        let docking_table = docking.table();
         let weigher = Weigher {
-            table: &self.config.table,
+            table: &self.table,
             density: self.config.density,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
@@ -2275,7 +2356,7 @@ impl Bodies {
                 };
                 planet.scanned = true;
                 for brick in bricks {
-                    let ports = weigher.scan_brick(grid, brick, Some(docking.table())).ports;
+                    let ports = weigher.scan_brick(grid, brick, Some(&docking_table)).ports;
                     if ports.is_empty() {
                         planet.ports.remove(&brick);
                     } else {
@@ -2296,8 +2377,9 @@ impl Bodies {
         let Some(docking) = &self.config.docking else {
             return;
         };
+        let docking_table = docking.table();
         let weigher = Weigher {
-            table: &self.config.table,
+            table: &self.table,
             density: self.config.density,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
@@ -2329,7 +2411,7 @@ impl Bodies {
             ends.scanned = true;
             for brick in bricks {
                 let found = weigher
-                    .scan_brick(grid, brick, Some(docking.table()))
+                    .scan_brick(grid, brick, Some(&docking_table))
                     .joint_ends;
                 if found.is_empty() {
                     ends.by_brick.remove(&brick);
@@ -3658,46 +3740,60 @@ impl Weigher<'_> {
                 joint_ends: Vec::new(),
             };
         };
+        self.scan_contents(brick, contents, faces_by)
+    }
+
+    /// The same, of the contents of the brick. Only the voxels whose block is not air are looked at, found from the palette of the block channel and not by asking at each
+    /// of the 32,768 places (a ship of a few blocks is a brick of air): in the same order as every voxel was, so that the sum is the same to the last bit. That is so if air
+    /// weighs nothing, which a table in which the air is a block is not (and then every voxel is looked at, as before).
+    pub fn scan_contents(
+        &self,
+        brick: BrickCoordinate,
+        contents: &Brick,
+        faces_by: Option<&BlockTable>,
+    ) -> BrickScan {
         let first = brick.origin();
+        let air_weighs = self.voxel_moments([0; 3], self.air, 0, 0).is_some();
+        let voxels: Vec<LocalVoxelIndex> = if air_weighs {
+            LocalVoxelIndex::all().collect()
+        } else {
+            contents
+                .channel(self.block_channel)
+                .indices_where(|block| block != self.air)
+        };
         let mut parts = Vec::new();
         let mut extent: Option<HullBox> = None;
         let mut ports = Vec::new();
         let mut joint_ends = Vec::new();
-        for z in 0..BRICK_EDGE_LENGTH {
-            for y in 0..BRICK_EDGE_LENGTH {
-                for x in 0..BRICK_EDGE_LENGTH {
-                    let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
-                    let block = contents.get(self.block_channel, local);
-                    let state = contents.get(self.state_channel, local);
-                    let orientation = self
-                        .orientation_channel
-                        .map_or(0, |channel| contents.get(channel, local));
-                    let voxel = [
-                        first.x() + x as i128,
-                        first.y() + y as i128,
-                        first.z() + z as i128,
-                    ];
-                    if let Some(moments) = self.voxel_moments(voxel, block, state, orientation) {
-                        let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
-                        extent =
-                            Some(extent.map_or(HullBox::of_voxel(at), |hull| hull.including(at)));
-                        parts.push(moments);
-                    }
-                    if let Some(table) = faces_by
-                        && block != self.air
-                    {
-                        let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
-                        if let Some(face) = table.docking_face(block, state, orientation) {
-                            ports.push(BlockFace::plain(at, face));
-                        }
-                        if let Some(face) = table.joint_face(block, state, orientation) {
-                            joint_ends.push(BlockFace {
-                                voxel: at,
-                                face,
-                                line: table.joint_line_face(block, state, orientation),
-                            });
-                        }
-                    }
+        for local in voxels {
+            let block = contents.get(self.block_channel, local);
+            let state = contents.get(self.state_channel, local);
+            let orientation = self
+                .orientation_channel
+                .map_or(0, |channel| contents.get(channel, local));
+            let voxel = [
+                first.x() + i128::from(local.x()),
+                first.y() + i128::from(local.y()),
+                first.z() + i128::from(local.z()),
+            ];
+            if let Some(moments) = self.voxel_moments(voxel, block, state, orientation) {
+                let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+                extent = Some(extent.map_or(HullBox::of_voxel(at), |hull| hull.including(at)));
+                parts.push(moments);
+            }
+            if let Some(table) = faces_by
+                && block != self.air
+            {
+                let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+                if let Some(face) = table.docking_face(block, state, orientation) {
+                    ports.push(BlockFace::plain(at, face));
+                }
+                if let Some(face) = table.joint_face(block, state, orientation) {
+                    joint_ends.push(BlockFace {
+                        voxel: at,
+                        face,
+                        line: table.joint_line_face(block, state, orientation),
+                    });
                 }
             }
         }
@@ -3851,6 +3947,222 @@ mod tests {
             !StoredBricks::scan(&Grid::new(Arc::clone(grid.layout())))
                 .any_in(cube_at(0, 0, 0, 116))
         );
+    }
+
+    // ---- the scan of a brick for its mass, its ports and the ends of its joints ----
+
+    mod scans {
+        use block_models::{BlockDefinition, Shape};
+        use voxel_grid::{ChannelDefinition, GridLayout};
+        use voxel_space::FaceDirection;
+
+        use super::super::*;
+
+        const AIR: u32 = 0;
+        const STONE: u32 = 1;
+        /// A block that is not air and that has no shape at all.
+        const MIST: u32 = 2;
+        const PORT: u32 = 3;
+        const JOINT: u32 = 4;
+        const SLAB: u32 = 5;
+
+        fn table() -> BlockTable {
+            let air = BlockDefinition::air();
+            let stone = BlockDefinition::cube([0.5; 3])
+                .with_shapes(vec![Shape::full(), Shape::half(FaceDirection::NegativeY)]);
+            let mist = BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::empty()]);
+            let port = BlockDefinition::cube([0.5; 3])
+                .with_shapes(vec![Shape::full(), Shape::full()])
+                .with_docking_faces(&[Some(FaceDirection::PositiveY), None]);
+            let joint = BlockDefinition::cube([0.5; 3]).with_joint_face(FaceDirection::PositiveX);
+            let slab = BlockDefinition::cube([0.5; 3])
+                .with_shapes(vec![Shape::half(FaceDirection::PositiveY)])
+                .with_property_value("engine:density".parse().unwrap(), 3000);
+            BlockTable::from_definitions(&[
+                Some(&air),
+                Some(&stone),
+                Some(&mist),
+                Some(&port),
+                Some(&joint),
+                Some(&slab),
+            ])
+        }
+
+        fn layout() -> GridLayout {
+            GridLayout::new(vec![
+                ChannelDefinition::number("test:block".parse().unwrap(), AIR),
+                ChannelDefinition::number("test:state".parse().unwrap(), 0),
+                ChannelDefinition::number("test:orientation".parse().unwrap(), 0),
+            ])
+            .unwrap()
+        }
+
+        /// A brick with `count` voxels of the blocks above, scattered by a fixed rule, in states and orientations that vary; the rest is air.
+        fn brick_with(count: usize, seed: u64) -> (Brick, [ChannelIndex; 3]) {
+            let layout = layout();
+            let mut channels = layout.channel_indices();
+            let channels = [
+                channels.next().unwrap(),
+                channels.next().unwrap(),
+                channels.next().unwrap(),
+            ];
+            let mut brick = Brick::new(&layout);
+            let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut next = move || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            for _ in 0..count {
+                let local = LocalVoxelIndex::from_index((next() % 32_768) as usize).unwrap();
+                brick.set(
+                    channels[0],
+                    local,
+                    [STONE, MIST, PORT, JOINT, SLAB][(next() % 5) as usize],
+                );
+                brick.set(channels[1], local, (next() % 3) as u32);
+                brick.set(channels[2], local, (next() % 24) as u32);
+            }
+            (brick, channels)
+        }
+
+        /// What the look at a brick was before it looked only where the block is not air: every one of the 32,768 voxels.
+        fn scan_every_voxel(
+            weigher: &Weigher<'_>,
+            brick: BrickCoordinate,
+            contents: &Brick,
+            faces_by: Option<&BlockTable>,
+        ) -> BrickScan {
+            let first = brick.origin();
+            let (mut parts, mut ports, mut joint_ends) = (Vec::new(), Vec::new(), Vec::new());
+            let mut extent: Option<HullBox> = None;
+            for z in 0..BRICK_EDGE_LENGTH {
+                for y in 0..BRICK_EDGE_LENGTH {
+                    for x in 0..BRICK_EDGE_LENGTH {
+                        let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
+                        let block = contents.get(weigher.block_channel, local);
+                        let state = contents.get(weigher.state_channel, local);
+                        let orientation = weigher
+                            .orientation_channel
+                            .map_or(0, |channel| contents.get(channel, local));
+                        let voxel = [
+                            first.x() + x as i128,
+                            first.y() + y as i128,
+                            first.z() + z as i128,
+                        ];
+                        if let Some(moments) =
+                            weigher.voxel_moments(voxel, block, state, orientation)
+                        {
+                            let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+                            extent = Some(
+                                extent.map_or(HullBox::of_voxel(at), |hull| hull.including(at)),
+                            );
+                            parts.push(moments);
+                        }
+                        if let Some(table) = faces_by
+                            && block != weigher.air
+                        {
+                            let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+                            if let Some(face) = table.docking_face(block, state, orientation) {
+                                ports.push(BlockFace::plain(at, face));
+                            }
+                            if let Some(face) = table.joint_face(block, state, orientation) {
+                                joint_ends.push(BlockFace {
+                                    voxel: at,
+                                    face,
+                                    line: table.joint_line_face(block, state, orientation),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            BrickScan {
+                moments: MassMoments::sum(parts),
+                extent,
+                ports,
+                joint_ends,
+            }
+        }
+
+        fn the_same(first: &BrickScan, second: &BrickScan) -> bool {
+            first.moments == second.moments
+                && first.extent == second.extent
+                && first.ports == second.ports
+                && first.joint_ends == second.joint_ends
+        }
+
+        #[test]
+        fn a_brick_scanned_where_its_blocks_are_gives_what_every_voxel_gave_to_the_bit() {
+            let table = table();
+            let brick = BrickCoordinate::new(-3, 2, 5);
+            // Bricks of nothing, of a few blocks, of some hundreds and of a great many (so that the palette is wide and the indices are 4 bits and then 8).
+            for (count, seed) in [(0, 1), (1, 2), (27, 3), (300, 4), (3_000, 5), (20_000, 6)] {
+                let (contents, channels) = brick_with(count, seed);
+                let weigher = Weigher {
+                    table: &table,
+                    density: table.handle(&block_models::engine::DENSITY).unwrap(),
+                    block_channel: channels[0],
+                    state_channel: channels[1],
+                    orientation_channel: Some(channels[2]),
+                    air: AIR,
+                };
+                for faces_by in [None, Some(&table)] {
+                    let found = weigher.scan_contents(brick, &contents, faces_by);
+                    let every = scan_every_voxel(&weigher, brick, &contents, faces_by);
+                    assert!(
+                        the_same(&found, &every),
+                        "{count} blocks, faces {}",
+                        faces_by.is_some()
+                    );
+                    if count > 0 && faces_by.is_some() {
+                        assert!(
+                            !found.ports.is_empty() || count < 10,
+                            "{count}: ports are found"
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn a_brick_of_air_weighs_nothing_and_has_no_ports() {
+            let table = table();
+            let (contents, channels) = brick_with(0, 1);
+            let weigher = Weigher {
+                table: &table,
+                density: table.handle(&block_models::engine::DENSITY).unwrap(),
+                block_channel: channels[0],
+                state_channel: channels[1],
+                orientation_channel: Some(channels[2]),
+                air: AIR,
+            };
+            let scan = weigher.scan_contents(BrickCoordinate::ORIGIN, &contents, Some(&table));
+            assert_eq!(scan.moments, MassMoments::NOTHING);
+            assert!(scan.ports.is_empty() && scan.joint_ends.is_empty());
+        }
+
+        #[test]
+        fn a_game_whose_air_has_a_shape_is_looked_through_in_full_as_it_always_was() {
+            // (The shortcut is that air weighs nothing. A table in which block 0 is a whole cube is not that, and every voxel of the brick, air and all, weighs.)
+            let solid_zero =
+                BlockTable::from_definitions(&[Some(&BlockDefinition::cube([0.5; 3]))]);
+            let (contents, channels) = brick_with(10, 7);
+            let weigher = Weigher {
+                table: &solid_zero,
+                density: solid_zero.handle(&block_models::engine::DENSITY).unwrap(),
+                block_channel: channels[0],
+                state_channel: channels[1],
+                orientation_channel: Some(channels[2]),
+                air: AIR,
+            };
+            let brick = BrickCoordinate::ORIGIN;
+            let found = weigher.scan_contents(brick, &contents, None);
+            let every = scan_every_voxel(&weigher, brick, &contents, None);
+            assert!(the_same(&found, &every));
+            assert_eq!(found.moments.mass(), 32_768.0 * 1000.0);
+        }
     }
 
     #[test]

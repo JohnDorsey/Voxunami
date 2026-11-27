@@ -15,6 +15,8 @@ mod coarse_view_tests;
 mod command_entry;
 mod definition;
 #[cfg(test)]
+mod engine_shader_reload_tests;
+#[cfg(test)]
 mod far_ship_view_tests;
 pub mod files;
 pub mod following;
@@ -22,25 +24,35 @@ mod headless;
 pub mod host;
 pub mod options;
 mod orthographic_cut;
+mod pack_check;
 pub mod package;
 mod package_data;
+mod package_reload;
 mod packs;
+pub mod paint_bridge;
 #[cfg(test)]
 mod planet_view_tests;
 mod player_identity;
+mod pointer_hold;
 pub mod prepare;
+pub mod reload;
+mod remote_world;
 pub mod screen;
 pub mod serve;
 pub mod session;
 pub mod shader_pack_settings;
 pub mod shader_packs;
+mod shared_package;
 pub mod sun;
 #[cfg(test)]
 mod sun_view_tests;
 #[cfg(test)]
 mod test_support;
+pub mod texture_pack;
 pub mod view;
 mod view_controls;
+#[cfg(test)]
+mod view_reload_tests;
 pub mod view_rig;
 mod wheel;
 mod windowed;
@@ -52,10 +64,13 @@ pub use definition::{
 pub use identity::Identity;
 pub use package::{ContentPackage, FamilyFactory, GeneratorFactory, PackageSpec, no_families};
 pub use package_data::{PackageData, PackageError, check_materials};
+pub use package_reload::{ReloadError, Reloaded, reload_packs};
 pub use player_presence::{PlayerPose, Presence};
+pub use shared_package::{ReplaceError, SharedPackage};
 pub use sun::{Sky, Sun, SunView};
 pub use winit::keyboard::KeyCode;
 
+pub use pack_check::PackCheck;
 pub use packs::{content_with_packs, run_check_packs, run_pack_schemas};
 pub use shader_packs::run_check_shader_packs;
 
@@ -72,10 +87,16 @@ pub fn run_play<G: GameDefinition>(
             println!("{}", play_usage::<G>());
             Ok(())
         }
-        Parsed::Run(options) if options.view.screenshot.is_some() || options.benchmark => {
-            headless::play::<G>(&options)
+        Parsed::Run(mut options) => {
+            options
+                .view
+                .use_default_texture_pack(default_texture_pack_exists());
+            if options.view.screenshot.is_some() || options.benchmark {
+                headless::play::<G>(&options)
+            } else {
+                windowed::play::<G>(options)
+            }
         }
-        Parsed::Run(options) => windowed::play::<G>(options),
     }
 }
 
@@ -143,9 +164,20 @@ pub fn run_replay<G: GameDefinition>(
             println!("{}", replay_usage());
             Ok(())
         }
-        Parsed::Run(options) if options.view.screenshot.is_some() => {
-            headless::replay::<G>(&options)
+        Parsed::Run(mut options) => {
+            options
+                .view
+                .use_default_texture_pack(default_texture_pack_exists());
+            if options.view.screenshot.is_some() {
+                headless::replay::<G>(&options)
+            } else {
+                windowed::replay::<G>(options)
+            }
         }
-        Parsed::Run(options) => windowed::replay::<G>(options),
     }
+}
+
+/// Whether the folder that is the texture pack by default is there, as seen from the folder the program was started in.
+fn default_texture_pack_exists() -> bool {
+    std::path::Path::new(options::DEFAULT_TEXTURE_PACK).is_dir()
 }
