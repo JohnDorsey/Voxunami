@@ -427,7 +427,7 @@ impl Fixture {
         let recording = RecordingConnection::new(connection, buffer.clone()).unwrap();
         self.joined += 1;
         let identity = Identity::from_secret([self.joined; 32]);
-        let mut handshake = Handshake::start(recording, game_id(), &identity).unwrap();
+        let mut handshake = Handshake::start(recording, game_id(), &identity, "player").unwrap();
         loop {
             self.server.step();
             handshake = match handshake.poll().unwrap() {
@@ -454,7 +454,7 @@ impl Fixture {
     fn complete_join<C: Connection>(&mut self, connection: C, plugins: &[Plugin]) -> Player<C> {
         self.joined += 1;
         let identity = Identity::from_secret([self.joined; 32]);
-        let mut handshake = Handshake::start(connection, game_id(), &identity).unwrap();
+        let mut handshake = Handshake::start(connection, game_id(), &identity, "player").unwrap();
         for _ in 0..2 {
             self.server.step();
             handshake = match handshake.poll().unwrap() {
@@ -575,7 +575,12 @@ pub fn replay_player(
 ) -> Result<Player<ReplayConnection<Cursor<Vec<u8>>>>, ClientError> {
     let connection = ReplayConnection::new(Cursor::new(recording)).expect("a valid recording");
     // A replay asks for nothing, so who it says it is does not matter.
-    let mut handshake = Handshake::start(connection, game_id(), &Identity::from_secret([0; 32]))?;
+    let mut handshake = Handshake::start(
+        connection,
+        game_id(),
+        &Identity::from_secret([0; 32]),
+        "player",
+    )?;
     loop {
         handshake = match handshake.poll()? {
             HandshakeProgress::Waiting(waiting) => waiting,

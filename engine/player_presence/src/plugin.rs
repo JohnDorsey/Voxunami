@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    Argument, CommandSpec, HandlerSpec, PlayerJoined, PlayerLeft, Plugin, Registrar,
+    Argument, CommandClass, CommandSpec, HandlerSpec, PlayerJoined, PlayerLeft, Plugin, Registrar,
 };
 
 use crate::messages::{LevelChange, PlayerPlaced, PoseReport};
@@ -83,13 +83,25 @@ impl Plugin for PlayersPlugin {
         registrar.declares_message::<PlayerPlaced>();
         let presence = Arc::clone(&self.presence);
         registrar.command(
-            CommandSpec::new(
-                "level",
-                "which level you are in; /level list; /level go NAME",
-            )
-            .argument(Argument::rest("subcommand").optional()),
+            CommandSpec::new("level", "which level you are in")
+                .class(CommandClass::Read)
+                .runs_alone()
+                .subcommand(CommandSpec::new("list", "lists the levels, and marks yours"))
+                .subcommand(
+                    CommandSpec::new(
+                        "go",
+                        "moves you to a level, named by its identifier or by the part after the colon",
+                    )
+                    .class(CommandClass::Change)
+                    .argument(Argument::word("name")),
+                ),
             move |context, client, arguments| {
-                lock(&presence).level_command(client, arguments.rest(0), context.world());
+                // (`level_command` takes the words as they were typed, after the name)
+                let mut words: Vec<&str> = arguments.subcommand().to_vec();
+                if arguments.subcommand() == ["go"] {
+                    words.push(arguments.word(0));
+                }
+                lock(&presence).level_command(client, &words, context.world());
             },
         );
         let presence = Arc::clone(&self.presence);

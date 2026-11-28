@@ -1,0 +1,16 @@
+success.value                            => 5
+failure.value (no such attribute)        => ERROR AttributeError: 'CommandFailure' object has no attribute 'value'
+failure.unwrap()                         => ERROR RuntimeError: unwrapped a failure of engine:no_such_player: no such player
+failure.unwrap_or(0)                     => 0
+success.unwrap()                         => 5
+str(failure) raises                      => ERROR RuntimeError: str() of a failure of engine:failed: no such player (check .ok or match first)
+f-string of a failure raises             => ERROR RuntimeError: str() of a failure of engine:failed: no such player (check .ok or match first)
+print(failure) raises                    => ERROR RuntimeError: str() of a failure of engine:failed: no such player (check .ok or match first)
+repr(failure) still works                => "CommandFailure('no such player')"
+failure + 1 / iteration / int()          => ERROR TypeError: unsupported operand type(s) for +: 'CommandFailure' and 'int'
+int(failure)                             => ERROR TypeError: int() argument must be a string, a bytes-like object or a real number, not 'CommandFailure'
+failure in a list repr                   => "[CommandFailure('x'), CommandSuccess('y')]"
+match on the result                      => 'engine:no_such_player'
+if r: (silent trap)                      => 'taken'
+__getattr__ available?                   => ERROR AttributeError: 'A' object has no attribute 'zzz'
+__eq__ on a failure                      => False

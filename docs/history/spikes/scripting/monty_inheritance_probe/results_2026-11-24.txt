@@ -1,0 +1,58 @@
+Run 2026-11-24, release, Windows, fork head 21366f2a (path dependency E:/s/vx/monty). Cases 20, 23 print None because a case body or a try body is a statement (nothing to report); 21 is a real NameError.
+
+=== inherit-probe (main)
+1 inheritance, method                                          => 1
+2 isinstance/issubclass                                        => (True, True, True, False, True)
+3 ok is a class variable                                       => (True, False, 'engine:failed')
+4 str / repr / f-string / % / format / list                    => ('5', "TeleportSuccess(message='moved')", '5', '5', '5', [TeleportSuccess(message='moved', value=5, moved_out_of_a_wall=False)], "TeleportSuccess(message='moved')")
+5 print(r) then bare repr                                      => TeleportSuccess(message='moved', value=None, moved_out_of_a_wall=False)   [printed "moved\n"]
+6 only __repr__ defined: str()                                 => 'A!'
+7 bool(r) / if not r                                           => (True, 'truthy', False)
+8 __bool__ defined                                             => (True, 'truthy')
+9 super()                                                      => ERROR NameError: name 'super' is not defined
+10 @property                                                   => ERROR NotImplementedError: The monty syntax parser does not yet support method decorators (classmethod/staticmethod/property)
+11 @classmethod                                                => ERROR NotImplementedError: The monty syntax parser does not yet support method decorators (classmethod/staticmethod/property)
+12 @staticmethod                                               => ERROR NotImplementedError: The monty syntax parser does not yet support method decorators (classmethod/staticmethod/property)
+13 subclass Exception                                          => ERROR TypeError: Monty does not support subclassing 'Exception': classes can only inherit from classes defined in Python and object
+14 raise an instance of a plain class                          => ERROR TypeError: exceptions must derive from BaseException
+15 @dataclass                                                  => P(x=1, y=0)
+16 @dataclass inheritance                                      => ERROR TypeError: Q.__init__() takes from 1 to 2 positional arguments but 3 were given
+17 type(name, bases, dict)                                     => (True, 'RoofSuccess', "RoofSuccess(message='built')", True)
+18 __eq__ and ==                                               => (True, False)
+19 match with class patterns and inheritance                   => ('moved out of a wall', 'success', 'failure', 'other')
+20 __match_args__ positional pattern                           => None
+21 vars / __dict__                                             => ERROR NameError: name 'vars' is not defined
+22 multiple inheritance + MRO                                  => ['C', 'A', 'B', 'object']
+23 a failure that is raised (custom Exception) via ValueError(str(r)) => None
+24 result as dict key / hash                                   => 1
+25 abstract-ish: base method calls the subclass override       => 'b!'
+26 __str__ that calls a missing attribute                      => ERROR AttributeError: 'A' object has no attribute 'nope'
+27 __init_subclass__ registry                                  => ['A', 'B']
+28 isinstance with a tuple of classes                          => True
+
+--- cost of a prelude with N commands, each a success class and a failure class, each with extra fields
+N=10   source    3445 bytes | prelude run median   0.27 ms | model_bytes    10744 | dump   15876 bytes | load    187 us | one result   1.3 us | after restore: (True, True, "Cmd9Success(message='x')", True)
+N=50   source   13885 bytes | prelude run median   0.95 ms | model_bytes    43704 | dump   60243 bytes | load    284 us | one result   1.3 us | after restore: (True, True, "Cmd49Success(message='x')", True)
+N=100  source   26935 bytes | prelude run median   2.45 ms | model_bytes    84904 | dump  116118 bytes | load    859 us | one result   2.4 us | after restore: (True, True, "Cmd99Success(message='x')", True)
+N=200  source   53235 bytes | prelude run median   4.89 ms | model_bytes   167304 | dump  228521 bytes | load   1045 us | one result   1.7 us | after restore: (True, True, "Cmd199Success(message='x')", True)
+
+an instance in a global after dump and restore: ("TeleportSuccess(message='moved')", True, True, '7', 'TeleportSuccess')
+what the host gets for a result instance as a line's value: MontyObject { graph: MontyGraph { nodes: [ClassType(ClassTypeNode { name: "TeleportSuccess", id: MontyUuid([122, 174, 238, 146, 175, 221, 65, 74, 162, 151, 71, 77, 130, 231, 240, 40]), host_defined: false, is_dataclass: false, attrs: [] }), String("message"), String("moved"), String("value"), Int(7), String("moved_out_of_a_wall"), Bool(tr
+
+=== second
+setattr + **fields + __dict__ iteration                            => CommandSuccess(message='moved', value=5, names=['moved_out_of_a_wall', 'pushed'], moved_out_of_a_wall=True, pushed=2)
+repr() inside the sandbox                                          => "CommandSuccess('moved', moved_out_of_a_wall=True)"
+class made on first use, twice (same class)                        => (True, True, "TeleportSuccess('', moved=True)", "TeleportSuccess('', moved=False)")
+failure then success of one command are different classes          => (True, False, False)
+a line's value: repr(_) wrapper idea (value is a list of results)  => "[CommandSuccess('a'), CommandFailure('b', reason='engine:no_such_player')]"
+hasattr / getattr                                                  => (True, 'none')
+a result compared: == by identity                                  => False
+the failure message in a splice: str(failure)                      => 'no such player Bob'
+raise RuntimeError(str(failure)) and catch it                      => 'no such player'
+
+--- lazy classes: cost of the base, then of making N command classes on first use, then one result
+base only: run 0.07 ms, model_bytes 1672, dump 4278 bytes
+classes made for 10   commands (20  classes): took   0.12 ms | model_bytes     8728 | dump    7988 bytes | load   151 us | one result via make()  3.9 us | after restore (True, "Cmd9Success('', amount=1)")
+classes made for 50   commands (100 classes): took   0.40 ms | model_bytes    37600 | dump   22661 bytes | load   148 us | one result via make()  3.5 us | after restore (True, "Cmd49Success('', amount=1)")
+classes made for 100  commands (200 classes): took   0.78 ms | model_bytes    72800 | dump   40654 bytes | load   225 us | one result via make()  3.4 us | after restore (True, "Cmd99Success('', amount=1)")
+classes made for 200  commands (400 classes): took   1.36 ms | model_bytes   143200 | dump   76907 bytes | load   413 us | one result via make()  3.5 us | after restore (True, "Cmd199Success('', amount=1)")

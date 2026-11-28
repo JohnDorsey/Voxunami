@@ -412,7 +412,11 @@ fn the_ships_a_client_was_told_of_as_far_are_asked_for_by_client_and_forgotten_w
     let (mut world, _, _) = counting_world();
     let (first, second) = (protocol::ClientId::new(1), protocol::ClientId::new(2));
     for client in [first, second] {
-        world.add_client(client, protocol::PlayerKey::new([client.get() as u8; 32]));
+        world.add_client(
+            client,
+            protocol::PlayerKey::new([client.get() as u8; 32]),
+            protocol::Nickname::sanitized("player"),
+        );
     }
     let ships = |ids: &[u64]| -> std::collections::BTreeSet<GridId> {
         ids.iter()

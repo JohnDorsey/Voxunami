@@ -237,6 +237,7 @@ impl Rig {
         Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([who; 32]),
+            "player",
             Mode::Playing,
             3,
             camera_at(position, 0.0, pitch),
@@ -478,6 +479,7 @@ fn a_recording_of_a_player_over_a_planet_shows_what_the_player_saw() {
     let mut replay = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         3,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -596,6 +598,7 @@ fn a_recording_of_a_player_who_saw_a_planet_in_detail_shows_the_same_nodes() {
     let mut replay = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         3,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -748,6 +751,7 @@ fn a_recording_of_a_player_who_saw_an_edit_to_a_planet_in_its_nodes_shows_the_sa
     let mut replay = Session::<_, ExampleGame>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         3,
         camera_at([0.0; 3], 0.0, 0.0),

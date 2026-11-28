@@ -15,6 +15,7 @@ coarse_streaming.workspace = true
 content_registry.workspace = true
 data_packs.workspace = true
 identity.workspace = true
+line_language.workspace = true
 namespaced_id.workspace = true
 pack_archive.workspace = true
 player_presence.workspace = true

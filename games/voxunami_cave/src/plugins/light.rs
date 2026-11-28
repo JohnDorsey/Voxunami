@@ -7,8 +7,8 @@ use block_models::{BlockTable, PropertyHandle, SharedBlockTable};
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    Argument, CommandSpec, Context, HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope,
-    SystemSpec,
+    Argument, CommandClass, CommandSpec, Context, HandlerSpec, Phase, PlayerJoined, Plugin,
+    Registrar, SaveScope, SystemSpec,
 };
 use protocol::{ClientId, Message};
 use server::{Audience, GridView, ServerWorld};
@@ -315,6 +315,7 @@ impl Plugin for LightPlugin {
                 "light",
                 "which light the world has; /light classic; /light multiscale [LEVELS [WIDTH...]]",
             )
+            .class(CommandClass::Change)
             .argument(Argument::rest("subcommand").optional()),
             move |context, client, arguments| {
                 let reply = locked(&commanded).light_command(arguments.rest(0), context);

@@ -148,7 +148,7 @@ fn replay(arguments: Vec<String>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use protocol::{ClientId, PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
+    use protocol::{ClientId, Nickname, PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
     use replay::ReplayWriter;
 
     use super::*;
@@ -162,6 +162,7 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             game: game.parse().unwrap(),
             client: ClientId::new(1),
+            nickname: Nickname::sanitized("player"),
             ticks_per_second: 20,
             tick: Tick::ZERO,
             world_clock: 0,

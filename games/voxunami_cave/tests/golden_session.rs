@@ -424,8 +424,13 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// and the old stream hash, 13_343_156_623_870_405_502, passed with the new hashes while the version was still 14.
 /// The thanksgiving demo, graphics-world-painting merged (protocol 16): the length is main's plus 9 bytes (`, /reload` in the reply to an unknown command) plus 5,120 (the owner's five companion
 /// pictures in the package): 7,228,035, predicted before the run and seen; the saved world's hash did not move.
+/// (scripting-integration's changes, merged into this demo branch:)
+/// Chat and nicknames (2026-11-24; protocol 14): the welcome says what the server made of the player's name ("player": a length byte and six letters), 7 bytes more (7_222_146 to 7_222_153, predicted), and says version 14, so the stream's hash moved to 5_683_406_848_498_704_113; the saved world's did not. Checked by taking the stream apart (`docs/history/spikes/scripting/take_apart_recording.py`: the welcome with its version put back to 13 and its nickname taken out, the records' lengths and checksums made again): the old length and the old hash, 15_858_216_659_142_805_030, came back.
+/// Subcommands in `CommandSpec` (2026-11-25, scripting phase 3): `/level` is a tree, and the list of commands in the reply to `/nonsense` shows it as `/level [list|go]` where it showed `/level [SUBCOMMAND...]`: 6 bytes fewer (7_222_153 to 7_222_147, worked out from the two strings, 13 characters and 7), and the stream hash moved to 16_710_668_691_826_245_687; the saved world's did not. Control run, not assumed: with the old text for that one line put back the old hash and length came back to the digit.
+/// The thanksgiving demo, scripting-integration merged (protocol 2026): 7 bytes more for the nickname and 6 fewer for `/level [list|go]` in the list of commands (7,228,036, predicted before the run and
+/// seen); the saved world's hash did not move.
 const PINNED: (u64, usize, u64) = (
-    1_061_135_670_948_654_239,
-    7_228_035,
+    18_223_207_787_480_865_073,
+    7_228_036,
     10_072_587_723_607_525_272,
 );

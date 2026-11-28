@@ -1,6 +1,6 @@
 use identity::Identity;
 use namespaced_id::NamespacedId;
-use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
+use protocol::{ClientMessage, ServerMessage, Tick, Welcome};
 use transport::{Connection, ConnectionClosed};
 use voxel_space::{BrickBox, LevelIndex};
 use world_storage::{LoadContext, LoadReport};
@@ -32,21 +32,16 @@ pub enum HandshakeProgress<C: Connection> {
 }
 
 impl<C: Connection> Handshake<C> {
-    /// Sends the hello for `game`, saying who this player is.
+    /// Sends the hello for `game`, saying who this player is and what they would like to be called (the server makes a valid,
+    /// unused nickname of it and says which in the welcome; see [`ServerInfo::nickname`](crate::ServerInfo::nickname)).
     pub fn start(
         mut connection: C,
         game: NamespacedId,
         identity: &Identity,
+        nickname: &str,
     ) -> Result<Self, ClientError> {
         connection
-            .send(
-                ClientMessage::Hello {
-                    protocol_version: PROTOCOL_VERSION,
-                    game: game.clone(),
-                    player_key: identity.player_key(),
-                }
-                .encode(),
-            )
+            .send(identity.hello(&game, nickname).encode())
             .map_err(|ConnectionClosed| ClientError::ConnectionClosed)?;
         Ok(Self {
             connection,
@@ -272,6 +267,14 @@ impl<C: Connection> Client<C> {
     /// [`ClientEvent::CommandReply`](crate::ClientEvent::CommandReply).
     pub fn send_command(&mut self, text: &str) -> Result<(), ClientError> {
         self.send(&ClientMessage::Command {
+            text: text.to_owned(),
+        })
+    }
+
+    /// Sends a line of chat for every player. It arrives, to this client too, as a
+    /// [`ClientEvent::Chat`](crate::ClientEvent::Chat).
+    pub fn send_chat(&mut self, text: &str) -> Result<(), ClientError> {
+        self.send(&ClientMessage::Chat {
             text: text.to_owned(),
         })
     }

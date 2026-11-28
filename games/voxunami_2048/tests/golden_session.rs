@@ -151,6 +151,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let mut player = Session::<_, Game2048>::connect(
         recorded,
         &Identity::from_secret([1; 32]),
+        "player",
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -324,8 +325,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Pack hashes are BLAKE3 (2026-11-26; protocol 15): the stream hash changed once, for the protocol version in the welcome (15, was 14); the length and the saved world did not,
 /// and the old stream hash, 4_395_887_580_573_967_503, passed with the new hashes while the version was still 14.
 /// The thanksgiving demo, graphics-world-painting merged (protocol 16): only the version in the welcome changed. Checked: with the version put back to 13 the stream is main's, old hash and all.
+/// (scripting-integration's changes, merged into this demo branch:)
+/// Chat and nicknames (2026-11-24; protocol 14): the welcome says what the server made of the player's name ("player": a length byte and six letters), 7 bytes more (58_969 to 58_976, predicted), and says version 14, so the stream's hash moved to 4_973_066_925_433_376_532; the saved world's did not. Checked by taking the stream apart (`docs/history/spikes/scripting/take_apart_recording.py`: the welcome with its version put back to 13 and its nickname taken out, the records' lengths and checksums made again): the old length and the old hash, 13_621_063_276_189_007_546, came back.
+/// The thanksgiving demo, scripting-integration merged (protocol 2026): the welcome has the nickname, 7 bytes more, and says version 2026. Checked: with the nickname taken out of the welcome and the version put back to 16 the first merge's pin comes back.
 const PINNED: (u64, usize, u64) = (
-    14_262_438_525_781_768_713,
-    59_203,
+    15_967_933_976_635_012_138,
+    59_210,
     15_563_235_043_056_448_435,
 );

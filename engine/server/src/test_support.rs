@@ -199,7 +199,7 @@ pub fn log_in(
 ) {
     let identity = test_identity(ordinal);
     connection
-        .send(identity.hello(game).encode())
+        .send(identity.hello(game, "player").encode())
         .expect("the server is listening");
     server.step();
     let frame = connection

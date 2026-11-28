@@ -213,6 +213,7 @@ fn the_command_reload_makes_a_running_server_read_its_packs_folder_again_and_a_p
     let mut player = Session::<_, Cave>::connect(
         Box::new(connection) as Box<dyn Connection>,
         &Identity::from_secret([61; 32]),
+        "player",
         Mode::Playing,
         common::VIEW_RADIUS,
         camera_at([16.5, 110.0, 16.5], 0.0, 0.0),
@@ -290,6 +291,7 @@ fn a_recording_of_a_session_across_a_reload_shows_the_package_and_the_block_as_i
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         common::VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -444,6 +446,7 @@ fn a_server_that_watches_its_packs_folder_reads_it_again_by_itself_when_files_ch
     let mut player = Session::<_, Cave>::connect(
         Box::new(connection) as Box<dyn Connection>,
         &Identity::from_secret([62; 32]),
+        "player",
         Mode::Playing,
         common::VIEW_RADIUS,
         camera_at([16.5, 110.0, 16.5], 0.0, 0.0),

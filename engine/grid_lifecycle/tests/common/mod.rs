@@ -13,8 +13,8 @@ use grid_lifecycle::{ArrivalConfig, GridLifecyclePlugin, LifecycleReport};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPlaced, PlayerPose, PlayersPlugin, PoseReport, SharedPresence};
 use plugin_host::{
-    CommandSpec, HandlerSpec, Phase, Plugin, PluginHost, Prompt, PromptAnswer, PromptAnswered,
-    PromptClosed, PromptId, Registrar, SystemSpec,
+    CommandClass, CommandSpec, HandlerSpec, Phase, Plugin, PluginHost, Prompt, PromptAnswer,
+    PromptAnswered, PromptClosed, PromptId, Registrar, SystemSpec,
 };
 use protocol::{ClientId, ClientMessage, Message, ServerMessage};
 use server::test_support::log_in;
@@ -75,7 +75,7 @@ impl Plugin for Asker {
 
     fn register(&self, registrar: &mut Registrar<'_>) {
         registrar.command(
-            CommandSpec::new("ask", "asks a question of its own"),
+            CommandSpec::new("ask", "asks a question of its own").class(CommandClass::Change),
             |context, client, _| {
                 let _ = context.prompt(client, "Another question?", &["Yes", "No"]);
             },

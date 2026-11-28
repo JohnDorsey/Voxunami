@@ -3,9 +3,10 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use line_language::{Call, CommandValue, Runner as HoleRunner, Sigil};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Message, Tick};
-use server::{Audience, CommandLine, GameLogic, ServerWorld};
+use server::{Audience, GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::far_nodes::FarFileName;
@@ -13,8 +14,8 @@ use world_storage::{FarFileMaker, SavedShip, Section, ShipFormat, WorldData};
 
 use entities::EntityCatalog;
 
-use crate::command::{Argument, Arguments, CommandSpec};
-use crate::context::{Context, Intent, MindContext, Queue, Queued};
+use crate::command::{Argument, CommandClass, CommandNode, CommandSpec};
+use crate::context::{CommandOutcome, Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
 use crate::event::{
     ChannelsChanged, PlayerJoined, PlayerLeft, PromptAnswered, ShipParked, UiResponded,
@@ -121,8 +122,23 @@ impl PluginHost {
     pub fn command_usages(&self) -> Vec<String> {
         command_list(&self.registry)
             .iter()
-            .map(CommandSpec::usage)
+            .map(|spec| spec.listing())
             .collect()
+    }
+
+    /// Every command and subcommand the server has, with the id it has in permissions and the class it was declared with,
+    /// in order of command name (the host's own `/help` among them).
+    pub fn command_nodes(&self) -> Vec<CommandNode> {
+        let mut nodes = Vec::new();
+        for spec in command_list(&self.registry) {
+            let pack = self
+                .registry
+                .commands
+                .get(spec.name())
+                .map_or(HELP_PACK, |entry| entry.pack.as_str());
+            nodes.extend(spec.nodes(pack));
+        }
+        nodes
     }
 
     /// The scope of each piece of saved plugin state, in the order the sections are written.
@@ -212,6 +228,7 @@ fn drain(registry: &Registry, queue: &mut Queue, world: &mut ServerWorld, tick: 
                         tick,
                         client: None,
                         declared: None,
+                        outcome: CommandOutcome::default(),
                     };
                     run(&*event.payload, &mut context);
                 }
@@ -221,14 +238,96 @@ fn drain(registry: &Registry, queue: &mut Queue, world: &mut ServerWorld, tick: 
     }
 }
 
+/// Runs the commands of a line a player typed, and its `{/}` holes, which are commands too. What the window runs (`{.}` holes)
+/// has run before the line was sent, and code cannot be run yet.
+struct CommandRunner<'host> {
+    registry: &'host Registry,
+    queue: &'host mut Queue,
+    world: &'host mut ServerWorld,
+    tick: Tick,
+    client: ClientId,
+}
+
+impl HoleRunner for CommandRunner<'_> {
+    fn command(&mut self, sigil: Sigil, call: &Call) -> Result<CommandValue, String> {
+        if sigil != Sigil::Server {
+            return Err(
+                "a command of the window can only be run by the window, before the line is sent"
+                    .to_owned(),
+            );
+        }
+        let Self {
+            registry,
+            queue,
+            world,
+            tick,
+            client,
+        } = self;
+        let (registry, tick, client) = (*registry, *tick, *client);
+        if call.name == HELP_COMMAND && !registry.commands.is_empty() {
+            let words: Vec<&str> = call
+                .items
+                .iter()
+                .flat_map(|item| item.text.split_whitespace())
+                .collect();
+            for reply in help(registry, &words) {
+                world.reply(client, &reply);
+            }
+            return Ok(CommandValue::None);
+        }
+        let Some(entry) = registry.commands.get(call.name.as_str()) else {
+            let usages: Vec<String> = command_list(registry)
+                .iter()
+                .map(|spec| spec.listing())
+                .collect();
+            return Err(if usages.is_empty() {
+                "this game has no commands".to_owned()
+            } else {
+                format!("unknown command; try {}", usages.join(", "))
+            });
+        };
+        let arguments = entry.spec.parse_items(&call.items)?;
+        let outcome = {
+            let mut run = entry
+                .run
+                .try_borrow_mut()
+                .expect("a command reached a handler that was still running");
+            let mut context = Context {
+                world,
+                registry,
+                queue,
+                tick,
+                client: Some(client),
+                declared: None,
+                outcome: CommandOutcome::default(),
+            };
+            run(&mut context, client, &arguments);
+            context.outcome
+        };
+        drain(registry, queue, world, tick);
+        match outcome.failure {
+            Some(message) => Err(message),
+            None => Ok(outcome.given.unwrap_or(CommandValue::None)),
+        }
+    }
+
+    fn code(&mut self, _: &str) -> Result<CommandValue, String> {
+        Err("code cannot be run yet: scripts are not built".to_owned())
+    }
+}
+
 /// The name of the command the host provides itself.
 pub(crate) const HELP_COMMAND: &str = "help";
+
+/// The pack of the host's own command: the engine.
+const HELP_PACK: &str = "engine";
 
 fn help_spec() -> CommandSpec {
     CommandSpec::new(
         HELP_COMMAND,
         "lists the commands; /help NAME says what one does",
     )
+    .class(CommandClass::Read)
     .argument(Argument::word("command").optional())
 }
 
@@ -250,17 +349,26 @@ fn command_list(registry: &Registry) -> Vec<CommandSpec> {
 /// The replies to `/help`: a line for every command, or for the one named.
 fn help(registry: &Registry, words: &[&str]) -> Vec<String> {
     let specs = command_list(registry);
-    let describe = |spec: &CommandSpec| format!("{}: {}", spec.usage(), spec.summary());
+    let describe = |spec: &CommandSpec| {
+        spec.describe(&[])
+            .expect("a command can always describe itself")
+    };
     match words {
         [] => specs.iter().map(describe).collect(),
-        [wanted] => {
+        [wanted, path @ ..] => {
             let wanted = wanted.strip_prefix('/').unwrap_or(wanted);
             match specs.iter().find(|spec| spec.name() == wanted) {
-                Some(spec) => vec![describe(spec)],
-                None => vec![format!("there is no command {wanted}; /help lists them")],
+                Some(spec) => match spec.describe(path) {
+                    Some(description) => vec![description],
+                    // (more words than the command has subcommands: what `/help` itself says it takes)
+                    None => vec![describe(&help_spec())],
+                },
+                None if path.is_empty() => {
+                    vec![format!("there is no command {wanted}; /help lists them")]
+                }
+                None => vec![describe(&help_spec())],
             }
         }
-        _ => vec![describe(&help_spec())],
     }
 }
 
@@ -300,6 +408,7 @@ fn dispatch_message(
             tick,
             client: Some(client),
             declared: None,
+            outcome: CommandOutcome::default(),
         };
         if !run(&mut context, client, payload) {
             registry.malformed_messages.fetch_add(1, Ordering::Relaxed);
@@ -453,54 +562,26 @@ impl GameLogic for PluginHost {
         let Self {
             registry, queue, ..
         } = self;
-        let line = CommandLine::parse(text);
-        if let Some(line) = &line
-            && line.name == HELP_COMMAND
-            && !registry.commands.is_empty()
-        {
-            for reply in help(registry, &line.arguments) {
-                world.reply(client, &reply);
-            }
-            return;
-        }
-        let known =
-            line.and_then(|line| registry.commands.get(line.name).map(|entry| (line, entry)));
-        let Some((line, entry)) = known else {
-            let usages: Vec<String> = command_list(registry)
-                .iter()
-                .map(CommandSpec::usage)
-                .collect();
-            let reply = if usages.is_empty() {
-                "this game has no commands".to_owned()
-            } else {
-                format!("unknown command; try {}", usages.join(", "))
-            };
-            world.reply(client, &reply);
-            return;
-        };
-        let arguments = match Arguments::parse(&entry.spec, &line.arguments) {
-            Ok(arguments) => arguments,
-            Err(reply) => {
-                world.reply(client, &reply);
+        // the slash is not needed: a line is a command whatever its first character
+        let text = text.trim_start();
+        let text = text.strip_prefix('/').unwrap_or(text);
+        let line = match line_language::scan(Sigil::Server, text) {
+            Ok(line) => line,
+            Err(error) => {
+                world.reply(client, &error.to_string());
                 return;
             }
         };
-        {
-            let mut run = entry
-                .run
-                .try_borrow_mut()
-                .expect("a command reached a handler that was still running");
-            let mut context = Context {
-                world: &mut *world,
-                registry,
-                queue: &mut *queue,
-                tick,
-                client: Some(client),
-                declared: None,
-            };
-            run(&mut context, client, &arguments);
+        let mut runner = CommandRunner {
+            registry,
+            queue,
+            world: &mut *world,
+            tick,
+            client,
+        };
+        if let Err(failure) = line_language::evaluate(&line, &mut runner) {
+            world.reply(client, &failure.to_string());
         }
-        drain(registry, queue, world, tick);
     }
 
     fn tick(&mut self, tick: Tick, world: &mut ServerWorld) {
@@ -525,6 +606,7 @@ impl GameLogic for PluginHost {
                             tick,
                             client: None,
                             declared: Some(&entry.spec),
+                            outcome: CommandOutcome::default(),
                         };
                         run(&mut context);
                     }

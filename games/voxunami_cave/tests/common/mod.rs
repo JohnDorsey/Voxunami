@@ -138,6 +138,7 @@ impl Rig {
         let mut player = Session::<_, Cave>::connect(
             connection,
             &identity,
+            "player",
             Mode::Playing,
             VIEW_RADIUS,
             start,
@@ -180,6 +181,7 @@ impl Rig {
         Session::<_, Cave>::connect(
             connection,
             &identity,
+            "player",
             Mode::Playing,
             VIEW_RADIUS,
             start,

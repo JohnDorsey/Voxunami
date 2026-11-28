@@ -9,17 +9,17 @@ use voxel_space::{
     BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, LocalVoxelIndex,
 };
 
-use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
 use crate::packs::{
     MAXIMUM_PACK_CHUNK, PackListing, maximum_pack_bytes, read_listings, write_listings,
 };
-use crate::types::{ClientId, EntityId, Tick};
+use crate::types::{ClientId, EntityId, Nickname, PlayerKey, Tick};
 use crate::wire::{
     read_brick_box, read_brick_coordinate, read_entity_pose, read_free_regions, read_grid,
     read_grid_pose, read_level, write_brick_box, write_brick_coordinate, write_entity_pose,
     write_free_regions, write_grid, write_grid_pose, write_level,
 };
+use crate::{MAXIMUM_CHAT_LENGTH, MAXIMUM_COMMAND_LENGTH};
 
 const KIND_WELCOME: u8 = 1;
 const KIND_INTEREST_CHANGED: u8 = 2;
@@ -39,11 +39,19 @@ const KIND_GRIDS_DESPAWNED: u8 = 15;
 const KIND_PACKAGE_REPLACED: u8 = 16;
 const KIND_PACKS: u8 = 17;
 const KIND_PACK_CHUNK: u8 = 18;
+const KIND_CHAT: u8 = 19;
 
 /// What follows the pose of a ship that is told of: its bricks (all of them follow), a generator and an extent, or the box of a far ship.
 const CONTENT_BRICKS: u8 = 0;
 const CONTENT_GENERATED: u8 = 1;
 const CONTENT_FAR: u8 = 2;
+
+/// A player who spoke: who they are, and what they were called at the time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Speaker {
+    pub key: PlayerKey,
+    pub nickname: Nickname,
+}
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +61,8 @@ pub struct Welcome {
     pub game: NamespacedId,
     /// The id the server gave this connection.
     pub client: ClientId,
+    /// What the server made of the name the player asked for: valid, and not any other player's.
+    pub nickname: Nickname,
     pub ticks_per_second: u32,
     /// The last tick the server completed before this client joined.
     pub tick: Tick,
@@ -197,6 +207,13 @@ pub enum ServerMessage {
     Disconnected { reason: String },
     /// The answer to a `Command` this client sent: at most [`MAXIMUM_COMMAND_LENGTH`] bytes of text.
     CommandReply { text: String },
+    /// A line of chat, for every player. (Protocol version 14.)
+    Chat {
+        /// Who said it, or `None` for the server itself (a notice that is not the answer to a command).
+        speaker: Option<Speaker>,
+        /// At most [`MAXIMUM_CHAT_LENGTH`] bytes.
+        text: String,
+    },
     /// Entities that came into the region the client watches (or were made in it), in order of id.
     /// (Protocol version 3.)
     EntitiesSpawned(Vec<EntityState>),
@@ -259,6 +276,7 @@ impl ServerMessage {
                 writer.write_u32(welcome.protocol_version);
                 writer.write_identifier(&welcome.game);
                 writer.write_u32(welcome.client.get());
+                writer.write_string(welcome.nickname.as_str());
                 writer.write_u32(welcome.ticks_per_second);
                 writer.write_u64(welcome.tick.get());
                 writer.write_u64(welcome.world_clock);
@@ -326,6 +344,18 @@ impl ServerMessage {
             }
             Self::CommandReply { text } => {
                 writer.write_u8(KIND_COMMAND_REPLY);
+                writer.write_string(text);
+            }
+            Self::Chat { speaker, text } => {
+                writer.write_u8(KIND_CHAT);
+                match speaker {
+                    None => writer.write_u8(0),
+                    Some(speaker) => {
+                        writer.write_u8(1);
+                        writer.write_raw(speaker.key.bytes());
+                        writer.write_string(speaker.nickname.as_str());
+                    }
+                }
                 writer.write_string(text);
             }
             Self::EntitiesSpawned(entities) => {
@@ -438,6 +468,7 @@ impl ServerMessage {
                 protocol_version: reader.read_u32()?,
                 game: reader.read_identifier()?,
                 client: ClientId::new(reader.read_u32()?),
+                nickname: read_nickname(&mut reader)?,
                 ticks_per_second: reader.read_u32()?,
                 tick: Tick::new(reader.read_u64()?),
                 world_clock: reader.read_u64()?,
@@ -530,6 +561,31 @@ impl ServerMessage {
                     return Err(DecodeError::Invalid("a command reply is too long").into());
                 }
                 Self::CommandReply {
+                    text: text.to_owned(),
+                }
+            }
+            KIND_CHAT => {
+                let speaker = match reader.read_u8()? {
+                    0 => None,
+                    1 => Some(Speaker {
+                        key: PlayerKey::new(
+                            reader.read_raw(32)?.try_into().expect("32 bytes were read"),
+                        ),
+                        nickname: read_nickname(&mut reader)?,
+                    }),
+                    _ => {
+                        return Err(DecodeError::Invalid(
+                            "a speaker is neither a player nor the server",
+                        )
+                        .into());
+                    }
+                };
+                let text = reader.read_string()?;
+                if text.len() > MAXIMUM_CHAT_LENGTH {
+                    return Err(DecodeError::Invalid("a line of chat is too long").into());
+                }
+                Self::Chat {
+                    speaker,
                     text: text.to_owned(),
                 }
             }
@@ -727,6 +783,11 @@ impl ServerMessage {
 }
 
 /// The id of a ship: a root grid is a level, which a client knows from the world description and is never told of.
+/// A nickname the server sent: it made it, so one that is not valid is a damaged frame.
+fn read_nickname(reader: &mut ByteReader<'_>) -> Result<Nickname, DecodeError> {
+    Nickname::parse(reader.read_string()?).ok_or(DecodeError::Invalid("a nickname is not valid"))
+}
+
 fn read_ship(reader: &mut ByteReader<'_>) -> Result<GridId, DecodeError> {
     let id = read_grid(reader)?;
     if id.root_level().is_some() {
@@ -795,6 +856,7 @@ mod tests {
                 protocol_version: 2,
                 game: id("voxunami_cave:game"),
                 client: ClientId::new(3),
+                nickname: Nickname::parse("Alex").unwrap(),
                 ticks_per_second: 20,
                 tick: Tick::new(12_345),
                 world_clock: 9_876_543_210,
@@ -874,6 +936,17 @@ mod tests {
             },
             ServerMessage::CommandReply {
                 text: "you are in the nether".to_owned(),
+            },
+            ServerMessage::Chat {
+                speaker: Some(Speaker {
+                    key: PlayerKey::new([5; 32]),
+                    nickname: Nickname::parse("Alex_2").unwrap(),
+                }),
+                text: "hello {>1+1} \\ everyone".to_owned(),
+            },
+            ServerMessage::Chat {
+                speaker: None,
+                text: "you are chatting too fast".to_owned(),
             },
             ServerMessage::EntitiesSpawned(vec![
                 EntityState {
@@ -1032,6 +1105,7 @@ mod tests {
             protocol_version: 0x0A0B_0C0D,
             game: id("a:b"),
             client: ClientId::new(1),
+            nickname: Nickname::parse("Alex").unwrap(),
             ticks_per_second: 20,
             tick: Tick::new(0x0102),
             world_clock: 0x1112_1314_1516_1718,
@@ -1045,6 +1119,7 @@ mod tests {
                 0x0D, 0x0C, 0x0B, 0x0A, // the version
                 3, b'a', b':', b'b', // the game
                 1, 0, 0, 0, // the client
+                4, b'A', b'l', b'e', b'x', // the nickname the server made
                 20, 0, 0, 0, // ticks per second
                 2, 1, 0, 0, 0, 0, 0, 0, // the tick
                 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, // the clock
@@ -1226,6 +1301,28 @@ mod tests {
             }
             .encode(),
             [8, 2, b'o', b'k']
+        );
+        assert_eq!(
+            ServerMessage::Chat {
+                speaker: None,
+                text: "ok".to_owned()
+            }
+            .encode(),
+            [19, 0, 2, b'o', b'k']
+        );
+        let mut spoken = vec![19, 1];
+        spoken.extend([8; 32]);
+        spoken.extend([2, b'A', b'l', 2, b'h', b'i']);
+        assert_eq!(
+            ServerMessage::Chat {
+                speaker: Some(Speaker {
+                    key: PlayerKey::new([8; 32]),
+                    nickname: Nickname::parse("Al").unwrap(),
+                }),
+                text: "hi".to_owned()
+            }
+            .encode(),
+            spoken
         );
         let mut challenge = vec![12];
         challenge.extend([3; 32]);
@@ -1575,5 +1672,34 @@ mod tests {
             frame[position] = replacement;
             let _ = ServerMessage::decode(&frame);
         }
+    }
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+
+    #[test]
+    fn a_line_of_chat_may_be_as_long_as_the_limit_and_no_longer() {
+        let longest = ServerMessage::Chat {
+            speaker: None,
+            text: "a".repeat(MAXIMUM_CHAT_LENGTH),
+        };
+        assert_eq!(ServerMessage::decode(&longest.encode()), Ok(longest));
+        let too_long = ServerMessage::Chat {
+            speaker: None,
+            text: "a".repeat(MAXIMUM_CHAT_LENGTH + 1),
+        };
+        assert!(ServerMessage::decode(&too_long.encode()).is_err());
+    }
+
+    #[test]
+    fn a_speaker_that_is_neither_a_player_nor_the_server_and_a_nickname_that_is_not_valid_are_damage()
+     {
+        assert!(ServerMessage::decode(&[19, 2, 0]).is_err());
+        let mut invalid = vec![19, 1];
+        invalid.extend([8; 32]);
+        invalid.extend([3, b'a', b' ', b'b', 0]);
+        assert!(ServerMessage::decode(&invalid).is_err());
     }
 }

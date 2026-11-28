@@ -230,6 +230,7 @@ fn a_recording_of_a_session_with_a_pack_shows_the_packs_blocks_with_no_pack_inst
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -501,6 +502,7 @@ fn join_keeping_packs(
     Session::<_, Cave>::connect_with_packs(
         connection,
         &Identity::from_secret([9; 32]),
+        "player",
         game_shell::session::Mode::Playing,
         VIEW_RADIUS,
         camera_at([0.0, 40.0, 0.0], 0.0, 0.0),
@@ -577,6 +579,7 @@ fn a_server_made_from_a_folder_of_packs_sends_the_ones_that_clients_keep_and_a_r
         let mut replay = Session::<_, Cave>::connect(
             connection,
             &Identity::generate(),
+            "player",
             game_shell::session::Mode::Replaying,
             VIEW_RADIUS,
             camera_at([0.0; 3], 0.0, 0.0),
@@ -625,6 +628,7 @@ fn replayed(path: &std::path::Path) -> common::Player {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         game_shell::session::Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

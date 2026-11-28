@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use plugin_host::{
-    Argument, CommandSpec, HandlerSpec, Plugin, PluginHost, Prompt, PromptAnswer, PromptAnswered,
-    PromptClosed, PromptError, PromptId, Registrar,
+    Argument, CommandClass, CommandSpec, HandlerSpec, Plugin, PluginHost, Prompt, PromptAnswer,
+    PromptAnswered, PromptClosed, PromptError, PromptId, Registrar,
 };
 use protocol::{ClientId, ClientMessage, Message, ServerMessage};
 use server::test_support::log_in;
@@ -35,7 +35,7 @@ impl Plugin for Asker {
     fn register(&self, registrar: &mut Registrar<'_>) {
         let asked = Arc::clone(&self.asked);
         registrar.command(
-            CommandSpec::new("ask", "asks"),
+            CommandSpec::new("ask", "asks").class(CommandClass::Change),
             move |context, client, _| {
                 let result = context.prompt(client, "Delete the level?", &["Keep it", "Delete it"]);
                 asked.lock().unwrap().push(result);
@@ -43,7 +43,7 @@ impl Plugin for Asker {
         );
         let asked = Arc::clone(&self.asked);
         registrar.command(
-            CommandSpec::new("askbad", "asks badly"),
+            CommandSpec::new("askbad", "asks badly").class(CommandClass::Change),
             move |context, client, _| {
                 let result = context.prompt(client, "Nothing to choose?", &[]);
                 asked.lock().unwrap().push(result);
@@ -51,7 +51,7 @@ impl Plugin for Asker {
         );
         let asked = Arc::clone(&self.asked);
         registrar.command(
-            CommandSpec::new("askabsent", "asks someone not there"),
+            CommandSpec::new("askabsent", "asks someone not there").class(CommandClass::Change),
             move |context, _, _| {
                 let result = context.prompt(ClientId::new(99), "Hello?", &["Yes"]);
                 asked.lock().unwrap().push(result);
@@ -59,7 +59,9 @@ impl Plugin for Asker {
         );
         let cancelled = Arc::clone(&self.cancelled);
         registrar.command(
-            CommandSpec::new("cancel", "withdraws a question").argument(Argument::number("number")),
+            CommandSpec::new("cancel", "withdraws a question")
+                .class(CommandClass::Change)
+                .argument(Argument::number("number")),
             move |context, client, arguments| {
                 let id = PromptId::new(arguments.number(0) as u64);
                 cancelled

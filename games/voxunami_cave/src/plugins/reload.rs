@@ -5,7 +5,7 @@
 //! Cave follows it (`SharedPackage`).
 
 use namespaced_id::NamespacedId;
-use plugin_host::{CommandSpec, Plugin, Registrar};
+use plugin_host::{CommandClass, CommandSpec, Plugin, Registrar};
 
 /// The command `/reload`.
 #[derive(Debug, Default)]
@@ -23,7 +23,8 @@ impl Plugin for ReloadPlugin {
             CommandSpec::new(
                 "reload",
                 "reads the data packs again and replaces what the world is made of, without stopping it",
-            ),
+            )
+            .class(CommandClass::Change),
             |context, client, _arguments| {
                 context.world().request_reload();
                 context.reply(

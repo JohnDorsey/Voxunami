@@ -109,6 +109,7 @@ fn join(connection: Box<dyn Connection>, position: [f64; 3]) -> Player {
     Session::<_, Cave>::connect(
         connection,
         &identity,
+        "player",
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -296,6 +297,7 @@ fn a_recording_made_over_the_network_replays_the_same_view() {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),
@@ -357,7 +359,9 @@ fn a_player_who_asks_to_watch_more_than_the_server_allows_is_refused_with_a_reas
     let mut connection = server.connect();
     let identity = Identity::from_secret([200; 32]);
     let game = voxunami_cave::game_id();
-    connection.send(identity.hello(&game).encode()).unwrap();
+    connection
+        .send(identity.hello(&game, "player").encode())
+        .unwrap();
     let challenge = loop {
         if let Some(frame) = connection.receive().unwrap() {
             break frame;

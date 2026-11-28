@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use plugin_host::{
-    Argument, CommandSpec, FormError, FormId, HandlerSpec, MAXIMUM_FORMS_PER_PLAYER, Plugin,
-    PluginHost, Registrar, UiAction, UiClose, UiResponded, UiResponse, UiShow,
+    Argument, CommandClass, CommandSpec, FormError, FormId, HandlerSpec, MAXIMUM_FORMS_PER_PLAYER,
+    Plugin, PluginHost, Registrar, UiAction, UiClose, UiResponded, UiResponse, UiShow,
 };
 use protocol::{ClientId, ClientMessage, Message, ServerMessage};
 use server::test_support::log_in;
@@ -78,7 +78,7 @@ impl Plugin for Shower {
              shown: &Shown| {
                 let shown = Arc::clone(shown);
                 registrar.command(
-                    CommandSpec::new(name, "shows"),
+                    CommandSpec::new(name, "shows").class(CommandClass::Change),
                     move |context, client, _| {
                         let result = show(context, client);
                         shown.lock().unwrap().push(result);
@@ -115,7 +115,9 @@ impl Plugin for Shower {
         );
         let updates = Arc::clone(&self.updates);
         registrar.command(
-            CommandSpec::new("update", "changes a form").argument(Argument::number("number")),
+            CommandSpec::new("update", "changes a form")
+                .class(CommandClass::Change)
+                .argument(Argument::number("number")),
             move |context, client, arguments| {
                 let form = FormId::new(arguments.number(0) as u64);
                 updates
@@ -126,7 +128,9 @@ impl Plugin for Shower {
         );
         let closed = Arc::clone(&self.closed);
         registrar.command(
-            CommandSpec::new("close", "takes a form away").argument(Argument::number("number")),
+            CommandSpec::new("close", "takes a form away")
+                .class(CommandClass::Change)
+                .argument(Argument::number("number")),
             move |context, client, arguments| {
                 let form = FormId::new(arguments.number(0) as u64);
                 closed.lock().unwrap().push(context.close_ui(client, form));

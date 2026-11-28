@@ -9,9 +9,9 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    Argument, CASCADE_LIMIT, CommandSpec, EntityDespawned, EntitySpawned, Event, HandlerSpec,
-    Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError, SaveScope,
-    ShipParked, SystemSpec, Verdict,
+    Argument, CASCADE_LIMIT, CommandClass, CommandSpec, CommandValue, EntityDespawned,
+    EntitySpawned, Event, HandlerSpec, Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost,
+    Registrar, RegistrationError, SaveScope, ShipParked, SystemSpec, Verdict,
 };
 use protocol::{ClientMessage, EntityId, Message, ServerMessage};
 use server::test_support::log_in;
@@ -472,7 +472,10 @@ fn plugins_that_cannot_be_registered_are_refused_with_the_reason() {
         Some(RegistrationError::DuplicateMessage(id("test:kind")))
     );
     let command = |registrar: &mut Registrar<'_>| {
-        registrar.command(CommandSpec::new("go", "goes"), |_, _, _| {});
+        registrar.command(
+            CommandSpec::new("go", "goes").class(CommandClass::Change),
+            |_, _, _| {},
+        );
     };
     assert_eq!(
         registration_error(vec![plugin("test:a", command), plugin("test:b", command)]),
@@ -969,6 +972,7 @@ fn a_command_gets_its_arguments_and_an_unknown_one_is_answered_with_the_usages()
             let log = Arc::clone(&log);
             registrar.command(
                 CommandSpec::new("tp", "teleports")
+                    .class(CommandClass::Change)
                     .argument(Argument::number("x"))
                     .argument(Argument::number("y"))
                     .argument(Argument::number("z")),
@@ -985,7 +989,10 @@ fn a_command_gets_its_arguments_and_an_unknown_one_is_answered_with_the_usages()
                     context.reply(client, "teleported");
                 },
             );
-            registrar.command(CommandSpec::new("fly", "flies"), |_, _, _| {});
+            registrar.command(
+                CommandSpec::new("fly", "flies").class(CommandClass::Change),
+                |_, _, _| {},
+            );
         })]
     })
     .unwrap();
@@ -1274,6 +1281,7 @@ fn plugin_with_commands() -> Box<dyn Plugin> {
     plugin("test:p", |registrar| {
         registrar.command(
             CommandSpec::new("give", "gives a block to a player")
+                .class(CommandClass::Change)
                 .argument(Argument::identifier("block"))
                 .argument(Argument::integer("count").optional()),
             |context, client, arguments| {
@@ -1289,7 +1297,9 @@ fn plugin_with_commands() -> Box<dyn Plugin> {
             },
         );
         registrar.command(
-            CommandSpec::new("say", "says words").argument(Argument::rest("words")),
+            CommandSpec::new("say", "says words")
+                .class(CommandClass::Change)
+                .argument(Argument::rest("words")),
             |context, client, arguments| {
                 context.reply(client, &arguments.rest(0).join("+"));
             },
@@ -1364,10 +1374,233 @@ fn help_lists_every_command_or_explains_one() {
     );
 }
 
+/// A command with subcommands, two deep: `/zone` alone, `list`, `go NAME`, and `mark` with `add N` and `remove N`.
+fn plugin_with_a_tree() -> Box<dyn Plugin> {
+    plugin("test:p", |registrar| {
+        registrar.command(
+            CommandSpec::new("zone", "works with zones")
+                .class(CommandClass::Read)
+                .runs_alone()
+                .subcommand(CommandSpec::new("list", "lists the zones"))
+                .subcommand(
+                    CommandSpec::new("go", "goes to a zone")
+                        .class(CommandClass::Change)
+                        .argument(Argument::word("name")),
+                )
+                .subcommand(
+                    CommandSpec::new("mark", "marks zones")
+                        .class(CommandClass::Change)
+                        .subcommand(
+                            CommandSpec::new("add", "marks a zone")
+                                .argument(Argument::integer("n")),
+                        )
+                        .subcommand(
+                            CommandSpec::new("remove", "unmarks a zone")
+                                .class(CommandClass::Permission)
+                                .argument(Argument::integer("n")),
+                        ),
+                ),
+            |context, client, arguments| {
+                let which = arguments.subcommand().join(" ");
+                let text = match arguments.subcommand() {
+                    ["go"] => format!("{which} {}", arguments.word(0)),
+                    ["mark", _] => format!("{which} {}", arguments.integer(0)),
+                    _ => format!("[{which}]"),
+                };
+                context.reply(client, &text);
+            },
+        );
+    })
+}
+
+const ZONE_USAGE: &str =
+    "usage: /zone, /zone list, /zone go NAME, /zone mark add N, /zone mark remove N";
+
+#[test]
+fn a_command_goes_down_its_subcommands_and_its_arguments_are_those_of_the_one_it_ends_at() {
+    let mut rig = build(|_, _| vec![plugin_with_a_tree()]).unwrap();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/zone",
+                "/zone list",
+                "/zone go moon",
+                "/zone mark add 5",
+                "/zone mark remove -2",
+            ]
+        ),
+        ["[]", "[list]", "go moon", "mark add 5", "mark remove -2"]
+    );
+}
+
+#[test]
+fn a_word_that_is_no_subcommand_and_a_node_that_is_not_finished_are_answered_with_the_whole_usage()
+{
+    let mut rig = build(|_, _| vec![plugin_with_a_tree()]).unwrap();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/zone fly",
+                "/zone go",
+                "/zone go a b",
+                "/zone list now",
+                "/zone mark",
+                "/zone mark add",
+                "/zone mark fly 1",
+            ]
+        ),
+        [ZONE_USAGE; 7]
+    );
+    // an argument that is not what it should be says which, after the whole usage
+    assert_eq!(
+        replies_to(&mut rig, &["/zone mark add x", "/zone mark remove 1.5"]),
+        [
+            format!("{ZONE_USAGE}; N must be a whole number"),
+            format!("{ZONE_USAGE}; N must be a whole number"),
+        ]
+    );
+}
+
+#[test]
+fn a_command_that_has_subcommands_and_does_not_run_alone_answers_a_bare_call_with_its_usage() {
+    let mut rig = build(|_, _| {
+        vec![plugin("test:p", |registrar| {
+            registrar.command(
+                CommandSpec::new("pen", "works with pens")
+                    .class(CommandClass::Change)
+                    .subcommand(CommandSpec::new("up", "lifts it"))
+                    .subcommand(CommandSpec::new("down", "lowers it")),
+                |context, client, arguments| {
+                    context.reply(client, &format!("{:?}", arguments.subcommand()));
+                },
+            );
+        })]
+    })
+    .unwrap();
+    assert_eq!(
+        replies_to(&mut rig, &["/pen", "/pen up", "/pen sideways", "/nonsense"]),
+        [
+            "usage: /pen up, /pen down",
+            "[\"up\"]",
+            "usage: /pen up, /pen down",
+            "unknown command; try /help [COMMAND], /pen up|down",
+        ]
+    );
+}
+
+#[test]
+fn help_comes_from_the_tree_for_a_command_a_subcommand_and_one_below_it() {
+    let mut rig = build(|_, _| vec![plugin_with_a_tree()]).unwrap();
+    let help = "/help [COMMAND]: lists the commands; /help NAME says what one does";
+    let zone = format!("{}: works with zones", &ZONE_USAGE["usage: ".len()..]);
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/help",
+                "/help zone",
+                "/help zone mark",
+                "/help zone mark add",
+                "/help zone go",
+                "/help zone nothing",
+                "/nonsense",
+            ]
+        ),
+        [
+            help.to_owned(),
+            zone.clone(),
+            zone,
+            "/zone mark add N, /zone mark remove N: marks zones".to_owned(),
+            "/zone mark add N: marks a zone".to_owned(),
+            "/zone go NAME: goes to a zone".to_owned(),
+            help.to_owned(),
+            "unknown command; try /help [COMMAND], /zone [list|go|mark]".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn every_command_and_subcommand_has_an_id_in_its_pack_and_a_class_that_a_subcommand_may_take_from_above()
+ {
+    let host = PluginHost::new(vec![plugin_with_a_tree()], &sample_world(&game())).unwrap();
+    let nodes: Vec<(String, Option<CommandClass>, bool)> = host
+        .command_nodes()
+        .iter()
+        .map(|node| (node.id.to_string(), node.class, node.runs))
+        .collect();
+    let read = Some(CommandClass::Read);
+    let change = Some(CommandClass::Change);
+    let permission = Some(CommandClass::Permission);
+    assert_eq!(
+        nodes,
+        [
+            ("engine:help".to_owned(), read, true),
+            // `/zone` runs alone and reads; `list` takes that; `go` and `mark` change; `add` takes that and `remove` grants
+            ("test:zone".to_owned(), read, true),
+            ("test:zone.list".to_owned(), read, true),
+            ("test:zone.go".to_owned(), change, true),
+            ("test:zone.mark".to_owned(), change, false),
+            ("test:zone.mark.add".to_owned(), change, true),
+            ("test:zone.mark.remove".to_owned(), permission, true),
+        ]
+    );
+}
+
+#[test]
+fn a_command_the_server_runs_with_no_class_stops_the_host_from_starting_and_names_it() {
+    let no_class = |registrar: &mut Registrar<'_>| {
+        registrar.command(CommandSpec::new("loose", "has none"), |_, _, _| {});
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", no_class)]),
+        Some(RegistrationError::CommandWithoutClass(
+            "test:loose".to_owned()
+        ))
+    );
+    // a subcommand that no class reaches is named by its whole id
+    let one_child_without = |registrar: &mut Registrar<'_>| {
+        registrar.command(
+            CommandSpec::new("tree", "has a branch")
+                .subcommand(CommandSpec::new("left", "").class(CommandClass::Read))
+                .subcommand(CommandSpec::new("right", "")),
+            |_, _, _| {},
+        );
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", one_child_without)]),
+        Some(RegistrationError::CommandWithoutClass(
+            "test:tree.right".to_owned()
+        ))
+    );
+    // a command with subcommands that does not run alone needs no class of its own when each below it has one
+    let classed_below = |registrar: &mut Registrar<'_>| {
+        registrar.command(
+            CommandSpec::new("tree", "has a branch")
+                .subcommand(CommandSpec::new("left", "").class(CommandClass::Read))
+                .subcommand(CommandSpec::new("right", "").class(CommandClass::Change)),
+            |_, _, _| {},
+        );
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", classed_below)]),
+        None
+    );
+    // the window's commands, typed with a dot, are not asked of the server's permissions
+    let window = |registrar: &mut Registrar<'_>| {
+        registrar.command(CommandSpec::new("look", "").with_prefix('.'), |_, _, _| {});
+    };
+    assert_eq!(registration_error(vec![plugin("test:a", window)]), None);
+}
+
 #[test]
 fn help_belongs_to_the_host_and_a_game_without_commands_has_none() {
     let help = |registrar: &mut Registrar<'_>| {
-        registrar.command(CommandSpec::new("help", "my own"), |_, _, _| {});
+        registrar.command(
+            CommandSpec::new("help", "my own").class(CommandClass::Change),
+            |_, _, _| {},
+        );
     };
     assert_eq!(
         registration_error(vec![plugin("test:a", help)]),
@@ -1378,6 +1611,283 @@ fn help_belongs_to_the_host_and_a_game_without_commands_has_none() {
         replies_to(&mut rig, &["/help"]),
         ["this game has no commands"]
     );
+}
+
+// ---------------------------------------------------------------- holes in a command line (scripting spec 4)
+
+/// Commands that give values, so that holes have something to be worth, and write down which ran.
+fn plugin_with_values(log: &Log) -> Box<dyn Plugin> {
+    let log = Arc::clone(log);
+    plugin("test:values", move |registrar| {
+        let gives = |name: &'static str, value: CommandValue| {
+            let log = Arc::clone(&log);
+            (
+                CommandSpec::new(name, "gives a value").class(CommandClass::Change),
+                move |context: &mut plugin_host::Context<'_>,
+                      _: protocol::ClientId,
+                      _: &plugin_host::Arguments<'_>| {
+                    note(&log, name);
+                    context.give(value.clone());
+                },
+            )
+        };
+        let text = |text: &str| CommandValue::Text(text.to_owned());
+        for (spec, run) in [
+            gives("two", CommandValue::Integer(2)),
+            gives("half", CommandValue::Float(0.5)),
+            gives("yes", CommandValue::Bool(true)),
+            gives("name", text("Alex")),
+            gives("pair", text("1 2")),
+            gives("five_as_text", text("5")),
+            gives("empty", text("")),
+            gives("braces", text(r"{/two} \ }")),
+            gives("nothing", CommandValue::None),
+        ] {
+            registrar.command(spec, run);
+        }
+        let broken_log = Arc::clone(&log);
+        registrar.command(
+            CommandSpec::new("broken", "fails").class(CommandClass::Change),
+            move |context, _, _| {
+                note(&broken_log, "broken");
+                context.fail("it broke");
+            },
+        );
+        let chatty_log = Arc::clone(&log);
+        registrar.command(
+            CommandSpec::new("chatty", "replies and gives").class(CommandClass::Change),
+            move |context, client, _| {
+                note(&chatty_log, "chatty");
+                context.reply(client, "hello");
+                context.give(CommandValue::Text("x".to_owned()));
+            },
+        );
+        registrar.command(
+            CommandSpec::new("go", "takes a number")
+                .class(CommandClass::Change)
+                .argument(Argument::number("x")),
+            |context, client, arguments| {
+                context.reply(client, &format!("go {}", arguments.number(0)))
+            },
+        );
+        registrar.command(
+            CommandSpec::new("pick", "takes a word")
+                .class(CommandClass::Change)
+                .argument(Argument::word("word")),
+            |context, client, arguments| {
+                context.reply(client, &format!("pick {}", arguments.word(0)))
+            },
+        );
+    })
+}
+
+fn rig_with_values() -> (Rig, Log) {
+    let log = new_log();
+    let rig = build(|_, _| vec![plugin_with_commands(), plugin_with_values(&log)]).unwrap();
+    (rig, log)
+}
+
+#[test]
+fn a_hole_inside_the_rest_of_a_command_is_pasted_as_text_and_its_words_are_words() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/say {/two}",
+                "/say a{/name}b",
+                "/say {/pair} end",
+                "/say x{/pair}y",
+                "/say {/half} {/yes} {/nothing}",
+                "say {/two}",
+            ]
+        ),
+        ["2", "aAlexb", "1+2+end", "x1+2y", "0.5+True+None", "2"]
+    );
+}
+
+#[test]
+fn a_hole_that_is_a_whole_argument_fills_a_slot_with_a_value_of_the_right_kind() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/give base_blocks:lamp {/two}",
+                "/go {/two}",
+                "/go {/half}",
+                "/pick {/name}",
+            ]
+        ),
+        ["gave 2 of base_blocks:lamp", "go 2", "go 0.5", "pick Alex"]
+    );
+}
+
+#[test]
+fn a_value_of_the_wrong_kind_is_refused_and_names_the_slot_and_the_hole() {
+    let (mut rig, _) = rig_with_values();
+    // the hole ran before the command was refused, and the answer says so
+    let ran = " (1 hole before it already ran and is not undone)";
+    let expected = [
+        "usage: /give BLOCK [COUNT]; COUNT must be a whole number, and hole 1 (at character 11) gave a number with a fraction",
+        "usage: /give BLOCK [COUNT]; COUNT must be a whole number, and hole 1 (at character 11) gave text",
+        "usage: /give BLOCK [COUNT]; COUNT must be a whole number, and hole 1 (at character 11) gave text",
+        "usage: /give BLOCK [COUNT]; BLOCK must be an identifier like namespace:name, and hole 1 (at character 7) gave text",
+        "usage: /go X; X must be a number, and hole 1 (at character 5) gave a truth value (True or False)",
+        "usage: /go X; X must be a number, and hole 1 (at character 5) gave text",
+        "usage: /pick WORD; WORD must be a word, and hole 1 (at character 7) gave a whole number",
+        "usage: /pick WORD; WORD must be a word, and hole 1 (at character 7) gave text that is empty or holds a blank or control character",
+    ];
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/give a:b {/half}",
+                "/give a:b {/name}",
+                "/give a:b {/five_as_text}",
+                "/give {/name}",
+                "/go {/yes}",
+                "/go {/name}",
+                "/pick {/two}",
+                "/pick {/pair}",
+            ]
+        ),
+        expected.map(|reply| format!("{reply}{ran}")),
+        "nothing is converted by guessing: the text 5 is not a whole number, and text with a space is not a word"
+    );
+}
+
+#[test]
+fn a_hole_joined_to_text_cannot_fill_a_slot_that_is_not_the_rest() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/give a:b 1{/two}", "/go {/two}{/two}"]),
+        [
+            "usage: /give BLOCK [COUNT]; COUNT is made of text and a hole, and only the argument that takes the rest can be (1 hole before it already ran and is not undone)",
+            "usage: /go X; X is made of text and a hole, and only the argument that takes the rest can be (2 holes before it already ran and are not undone)",
+        ]
+    );
+}
+
+#[test]
+fn a_rest_that_needs_a_word_and_gets_none_is_answered_with_the_usage() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/say {/empty}", "/say a {/empty}"]),
+        [
+            "usage: /say WORDS... (1 hole before it already ran and is not undone)",
+            "a"
+        ]
+    );
+}
+
+#[test]
+fn a_failing_hole_stops_the_line_and_says_which_hole_and_what_already_ran() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/say a {/broken} {/two}",
+                "/say {/name} {/broken}",
+                "/say {/nonsense}"
+            ]
+        ),
+        [
+            "hole 1 (at character 8): it broke",
+            "hole 2 (at character 14): it broke (1 hole before it already ran and is not undone)",
+            "hole 1 (at character 6): unknown command; try /braces, /broken, /chatty, /empty, /five_as_text, /give BLOCK [COUNT], /go X, /half, /help [COMMAND], /name, /nothing, /pair, /pick WORD, /say WORDS..., /two, /yes",
+        ]
+    );
+    // `say` never ran, and the hole after the failing one never ran
+    assert_eq!(lines(&log), ["broken", "name", "broken"]);
+}
+
+#[test]
+fn a_command_that_fails_after_its_holes_ran_says_so() {
+    let (mut rig, _) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/go {/half} {/two}"]),
+        ["usage: /go X (2 holes before it already ran and are not undone)"]
+    );
+}
+
+#[test]
+fn what_a_nested_command_says_is_said_and_each_command_gives_only_its_own_value() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/say {/chatty}",
+                "/say {/two} {/nothing}",
+                "/say {/help say}"
+            ]
+        ),
+        ["hello", "x", "2+None", "/say WORDS...: says words", "None"]
+    );
+    assert_eq!(lines(&log), ["chatty", "two", "nothing"]);
+}
+
+#[test]
+fn what_a_hole_gives_is_never_read_as_a_hole() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(replies_to(&mut rig, &["/say {/braces}"]), [r"{/two}+\+}"]);
+    assert_eq!(
+        lines(&log),
+        ["braces"],
+        "the braces in what it gave ran nothing"
+    );
+}
+
+#[test]
+fn escapes_keep_a_brace_or_a_backslash_as_text() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &[r"/say \{/two\} a\\b \n"]),
+        [r"{/two}+a\b+\n"]
+    );
+    assert!(lines(&log).is_empty());
+}
+
+#[test]
+fn a_line_with_a_hole_that_is_not_closed_or_that_the_server_cannot_run_is_answered_with_why() {
+    let (mut rig, _) = rig_with_values();
+    let replies = replies_to(
+        &mut rig,
+        &["/say {/two", "/say {.name}", "/say {>1+1}", "/say {*a}"],
+    );
+    assert_eq!(replies.len(), 4);
+    assert!(
+        replies[0].starts_with("the hole that opens at character 6 is never closed"),
+        "{}",
+        replies[0]
+    );
+    assert_eq!(
+        replies[1],
+        "hole 1 (at character 6): a command of the window can only be run by the window, before the line is sent"
+    );
+    assert_eq!(
+        replies[2],
+        "hole 1 (at character 6): code cannot be run yet: scripts are not built"
+    );
+    assert!(
+        replies[3].starts_with("{* and {** at character 6 are kept"),
+        "{}",
+        replies[3]
+    );
+}
+
+#[test]
+fn the_name_of_a_command_cannot_be_a_hole() {
+    let (mut rig, log) = rig_with_values();
+    assert_eq!(
+        replies_to(&mut rig, &["/{/name} a"]),
+        [
+            "a hole cannot be the name of a command: holes are for the words after it (1 hole before it already ran and is not undone)"
+        ]
+    );
+    assert_eq!(lines(&log), ["name"]);
 }
 
 // ---------------------------------------------------------------- entities

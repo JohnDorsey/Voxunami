@@ -22,7 +22,9 @@ mod registrar;
 mod registry;
 mod spec;
 
-pub use command::{Argument, ArgumentKind, Arguments, CommandSpec};
+pub use command::{
+    Argument, ArgumentKind, Arguments, CommandClass, CommandId, CommandNode, CommandSpec,
+};
 pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
 pub use event::{
@@ -33,6 +35,7 @@ pub use forms::{
     FormError, FormId, MAXIMUM_FORMS_PER_PLAYER, UiAction, UiClose, UiResponse, UiShow,
 };
 pub use host::{CASCADE_LIMIT, PluginHost};
+pub use line_language::CommandValue;
 pub use prompt::{
     MAXIMUM_PROMPT_OPTIONS, MAXIMUM_PROMPT_TEXT, Prompt, PromptAnswer, PromptClosed, PromptError,
     PromptId,

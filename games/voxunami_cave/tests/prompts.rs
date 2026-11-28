@@ -11,7 +11,7 @@ use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use namespaced_id::NamespacedId;
-use plugin_host::{CommandSpec, HandlerSpec, Plugin, PromptAnswered, Registrar};
+use plugin_host::{CommandClass, CommandSpec, HandlerSpec, Plugin, PromptAnswered, Registrar};
 use transport::Connection;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::Cave;
@@ -32,7 +32,7 @@ impl Plugin for Asker {
 
     fn register(&self, registrar: &mut Registrar<'_>) {
         registrar.command(
-            CommandSpec::new("ask", "asks a question"),
+            CommandSpec::new("ask", "asks a question").class(CommandClass::Change),
             |context, client, _| {
                 let _ = context.prompt(client, "Delete the level?", &["Keep it", "Delete it"]);
             },
@@ -125,6 +125,7 @@ fn a_replay_shows_the_question_while_it_was_asked_and_not_after() {
     let mut replay = Session::<_, Cave>::connect(
         connection,
         &Identity::generate(),
+        "player",
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0),

@@ -7,7 +7,7 @@ use entities::{Inventory, ItemStack};
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PLAYER_INVENTORY_SLOTS, PlayerClient, player_kind};
-use plugin_host::{Argument, CommandSpec, Plugin, Registrar};
+use plugin_host::{Argument, CommandClass, CommandSpec, Plugin, Registrar};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::request_block;
@@ -289,6 +289,7 @@ impl Plugin for Filler {
     fn register(&self, registrar: &mut Registrar<'_>) {
         registrar.command(
             CommandSpec::new("fill", "fills slots")
+                .class(CommandClass::Change)
                 .argument(Argument::number("slots"))
                 .argument(Argument::number("stone")),
             move |context, client, arguments| {

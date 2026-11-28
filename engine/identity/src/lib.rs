@@ -92,12 +92,13 @@ impl Identity {
             .to_bytes()
     }
 
-    /// The hello a client of `game` sends to say who it is.
-    pub fn hello(&self, game: &NamespacedId) -> ClientMessage {
+    /// The hello a client of `game` sends to say who it is and what it would like to be called.
+    pub fn hello(&self, game: &NamespacedId, nickname: &str) -> ClientMessage {
         ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
             game: game.clone(),
             player_key: self.player_key(),
+            nickname: nickname.to_owned(),
         }
     }
 
@@ -274,11 +275,12 @@ mod tests {
         let identity = Identity::from_secret([2; 32]);
         let game = game("test:game");
         assert_eq!(
-            identity.hello(&game),
+            identity.hello(&game, "Alex"),
             ClientMessage::Hello {
                 protocol_version: PROTOCOL_VERSION,
                 game: game.clone(),
                 player_key: identity.player_key(),
+                nickname: "Alex".to_owned(),
             }
         );
         let challenge = ServerMessage::Challenge { nonce: [4; 32] }.encode();

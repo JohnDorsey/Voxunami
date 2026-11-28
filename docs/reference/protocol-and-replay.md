@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 16)
+# The message stream and replays (protocol version 2026: the 2026 Thanksgiving demo)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -37,7 +37,7 @@ since a recording is just the frames a client received.
 
 ## The conversation
 
-1. The client sends `Hello` (protocol version, game id, its public key). The server refuses another version or game, or a
+1. The client sends `Hello` (protocol version, game id, its public key, and the name it would like to be called). The server refuses another version or game, or a
    key that is already playing, with `Disconnected` and closes the connection. A client that never says hello, or never
    proves who it is, is dropped after a number of *ticks* (`ServerConfig::handshake_timeout_ticks`); the server never
    reads a clock.
@@ -47,7 +47,7 @@ since a recording is just the frames a client received.
    system's randomness; a test server, or one whose only clients are in its own process, counts them, so streams repeat. Each
    key is one player and one connection at a time; there are no accounts (`entities-spec.md` section 2.7). Joining takes two
    server ticks: the challenge is sent in the tick after the hello and the welcome in the tick after the proof.
-3. The server answers `Welcome`: protocol version, game id, the id it gave the client, ticks per second, the last tick
+3. The server answers `Welcome`: protocol version, game id, the id it gave the client, the nickname it made of the name asked for (version 14: the letters `A-Z a-z 0-9 _`, one to 32 of them, every other character turned into `_`, with `_2`, `_3`, ... after it if another player has it, compared without regard to case), ticks per second, the last tick
    completed before the client joined, the world's clock at that tick (protocol 10: the time of the world, which is saved with it and which the client counts a tick at a time, is what the sun is a function of), the *package* (how blocks look, which channels the view reads) and a *world description*: a world file (`WorldData::describe`) with seed,
    registry tables, channel layout and, for each level, its name and generator setup, but no assignments, bricks or
    plugin sections. Levels are numbered by their order in it. The client loads
@@ -73,19 +73,20 @@ Client to server (first byte is the kind):
 
 | Kind | Message | Body |
 |---|---|---|
-| 1 | `Hello` | protocol version (`u32`), game (identifier), public key (32 bytes) |
+| 1 | `Hello` | protocol version (`u32`), game (identifier), public key (32 bytes), the name asked for (string, at most 256 bytes; the server makes it valid, so it may be anything) |
 | 2 | `SetInterest` | level (varint), box: min x, y, z then max x, y, z (zigzag), then the free regions: a count (at most 8) and a box each |
 | 3 | `GameMessage` | kind (identifier), payload (bytes) |
 | 4 | `Goodbye` | none |
 | 5 | `Command` | text (string, at most 1024 bytes): a line the player typed, such as `/level go cellar` |
 | 6 | `Prove` | signature (64 bytes) of the login text for the challenge the server sent |
 | 7 | `RequestPacks` | count (1 to 256), then that many root hashes (32 bytes each, none twice): the packs of the server's list that the client lacks |
+| 8 | `Chat` | text (string, at most 1024 bytes): a line for every player (version 14; message 7 in `scripting-integration`) |
 
 Server to client:
 
 | Kind | Message | Body |
 |---|---|---|
-| 1 | `Welcome` | protocol version (`u32`), game (identifier), client id (`u32`), ticks per second (`u32`), tick (`u64`), world clock (`u64`), world description (bytes), package (bytes) |
+| 1 | `Welcome` | protocol version (`u32`), game (identifier), client id (`u32`), nickname (string), ticks per second (`u32`), tick (`u64`), world clock (`u64`), world description (bytes), package (bytes) |
 | 2 | `InterestChanged` | level (varint), box, the free regions (a count and a box each), then count and per assignment: cube origin x, y, z (zigzag), cube size level (`u8`), generator file id plus one (varint, 0 = none) |
 | 3 | `BrickContents` | grid (varint: a level's number for its terrain, from 2^32 up for a ship), brick x, y, z (zigzag), the brick in its stored form (bytes; see the world file format) |
 | 4 | `VoxelEdits` | grid (varint), brick x, y, z, digest of the result (`u64`), count and per change: voxel index, channel number, value (varints) |
@@ -103,6 +104,7 @@ Server to client:
 | 17 | `Packs` | a byte, 1 if the list is every pack the server runs besides the game's own and 0 if not (since version 14); count (0 to 256), then per pack: id (string: 1 to 64 characters of `a-z 0-9 _`, none twice), its file index (bytes: `VXPI`, version, count, then per file its path, size, hash and whether clients are sent it), and the size of the archive a client is sent (varint, at most 1 GiB). The pack's identity, its root hash, is the hash of the index bytes. Every hash is BLAKE3, 32 bytes, and the index's version is 2 (since version 15; before, SHA-256 and version 1) |
 | 18 | `PackChunk` | root hash (32 bytes), offset (varint), bytes (at most 65,536, never none): a piece of the canonical archive of the pack with that root |
 | 16 | `PackageReplaced` | count of registries, then for each: the registry's kind (identifier), a count, and the identifiers appended to it, in order; then the package (bytes). Registries in order of their kinds, none with no entries, no entry twice |
+| 19 | `Chat` | a byte (0: the server speaking; 1: a player, then their public key (32 bytes) and their nickname (string)), then the text (string, at most 1024 bytes). Version 14; message 16 in `scripting-integration` |
 
 A **pose** is the grid id (varint), the brick x, y, z (zigzag), the offset in the brick (three `f64` since version 11, each in [0, 32)) and the orientation
 (four `f64` since version 7, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
@@ -128,6 +130,8 @@ button pressed or `Dismissed`). The interface's byte form is the `ui` crate's (c
 registers it.
 
 ## What the server sends when
+
+- **Chat** (version 14): a line from a joined client is cleaned (control characters removed, blanks at both ends trimmed, dropped if nothing is left) and told to every joined client, the speaker too, in the updates of the tick it was handled in: after the game's messages and the answers to commands, before `TickCompleted`, in the order the lines were handled (clients in id order, each client's lines in the order it sent them). The server reads no sigil: what is a command and what is chat is the client's choice, and a `/`, `.`, `>` or `{` in chat is text. A player may chat a burst of `ServerConfig::chat_burst` lines (5) and then one line every `chat_ticks_between_lines` (10) ticks, counted in ticks like every other limit; a line over it is dropped, and the speaker, once a tick, is told "you are chatting too fast" by a `Chat` with no speaker, for them alone.
 
 - **Entities** (version 3): after the voxel edits of the tick and before the game's own messages, the difference between what this
   client was last told and what is now, for the entities in the region it watches (those whose grid is the root grid of the watched level

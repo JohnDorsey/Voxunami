@@ -36,6 +36,11 @@ pub enum ClientEvent {
     },
     /// The server's answer to a command this client sent.
     CommandReply { text: String },
+    /// A line of chat, from a player (who may be this client) or from the server itself.
+    Chat {
+        speaker: Option<protocol::Speaker>,
+        text: String,
+    },
     /// Entities appeared, changed or went away.
     EntitiesChanged,
     /// Ships appeared, moved or went away.
@@ -58,6 +63,8 @@ pub type RegistryGrowth<'a> =
 pub struct ServerInfo {
     pub game: NamespacedId,
     pub client: protocol::ClientId,
+    /// What the server made of the name this player asked for: valid, and no other player's.
+    pub nickname: protocol::Nickname,
     pub ticks_per_second: u32,
 }
 
@@ -144,6 +151,7 @@ impl ClientWorld {
                 info: ServerInfo {
                     game: welcome.game,
                     client: welcome.client,
+                    nickname: welcome.nickname,
                     ticks_per_second: welcome.ticks_per_second,
                 },
                 world,
@@ -348,6 +356,7 @@ impl ClientWorld {
                 Ok(Some(ClientEvent::GameMessage { kind, payload }))
             }
             ServerMessage::CommandReply { text } => Ok(Some(ClientEvent::CommandReply { text })),
+            ServerMessage::Chat { speaker, text } => Ok(Some(ClientEvent::Chat { speaker, text })),
             ServerMessage::EntitiesSpawned(entities) => {
                 self.entities.spawn(entities)?;
                 Ok(Some(ClientEvent::EntitiesChanged))

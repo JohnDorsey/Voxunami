@@ -26,8 +26,8 @@ pub struct ScreenText {
     pub status: Vec<String>,
     /// The command being typed, with its cursor, if one is.
     pub typing: Option<String>,
-    /// The latest answer to a command, while it is still worth reading.
-    pub reply: Option<String>,
+    /// The latest lines of chat and answers to commands, oldest first, while they are still worth reading.
+    pub messages: Vec<String>,
 }
 
 /// Where an interface on the screen came from.
@@ -162,14 +162,14 @@ pub fn build(
             ),
         );
     }
-    if let Some(reply) = &text.reply {
+    if !text.messages.is_empty() {
         add(
             Source::Reply,
             lines(
                 Anchor::BottomLeft,
                 COMMAND_COLOR,
                 REPLY_TEXT,
-                std::slice::from_ref(reply),
+                &text.messages,
             ),
         );
     }
@@ -307,7 +307,7 @@ mod tests {
         ScreenText {
             status: status.iter().map(|line| (*line).to_owned()).collect(),
             typing: typing.map(str::to_owned),
-            reply: reply.map(str::to_owned),
+            messages: reply.into_iter().map(str::to_owned).collect(),
         }
     }
 

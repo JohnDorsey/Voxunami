@@ -14,8 +14,8 @@ use game_shell::{PackageData, SharedPackage};
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
 use plugin_host::{
-    Argument, CommandSpec, Context, HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope,
-    SystemSpec, Verdict,
+    Argument, CommandClass, CommandSpec, Context, HandlerSpec, Phase, PlayerJoined, Plugin,
+    Registrar, SaveScope, SystemSpec, Verdict,
 };
 use protocol::{ClientId, EntityId, Message};
 use server::{Audience, GridView};
@@ -117,6 +117,7 @@ impl Plugin for ItemsPlugin {
                 "gamemode",
                 "which game mode this world is in; /gamemode creative; /gamemode survival",
             )
+            .class(CommandClass::Change)
             .argument(Argument::rest("mode").optional()),
             move |context, client, arguments| {
                 let mut rules = locked(&shared);

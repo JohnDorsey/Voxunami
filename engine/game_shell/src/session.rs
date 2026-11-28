@@ -236,9 +236,19 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// The level the meshes are of: the one the server last confirmed watching.
     meshed_level: Option<LevelIndex>,
     command_replies: Vec<String>,
+    /// The lines of chat that have arrived, as they read on the screen, not yet taken.
+    chat_lines: Vec<String>,
     last_pose_sent: Option<PlayerPose>,
     /// What a server that moves the player was last told they are asking of their body.
     last_movement_sent: Option<(NamespacedId, Vec<u8>)>,
+}
+
+/// How a line of chat reads on the screen: `<Alex> hello` for a player, the text as it is for the server.
+fn chat_text(speaker: Option<&protocol::Speaker>, text: &str) -> String {
+    match speaker {
+        Some(speaker) => format!("<{}> {text}", speaker.nickname),
+        None => text.to_owned(),
+    }
 }
 
 /// A turn as the camera holds it.
@@ -248,11 +258,13 @@ fn frame_of(turn: Orientation) -> glam::Quat {
 
 impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// Connects and builds the player's picture of the world, proving to the server that the player is
-    /// `identity`. `wait` is called between attempts to hear the server's welcome, and is where a program
+    /// `identity` and asking to be called `nickname` (the server may call them something else: see
+    /// `ServerInfo::nickname`). `wait` is called between attempts to hear the server's welcome, and is where a program
     /// that ticks its own server steps it.
     pub fn connect(
         connection: C,
         identity: &Identity,
+        nickname: &str,
         mode: Mode,
         view_radius_bricks: i128,
         start: Camera,
@@ -261,6 +273,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         Self::connect_with_packs(
             connection,
             identity,
+            nickname,
             mode,
             view_radius_bricks,
             start,
@@ -270,16 +283,18 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     }
 
     /// As [`Session::connect`], keeping the packs the server replicates in `packs`: what it has of them it does not ask for again, and what it is sent it keeps there.
+    #[allow(clippy::too_many_arguments)]
     pub fn connect_with_packs(
         connection: C,
         identity: &Identity,
+        nickname: &str,
         mode: Mode,
         view_radius_bricks: i128,
         start: Camera,
         mut wait: impl FnMut(),
         packs: Box<dyn client::PackStore>,
     ) -> Result<Self, SessionError> {
-        let mut handshake = Handshake::start(connection, G::id(), identity)?;
+        let mut handshake = Handshake::start(connection, G::id(), identity, nickname)?;
         let deadline = Instant::now() + Duration::from_secs(15);
         let welcomed = loop {
             match handshake.poll()? {
@@ -377,6 +392,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             watched_center: None,
             meshed_level: None,
             command_replies: Vec::new(),
+            chat_lines: Vec::new(),
             last_pose_sent: None,
             last_movement_sent: None,
         };
@@ -849,6 +865,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     self.forget_ships_that_changed_tier();
                 }
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
+                ClientEvent::Chat { speaker, text } => {
+                    self.chat_lines.push(chat_text(speaker.as_ref(), &text));
+                }
                 ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.
                     if self.mode == Mode::Playing
@@ -1224,6 +1243,20 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             return;
         }
         let _ = self.client.send_command(text);
+    }
+
+    /// Sends the server a line of chat, for every player to read (it comes back, to the speaker too, with a later tick: see
+    /// [`Session::take_chat_lines`]). A replay says nothing to anyone.
+    pub fn send_chat(&mut self, text: &str) {
+        if self.mode != Mode::Playing {
+            return;
+        }
+        let _ = self.client.send_chat(text);
+    }
+
+    /// The lines of chat that have arrived since this was last called, oldest first, as they read on the screen.
+    pub fn take_chat_lines(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.chat_lines)
     }
 
     /// The answers to commands that have arrived since this was last called, oldest first.
@@ -1798,6 +1831,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.with_client_context(|host, context| host.command(line, context))
     }
 
+    /// Sends the server a line typed with a slash (`/tp 1 2 {.where}`), after running the `{.}` holes in it, which only this window
+    /// can run (see [`line_language`]). If one fails nothing is sent and the error is what to tell the player.
+    pub fn send_command_line(&mut self, line: &str) -> Result<(), String> {
+        let ready =
+            self.with_client_context(|host, context| host.line_for_the_server(line, context))?;
+        self.send_command(&ready);
+        Ok(())
+    }
+
     /// The HUD lines of the client plugins, one each (the question the server is waiting on is not among them: it is on the
     /// screen as a panel).
     pub fn hud_lines(&mut self) -> Vec<String> {
@@ -1895,6 +1937,14 @@ mod package_tests {
     fn joined_with_bytes(
         package: Vec<u8>,
     ) -> Result<Session<Box<dyn Connection>, ExampleGame>, SessionError> {
+        joined_as("player", package)
+    }
+
+    /// A session joined asking to be called `nickname`.
+    fn joined_as(
+        nickname: &str,
+        package: Vec<u8>,
+    ) -> Result<Session<Box<dyn Connection>, ExampleGame>, SessionError> {
         let served = content();
         let world = served.new_world(7);
         let (listener, connector) = loopback_listener();
@@ -1913,6 +1963,7 @@ mod package_tests {
         Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([1; 32]),
+            nickname,
             Mode::Playing,
             3,
             camera_at([16.0, 110.0, 16.0], 0.0, 0.0),
@@ -1920,6 +1971,29 @@ mod package_tests {
                 server.step();
             },
         )
+    }
+
+    #[test]
+    fn a_session_asks_the_server_for_the_name_the_player_chose_and_learns_what_it_was_given() {
+        let session = joined_as("Alex Smith", compiled_in().encode()).unwrap();
+        assert_eq!(
+            session.client().world().server_info().nickname.as_str(),
+            "Alex_Smith"
+        );
+    }
+
+    #[test]
+    fn chat_reads_as_the_name_in_angle_brackets_and_the_text_and_the_servers_own_words_as_they_are()
+    {
+        let speaker = protocol::Speaker {
+            key: protocol::PlayerKey::new([1; 32]),
+            nickname: protocol::Nickname::parse("Bo_2").unwrap(),
+        };
+        assert_eq!(chat_text(Some(&speaker), "hi {>1+1}"), "<Bo_2> hi {>1+1}");
+        assert_eq!(
+            chat_text(None, "you are chatting too fast"),
+            "you are chatting too fast"
+        );
     }
 
     /// The package the client's own copy of the game would make.
@@ -2074,6 +2148,7 @@ mod package_tests {
         let session = Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([1; 32]),
+            "player",
             Mode::Playing,
             3,
             camera_at([16.0, 110.0, 16.0], 0.0, 0.0),
@@ -2104,6 +2179,7 @@ mod package_tests {
             protocol_version: PROTOCOL_VERSION,
             game: ExampleGame::id(),
             client: ClientId::new(1),
+            nickname: protocol::Nickname::parse("player").unwrap(),
             ticks_per_second: 20,
             tick: Tick::new(0),
             world_clock: 0,
@@ -2355,6 +2431,7 @@ mod package_tests {
         let mut replayed = Session::<_, ExampleGame>::connect(
             connection,
             &Identity::from_secret([2; 32]),
+            "player",
             Mode::Replaying,
             3,
             camera_at([16.0, 110.0, 16.0], 0.0, 0.0),

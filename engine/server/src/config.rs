@@ -52,6 +52,11 @@ pub struct ServerConfig {
     pub ships: ShipSettings,
     /// How the paths of ships on rails are kept: how wide a number a hand-over from one sphere of influence to the next may make.
     pub rails: RailSettings,
+    /// How fast one player may chat: that many lines at once (the burst), and then one line every `chat_ticks_between_lines`
+    /// ticks. Counted in ticks, never in time, so that a recording of a session is the same on any machine. A line over the
+    /// limit is dropped and its speaker told so.
+    pub chat_burst: u32,
+    pub chat_ticks_between_lines: u32,
 }
 
 impl ServerConfig {
@@ -76,6 +81,8 @@ impl ServerConfig {
             level_gravity: Vec::new(),
             ships: ShipSettings::default(),
             rails: RailSettings::default(),
+            chat_burst: 5,
+            chat_ticks_between_lines: 10,
         }
     }
 
@@ -100,6 +107,13 @@ impl ServerConfig {
     /// The same, sending a client at most this many bytes of pack archives a tick.
     pub fn with_pack_bytes_per_tick(mut self, bytes: usize) -> Self {
         self.pack_bytes_per_tick = bytes;
+        self
+    }
+
+    /// The same, with this limit on how fast a player may chat (see [`ServerConfig::chat_burst`]). A burst of 0 is taken as 1.
+    pub fn with_chat_limit(mut self, burst: u32, ticks_between_lines: u32) -> Self {
+        self.chat_burst = burst.max(1);
+        self.chat_ticks_between_lines = ticks_between_lines;
         self
     }
 

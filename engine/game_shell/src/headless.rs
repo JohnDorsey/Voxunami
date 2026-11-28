@@ -70,6 +70,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     let mut session = Session::<_, G>::connect_with_packs(
         connection,
         &identity,
+        options.nickname(),
         Mode::Playing,
         view.view_radius,
         start,
@@ -163,6 +164,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     let mut session = Session::<_, G>::connect(
         connection,
         &crate::player_identity::for_replay(),
+        crate::player_identity::REPLAY_NICKNAME,
         Mode::Replaying,
         view.view_radius,
         start,

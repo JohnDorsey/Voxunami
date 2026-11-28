@@ -7,7 +7,8 @@ use crate::generators::GreatRivers;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, Presence, SharedPresence, lock};
 use plugin_host::{
-    Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
+    Argument, Arguments, CommandClass, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin,
+    Registrar, SystemSpec,
 };
 use protocol::ClientId;
 use server::ServerWorld;
@@ -421,7 +422,7 @@ impl Plugin for MovementPlugin {
 
         let bodies = Arc::clone(&movement);
         registrar.command(
-            CommandSpec::new("fly", "toggles flying and walking"),
+            CommandSpec::new("fly", "toggles flying and walking").class(CommandClass::Change),
             move |context, client, _| {
                 let flying = locked(&bodies).toggle_flying(client);
                 context.reply(
@@ -439,7 +440,7 @@ impl Plugin for MovementPlugin {
             CommandSpec::new(
                 "thrusters",
                 "switches the suit thrusters: in the air the movement keys (and space and shift) push you, and nothing brakes you",
-            ),
+            ).class(CommandClass::Change),
             move |context, client, _| {
                 let thrusters = locked(&bodies).toggle_thrusters(client);
                 context.reply(
@@ -459,6 +460,7 @@ impl Plugin for MovementPlugin {
                 "tp",
                 "goes to a place or to coordinates; /tp alone lists the places",
             )
+            .class(CommandClass::Change)
             .argument(Argument::word("where").optional())
             .argument(Argument::rest("numbers").optional()),
             move |context, client, arguments| {

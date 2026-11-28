@@ -44,6 +44,10 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   components a kind marks replicated, and a client store (`ClientEntities`) is built from the stream alone, so a replay shows the same
   entities.
 
+## Decided (what a player is called; scripting-spec.md phase 1, 2026-11-24)
+- **A nickname is a label, never an identity.** A player asks to be called something in the hello; the server makes of it a nickname of one to 32 of `A-Z a-z 0-9 _` (anything else becomes `_`, nothing at all becomes `player`), unique among the players there at the time (compared without regard to case; a second `Alex` is `Alex_2`), and says which in the welcome. A nickname is never used to decide what anyone may do, and no file keeps one: a player is their key. The characters are limited so that a nickname pasted into a command by a command block or a script cannot hold a space, a brace or a quote that changes what the command means (`permissions-survey.md`). A client that asks for nothing is `player` (the game's `--nickname NAME` sets it).
+- **Chat is a protocol message each way** (`Chat`), not a command: the line a player sends is chat unless its first character is `/`, `.` or `>` (the client decides; the server reads no sigil). Limits are in ticks. `scripting-spec.md` section 5.
+
 ## Decided (who a player is; built in Phase 27e, the owner's decision after review of 27d)
 - **A keypair per install, no accounts.** The player is an Ed25519 public key, made once and kept in a file in the game's data folder (`--identity
   FILE` chooses another; the file is 32 secret bytes, never overwritten if it is not). There are no names, passwords or servers that know players.

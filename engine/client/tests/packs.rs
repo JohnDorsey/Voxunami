@@ -8,7 +8,7 @@ use client::{Client, ClientError, Handshake, HandshakeProgress, MemoryPackStore,
 use identity::Identity;
 use pack_archive::{Archive, FileIndex, Hash};
 use protocol::{
-    ClientId, ClientMessage, PROTOCOL_VERSION, PackListing, ServerMessage, Tick, Welcome,
+    ClientId, ClientMessage, Nickname, PROTOCOL_VERSION, PackListing, ServerMessage, Tick, Welcome,
     pack_chunks,
 };
 use transport::loopback::{LoopbackConnection, loopback_pair};
@@ -111,7 +111,7 @@ impl Rig {
             inner: client_end,
             noted: Arc::clone(&noted),
         };
-        let handshake = Handshake::start(connection, game_id(), &identity).unwrap();
+        let handshake = Handshake::start(connection, game_id(), &identity, "player").unwrap();
         server.receive().unwrap().expect("the hello");
         server
             .send(
@@ -119,6 +119,7 @@ impl Rig {
                     protocol_version: PROTOCOL_VERSION,
                     game: game_id(),
                     client: ClientId::new(7),
+                    nickname: Nickname::parse("player").unwrap(),
                     ticks_per_second: 20,
                     tick: Tick::new(4),
                     world_clock: 1_004,

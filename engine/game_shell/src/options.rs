@@ -21,6 +21,8 @@ Usage: voxunami {command} [options]
   --packs DIRECTORY               load the data packs in this folder into the server this starts
   --identity FILE                 the key that says who you are to servers (default: made once, in the
                                   game data folder; keep it to stay the same player)
+  --nickname NAME                 what you would like to be called in chat (letters, digits and _,
+                                  at most 32; default: player; a server may add a number if it is taken)
   --autosave SECONDS              save the world to --world this often while playing
   --view-radius BRICKS            how far to see, in 32-voxel bricks (default 12)
   --adapter discrete|integrated   which GPU to use (default: best available)
@@ -291,6 +293,8 @@ pub struct PlayOptions {
     pub join: Option<String>,
     /// Where the player's private key is kept: `None` for the file in the game data folder.
     pub identity: Option<PathBuf>,
+    /// What the player would like to be called to other players: `None` for `player`. A server makes a valid, unused nickname of it.
+    pub nickname: Option<String>,
     /// A directory of data packs for the server this runs.
     pub packs: Option<PathBuf>,
     pub autosave_seconds: Option<f32>,
@@ -301,6 +305,11 @@ pub struct PlayOptions {
 }
 
 impl PlayOptions {
+    /// What to ask servers to call this player.
+    pub fn nickname(&self) -> &str {
+        self.nickname.as_deref().unwrap_or("player")
+    }
+
     /// The options a command line without arguments gives for game `G`.
     pub fn defaults_for<G: GameDefinition>() -> Self {
         let camera = G::default_camera();
@@ -312,6 +321,7 @@ impl PlayOptions {
             host: None,
             join: None,
             identity: None,
+            nickname: None,
             packs: None,
             autosave_seconds: None,
             camera: camera.position,
@@ -472,6 +482,7 @@ pub fn parse_play<G: GameDefinition>(
             "--host" => options.host = Some(complete_address(&value(&flag)?, "0.0.0.0")),
             "--join" => options.join = Some(complete_address(&value(&flag)?, "127.0.0.1")),
             "--identity" => options.identity = Some(PathBuf::from(value(&flag)?)),
+            "--nickname" => options.nickname = Some(value(&flag)?),
             "--packs" => options.packs = Some(PathBuf::from(value(&flag)?)),
             "--autosave" => options.autosave_seconds = Some(parse_number(&flag, &value(&flag)?)?),
             "--camera" => {
@@ -720,7 +731,7 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off \
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --nickname Alex --packs my_packs --time 18:30 --shadows off \
              --map-release off --map-distance 100 --shader-pack cel --shader-packs my_shaders --watch --engine-shaders src_shaders \n             --texture-pack my_pictures",
         );
         assert_eq!(
@@ -755,6 +766,7 @@ mod tests {
                 host: Some("0.0.0.0:4000".to_owned()),
                 join: None,
                 identity: Some(PathBuf::from("me.key")),
+                nickname: Some("Alex".to_owned()),
                 packs: Some(PathBuf::from("my_packs")),
                 autosave_seconds: Some(30.0),
                 camera: [1.5, 2.0, -3.0],
