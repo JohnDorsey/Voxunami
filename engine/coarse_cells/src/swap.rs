@@ -6,9 +6,11 @@
 //! taken in **groups**: a cube and the cubes of the other set that it overlaps (they are its halves, or its quarters, or the cube that holds it) change together,
 //! and only when every cube that comes in is ready.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::hash::BuildHasher;
 
 use region_octree::BrickCube;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Cubes that go and cubes that come, which are to change in one frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,7 +29,7 @@ fn order(cube: &BrickCube) -> (std::cmp::Reverse<u8>, [i128; 3]) {
 }
 
 /// The cube of `set` that holds `cube` (and is not it), if there is one. Cubes of a set do not overlap, so there is at most one.
-fn holder(cube: BrickCube, set: &HashSet<BrickCube>, highest_level: u8) -> Option<BrickCube> {
+fn holder(cube: BrickCube, set: &FxHashSet<BrickCube>, highest_level: u8) -> Option<BrickCube> {
     (cube.level() + 1..=highest_level)
         .map(|level| BrickCube::containing(cube.origin(), level))
         .find(|candidate| set.contains(candidate))
@@ -36,21 +38,41 @@ fn holder(cube: BrickCube, set: &HashSet<BrickCube>, highest_level: u8) -> Optio
 /// The changes that can be made now, from what is `shown` to what is `wanted`: the groups whose cubes that come are all `ready`, and the cubes that go and
 /// have nothing coming (they are out of what is wanted). Biggest first. Neither set has two cubes that overlap, and after the changes `shown` has none either,
 /// and every brick that was covered by a shown cube and is covered by a wanted one is covered still (by the cube that was shown, or by the ones that replaced it).
-pub fn plan_swaps(
-    shown: &HashSet<BrickCube>,
-    wanted: &HashSet<BrickCube>,
+pub fn plan_swaps<S: BuildHasher>(
+    shown: &HashSet<BrickCube, S>,
+    wanted: &HashSet<BrickCube, S>,
     ready: impl Fn(BrickCube) -> bool,
 ) -> Vec<Swap> {
-    let going: HashSet<BrickCube> = shown.difference(wanted).copied().collect();
-    let coming: HashSet<BrickCube> = wanted.difference(shown).copied().collect();
-    let highest = |set: &HashSet<BrickCube>| set.iter().map(|cube| cube.level()).max().unwrap_or(0);
-    let (highest_going, highest_coming) = (highest(&going), highest(&coming));
+    let (going, coming) = differences(shown, wanted);
+    swaps_between(&going, &coming, ready)
+}
+
+/// What is shown and not wanted, and what is wanted and not shown.
+fn differences<S: BuildHasher>(
+    shown: &HashSet<BrickCube, S>,
+    wanted: &HashSet<BrickCube, S>,
+) -> (FxHashSet<BrickCube>, FxHashSet<BrickCube>) {
+    (
+        shown.difference(wanted).copied().collect(),
+        wanted.difference(shown).copied().collect(),
+    )
+}
+
+/// [`plan_swaps`], of the differences.
+fn swaps_between(
+    going: &FxHashSet<BrickCube>,
+    coming: &FxHashSet<BrickCube>,
+    ready: impl Fn(BrickCube) -> bool,
+) -> Vec<Swap> {
+    let highest =
+        |set: &FxHashSet<BrickCube>| set.iter().map(|cube| cube.level()).max().unwrap_or(0);
+    let (highest_going, highest_coming) = (highest(going), highest(coming));
 
     // A group is named by its biggest cube. A cube that something in the other set holds is in that cube's group, and one that nothing holds is the name of
     // its own (and of the cubes it holds, if it holds any).
-    let mut groups: HashMap<BrickCube, Swap> = HashMap::new();
-    for &cube in &going {
-        let name = holder(cube, &coming, highest_coming).unwrap_or(cube);
+    let mut groups: FxHashMap<BrickCube, Swap> = FxHashMap::default();
+    for &cube in going {
+        let name = holder(cube, coming, highest_coming).unwrap_or(cube);
         groups
             .entry(name)
             .or_insert_with(|| Swap {
@@ -60,8 +82,8 @@ pub fn plan_swaps(
             .remove
             .push(cube);
     }
-    for &cube in &coming {
-        let name = holder(cube, &going, highest_going).unwrap_or(cube);
+    for &cube in coming {
+        let name = holder(cube, going, highest_going).unwrap_or(cube);
         groups
             .entry(name)
             .or_insert_with(|| Swap {
@@ -97,12 +119,23 @@ pub struct Refinement {
 
 /// The refinements from what is `shown` to what is `wanted`, the biggest cube that goes first: the cubes that go with something wanted inside them. (A cube that
 /// something wanted holds is the other way round, a coarsening, and has none of this: the one cube that comes is ready or it is not.)
-pub fn refinements(shown: &HashSet<BrickCube>, wanted: &HashSet<BrickCube>) -> Vec<Refinement> {
-    let going: HashSet<BrickCube> = shown.difference(wanted).copied().collect();
+pub fn refinements<S: BuildHasher>(
+    shown: &HashSet<BrickCube, S>,
+    wanted: &HashSet<BrickCube, S>,
+) -> Vec<Refinement> {
+    let (going, coming) = differences(shown, wanted);
+    refinements_between(&going, &coming)
+}
+
+/// [`refinements`], of the differences.
+fn refinements_between(
+    going: &FxHashSet<BrickCube>,
+    coming: &FxHashSet<BrickCube>,
+) -> Vec<Refinement> {
     let highest_going = going.iter().map(|cube| cube.level()).max().unwrap_or(0);
-    let mut found: HashMap<BrickCube, Vec<BrickCube>> = HashMap::new();
-    for &cube in wanted.difference(shown) {
-        if let Some(holder) = holder(cube, &going, highest_going) {
+    let mut found: FxHashMap<BrickCube, Vec<BrickCube>> = FxHashMap::default();
+    for &cube in coming {
+        if let Some(holder) = holder(cube, going, highest_going) {
             found.entry(holder).or_default().push(cube);
         }
     }
@@ -125,7 +158,7 @@ pub fn intermediate_cubes(
     refinements: &[Refinement],
     ready: impl Fn(BrickCube) -> bool,
 ) -> Vec<BrickCube> {
-    let mut found: HashSet<BrickCube> = HashSet::new();
+    let mut found: FxHashSet<BrickCube> = FxHashSet::default();
     for refinement in refinements {
         for coming in refinement.coming.iter().filter(|coming| !ready(**coming)) {
             for level in coming.level() + 1..refinement.going.level() {
@@ -145,17 +178,18 @@ pub fn intermediate_cubes(
 /// coarser than what has been built, a node does not wait for the whole of what replaces it, and **what is ready is not made to wait for what is not**: the swap puts up
 /// everything that is ready at once and keeps a coarser cover over the rest. The next call takes the next step, from the halves that cover. Cubes that come that are not
 /// wanted are only these.
-pub fn plan_progressive_swaps(
-    shown: &HashSet<BrickCube>,
-    wanted: &HashSet<BrickCube>,
+pub fn plan_progressive_swaps<S: BuildHasher>(
+    shown: &HashSet<BrickCube, S>,
+    wanted: &HashSet<BrickCube, S>,
     ready: impl Fn(BrickCube) -> bool,
 ) -> Vec<Swap> {
-    let mut swaps = plan_swaps(shown, wanted, &ready);
-    let changed: HashSet<BrickCube> = swaps
+    let (going, coming) = differences(shown, wanted);
+    let mut swaps = swaps_between(&going, &coming, &ready);
+    let changed: FxHashSet<BrickCube> = swaps
         .iter()
         .flat_map(|swap| swap.remove.iter().copied())
         .collect();
-    for refinement in refinements(shown, wanted) {
+    for refinement in refinements_between(&going, &coming) {
         let level = refinement.going.level();
         let steps_between = refinement
             .coming
@@ -165,7 +199,7 @@ pub fn plan_progressive_swaps(
             continue;
         }
         // What comes, by the half of the cube that goes that holds it.
-        let mut by_half: HashMap<BrickCube, Vec<BrickCube>> = HashMap::new();
+        let mut by_half: FxHashMap<BrickCube, Vec<BrickCube>> = FxHashMap::default();
         for &cube in &refinement.coming {
             by_half
                 .entry(BrickCube::containing(cube.origin(), level - 1))

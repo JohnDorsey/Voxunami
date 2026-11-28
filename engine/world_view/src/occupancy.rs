@@ -5,7 +5,7 @@
 //! every program that matches on `MeshUpdate` would have to know a variant it has nothing to do with. It is off until a program asks for it (`enable_occupancy`), and costs
 //! nothing while it is off.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -54,7 +54,7 @@ impl<K: Copy + Eq + Hash + Ord> OccupancyLog<K> {
     pub(crate) fn new() -> Self {
         Self {
             enabled: false,
-            sent: HashMap::new(),
+            sent: HashMap::default(),
             pending: Vec::new(),
         }
     }

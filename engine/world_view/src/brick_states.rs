@@ -12,7 +12,8 @@
 //! A brick that is taken down may have its picture **held** (`docs/specs/viewpoints-spec.md` 9f): the renderer keeps the mesh, hidden, the record keeps the picture's
 //! size and what the sun is told of the brick, and showing it again is a move that makes nothing. What is held is charged to a budget, and the oldest go first.
 
-use std::collections::{BTreeMap, HashMap};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use voxel_grid::Brick;

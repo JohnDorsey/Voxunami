@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Turns a world into what a viewer draws: meshes kept up to date in the background, and rays cast through voxels."
 
 [dependencies]
+rustc-hash.workspace = true
 block_models.workspace = true
 coarse_cells.workspace = true
 region_octree.workspace = true

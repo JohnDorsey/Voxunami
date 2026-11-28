@@ -1,6 +1,6 @@
 //! Bricks and coarse nodes drawn together: what is on the screen of a viewer on flat ground, standing and walking.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +28,9 @@ mod common;
 const DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
 use common::{Scene, scene, scene_of};
+
+/// The view keeps its cubes in sets that hash this way.
+type HashSet<T> = std::collections::HashSet<T, rustc_hash::FxBuildHasher>;
 
 /// What the renderer holds, as the updates say.
 #[derive(Default)]
@@ -187,7 +190,7 @@ fn view_of(scene: &Scene, radius: i128) -> LodView {
 
 /// The cubes and every cube that holds one of them, so that "something shown is inside this cube" is a lookup.
 fn holders_of(cubes: &HashSet<BrickCube>) -> HashSet<BrickCube> {
-    let mut holders = HashSet::new();
+    let mut holders = HashSet::default();
     for cube in cubes {
         for level in cube.level() + 1..=30 {
             holders.insert(BrickCube::containing(cube.origin(), level));
@@ -303,7 +306,7 @@ fn walking_never_leaves_a_hole_where_something_was_and_is_wanted_and_never_draws
     scene.assign_around(brick(0, 0, 0), 40);
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
-    let mut previous: HashSet<BrickCube> = HashSet::new();
+    let mut previous: HashSet<BrickCube> = HashSet::default();
     let mut checked = 0;
     for step in 0..8 {
         let viewer = viewer_in(brick(step, 0, 0));
@@ -1286,7 +1289,7 @@ fn come_back(
         brick_uploads: 0,
         brick_shows: 0,
         updates: 0,
-        shown_after_the_first_update: HashSet::new(),
+        shown_after_the_first_update: HashSet::default(),
     };
     let started = std::time::Instant::now();
     loop {

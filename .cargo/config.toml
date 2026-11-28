@@ -1,0 +1,4 @@
+# The demo runs on friends' computers: the C runtime is linked into the program, so no Visual C++ redistributable (VCRUNTIME140.dll) is needed.
+# (No higher CPU target than the default: x86-64-v2 was measured at 2 percent faster, not worth a program that will not start on an old processor.)
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

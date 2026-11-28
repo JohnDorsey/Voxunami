@@ -438,6 +438,7 @@ dependencies = [
  "libm",
  "proptest",
  "region_octree",
+ "rustc-hash 2.1.3",
  "voxel_space",
 ]
 
@@ -4302,6 +4303,7 @@ dependencies = [
  "content_registry",
  "proptest",
  "region_octree",
+ "rustc-hash 2.1.3",
  "terrain",
  "voxel_grid",
  "voxel_meshing",

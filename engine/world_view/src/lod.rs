@@ -5,8 +5,8 @@
 //! from the terrain generators or from what the server has said differs, see [`LodView::set_override`]) and then swaps what is on the screen for what is
 //! wanted in groups ([`coarse_cells::plan_swaps`]), so that a cube and what replaces it change in one frame and are never both on the screen or neither.
 
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
@@ -319,10 +319,10 @@ impl LodView {
         Self {
             mesher,
             grid: GridId::MAIN,
-            overrides: HashMap::new(),
-            told_empty: HashSet::new(),
+            overrides: HashMap::default(),
+            told_empty: HashSet::default(),
             told_empty_top: 0,
-            waiting_for_the_server: HashSet::new(),
+            waiting_for_the_server: HashSet::default(),
             next_version: 0,
             edited: EditedCubes::new(),
             new_edits: false,
@@ -353,7 +353,7 @@ impl LodView {
             in_flight: 0,
             finished_last_update: 0,
             warm_nodes_in_flight: 0,
-            warm_node_cubes: HashSet::new(),
+            warm_node_cubes: HashSet::default(),
             warm_finished_last_update: 0,
             warm_worker_count: default_warm_threads(config.worker_count),
             jobs: Some(jobs),
@@ -361,7 +361,7 @@ impl LodView {
             workers,
             was_settled: false,
             stalls: Vec::new(),
-            stall_reported: HashSet::new(),
+            stall_reported: HashSet::default(),
             stall_report: None,
         }
     }
@@ -928,7 +928,7 @@ impl LodView {
         // (A terrain that waits for the server's nodes has no node to make them from.)
         let wanted_set: HashSet<BrickCube> = cubes.iter().copied().collect();
         let (steps, hurried) = if source.waits_for_nodes() {
-            (Vec::new(), HashSet::new())
+            (Vec::new(), HashSet::default())
         } else {
             let groups: Vec<_> = refinements(self.cubes.shown(), &wanted_set)
                 .into_iter()

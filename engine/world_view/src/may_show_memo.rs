@@ -8,9 +8,8 @@
 //! Measured 2026-11-22 (`docs/specs/viewpoints-spec.md` 9g): a view from 264 km up back to the ground asked the terrain about 32,338 of the 33,030 cubes it worked out, because the
 //! answers of the ground were forgotten by the third working out on the way up, and that was 25 of the 38 ms it took to choose them.
 
-use std::collections::HashMap;
-
 use region_octree::BrickCube;
+use rustc_hash::FxHashMap as HashMap;
 
 /// How many answers are kept: two views' worth of a view that reaches far (about 33,000 are asked about from 264 km up, and a hundred thousand in one to 100 million voxels), about 64
 /// bytes each.
@@ -44,7 +43,7 @@ impl MayShowMemo {
         Self {
             version: 0,
             round: 0,
-            answers: HashMap::new(),
+            answers: HashMap::default(),
             capacity,
         }
     }

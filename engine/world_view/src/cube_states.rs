@@ -7,7 +7,8 @@
 //! screen and a picture waiting that could not both be, and a third set of the nodes the renderer had a mesh of); now a change is a method here, which changes
 //! all of what it touches, and [`CubeStates::check_consistency`] says what the shape of the records cannot.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 
 use region_octree::BrickCube;
 use voxel_meshing::PackedBrickMesh;

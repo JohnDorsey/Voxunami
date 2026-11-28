@@ -5,6 +5,9 @@ use voxel_space::{LevelOfDetail, VoxelBox, VoxelCoordinate};
 use crate::interval::Interval;
 use crate::noise::FractalNoise;
 
+/// What [`DensityField::sampler`] gives: samples of a field at one position after another.
+pub type Sampler<'field> = Box<dyn FnMut(VoxelCoordinate, LevelOfDetail) -> f64 + 'field>;
+
 /// A function of position that is positive where the world is solid and zero or negative where it
 /// is air.
 ///
@@ -29,6 +32,12 @@ pub trait DensityField: Debug + Send + Sync {
         let _ = (x, z, footprint);
         None
     }
+
+    /// A sampler of this field for many positions near each other, as the voxels of a brick are: it gives what [`DensityField::sample`] does, to the bit, and may keep
+    /// what it works out from one position to the next. The default keeps nothing.
+    fn sampler(&self) -> Sampler<'_> {
+        Box::new(move |position, footprint| self.sample(position, footprint))
+    }
 }
 
 /// Ground whose surface height varies with x and z: solid below `base_height + hills(x, z)`.
@@ -50,6 +59,14 @@ impl Heightfield {
 impl DensityField for Heightfield {
     fn sample(&self, position: VoxelCoordinate, footprint: LevelOfDetail) -> f64 {
         self.base_height + self.hills.sample(position, footprint) - (position.y() as f64 + 0.5)
+    }
+
+    fn sampler(&self) -> Sampler<'_> {
+        let mut hills = self.hills.cache();
+        Box::new(move |position, footprint| {
+            self.base_height + self.hills.sample_with(position, footprint, &mut hills)
+                - (position.y() as f64 + 0.5)
+        })
     }
 
     fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
@@ -112,6 +129,21 @@ impl DensityField for ShellCaves {
         self.strength * (self.noise.sample(position, footprint).abs() - self.half_thickness)
     }
 
+    fn sampler(&self) -> Sampler<'_> {
+        let mut noise = self.noise.cache();
+        Box::new(move |position, footprint| {
+            if self.noise.is_entirely_finer_than(footprint) {
+                return NO_CAVES;
+            }
+            self.strength
+                * (self
+                    .noise
+                    .sample_with(position, footprint, &mut noise)
+                    .abs()
+                    - self.half_thickness)
+        })
+    }
+
     fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
         if self.noise.is_entirely_finer_than(footprint) {
             return Interval::point(NO_CAVES);
@@ -151,6 +183,14 @@ impl<A: DensityField, B: DensityField> DensityField for Minimum<A, B> {
         self.first
             .sample(position, footprint)
             .min(self.second.sample(position, footprint))
+    }
+
+    fn sampler(&self) -> Sampler<'_> {
+        let mut first = self.first.sampler();
+        let mut second = self.second.sampler();
+        Box::new(move |position, footprint| {
+            first(position, footprint).min(second(position, footprint))
+        })
     }
 
     fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
@@ -420,6 +460,40 @@ mod tests {
                     value >= bounds.lower() - 1e-9 && value <= bounds.upper() + 1e-9,
                     "{value} outside [{}, {}] at {point}", bounds.lower(), bounds.upper()
                 );
+            }
+        }
+
+        /// A sampler of a composed field gives each voxel of a column-by-column walk what a sample on its own gives, to the bit, at every footprint.
+        #[test]
+        fn a_sampler_of_a_composed_field_gives_every_sample_to_the_bit(
+            seed in any::<u64>(),
+            base in [component(), component(), component()],
+            detail in 0u8..8,
+        ) {
+            let field = Minimum {
+                first: Heightfield::new(
+                    base[1] as f64,
+                    FractalNoise::standard(seed, Dimensionality::Planar, 7, 4, 30.0, 0.5),
+                ),
+                second: ShellCaves::new(
+                    FractalNoise::standard(seed ^ 1, Dimensionality::Volumetric, 5, 2, 1.0, 0.5),
+                    0.08,
+                    16.0,
+                ),
+            };
+            let footprint = LevelOfDetail::new(detail).unwrap();
+            let mut sample = field.sampler();
+            for z in 0..12 {
+                for x in 0..12 {
+                    for y in 0..40 {
+                        let position = voxel(base[0] + x * 3, base[1] - 20 + y, base[2] + z * 5);
+                        prop_assert_eq!(
+                            sample(position, footprint).to_bits(),
+                            field.sample(position, footprint).to_bits(),
+                            "at {}", position
+                        );
+                    }
+                }
             }
         }
 

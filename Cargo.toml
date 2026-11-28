@@ -72,6 +72,14 @@ dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
 
+# The demo: made once, to run fast on friends' computers. Fat link-time optimization in one code generation unit lets the optimizer see across every crate, the
+# libraries too. Panics unwind as before: the server's thread catches them.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+incremental = false
+
 # Voxel code is far too slow unoptimized to test or play; keep debug assertions and overflow checks on.
 [profile.dev]
 opt-level = 1

@@ -163,13 +163,14 @@ impl TerrainGenerator for FieldTerrainGenerator {
         let origin = coordinate.origin();
         let mut materials = vec![self.materials.air; BRICK_VOXEL_COUNT];
         let mut solid = [false; BRICK_EDGE_LENGTH + SURFACE_LAYER_DEPTH];
+        let mut sample = self.field.sampler();
         for z in 0..BRICK_EDGE_LENGTH {
             for x in 0..BRICK_EDGE_LENGTH {
                 // One column, including the voxels above the brick that decide the surface layers.
                 for (height, is_solid) in solid.iter_mut().enumerate() {
                     *is_solid = origin
                         .checked_offset(x as i128, height as i128, z as i128)
-                        .is_some_and(|position| self.field.sample(position, detail) > 0.0);
+                        .is_some_and(|position| sample(position, detail) > 0.0);
                 }
                 for y in 0..BRICK_EDGE_LENGTH {
                     if !solid[y] {

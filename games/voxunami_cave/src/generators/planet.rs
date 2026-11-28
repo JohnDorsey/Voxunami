@@ -24,8 +24,8 @@ use voxel_space::{
 };
 
 use terrain::Interval;
-use terrain::{DensityField, ShellCaves};
-use terrain::{Dimensionality, FractalNoise, mix};
+use terrain::{DensityField, Sampler, ShellCaves};
+use terrain::{Dimensionality, FractalNoise, NoiseCache, mix};
 use terrain::{SURFACE_LAYER_DEPTH, SolidBall, SurfaceLayers, TerrainGenerator};
 
 /// How far below the greatest a face's share of the direction can be and still count, as a share of the distance from the centre: the width of the seam.
@@ -57,6 +57,15 @@ const ARCTANGENT_COEFFICIENTS: [f64; 9] = [
 /// increasing, and continuous with a continuous slope.
 fn arctangent(x: f64) -> f64 {
     let magnitude = x.abs();
+    // (Within 1 the line beyond it adds nothing: the polynomial alone gives the same bits as the sum below, and its slope need not be worked out.)
+    if magnitude <= 1.0 {
+        let squared = magnitude * magnitude;
+        let mut sum = 0.0;
+        for &coefficient in ARCTANGENT_COEFFICIENTS.iter().rev() {
+            sum = sum * squared + coefficient;
+        }
+        return (magnitude * sum).copysign(x);
+    }
     let squared = magnitude.min(1.0) * magnitude.min(1.0);
     let mut sum = 0.0;
     let mut slope = 0.0;
@@ -175,7 +184,13 @@ impl PlanetGround {
 
     /// Where on the heightmap of a face a point at `ratio` times the distance along the face's axis across the face is read: in whole voxels.
     fn heightmap_coordinate(&self, ratio: f64) -> i128 {
-        (self.radius * arctangent(ratio)).floor() as i128
+        let at = (self.radius * arctangent(ratio)).floor();
+        // (Converting through an `i64` where it fits is the same number, without the call to a library routine a 128-bit conversion makes.)
+        if at.abs() < 9.2e18 {
+            i128::from(at as i64)
+        } else {
+            at as i128
+        }
     }
 
     /// The share of each axis's face in the height at `position` (a point, not a direction), `weights[axis]`, with the squares adding to one.
@@ -200,6 +215,7 @@ impl PlanetGround {
         VoxelCoordinate::new(x, 0, z)
     }
 
+    #[cfg(test)]
     fn face_height(&self, face: Face, position: [f64; 3], footprint: LevelOfDetail) -> f64 {
         self.faces[face.index()].sample(self.heightmap_position(face, position), footprint)
     }
@@ -211,6 +227,18 @@ impl PlanetGround {
         distance: f64,
         footprint: LevelOfDetail,
     ) -> f64 {
+        self.height_by(position, distance, |face, at| {
+            self.faces[face.index()].sample(at, footprint)
+        })
+    }
+
+    /// [`PlanetGround::height`], with the height of each face that counts read by `face_height`, which is given the face and the place on its heightmap.
+    fn height_by(
+        &self,
+        position: [f64; 3],
+        distance: f64,
+        mut face_height: impl FnMut(Face, VoxelCoordinate) -> f64,
+    ) -> f64 {
         let weights = Self::blend_weights(position, distance);
         let mut total = 0.0;
         for (axis, &weight) in weights.iter().enumerate() {
@@ -219,7 +247,7 @@ impl PlanetGround {
                     axis,
                     negative: position[axis] < 0.0,
                 };
-                total += weight * self.face_height(face, position, footprint);
+                total += weight * face_height(face, self.heightmap_position(face, position));
             }
         }
         total
@@ -227,10 +255,15 @@ impl PlanetGround {
 
     /// The middle of a voxel, which is where the field is asked.
     fn middle(position: VoxelCoordinate) -> [f64; 3] {
+        // (A 128-bit integer converts by a call to a library routine; through an `i64` where it fits, it is the same number, rounded the same.)
+        let number = |coordinate: i128| match i64::try_from(coordinate) {
+            Ok(narrow) => narrow as f64,
+            Err(_) => coordinate as f64,
+        };
         [
-            position.x() as f64 + 0.5,
-            position.y() as f64 + 0.5,
-            position.z() as f64 + 0.5,
+            number(position.x()) + 0.5,
+            number(position.y()) + 0.5,
+            number(position.z()) + 0.5,
         ]
     }
 
@@ -358,12 +391,93 @@ impl PlanetGround {
     }
 }
 
+/// How many places of the heightmaps a sampler of the ground remembers (a power of two).
+const HEIGHT_SLOTS: usize = 2048;
+
+/// The heights a sampler of the ground read last, of faces at places of their heightmaps: the voxels along a line from the centre read one place, and the voxels of a
+/// brick lie on lines nearly so. A place whose slot another one took is read again.
+struct HeightsRead {
+    slots: Box<[HeightRead]>,
+}
+
+#[derive(Clone, Copy)]
+struct HeightRead {
+    face: usize,
+    footprint: u8,
+    x: i128,
+    z: i128,
+    height: f64,
+}
+
+impl HeightsRead {
+    fn new() -> Self {
+        let empty = HeightRead {
+            face: usize::MAX,
+            footprint: 0,
+            x: 0,
+            z: 0,
+            height: 0.0,
+        };
+        Self {
+            slots: vec![empty; HEIGHT_SLOTS].into_boxed_slice(),
+        }
+    }
+
+    /// The height of `face` at `at`, kept from the last time, or read by `read`.
+    #[inline]
+    fn height(
+        &mut self,
+        face: usize,
+        at: VoxelCoordinate,
+        footprint: LevelOfDetail,
+        read: impl FnOnce() -> f64,
+    ) -> f64 {
+        let key = (at.x() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (at.z() as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ face as u64;
+        let hashed =
+            key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - HEIGHT_SLOTS.trailing_zeros());
+        let slot = &mut self.slots[hashed as usize];
+        if slot.face != face
+            || slot.footprint != footprint.level()
+            || slot.x != at.x()
+            || slot.z != at.z()
+        {
+            *slot = HeightRead {
+                face,
+                footprint: footprint.level(),
+                x: at.x(),
+                z: at.z(),
+                height: read(),
+            };
+        }
+        slot.height
+    }
+}
+
 impl DensityField for PlanetGround {
     fn sample(&self, position: VoxelCoordinate, footprint: LevelOfDetail) -> f64 {
         let middle = Self::middle(position);
         let distance =
             (middle[0] * middle[0] + middle[1] * middle[1] + middle[2] * middle[2]).sqrt();
         self.radius + self.height(middle, distance, footprint) - distance
+    }
+
+    fn sampler(&self) -> Sampler<'_> {
+        let mut faces: [NoiseCache; 6] = std::array::from_fn(|face| self.faces[face].cache());
+        let mut read = HeightsRead::new();
+        Box::new(move |position, footprint| {
+            let middle = Self::middle(position);
+            let distance =
+                (middle[0] * middle[0] + middle[1] * middle[1] + middle[2] * middle[2]).sqrt();
+            let height = self.height_by(middle, distance, |face, at| {
+                let index = face.index();
+                read.height(index, at, footprint, || {
+                    self.faces[index].sample_with(at, footprint, &mut faces[index])
+                })
+            });
+            self.radius + height - distance
+        })
     }
 
     fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
@@ -458,6 +572,8 @@ impl TerrainGenerator for PlanetGenerator {
 
         let origin = coordinate.origin();
         let mut materials = vec![self.materials.air; BRICK_VOXEL_COUNT];
+        let mut cave_sample = self.caves.sampler();
+        let mut ground_sample = self.ground.sampler();
         for z in 0..BRICK_EDGE_LENGTH {
             for y in 0..BRICK_EDGE_LENGTH {
                 for x in 0..BRICK_EDGE_LENGTH {
@@ -465,7 +581,7 @@ impl TerrainGenerator for PlanetGenerator {
                     else {
                         continue;
                     };
-                    if may_have_caves && self.caves.sample(position, detail) <= 0.0 {
+                    if may_have_caves && cave_sample(position, detail) <= 0.0 {
                         continue;
                     }
                     let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
@@ -473,7 +589,7 @@ impl TerrainGenerator for PlanetGenerator {
                         materials[local.index()] = self.materials.deep;
                         continue;
                     }
-                    let depth = self.ground.sample(position, detail);
+                    let depth = ground_sample(position, detail);
                     if depth > 0.0 {
                         materials[local.index()] = self.layer(depth);
                     }
@@ -1099,6 +1215,80 @@ mod tests {
     }
 
     // ---- bricks ----
+
+    /// The arctangent as it was before the shortcut for ratios within 1: the polynomial and the line beyond it, added.
+    fn arctangent_in_full(x: f64) -> f64 {
+        let magnitude = x.abs();
+        let squared = magnitude.min(1.0) * magnitude.min(1.0);
+        let mut sum = 0.0;
+        let mut slope = 0.0;
+        for (index, &coefficient) in ARCTANGENT_COEFFICIENTS.iter().enumerate().rev() {
+            sum = sum * squared + coefficient;
+            slope = slope * squared + coefficient * (2 * index + 1) as f64;
+        }
+        let inside = magnitude.min(1.0) * sum;
+        let value = inside + (magnitude - magnitude.min(1.0)) * slope;
+        value.copysign(x)
+    }
+
+    #[test]
+    fn the_shortcut_of_the_arctangent_gives_the_same_bits() {
+        let mut checked = vec![
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::MIN_POSITIVE,
+            1.0 - f64::EPSILON,
+            1.0 + f64::EPSILON,
+            2.0,
+            -3.5,
+            1e300,
+        ];
+        // A walk through (-2, 2) in steps that are no round numbers of binary.
+        checked.extend((0..200_000).map(|step| -2.0 + f64::from(step) * 0.000_020_000_7));
+        for x in checked {
+            assert_eq!(
+                arctangent(x).to_bits(),
+                arctangent_in_full(x).to_bits(),
+                "{x}"
+            );
+        }
+    }
+
+    /// A sampler of the ground gives every voxel of bricks what a sample on its own does, to the bit: at the poles, on the seams between faces, at the corners where
+    /// three meet, far from the surface, and at several footprints, walking brick after brick with one sampler.
+    #[test]
+    fn a_sampler_of_the_ground_gives_every_sample_to_the_bit() {
+        let ground = PlanetGround::new(&PlanetSettings::one_percent_of_earth(2024));
+        let mut sample = ground.sampler();
+        let bricks = [
+            [0, 1990, 0],
+            [1989, 3, -2],
+            [1406, 1388, 94],
+            [-1147, 1147, 1147],
+            [-12, -1988, 5],
+            [500, 1700, -400],
+            [0, 0, 0],
+        ];
+        for [x, y, z] in bricks {
+            for footprint in [FULL, LevelOfDetail::new(5).unwrap()] {
+                let origin = BrickCoordinate::new(x, y, z).origin();
+                for dz in (0..32).step_by(3) {
+                    for dy in 0..32 {
+                        for dx in (0..32).step_by(5) {
+                            let position = origin.checked_offset(dx, dy, dz).unwrap();
+                            assert_eq!(
+                                sample(position, footprint).to_bits(),
+                                ground.sample(position, footprint).to_bits(),
+                                "at {position:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// The material of a voxel worked out on its own from the samples.
     fn reference_material(generator: &PlanetGenerator, position: VoxelCoordinate) -> u32 {

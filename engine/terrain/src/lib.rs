@@ -35,7 +35,7 @@ pub use coarse::{
     coarse_node_of_field_cell_by_cell, coarse_node_of_surface_without_shortcuts,
     fills_of_field_cell_by_cell, node_digest,
 };
-pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
+pub use density::{DensityField, Heightfield, Minimum, Sampler, ShellCaves};
 pub use empty::{EmptyTerrain, empty};
 pub use generator::{
     FamilyError, FieldTerrainGenerator, GeneratorFamily, SURFACE_LAYER_DEPTH, SolidBall,
@@ -43,6 +43,7 @@ pub use generator::{
 };
 pub use interval::Interval;
 pub use noise::{
-    Dimensionality, FractalNoise, MAXIMUM_WAVELENGTH_LOG2, Octave, lattice_hash, lattice_value, mix,
+    Dimensionality, FractalNoise, MAXIMUM_WAVELENGTH_LOG2, NoiseCache, Octave, lattice_hash,
+    lattice_value, mix,
 };
 pub use world_terrain::{GenerationOutcome, GeneratorId, WorldTerrain, WorldTerrainError};

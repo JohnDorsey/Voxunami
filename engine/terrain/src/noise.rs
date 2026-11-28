@@ -187,6 +187,42 @@ impl FractalNoise {
         total
     }
 
+    /// An empty cache for [`FractalNoise::sample_with`] of this noise.
+    pub fn cache(&self) -> NoiseCache {
+        NoiseCache {
+            octaves: (0..self.octaves.len())
+                .map(|index| OctaveCache {
+                    seed: self.octave_seed(index),
+                    cells: [EMPTY_CELL; 8],
+                    corners: [[0.0; 8]; 8],
+                })
+                .collect(),
+        }
+    }
+
+    /// [`FractalNoise::sample`], the same value to the bit, keeping in `cache` (made by [`FractalNoise::cache`] of this noise) the values at the corners of the
+    /// lattice cells it has been in: far faster over positions near each other, as the voxels of a brick are, where the same cells are asked about again and again.
+    #[inline]
+    pub fn sample_with(
+        &self,
+        position: VoxelCoordinate,
+        footprint: LevelOfDetail,
+        cache: &mut NoiseCache,
+    ) -> f64 {
+        debug_assert_eq!(cache.octaves.len(), self.octaves.len());
+        let Some(narrow) = NarrowPosition::of(position) else {
+            return self.sample(position, footprint);
+        };
+        let mut total = 0.0;
+        for (octave, cached) in self.octaves.iter().zip(&mut cache.octaves) {
+            if Self::keeps(octave, footprint) {
+                total += octave.amplitude
+                    * cached.value(narrow, octave.wavelength_log2, self.dimensionality);
+            }
+        }
+        total
+    }
+
     /// Bounds on [`FractalNoise::sample`] for every voxel of `region`. Where an octave's lattice is
     /// coarse compared with the region, the bound is tight; otherwise it is the octave's full range.
     pub fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
@@ -251,6 +287,72 @@ impl FractalNoise {
             .filter(|octave| !Self::keeps(octave, footprint))
             .map(|octave| octave.amplitude)
             .sum()
+    }
+}
+
+/// What [`FractalNoise::sample_with`] keeps from one sample to the next, for one noise.
+#[derive(Clone, Debug)]
+pub struct NoiseCache {
+    octaves: Vec<OctaveCache>,
+}
+
+/// A cell no position is in (a narrow position's cells are far above it).
+const EMPTY_CELL: [i64; 3] = [i64::MIN; 3];
+
+/// For one octave, up to eight cells it has been in, one for each parity of a cell's three coordinates (so that a box that a few cells cover hashes the corners of
+/// each once), and the values at their corners, numbered `dx + 2 dy + 4 dz`.
+#[derive(Clone, Debug)]
+struct OctaveCache {
+    seed: u64,
+    cells: [[i64; 3]; 8],
+    corners: [[f64; 8]; 8],
+}
+
+impl OctaveCache {
+    /// What [`NarrowPosition::octave`] gives, to the bit.
+    #[inline]
+    fn value(
+        &mut self,
+        position: NarrowPosition,
+        wavelength_log2: u8,
+        dimensionality: Dimensionality,
+    ) -> f64 {
+        let [x, y, z] = position.coordinates;
+        let (cell_x, fraction_x) = split_axis_narrow(x, wavelength_log2);
+        let (cell_z, fraction_z) = split_axis_narrow(z, wavelength_log2);
+        let (cell_y, fraction_y) = match dimensionality {
+            Dimensionality::Planar => (0, 0.0),
+            Dimensionality::Volumetric => split_axis_narrow(y, wavelength_log2),
+        };
+        let slot = ((cell_x & 1) | ((cell_y & 1) << 1) | ((cell_z & 1) << 2)) as usize;
+        let cell = [cell_x, cell_y, cell_z];
+        if self.cells[slot] != cell {
+            self.fill(slot, cell, dimensionality);
+        }
+        let corners = &self.corners[slot];
+        blend_corners(
+            dimensionality,
+            [fraction_x, fraction_y, fraction_z],
+            |dx, dy, dz| corners[(dx + 2 * dy + 4 * dz) as usize],
+        )
+    }
+
+    fn fill(&mut self, slot: usize, cell: [i64; 3], dimensionality: Dimensionality) {
+        let [cell_x, cell_y, cell_z] = cell;
+        // (A planar noise looks at the lower corners along y only, as `blend_corners` does.)
+        let along_y = match dimensionality {
+            Dimensionality::Planar => 1,
+            Dimensionality::Volumetric => 2,
+        };
+        for dz in 0..2i64 {
+            for dy in 0..along_y {
+                for dx in 0..2i64 {
+                    self.corners[slot][(dx + 2 * dy + 4 * dz) as usize] =
+                        lattice_value_narrow(self.seed, cell_x + dx, cell_y + dy, cell_z + dz);
+                }
+            }
+        }
+        self.cells[slot] = cell;
     }
 }
 
@@ -348,8 +450,11 @@ impl NarrowPosition {
 #[inline]
 fn split_axis_narrow(coordinate: i64, wavelength_log2: u8) -> (i64, f64) {
     let cell = coordinate >> wavelength_log2;
-    let within = (coordinate & ((1i64 << wavelength_log2) - 1)) as u64;
-    let fraction = (within as f64 + 0.5) / (1u64 << wavelength_log2) as f64;
+    // (Not negative, and below 2^63: it converts to `f64` the same as a `u64` would, in one instruction.)
+    let within = coordinate & ((1i64 << wavelength_log2) - 1);
+    // Times 2^-wavelength is the same as divided by 2^wavelength, to the bit: the reciprocal is exact. And it is many times faster.
+    let per_wavelength = f64::from_bits((1023 - u64::from(wavelength_log2)) << 52);
+    let fraction = (within as f64 + 0.5) * per_wavelength;
     (cell, fraction)
 }
 
@@ -536,6 +641,29 @@ mod tests {
     /// Float rounding in the blend may exceed a bound by a few ulps.
     const TOLERANCE: f64 = 1e-9;
 
+    /// Every voxel of a box around cell borders at the origin, in order, with one cache: the cells are filled, used and evicted as a brick does it.
+    #[test]
+    fn a_cache_walked_over_a_brick_at_the_borders_of_cells_gives_every_sample_to_the_bit() {
+        for dimensionality in [Dimensionality::Planar, Dimensionality::Volumetric] {
+            let noise = FractalNoise::standard(2024, dimensionality, 5, 6, 1.0, 0.5);
+            let mut cache = noise.cache();
+            for z in -20i128..20 {
+                for y in -3i128..3 {
+                    for x in -20i128..20 {
+                        let position = voxel(x, y, z);
+                        assert_eq!(
+                            noise
+                                .sample_with(position, LevelOfDetail::FULL_DETAIL, &mut cache)
+                                .to_bits(),
+                            noise.sample(position, LevelOfDetail::FULL_DETAIL).to_bits(),
+                            "{dimensionality:?} at {x} {y} {z}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn mix_matches_the_published_splitmix64_first_output() {
         assert_eq!(mix(0), 0xE220_A839_7B1D_CDAF);
@@ -581,6 +709,40 @@ mod tests {
             let noise = FractalNoise::standard(seed, dimensionality, wavelength_log2.max(3), 3, 1.0, 0.5);
             let value = noise.sample(position, LevelOfDetail::FULL_DETAIL);
             prop_assert!(value.abs() <= noise.largest_magnitude() + 1e-12, "{value}");
+        }
+
+        /// A cache kept over many samples gives each the value of a sample on its own, to the bit: walks that stay in cells, cross them, jump far away and come
+        /// back, at every footprint, narrow positions and wide ones.
+        #[test]
+        fn a_sample_with_a_cache_is_the_sample_to_the_bit(
+            seed in any::<u64>(),
+            largest in 3u8..=12,
+            octaves in 1u8..=10,
+            volumetric in any::<bool>(),
+            start in (any_coordinate(), any_coordinate(), any_coordinate()),
+            steps in proptest::collection::vec(((-40i128..40, -40i128..40, -40i128..40), 0u8..12, any::<bool>()), 1..80),
+        ) {
+            let dimensionality = if volumetric { Dimensionality::Volumetric } else { Dimensionality::Planar };
+            let noise = FractalNoise::standard(seed, dimensionality, largest, octaves, 37.5, 0.5);
+            let mut cache = noise.cache();
+            let mut at = start;
+            for ((dx, dy, dz), footprint, jump) in steps {
+                if jump {
+                    at = (at.0.saturating_add(dx * 1000), at.1.saturating_add(dy * 1000), at.2.saturating_add(dz * 1000));
+                } else {
+                    at = (at.0.saturating_add(dx / 13), at.1.saturating_add(dy / 13), at.2.saturating_add(dz / 13));
+                }
+                let Ok(position) = VoxelCoordinate::try_new(at.0, at.1, at.2) else { continue };
+                let footprint = level(footprint);
+                // The same place twice, so that what was kept is used.
+                for _ in 0..2 {
+                    prop_assert_eq!(
+                        noise.sample_with(position, footprint, &mut cache).to_bits(),
+                        noise.sample(position, footprint).to_bits(),
+                        "at {:?}", position
+                    );
+                }
+            }
         }
 
         #[test]
